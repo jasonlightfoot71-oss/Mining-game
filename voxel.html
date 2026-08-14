@@ -3035,6 +3035,7 @@
     pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, pitch));
   });
   renderer.domElement.addEventListener('click', () => {
+    if (isTouchDevice) return; // touch devices use their own on-screen controls — Pointer Lock isn't supported on any mobile browser (iOS Safari, Chrome for Android, none of them), so this must never be called there
     if (document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock();
   });
   renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());

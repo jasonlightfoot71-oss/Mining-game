@@ -269,7 +269,7 @@
   <button id="leaveVisitBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;">Leave</button>
 </div>
 <div id="millEditBanner" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:25;background:rgba(20,20,25,0.85);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;align-items:center;gap:10px;">
-  <span>🍺 Editing The Mill</span>
+  <span id="millEditBannerLabel">🍺 Editing The Mill</span>
   <button id="leaveMillEditBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;">🏠 Exit to menu</button>
 </div>
 <div id="saveStatus"></div>
@@ -4680,7 +4680,15 @@
       renderer.domElement.requestPointerLock();
     }
     if (visitMode) document.getElementById('visitBanner').style.display = 'flex';
-    else if (currentWorldId === PUB_WORLD_ID) document.getElementById('millEditBanner').style.display = 'flex';
+    else if (currentWorldId) {
+      // Shows for any of your own worlds being played/edited, not just
+      // The Mill — this was the actual gap: every other entry point
+      // (visiting, Mill editing) already had its own "leave" button, but
+      // a normal world of your own had no way back to the menu short of
+      // closing and reopening the app.
+      document.getElementById('millEditBannerLabel').textContent = (currentWorldId === PUB_WORLD_ID) ? '🍺 Editing The Mill' : '🏗️ Editing ' + currentWorldName;
+      document.getElementById('millEditBanner').style.display = 'flex';
+    }
   });
 
   // ================= WORLD SELECT / INIT =================

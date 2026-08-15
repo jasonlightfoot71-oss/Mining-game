@@ -2744,9 +2744,14 @@
     if (!onDuty) {
       if (working) { working = false; workTimer = 0; }
       if (workStatusEl) workStatusEl.style.display = 'none';
+      setWorkHeldVisual(null);
       return;
     }
     if (!working) { working = true; workTimer = 0; promotionOfferDismissed = false; }
+    // Fallback bar-counter earning (no role system, e.g. a friend's world)
+    // still reads as "working the bar", so it gets the same drink prop;
+    // the Pub Manager roams the whole pub with no single themed item.
+    setWorkHeldVisual(currentRole ? workHeldKindForRole(currentRole) : (rankIndex() < 6 ? 'drink' : null));
     workTimer += dt;
     if (currentRole || rankIndex() >= 6) { hoursWorked += dt/60; updateRoleTag(); checkPromotionOffer(); } // 1 real second = 1 in-game minute (dt/60 hours)
     const payRate = payForRank(rankIndex());
@@ -3030,6 +3035,152 @@
   const crackMesh = new THREE.Mesh(new THREE.BoxGeometry(1.01,1.01,1.01), crackMat);
   crackMesh.visible = false;
   scene.add(crackMesh);
+
+  // ================= WORK-HELD PROPS (first person) =================
+  // While actually on shift, the hand shows a themed prop instead of
+  // whatever's selected in the hotbar — a nod to actually doing the job
+  // rather than carrying a brick around. Each prop is its own small group,
+  // all anchored at the same spot/rotation as heldMesh so they share its
+  // bob animation; only one is visible at a time via workHeldRoot.
+  const workHeldRoot = new THREE.Group();
+  camera.add(workHeldRoot);
+  const workHeldGroups = {};
+  function registerWorkHeldGroup(kind, group) {
+    group.visible = false;
+    workHeldRoot.add(group);
+    workHeldGroups[kind] = group;
+  }
+  function buildPintGlass(scale) {
+    const g = new THREE.Group();
+    const glassMat = new THREE.MeshPhongMaterial({ color: 0xdcefe0, shininess: 90, transparent: true, opacity: 0.3 });
+    const beerMat = new THREE.MeshPhongMaterial({ color: 0xd9962a, shininess: 60 });
+    const foamMat = new THREE.MeshBasicMaterial({ color: 0xfaf6ea });
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.055*scale, 0.045*scale, 0.14*scale, 10), glassMat);
+    g.add(glass);
+    const beer = new THREE.Mesh(new THREE.CylinderGeometry(0.05*scale, 0.042*scale, 0.1*scale, 10), beerMat);
+    beer.position.y = -0.01*scale;
+    g.add(beer);
+    const foam = new THREE.Mesh(new THREE.CylinderGeometry(0.052*scale, 0.052*scale, 0.02*scale, 10), foamMat);
+    foam.position.y = 0.05*scale;
+    g.add(foam);
+    return g;
+  }
+  registerWorkHeldGroup('drink', buildPintGlass(1));
+  function buildTrayDrinks() {
+    const g = new THREE.Group();
+    const trayMat = new THREE.MeshPhongMaterial({ color: 0xc7c9cc, shininess: 50 });
+    const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.015, 16), trayMat);
+    g.add(tray);
+    [[-0.08,-0.04],[0.08,-0.04],[0, 0.07]].forEach(([x,z]) => {
+      const glass = buildPintGlass(0.62);
+      glass.position.set(x, 0.05, z);
+      g.add(glass);
+    });
+    return g;
+  }
+  registerWorkHeldGroup('trayDrinks', buildTrayDrinks());
+  function buildPlateFood() {
+    const g = new THREE.Group();
+    const plateMat = new THREE.MeshPhongMaterial({ color: 0xf5f3ec, shininess: 40 });
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.13, 0.02, 16), plateMat);
+    g.add(plate);
+    const chipMat = new THREE.MeshPhongMaterial({ color: 0xe8b23a, shininess: 10 });
+    for (let i = 0; i < 6; i++) {
+      const chip = new THREE.Mesh(new THREE.BoxGeometry(0.02,0.02,0.09), chipMat);
+      chip.position.set((Math.random()-0.5)*0.14, 0.025, (Math.random()-0.5)*0.1);
+      chip.rotation.y = Math.random()*Math.PI;
+      g.add(chip);
+    }
+    const peaMat = new THREE.MeshPhongMaterial({ color: 0x5a9a4a, shininess: 20 });
+    for (let i = 0; i < 8; i++) {
+      const pea = new THREE.Mesh(new THREE.SphereGeometry(0.012, 5, 4), peaMat);
+      pea.position.set(0.08 + (Math.random()-0.5)*0.05, 0.028, (Math.random()-0.5)*0.06);
+      g.add(pea);
+    }
+    return g;
+  }
+  registerWorkHeldGroup('plateFood', buildPlateFood());
+  function buildTrayGlasses() {
+    const g = new THREE.Group();
+    const trayMat = new THREE.MeshPhongMaterial({ color: 0xc7c9cc, shininess: 50 });
+    const emptyGlassMat = new THREE.MeshPhongMaterial({ color: 0xdcefe0, shininess: 90, transparent: true, opacity: 0.25 });
+    const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.015, 16), trayMat);
+    g.add(tray);
+    [[-0.08,-0.04],[0.08,-0.04],[0, 0.07],[0.02,-0.02]].forEach(([x,z]) => {
+      const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.028, 0.087, 10), emptyGlassMat);
+      glass.position.set(x, 0.05, z);
+      g.add(glass);
+    });
+    return g;
+  }
+  registerWorkHeldGroup('trayGlasses', buildTrayGlasses());
+  function buildLaptop() {
+    const g = new THREE.Group();
+    const caseMat = new THREE.MeshPhongMaterial({ color: 0xc9cdd1, shininess: 50 });
+    const screenMat = new THREE.MeshPhongMaterial({ color: 0x3a6a9a, shininess: 60, emissive: 0x0d1f2e });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.014, 0.19), caseMat);
+    base.position.set(0, 0, 0);
+    g.add(base);
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.17, 0.012), caseMat);
+    lid.position.set(0, 0.09, -0.09);
+    lid.rotation.x = -0.35;
+    g.add(lid);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.13, 0.004), screenMat);
+    screen.position.set(0, 0.09, -0.0835);
+    screen.rotation.x = -0.35;
+    g.add(screen);
+    return g;
+  }
+  registerWorkHeldGroup('laptop', buildLaptop());
+  function buildRubberMallet() {
+    const g = new THREE.Group();
+    const handleMat = new THREE.MeshPhongMaterial({ color: 0x3a2a18, shininess: 20 });
+    const headMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2e, shininess: 30 });
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.26, 8), handleMat);
+    handle.rotation.z = Math.PI/2 * 0.15;
+    g.add(handle);
+    const head = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.12, 10), headMat);
+    head.rotation.z = Math.PI/2;
+    head.position.set(0.12, 0.02, 0);
+    g.add(head);
+    return g;
+  }
+  registerWorkHeldGroup('mallet', buildRubberMallet());
+  function positionWorkHeldRoot() {
+    workHeldRoot.position.set(0.4, -0.35, -0.62);
+    workHeldRoot.rotation.set(0.15, -0.3, 0);
+    workHeldRoot.scale.set(1.15, 1.15, 1.15);
+  }
+  positionWorkHeldRoot();
+  // Maps the current work role to which prop it shows — a role with no
+  // entry here just keeps whatever's selected in the hotbar for now.
+  function workHeldKindForRole(role) {
+    if (!role) return null;
+    switch (role.name) {
+      case 'Bar': case 'App Make': case 'Bar Team Leader': return 'drink';
+      case 'App Run': return 'trayDrinks';
+      case 'Food Run': case 'Floor Team Leader': return 'plateFood';
+      case 'Kitchen': return 'plateFood';
+      case 'Beer Garden': return 'trayGlasses';
+      case 'Cellar': return 'mallet';
+      case 'Office': case 'Recruitment': case 'Rota': case 'Stock Count': case 'Compliance': return 'laptop';
+      default: return null;
+    }
+  }
+  let currentWorkHeldKind = null;
+  function setWorkHeldVisual(kind) {
+    if (kind === currentWorkHeldKind) return;
+    currentWorkHeldKind = kind;
+    if (kind) {
+      heldMesh.visible = false;
+      heldStepGroup.visible = false;
+      Object.keys(workHeldGroups).forEach(k => { workHeldGroups[k].visible = (k === kind); });
+      workHeldRoot.visible = true;
+    } else {
+      workHeldRoot.visible = false;
+      selectSlot(selectedSlot); // restores whatever's actually selected, including the step-block two-piece preview
+    }
+  }
 
   // ================= HELD BLOCK (first person) =================
   const heldGeom = new THREE.BoxGeometry(1,1,1);
@@ -4088,6 +4239,7 @@
       const moving = move.lengthSq() > 0;
       heldMesh.position.y = -0.35 + (moving ? Math.sin(bobT)*0.02 : 0);
       heldStepGroup.position.y = heldMesh.position.y;
+      workHeldRoot.position.y = -0.35 + (moving ? Math.sin(bobT)*0.02 : 0);
 
       // mining
       const r = voxelRaycast();

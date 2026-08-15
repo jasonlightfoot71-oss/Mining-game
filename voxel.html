@@ -796,15 +796,15 @@
   const BLOCK_TYPES = [
     { name: 'Grass',  mats: { top: TEX.grassTop, side: TEX.grassSide, bottom: TEX.dirt } },
     { name: 'Dirt',   mats: TEX.dirt },
-    { name: 'Stone',  mats: TEX.stone, cost: 2 },
-    { name: 'Wood',   mats: { top: TEX.logTop, side: TEX.logSide, bottom: TEX.logTop }, cost: 2 },
+    { name: 'Stone',  mats: TEX.stone, cost: 4 },
+    { name: 'Wood',   mats: { top: TEX.logTop, side: TEX.logSide, bottom: TEX.logTop }, cost: 4 },
     { name: 'Leaves', mats: TEX.leaves },
     { name: 'Sand',   mats: TEX.sand },
     { name: 'Planks', mats: TEX.planks },
-    { name: 'Brick',  mats: TEX.brick, cost: 2 },
-    { name: 'Glass',  mats: TEX.glass, transparent: true, cost: 2 },
-    { name: 'Step',   mats: TEX.stone, half: true, cost: 2 },
-    { name: 'Concrete', mats: TEX.concreteGrey, cost: 2 },
+    { name: 'Brick',  mats: TEX.brick, cost: 4 },
+    { name: 'Glass',  mats: TEX.glass, transparent: true, cost: 4 },
+    { name: 'Step',   mats: TEX.stone, half: true, cost: 4 },
+    { name: 'Concrete', mats: TEX.concreteGrey, cost: 4 },
     // ── Variants — 4 alternates per family, grouped in BLOCK_FAMILIES
     // below. isVariant:true keeps these out of the main hotbar row; they
     // only ever appear in a family's popup, picked from the primary
@@ -892,7 +892,8 @@
   const BAR_SLOT = BATHROOM_SLOT + 1;  // "Bar Furniture" hotbar entry — see FURNITURE_TYPES (category:'bar')
   const KITCHEN_SLOT = BAR_SLOT + 1;   // "Kitchen Furniture" hotbar entry — see FURNITURE_TYPES (category:'kitchen')
   const CELLAR_SLOT = KITCHEN_SLOT + 1; // "Cellar Furniture" hotbar entry — see FURNITURE_TYPES (category:'cellar')
-  const LIGHT_COST = 10, WALLPAPER_COST = 4; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
+  const BEDROOM_SLOT = CELLAR_SLOT + 1; // "Bedroom Furniture" hotbar entry — see FURNITURE_TYPES (category:'bedroom')
+  const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
     // Phong instead of Lambert — Lambert computes lighting per-VERTEX,
@@ -1528,9 +1529,9 @@
   // blocked inside embedded iframes (this game runs inside one), so a
   // real in-page modal is the only reliable way to collect the text.
   const SIGN_TYPES = [
-    { name: 'Small Sign (1×1)', w: 1, h: 1, neon: false, cost: 10 },
-    { name: 'Wide Sign (2×1)',  w: 2, h: 1, neon: false, cost: 16 },
-    { name: 'Neon Sign (3×1)',  w: 3, h: 1, neon: true,  cost: 30 },
+    { name: 'Small Sign (1×1)', w: 1, h: 1, neon: false, cost: 20 },
+    { name: 'Wide Sign (2×1)',  w: 2, h: 1, neon: false, cost: 32 },
+    { name: 'Neon Sign (3×1)',  w: 3, h: 1, neon: true,  cost: 60 },
   ];
   let signTypeIdx = 0;
   const signs = new Map(); // faceKey -> { mesh, bx,by,bz,nx,ny,nz, sizeIdx, text }
@@ -1636,11 +1637,11 @@
   // untested alongside everything else in this change.
   const doors = new Map(); // "bx,by,bz" (the ground block it stands on) -> { group, leaves, bx,by,bz,rot, doorTypeIdx, openAngles, angle }
   const DOOR_TYPES = [
-    { name: 'Wood Door',        wide: 1, style: 'wood',   cost: 10 },
-    { name: 'White Door',       wide: 1, style: 'white',  cost: 10 },
-    { name: 'Glass Door',       wide: 1, style: 'glass',  cost: 16 },
-    { name: 'Double Wood Door', wide: 2, style: 'wood',   cost: 20 },
-    { name: 'French Doors',     wide: 2, style: 'french', cost: 24 },
+    { name: 'Wood Door',        wide: 1, style: 'wood',   cost: 20 },
+    { name: 'White Door',       wide: 1, style: 'white',  cost: 20 },
+    { name: 'Glass Door',       wide: 1, style: 'glass',  cost: 32 },
+    { name: 'Double Wood Door', wide: 2, style: 'wood',   cost: 40 },
+    { name: 'French Doors',     wide: 2, style: 'french', cost: 48 },
   ];
   let doorTypeIdx = 0;
 
@@ -1879,6 +1880,104 @@
         knob.position.set(x, y, -0.23);
         group.add(knob);
       });
+    });
+    return group;
+  }
+  function buildBedBase(width) {
+    // Shared frame + mattress + pillow(s) + headboard, parameterised by
+    // width so single/double only differ in one number.
+    const group = new THREE.Group();
+    const frameMat = new THREE.MeshPhongMaterial({ color: 0x5a3a20, shininess: 5 });
+    const mattressMat = new THREE.MeshPhongMaterial({ color: 0xf2ede0, shininess: 8 });
+    const pillowMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 10 });
+    const duvetMat = new THREE.MeshPhongMaterial({ color: 0xc44f5e, shininess: 8 });
+    const depth = 1.9;
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(width, 0.22, depth), frameMat);
+    frame.position.set(0, 0.15, 0);
+    group.add(frame);
+    [[-width/2+0.06, -depth/2+0.06],[width/2-0.06, -depth/2+0.06],[-width/2+0.06, depth/2-0.06],[width/2-0.06, depth/2-0.06]].forEach(([x,z]) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09,0.15,0.09), frameMat);
+      leg.position.set(x, 0.02, z);
+      group.add(leg);
+    });
+    const mattress = new THREE.Mesh(new THREE.BoxGeometry(width-0.06, 0.16, depth-0.1), mattressMat);
+    mattress.position.set(0, 0.34, 0);
+    group.add(mattress);
+    const duvet = new THREE.Mesh(new THREE.BoxGeometry(width-0.06, 0.08, depth*0.62), duvetMat);
+    duvet.position.set(0, 0.44, depth*0.16);
+    group.add(duvet);
+    const headboard = new THREE.Mesh(new THREE.BoxGeometry(width, 0.62, 0.08), frameMat);
+    headboard.position.set(0, 0.5, -depth/2+0.02);
+    group.add(headboard);
+    const pillowCount = width > 1.1 ? 2 : 1;
+    const pillowW = pillowCount === 2 ? width*0.42 : width*0.7;
+    for (let i = 0; i < pillowCount; i++) {
+      const px = pillowCount === 2 ? (i===0 ? -width*0.24 : width*0.24) : 0;
+      const pillow = new THREE.Mesh(new THREE.BoxGeometry(pillowW, 0.1, 0.34), pillowMat);
+      pillow.position.set(px, 0.44, -depth/2+0.32);
+      group.add(pillow);
+    }
+    return group;
+  }
+  function buildSingleBed() { return buildBedBase(1.0); }
+  function buildDoubleBed() { return buildBedBase(1.7); }
+  function buildWardrobe() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x4a3320, shininess: 8 });
+    const doorMat = new THREE.MeshPhongMaterial({ color: 0x5e4128, shininess: 12 });
+    const knobMat = new THREE.MeshPhongMaterial({ color: 0xd4a017, shininess: 40 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.9, 0.55), bodyMat);
+    body.position.set(0, 0.95, 0);
+    group.add(body);
+    [-0.28, 0.28].forEach(x => {
+      const door = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.72, 0.03), doorMat);
+      door.position.set(x, 0.95, -0.29);
+      group.add(door);
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), knobMat);
+      knob.position.set(x + (x<0?0.2:-0.2), 0.95, -0.32);
+      group.add(knob);
+    });
+    const top = new THREE.Mesh(new THREE.BoxGeometry(1.16, 0.06, 0.6), bodyMat);
+    top.position.set(0, 1.93, 0);
+    group.add(top);
+    return group;
+  }
+  function buildChestOfDrawers() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x6b4a2a, shininess: 8 });
+    const drawerMat = new THREE.MeshPhongMaterial({ color: 0x7d5834, shininess: 12 });
+    const knobMat = new THREE.MeshPhongMaterial({ color: 0xd4a017, shininess: 40 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.9, 0.45), bodyMat);
+    body.position.set(0, 0.45, 0);
+    group.add(body);
+    [0.72, 0.44, 0.16].forEach(y => {
+      const drawer = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.22, 0.03), drawerMat);
+      drawer.position.set(0, y, -0.22);
+      group.add(drawer);
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 6), knobMat);
+      knob.position.set(0, y, -0.245);
+      group.add(knob);
+    });
+    return group;
+  }
+  function buildToyBox() {
+    const group = new THREE.Group();
+    const boxMat = new THREE.MeshPhongMaterial({ color: 0xe8703a, shininess: 10 });
+    const lidMat = new THREE.MeshPhongMaterial({ color: 0xf2c14e, shininess: 15 });
+    const trimMat = new THREE.MeshPhongMaterial({ color: 0x4a90d9, shininess: 15 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.42, 0.4), boxMat);
+    box.position.set(0, 0.24, 0);
+    group.add(box);
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.08, 0.44), lidMat);
+    lid.position.set(0, 0.49, -0.02);
+    lid.rotation.x = -0.35; // propped open like it's mid-play
+    lid.position.z = -0.16;
+    lid.position.y = 0.52;
+    group.add(lid);
+    [0.12, -0.12].forEach(x => {
+      const trim = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.42, 0.4), trimMat);
+      trim.position.set(x*3, 0.24, 0);
+      group.add(trim);
     });
     return group;
   }
@@ -2287,33 +2386,38 @@
     return group;
   }
   const FURNITURE_TYPES = [
-    { name: '2-Seater Couch', build: buildCouch,     swatch: 0x35577a, cost: 40, category: 'room' },
-    { name: 'TV',             build: buildTV,        swatch: 0x1a1a1a, cost: 60, category: 'room' },
-    { name: 'Coffee Table',   build: buildCoffeeTable, swatch: 0x8a5a34, cost: 20, category: 'room' },
-    { name: 'Cabinet',        build: buildCabinet,   swatch: 0x6b4a2a, cost: 30, category: 'room' },
-    { name: 'Armchair',       build: buildArmchair,  swatch: 0xa8623c, cost: 30, category: 'room' },
-    { name: 'Bar Counter',    build: buildBarCounter, swatch: 0x6b4a2a, cost: 50, isWorkSpot: true, category: 'bar' },
-    { name: 'Toilet',           build: buildToilet,          swatch: 0xf4f4f2, cost: 30, category: 'bathroom' },
-    { name: 'Sink',              build: buildSink,            swatch: 0xf4f4f2, cost: 20, category: 'bathroom' },
-    { name: 'Bath',              build: buildBath,            swatch: 0xf4f4f2, cost: 60, category: 'bathroom' },
-    { name: 'Shower',            build: buildShower,          swatch: 0xbfe0ea, cost: 50, category: 'bathroom' },
-    { name: 'Bathroom Cabinet',  build: buildBathroomCabinet, swatch: 0xffffff, cost: 30, category: 'bathroom' },
-    { name: 'Urinal',            build: buildUrinal,          swatch: 0xf4f4f2, cost: 24, category: 'bathroom' },
-    { name: 'Table',              build: buildBarTable,     swatch: 0x6b4a2a, cost: 30, category: 'bar' },
-    { name: 'Chair',               build: buildChair,        swatch: 0x5a3a20, cost: 16,  category: 'bar' },
-    { name: 'Fruit Machine',       build: buildFruitMachine, swatch: 0x2a2a2a, cost: 80, category: 'bar' },
-    { name: 'Wall TV',              build: buildWallTV,       swatch: 0x1a1a1a, cost: 60, category: 'bar' },
-    { name: 'Kitchen Sink',        build: buildKitchenSink,    swatch: 0xd8d3c8, cost: 30, category: 'kitchen' },
-    { name: 'Fridge',                build: buildFridge,         swatch: 0xe4e6e8, cost: 50, category: 'kitchen' },
-    { name: 'Oven',                  build: buildOven,           swatch: 0xe8e8e8, cost: 50, category: 'kitchen' },
-    { name: 'Kitchen Cabinet',       build: buildKitchenCabinet, swatch: 0xf0ede4, cost: 30, category: 'kitchen' },
-    { name: 'Microwave',              build: buildMicrowave,      swatch: 0xe8e8e8, cost: 24, category: 'kitchen' },
-    { name: 'Beer Barrel',            build: buildMetalBarrel,    swatch: 0xb0b8bd, cost: 40, category: 'cellar' },
-    { name: 'Bottle Shelf',           build: buildBottleShelf,    swatch: 0x4a3320, cost: 30, category: 'cellar' },
-    { name: 'Gas Bottle',             build: buildGasBottle,      swatch: 0x5a6a70, cost: 30, category: 'cellar' },
-    { name: 'Ice Machine',            build: buildIceMachine,     swatch: 0xe8e8e8, cost: 40, category: 'cellar' },
+    { name: '2-Seater Couch', build: buildCouch,     swatch: 0x35577a, cost: 80, category: 'room' },
+    { name: 'TV',             build: buildTV,        swatch: 0x1a1a1a, cost: 120, category: 'room' },
+    { name: 'Coffee Table',   build: buildCoffeeTable, swatch: 0x8a5a34, cost: 40, category: 'room' },
+    { name: 'Cabinet',        build: buildCabinet,   swatch: 0x6b4a2a, cost: 60, category: 'room' },
+    { name: 'Armchair',       build: buildArmchair,  swatch: 0xa8623c, cost: 60, category: 'room' },
+    { name: 'Bar Counter',    build: buildBarCounter, swatch: 0x6b4a2a, cost: 100, isWorkSpot: true, category: 'bar' },
+    { name: 'Toilet',           build: buildToilet,          swatch: 0xf4f4f2, cost: 60, category: 'bathroom' },
+    { name: 'Sink',              build: buildSink,            swatch: 0xf4f4f2, cost: 40, category: 'bathroom' },
+    { name: 'Bath',              build: buildBath,            swatch: 0xf4f4f2, cost: 120, category: 'bathroom' },
+    { name: 'Shower',            build: buildShower,          swatch: 0xbfe0ea, cost: 100, category: 'bathroom' },
+    { name: 'Bathroom Cabinet',  build: buildBathroomCabinet, swatch: 0xffffff, cost: 60, category: 'bathroom' },
+    { name: 'Urinal',            build: buildUrinal,          swatch: 0xf4f4f2, cost: 48, category: 'bathroom' },
+    { name: 'Table',              build: buildBarTable,     swatch: 0x6b4a2a, cost: 60, category: 'bar' },
+    { name: 'Chair',               build: buildChair,        swatch: 0x5a3a20, cost: 32,  category: 'bar' },
+    { name: 'Fruit Machine',       build: buildFruitMachine, swatch: 0x2a2a2a, cost: 160, category: 'bar' },
+    { name: 'Wall TV',              build: buildWallTV,       swatch: 0x1a1a1a, cost: 120, category: 'bar' },
+    { name: 'Kitchen Sink',        build: buildKitchenSink,    swatch: 0xd8d3c8, cost: 60, category: 'kitchen' },
+    { name: 'Fridge',                build: buildFridge,         swatch: 0xe4e6e8, cost: 100, category: 'kitchen' },
+    { name: 'Oven',                  build: buildOven,           swatch: 0xe8e8e8, cost: 100, category: 'kitchen' },
+    { name: 'Kitchen Cabinet',       build: buildKitchenCabinet, swatch: 0xf0ede4, cost: 60, category: 'kitchen' },
+    { name: 'Microwave',              build: buildMicrowave,      swatch: 0xe8e8e8, cost: 48, category: 'kitchen' },
+    { name: 'Beer Barrel',            build: buildMetalBarrel,    swatch: 0xb0b8bd, cost: 80, category: 'cellar' },
+    { name: 'Bottle Shelf',           build: buildBottleShelf,    swatch: 0x4a3320, cost: 60, category: 'cellar' },
+    { name: 'Gas Bottle',             build: buildGasBottle,      swatch: 0x5a6a70, cost: 60, category: 'cellar' },
+    { name: 'Ice Machine',            build: buildIceMachine,     swatch: 0xe8e8e8, cost: 80, category: 'cellar' },
+    { name: 'Single Bed',             build: buildSingleBed,      swatch: 0xc44f5e, cost: 80, category: 'bedroom' },
+    { name: 'Double Bed',             build: buildDoubleBed,      swatch: 0xc44f5e, cost: 140, category: 'bedroom' },
+    { name: 'Wardrobe',               build: buildWardrobe,       swatch: 0x4a3320, cost: 80, category: 'bedroom' },
+    { name: 'Chest of Drawers',       build: buildChestOfDrawers, swatch: 0x6b4a2a, cost: 60, category: 'bedroom' },
+    { name: 'Toy Box',                build: buildToyBox,         swatch: 0xe8703a, cost: 48, category: 'bedroom' },
   ];
-  let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 16, cellarTypeIdx = 21; // default selection per category — indices into FURNITURE_TYPES above
+  let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 16, cellarTypeIdx = 21, bedroomTypeIdx = 26; // default selection per category — indices into FURNITURE_TYPES above
   function addFurniture(bx,by,bz,rot,typeIdx) {
     const fk = key(bx,by,bz);
     if (furniture.has(fk)) return fk;
@@ -2840,6 +2944,39 @@
     promotionOfferDismissed = true; // won't re-offer again until the current shift ends and a new one starts
     document.getElementById('promoOfferModal').style.display = 'none';
   }
+  // Marks each question's options right after submission: correct answer
+  // highlighted green, a wrong pick (if any) highlighted red, and a
+  // ✅/❌ next to the question text — instead of just hiding the quiz and
+  // stating a bare score. Radios are disabled so the review stays put.
+  function markQuizReview() {
+    const container = document.getElementById('quizQuestions');
+    activeQuiz.questions.forEach((q, qi) => {
+      const picked = document.querySelector(`input[name="quizq${qi}"]:checked`);
+      const pickedIdx = picked ? parseInt(picked.value) : -1;
+      const isCorrect = pickedIdx === q.a;
+      const block = container.children[qi];
+      if (!block) return;
+      block.querySelectorAll('input[type="radio"]').forEach(r => r.disabled = true);
+      const rows = block.querySelectorAll('label');
+      rows.forEach((row, oi) => {
+        row.style.borderRadius = '4px';
+        row.style.padding = '2px 4px';
+        if (oi === q.a) {
+          row.style.background = 'rgba(70,200,120,0.28)';
+          row.style.color = '#8ef0a8';
+        } else if (oi === pickedIdx) {
+          row.style.background = 'rgba(220,70,70,0.28)';
+          row.style.color = '#ff9a9a';
+        }
+      });
+      const qLabel = block.children[0];
+      if (qLabel) {
+        const marker = document.createElement('span');
+        marker.textContent = isCorrect ? ' ✅' : ' ❌';
+        qLabel.appendChild(marker);
+      }
+    });
+  }
   function submitQuiz() {
     if (!activeQuiz) return;
     let correct = 0;
@@ -2847,7 +2984,7 @@
       const picked = document.querySelector(`input[name="quizq${qi}"]:checked`);
       if (picked && parseInt(picked.value) === q.a) correct++;
     });
-    document.getElementById('quizModal').style.display = 'none';
+    markQuizReview(); // quizModal stays open underneath so right/wrong answers are visible for review
     if (correct === activeQuiz.questions.length) {
       const newRankIdx = activeQuiz.nextRankIdx;
       rank = RANKS[newRankIdx];
@@ -2982,7 +3119,7 @@
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
-      const total = BLOCK_TYPES.length + 11; // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture
+      const total = BLOCK_TYPES.length + 12; // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture
       let s = selectedSlot + (e.deltaY > 0 ? 1 : -1);
       s = ((s % total) + total) % total;
       selectSlot(s);
@@ -3016,7 +3153,7 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x8a5a34 });
     } else if (i === SIGN_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x3a2a1a });
-    } else if (i === ROOM_SLOT || i === BATHROOM_SLOT || i === BAR_SLOT || i === KITCHEN_SLOT || i === CELLAR_SLOT) {
+    } else if (i === ROOM_SLOT || i === BATHROOM_SLOT || i === BAR_SLOT || i === KITCHEN_SLOT || i === CELLAR_SLOT || i === BEDROOM_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x7a5a3a });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
@@ -3310,7 +3447,7 @@
       return;
     }
 
-    if (selectedSlot === ROOM_SLOT || selectedSlot === BATHROOM_SLOT || selectedSlot === BAR_SLOT || selectedSlot === KITCHEN_SLOT || selectedSlot === CELLAR_SLOT) {
+    if (selectedSlot === ROOM_SLOT || selectedSlot === BATHROOM_SLOT || selectedSlot === BAR_SLOT || selectedSlot === KITCHEN_SLOT || selectedSlot === CELLAR_SLOT || selectedSlot === BEDROOM_SLOT) {
       if (r.isWater) return; // can't stand furniture on water
       // Same "must be looking at the top of a block" check as doors — this
       // is also what lets things like the microwave sit on top of a
@@ -3323,7 +3460,7 @@
       if (ny !== 1) { showSaveStatus('⚠ Place furniture on a top-facing surface', true); return; }
       const fk = key(r.hit.x, r.hit.y, r.hit.z);
       if (furniture.has(fk)) { removeFurniture(fk); playThud(200); return; }
-      const typeIdx = selectedSlot === ROOM_SLOT ? roomTypeIdx : selectedSlot === BATHROOM_SLOT ? bathroomTypeIdx : selectedSlot === BAR_SLOT ? barTypeIdx : selectedSlot === KITCHEN_SLOT ? kitchenTypeIdx : cellarTypeIdx;
+      const typeIdx = selectedSlot === ROOM_SLOT ? roomTypeIdx : selectedSlot === BATHROOM_SLOT ? bathroomTypeIdx : selectedSlot === BAR_SLOT ? barTypeIdx : selectedSlot === KITCHEN_SLOT ? kitchenTypeIdx : selectedSlot === CELLAR_SLOT ? cellarTypeIdx : bedroomTypeIdx;
       const furnType = FURNITURE_TYPES[typeIdx];
       if (!trySpendCoins(furnType.cost, furnType.name)) return;
       const rot = snapYawToStepIndex(yaw); // faces the same direction the player is currently facing
@@ -3332,16 +3469,22 @@
       return;
     }
 
-    const {x,y,z} = r.before;
+    // Placing a solid block while looking straight at a water cell should
+    // drop the block INTO that cell (displacing the water), same as real
+    // Minecraft — otherwise it target the empty cell just before the water
+    // and you could never build over/through it.
+    const replacingWater = (selectedSlot !== WATER_SLOT && r.isWater);
+    const {x,y,z} = replacingWater ? r.hit : r.before;
     if (blockOverlapsPlayer(x,y,z)) return; // safeguard — never place a block that would clip/trap the player
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
     if (selectedSlot === WATER_SLOT) {
       if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); needsRebuild = true; playThud(280); }
-    } else if (!waterBlocks.has(k)) {
+    } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
       if (type && type.cost && !trySpendCoins(type.cost, type.name)) return;
       blocks.set(k, selectedSlot);
+      waterBlocks.delete(k); // displace any water that was there
       if (type && type.half) {
         stepRotations.set(k, snapYawToStepIndex(yaw));
       }
@@ -3637,16 +3780,31 @@
   const flowerStemMesh = new THREE.InstancedMesh(flowerStemGeom, flowerStemMat, MAX_INSTANCES);
   flowerStemMesh.count = 0;
   scene.add(flowerStemMesh);
-  const flowerBloomGeom = new THREE.SphereGeometry(0.07, 6, 5);
-  const flowerBloomMat = new THREE.MeshPhongMaterial({ color: 0xf07ec9, shininess: 30 });
-  const flowerBloomMesh = new THREE.InstancedMesh(flowerBloomGeom, flowerBloomMat, MAX_INSTANCES);
-  flowerBloomMesh.count = 0;
-  scene.add(flowerBloomMesh);
+  // Small yellow centre sitting where the petals meet.
+  const flowerCenterGeom = new THREE.SphereGeometry(0.045, 6, 5);
+  const flowerCenterMat = new THREE.MeshPhongMaterial({ color: 0xf5c93f, shininess: 30 });
+  const flowerCenterMesh = new THREE.InstancedMesh(flowerCenterGeom, flowerCenterMat, MAX_INSTANCES);
+  flowerCenterMesh.count = 0;
+  scene.add(flowerCenterMesh);
+  // Petals — a flattened blob repeated in a ring around the centre and
+  // tilted outward, so a flower reads as an actual bloom instead of one
+  // big ball on a stick. Colour is randomised per FLOWER (not per petal)
+  // via instance colour, so each bloom is one consistent colour but the
+  // field as a whole has variety.
+  const FLOWER_COLORS = [0xf07ec9, 0xf5f0e6, 0xf2c14e, 0xd66b8a, 0xc678e0, 0xe8703a];
+  const PETALS_PER_FLOWER = 5;
+  const flowerPetalGeom = new THREE.SphereGeometry(0.062, 6, 5);
+  flowerPetalGeom.scale(1, 0.4, 0.62); // flatten into a petal-ish blob
+  const flowerPetalMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 25, vertexColors: true });
+  const flowerPetalMesh = new THREE.InstancedMesh(flowerPetalGeom, flowerPetalMat, MAX_INSTANCES);
+  flowerPetalMesh.count = 0;
+  scene.add(flowerPetalMesh);
   function rebuildFlowerOverlay() {
-    const dummyStem = new THREE.Object3D(), dummyBloom = new THREE.Object3D();
-    let count = 0;
+    const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
+    const col = new THREE.Color();
+    let count = 0, petalCount = 0;
     for (const [k, t] of blocks) {
-      if (count >= MAX_INSTANCES) break;
+      if (count >= MAX_INSTANCES || petalCount + PETALS_PER_FLOWER >= MAX_INSTANCES) break;
       if (t !== 0) continue; // Grass only
       const [x,y,z] = k.split(',').map(Number);
       const aboveKey = key(x,y+1,z);
@@ -3654,18 +3812,35 @@
       if (!isExposedToSky(x,y,z)) continue;
       const h = Math.abs(Math.sin(x*127.1 + z*311.7) * 43758.5453) % 1;
       if (h > 0.12) continue; // ~12% of eligible grass blooms
-      dummyStem.position.set(x+0.5, y+1.11, z+0.5);
+      const cx = x+0.5, cz = z+0.5;
+      dummyStem.position.set(cx, y+1.11, cz);
       dummyStem.updateMatrix();
       flowerStemMesh.setMatrixAt(count, dummyStem.matrix);
-      dummyBloom.position.set(x+0.5, y+1.24, z+0.5);
-      dummyBloom.updateMatrix();
-      flowerBloomMesh.setMatrixAt(count, dummyBloom.matrix);
+      dummyCenter.position.set(cx, y+1.24, cz);
+      dummyCenter.updateMatrix();
+      flowerCenterMesh.setMatrixAt(count, dummyCenter.matrix);
       count++;
+      // Second, independent hash picks this flower's colour so it doesn't
+      // correlate with which cells happen to bloom.
+      const hc = Math.abs(Math.sin(x*54.7 + z*91.3) * 12345.6789) % 1;
+      col.setHex(FLOWER_COLORS[Math.floor(hc * FLOWER_COLORS.length)]);
+      const baseAngle = h * Math.PI * 2; // reuses the bloom hash so petals aren't all aligned the same way
+      for (let p = 0; p < PETALS_PER_FLOWER; p++) {
+        const ang = baseAngle + (p / PETALS_PER_FLOWER) * Math.PI * 2;
+        dummyPetal.position.set(cx + Math.cos(ang)*0.075, y+1.22, cz + Math.sin(ang)*0.075);
+        dummyPetal.rotation.set(0.3, ang, 0);
+        dummyPetal.updateMatrix();
+        flowerPetalMesh.setMatrixAt(petalCount, dummyPetal.matrix);
+        flowerPetalMesh.setColorAt(petalCount, col);
+        petalCount++;
+      }
     }
     flowerStemMesh.count = count; flowerStemMesh.instanceMatrix.needsUpdate = true;
-    flowerBloomMesh.count = count; flowerBloomMesh.instanceMatrix.needsUpdate = true;
+    flowerCenterMesh.count = count; flowerCenterMesh.instanceMatrix.needsUpdate = true;
+    flowerPetalMesh.count = petalCount; flowerPetalMesh.instanceMatrix.needsUpdate = true;
+    if (flowerPetalMesh.instanceColor) flowerPetalMesh.instanceColor.needsUpdate = true;
   }
-  function clearFlowerOverlay() { flowerStemMesh.count = 0; flowerBloomMesh.count = 0; }
+  function clearFlowerOverlay() { flowerStemMesh.count = 0; flowerCenterMesh.count = 0; flowerPetalMesh.count = 0; }
 
   // One shared particle system for both rain and snow — same falling-box
   // technique either way (a cloud of points that always re-centres on the
@@ -4139,7 +4314,18 @@
     const entry = BLOCK_TYPES[familyChoice[primaryIdx]];
     const old = slotEl.querySelector('canvas.swatch');
     if (old) old.remove();
-    slotEl.insertBefore(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry), slotEl.querySelector('.family-badge'));
+    const anchor = slotEl.querySelector('.family-badge');
+    slotEl.insertBefore(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry), anchor);
+    const oldPrice = slotEl.querySelector('.price-badge');
+    if (oldPrice) oldPrice.remove();
+    if (entry.cost) {
+      const priceBadge = document.createElement('span');
+      priceBadge.className = 'price-badge';
+      priceBadge.textContent = '💰'+entry.cost;
+      priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
+      slotEl.insertBefore(priceBadge, anchor);
+    }
+    slotEl.title = entry.name + costLabel(entry.cost);
   }
   // Vertical popup of a family's 5 members, anchored above the slot that
   // was pressed. Picking one closes the popup and both selects it AND
@@ -4159,8 +4345,16 @@
       const entry = BLOCK_TYPES[idx];
       const btn = document.createElement('div');
       btn.className = 'slot';
+      btn.style.position = 'relative';
       btn.title = entry.name + costLabel(entry.cost);
       btn.appendChild(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry));
+      if (entry.cost) {
+        const priceBadge = document.createElement('span');
+        priceBadge.className = 'price-badge';
+        priceBadge.textContent = '💰'+entry.cost;
+        priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
+        btn.appendChild(priceBadge);
+      }
       btn.addEventListener('click', e => {
         e.stopPropagation();
         familyChoice[primaryIdx] = idx;
@@ -4184,6 +4378,16 @@
     const key = document.createElement('span'); key.className='key'; key.textContent = (i+1 <= 9) ? (i+1) : '';
     slot.appendChild(key);
     slot.appendChild(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry));
+    slot.style.position = 'relative';
+    if (entry.cost) {
+      // Visible price tag on the icon itself — the title tooltip alone
+      // isn't discoverable on touch devices and easy to miss on desktop.
+      const priceBadge = document.createElement('span');
+      priceBadge.className = 'price-badge';
+      priceBadge.textContent = '💰'+entry.cost;
+      priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
+      slot.appendChild(priceBadge);
+    }
     if (BLOCK_FAMILIES[i]) {
       // Small corner marker so it's visible this slot has more options,
       // without needing to press it first to discover that.
@@ -4191,7 +4395,6 @@
       badge.className = 'family-badge';
       badge.textContent = '▾';
       badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
-      slot.style.position = 'relative';
       slot.appendChild(badge);
       slot.addEventListener('click', (e) => { e.stopPropagation(); showFamilyPopup(i, slot); });
     } else {
@@ -4557,6 +4760,7 @@
   makeFurnitureSlot(BAR_SLOT,      'bar',      'Bar Furniture',      barTypeIdx,      () => barTypeIdx,      v => barTypeIdx = v);
   makeFurnitureSlot(KITCHEN_SLOT,  'kitchen',  'Kitchen Furniture',  kitchenTypeIdx,  () => kitchenTypeIdx,  v => kitchenTypeIdx = v);
   makeFurnitureSlot(CELLAR_SLOT,   'cellar',   'Cellar Furniture',   cellarTypeIdx,   () => cellarTypeIdx,   v => cellarTypeIdx = v);
+  makeFurnitureSlot(BEDROOM_SLOT,  'bedroom',  'Bedroom Furniture',  bedroomTypeIdx,  () => bedroomTypeIdx,  v => bedroomTypeIdx = v);
 
   // Real orientation lock — works on most Android browsers, but only
   // inside a fullscreen element, hence requesting that first. iOS Safari
@@ -4623,6 +4827,7 @@
   document.getElementById('quizSubmitBtn').addEventListener('click', () => { submitQuiz(); });
   document.getElementById('quizResultCloseBtn').addEventListener('click', () => {
     document.getElementById('quizResultModal').style.display = 'none';
+    document.getElementById('quizModal').style.display = 'none'; // quiz stayed open behind the result for review; close it now too
   });
   document.getElementById('quizResultRetryBtn').addEventListener('click', () => {
     document.getElementById('quizResultModal').style.display = 'none';

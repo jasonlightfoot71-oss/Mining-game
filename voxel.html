@@ -69,6 +69,11 @@
     position: fixed; top: 12px; right: 12px; z-index: 10; color: #fff; font-size: 13px;
     background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px; text-align: right;
   }
+  #clockDisplay {
+    position: fixed; top: 100px; left: 12px; z-index: 10;
+    color: #fff; font-size: 14px; font-weight: 600; letter-spacing: 0.5px;
+    background: rgba(0,0,0,0.35); padding: 6px 12px; border-radius: 6px; display: none;
+  }
   #coinsDisplay {
     position: fixed; top: 46px; right: 12px; z-index: 10; color: #ffd866; font-size: 13px;
     font-weight: 600; background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px;
@@ -258,8 +263,14 @@
 <div id="hint" style="display:none;"></div>
 <div id="modeTag" style="display:none;"></div>
 <div id="coinsDisplay" style="display:none;"></div>
+<div id="clockDisplay" style="display:none;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
+<div id="taskPanel" style="display:none;position:fixed;left:12px;bottom:210px;z-index:10;max-width:220px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
+  <div id="taskPanelText" style="margin-bottom:6px;line-height:1.4;"></div>
+  <button id="taskActionBtn" style="display:none;background:rgba(212,160,23,0.4);border:1px solid rgba(212,160,23,0.8);color:#ffe27a;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;"></button>
+  <button id="appMakeLeaveBtn" style="display:none;background:rgba(190,60,50,0.45);border:1px solid rgba(220,90,80,0.85);color:#ffe0da;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;">🚪 Leave Role</button>
+</div>
 <div id="roleAnnounce" style="display:none;position:fixed;top:18%;left:50%;transform:translateX(-50%);z-index:26;background:rgba(20,20,25,0.9);color:#fff;padding:16px 22px;border-radius:10px;text-align:center;font-size:15px;max-width:320px;">
   <div id="roleAnnounceTitle" style="font-size:20px;margin-bottom:4px;"></div>
   <div id="roleAnnounceDesc" style="opacity:0.85;font-size:13px;"></div>
@@ -305,18 +316,22 @@
     </div>
   </div>
 </div>
-<div id="quizResultModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">
-  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:340px;width:90%;color:#fff;font-size:13px;text-align:center;">
-    <div id="quizResultTitle" style="font-size:20px;margin-bottom:8px;"></div>
-    <div id="quizResultText" style="opacity:0.9;margin-bottom:16px;"></div>
-    <div style="display:flex;gap:8px;justify-content:center;">
-      <button id="quizResultRetryBtn" style="display:none;background:rgba(212,160,23,0.35);border:1px solid rgba(212,160,23,0.7);color:#ffd866;border-radius:5px;padding:7px 14px;font-size:12px;cursor:pointer;font-weight:600;">Retry</button>
-      <button id="quizResultCloseBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:7px 14px;font-size:12px;cursor:pointer;">Close</button>
+<div id="quizSummaryModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:420px;width:92%;max-height:82vh;overflow-y:auto;color:#fff;font-size:13px;">
+    <div style="text-align:center;margin-bottom:10px;">
+      <div id="quizSummaryTitle" style="font-size:20px;margin-bottom:4px;"></div>
+      <div id="quizSummaryText" style="opacity:0.9;"></div>
+    </div>
+    <div id="quizSummaryQuestions"></div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;">
+      <button id="quizSummaryRetryBtn" style="display:none;background:rgba(212,160,23,0.35);border:1px solid rgba(212,160,23,0.7);color:#ffd866;border-radius:5px;padding:7px 14px;font-size:12px;cursor:pointer;font-weight:600;">Try Again</button>
+      <button id="quizSummaryCloseBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:7px 14px;font-size:12px;cursor:pointer;">Close</button>
     </div>
   </div>
 </div>
-<div id="reconnectOverlay" style="display:none;position:fixed;inset:0;background:rgba(15,20,25,0.92);z-index:30;color:#fff;align-items:center;justify-content:center;text-align:center;font-size:16px;">
-  🔄 Reconnecting…
+<div id="reconnectOverlay" style="display:none;position:fixed;inset:0;background:rgba(15,20,25,0.92);z-index:30;color:#fff;align-items:center;justify-content:center;text-align:center;font-size:16px;flex-direction:column;gap:14px;">
+  <div>🔄 Reconnecting…</div>
+  <button id="reconnectReloadBtn" style="display:none;background:rgba(212,160,23,0.85);border:none;color:#1a1a1a;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;">Taking too long? Tap to reload</button>
 </div>
 <div id="waterOverlay"></div>
 
@@ -333,6 +348,7 @@
   <div style="font-size:40px;margin-bottom:10px;">📱↻</div>
   <div style="font-size:16px;font-weight:600;margin-bottom:6px;">Turn your phone sideways</div>
   <div style="font-size:13px;opacity:0.75;max-width:300px;">Mining World plays best in landscape — rotate your device to continue.</div>
+  <button id="rotateReloadBtn" style="display:none;margin-top:16px;background:rgba(212,160,23,0.85);border:none;color:#1a1a1a;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;">Already sideways? Tap to reload</button>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -373,6 +389,109 @@
   const SB_URL = 'https://awxuqcriwfavqwcagmey.supabase.co';
   const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF3eHVxY3Jpd2ZhdnF3Y2FnbWV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMzAwMDMsImV4cCI6MjA4OTYwNjAwM30.gTZnGQdHlJXFUcsH3dCcHCVZ4hDgHR4YDFNEN9L2PBg';
   const SB_HEADERS = { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY, 'Content-Type': 'application/json' };
+
+  // ================= CHUNKED WORLD STORAGE =================
+  // Blocks/water used to live inline in taskmill_voxel_worlds' own `data`
+  // column — one giant JSON blob, fully rewritten on every single save.
+  // That's what actually caused the outage: one Buy Terrain purchase
+  // pushed that blob to tens of thousands of entries, and every 20-second
+  // autosave from then on was rewriting the whole thing regardless of
+  // how much had actually changed.
+  //
+  // Blocks and water now live in their own table (taskmill_voxel_chunks —
+  // see the accompanying SQL), split into fixed-size x/z regions. A save
+  // only ever uploads the chunks that actually changed since the last
+  // save (see lastSavedChunkPayloads below), so a world with a huge
+  // amount of terrain sitting untouched costs nothing on the next
+  // autosave — only whatever you actually just built or dug costs
+  // anything to persist. Everything else (fixtures, doors, furniture,
+  // player position, etc.) is comparatively small and stays exactly
+  // where it always was, in the main world row.
+  //
+  // Old worlds saved before this change have no `chunked` flag and their
+  // blocks/water still sitting inline in the old spot — loadWorldData()
+  // below reads those exactly as before, completely unchanged, and they
+  // get migrated to chunked storage automatically the next time they're
+  // saved. Nothing needs to happen by hand for existing worlds.
+  const CHUNK_SIZE = 32;
+  function chunkKeyOf(x, z) { return Math.floor(x/CHUNK_SIZE) + '_' + Math.floor(z/CHUNK_SIZE); }
+  // What was actually uploaded last time, per chunk — compared against
+  // the current live state on every save so only genuinely-changed
+  // chunks get sent. Cleared on load, so the first save after loading a
+  // world always treats every chunk as new (safe — just means the first
+  // save after opening a world does a full upload, same as the old
+  // behaviour always did every time).
+  let lastSavedChunkPayloads = new Map();
+  function computeChunkGroups() {
+    const groups = new Map(); // chunkKey -> { blocks: [...], water: [...] }
+    for (const [k, t] of blocks) {
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
+      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
+      const ck = chunkKeyOf(x, z);
+      if (!groups.has(ck)) groups.set(ck, { blocks: [], water: [] });
+      const rot = stepRotations.get(k);
+      groups.get(ck).blocks.push(rot ? [x,y,z,t,rot] : [x,y,z,t]);
+    }
+    for (const [k, lvl] of waterBlocks) {
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
+      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
+      const ck = chunkKeyOf(x, z);
+      if (!groups.has(ck)) groups.set(ck, { blocks: [], water: [] });
+      groups.get(ck).water.push([x,y,z,lvl]);
+    }
+    return groups;
+  }
+  async function saveChangedChunks(worldId) {
+    const groups = computeChunkGroups();
+    const rows = [];
+    // Changed or brand-new chunks
+    for (const [ck, g] of groups) {
+      const payload = JSON.stringify(g);
+      if (lastSavedChunkPayloads.get(ck) === payload) continue; // unchanged since last save — skip it entirely
+      const [cx, cz] = ck.split('_').map(Number);
+      rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: g.blocks, water: g.water, updated_at: new Date().toISOString() });
+    }
+    // Chunks that existed last save but are now fully empty (everything
+    // in them got dug out/removed) — written back as empty rather than
+    // deleted, simplest safe option; an empty chunk costs almost nothing
+    // to store.
+    for (const ck of lastSavedChunkPayloads.keys()) {
+      if (groups.has(ck)) continue;
+      const [cx, cz] = ck.split('_').map(Number);
+      rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: [], water: [], updated_at: new Date().toISOString() });
+    }
+    if (rows.length === 0) return true; // nothing changed since last save — no request needed at all
+    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks`, {
+      method: 'POST', headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rows)
+    });
+    if (!res.ok) return false;
+    // Only remember these as "saved" once the request actually
+    // succeeded — if it failed, the next save attempt should still
+    // treat them as changed and retry, not silently skip them forever.
+    for (const [ck, g] of groups) lastSavedChunkPayloads.set(ck, JSON.stringify(g));
+    for (const ck of [...lastSavedChunkPayloads.keys()]) { if (!groups.has(ck)) lastSavedChunkPayloads.delete(ck); }
+    return true;
+  }
+  async function loadWorldChunks(worldId) {
+    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(worldId)}&select=chunk_x,chunk_z,blocks,water`, { headers: SB_HEADERS });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const blockArr = [], waterArr = [];
+    const chunkPayloads = new Map();
+    for (const row of rows) {
+      const b = row.blocks || [], w = row.water || [];
+      if (b.length === 0 && w.length === 0) continue; // empty row (e.g. debris from something dug out entirely) — nothing to add, and no need to track it as "last saved" either, since an absent chunk and an empty one behave identically in the diff
+      blockArr.push(...b);
+      waterArr.push(...w);
+      // Recorded in the exact shape/property order computeChunkGroups()
+      // itself produces, so a freshly-loaded, untouched world correctly
+      // diffs as "nothing changed" on its first save rather than
+      // re-uploading everything it just downloaded.
+      chunkPayloads.set(row.chunk_x + '_' + row.chunk_z, JSON.stringify({ blocks: b, water: w }));
+    }
+    return { blocks: blockArr, water: waterArr, chunkPayloads };
+  }
 
   let playerUid = null;
   try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
@@ -460,7 +579,30 @@
     const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(id)}&select=data`, { headers: SB_HEADERS });
     if (!res.ok) return null;
     const rows = await res.json();
-    return rows[0] ? rows[0].data : null;
+    const data = rows[0] ? rows[0].data : null;
+    if (!data) return null;
+    // Chunked worlds don't carry blocks/water inline any more (see the
+    // big comment by CHUNK_SIZE above) — fetch and stitch them back in
+    // here, so applyWorldData() and everywhere that calls loadWorldData()
+    // stay completely unaware any of this changed; they still just get
+    // back a data object with data.blocks/data.water populated, exactly
+    // like before. Old, never-yet-migrated worlds have no `chunked` flag
+    // and already have blocks/water sitting inline as they always did —
+    // left entirely alone here.
+    if (data.chunked) {
+      const chunkData = await loadWorldChunks(id);
+      data.blocks = chunkData ? chunkData.blocks : [];
+      data.water = chunkData ? chunkData.water : [];
+      lastSavedChunkPayloads = chunkData ? chunkData.chunkPayloads : new Map();
+    } else {
+      // Old, never-yet-migrated world — blocks/water are already sitting
+      // inline in `data` exactly as they always were, nothing to fetch.
+      // Starts with an empty map, so its first save (which is also the
+      // migration into chunked storage) correctly treats every chunk as
+      // new — which it is, from the chunks table's point of view.
+      lastSavedChunkPayloads = new Map();
+    }
+    return data;
   }
   async function deleteWorldRow(id) {
     try { await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', headers: SB_HEADERS }); } catch(e) {}
@@ -543,14 +685,13 @@
     clearTimeout(el._t);
     el._t = setTimeout(() => { el.style.opacity = '0'; }, 3000);
   }
-  // Shared by saveWorld() and exportPubLayout() below — builds the same
-  // data shape applyWorldData() consumes, from the live block/fixture/
-  // door/wallpaper/ladder/furniture Maps.
+  // Shared by saveWorld() below — builds the same data shape
+  // applyWorldData() consumes, from the live fixture/door/wallpaper/
+  // ladder/furniture Maps. Blocks/water are NOT included here any more —
+  // see the CHUNK_SIZE comment near the top of the PERSISTENCE section
+  // for why; they're saved separately, by saveChangedChunks(), before
+  // this ever gets called.
   function serializeWorldData() {
-    const blockArr = [];
-    for (const [k,v] of blocks) { const p = k.split(',').map(Number); p.push(v); p.push(stepRotations.get(k)||0); blockArr.push(p); }
-    const waterArr = [];
-    for (const [k,lvl] of waterBlocks) { const p = k.split(',').map(Number); p.push(lvl); waterArr.push(p); }
     const lightsArr = [];
     for (const f of fixtures.values()) lightsArr.push([f.bx,f.by,f.bz,f.nx,f.ny,f.nz]);
     const laddersArr = [];
@@ -564,7 +705,8 @@
     const furnitureArr = [];
     for (const f of furniture.values()) furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]);
     return {
-      blocks: blockArr, water: waterArr, lights: lightsArr, ladders: laddersArr,
+      chunked: true, // tells loadWorldData() to fetch blocks/water from taskmill_voxel_chunks instead of expecting them inline here
+      lights: lightsArr, ladders: laddersArr,
       wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
       yaw, pitch, flying, selectedSlot, dayTime
@@ -574,6 +716,16 @@
     if (visitMode) { console.log('[voxel] save skipped — visiting another world (read-only)'); return; }
     if (!currentWorldId || !playerUid) { console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid); return; }
     try {
+      // Chunks saved first, deliberately — the legacy row only ever gets
+      // marked chunked:true once the chunk data backing that flag has
+      // actually landed. Saving them the other way round risks a world
+      // claiming "blocks live in chunks" a moment before they actually do.
+      const chunksOk = await saveChangedChunks(currentWorldId);
+      if (!chunksOk) {
+        console.error('[voxel] chunk save failed');
+        showSaveStatus('⚠ Save failed (chunks)', true);
+        return;
+      }
       const payload = [{
         id: currentWorldId, uid: playerUid, name: currentWorldName,
         data: serializeWorldData(),
@@ -800,7 +952,7 @@
     { name: 'Wood',   mats: { top: TEX.logTop, side: TEX.logSide, bottom: TEX.logTop }, cost: 4 },
     { name: 'Leaves', mats: TEX.leaves },
     { name: 'Sand',   mats: TEX.sand },
-    { name: 'Planks', mats: TEX.planks },
+    { name: 'Planks', mats: TEX.planks, cost: 4 },
     { name: 'Brick',  mats: TEX.brick, cost: 4 },
     { name: 'Glass',  mats: TEX.glass, transparent: true, cost: 4 },
     { name: 'Step',   mats: TEX.stone, half: true, cost: 4 },
@@ -812,18 +964,18 @@
     // otherwise (its own mesh, its own placed-block identity), so a
     // world can freely mix e.g. Stone and Cobblestone blocks side by
     // side exactly like any other two different block types.
-    { name: 'Cobblestone',   mats: TEX.cobblestone,   isVariant: true },
-    { name: 'Mossy Stone',   mats: TEX.mossyStone,    isVariant: true },
-    { name: 'Cracked Stone', mats: TEX.crackedStone,  isVariant: true },
-    { name: 'Polished Stone',mats: TEX.polishedStone, isVariant: true },
-    { name: 'Grey Brick',    mats: TEX.greyBrick,     isVariant: true },
-    { name: 'Mossy Brick',   mats: TEX.mossyBrick,    isVariant: true },
-    { name: 'Chiseled Brick',mats: TEX.chiseledBrick, isVariant: true },
-    { name: 'Dark Brick',    mats: TEX.darkBrick,     isVariant: true },
-    { name: 'Dark Planks',   mats: TEX.darkPlanks,    isVariant: true },
-    { name: 'Birch Planks',  mats: TEX.birchPlanks,   isVariant: true },
-    { name: 'Spruce Planks', mats: TEX.sprucePlanks,  isVariant: true },
-    { name: 'Cracked Planks',mats: TEX.crackedPlanks, isVariant: true },
+    { name: 'Cobblestone',   mats: TEX.cobblestone,   cost: 4, isVariant: true },
+    { name: 'Mossy Stone',   mats: TEX.mossyStone,    cost: 4, isVariant: true },
+    { name: 'Cracked Stone', mats: TEX.crackedStone,  cost: 4, isVariant: true },
+    { name: 'Polished Stone',mats: TEX.polishedStone, cost: 4, isVariant: true },
+    { name: 'Grey Brick',    mats: TEX.greyBrick,     cost: 4, isVariant: true },
+    { name: 'Mossy Brick',   mats: TEX.mossyBrick,    cost: 4, isVariant: true },
+    { name: 'Chiseled Brick',mats: TEX.chiseledBrick, cost: 4, isVariant: true },
+    { name: 'Dark Brick',    mats: TEX.darkBrick,     cost: 4, isVariant: true },
+    { name: 'Dark Planks',   mats: TEX.darkPlanks,    cost: 4, isVariant: true },
+    { name: 'Birch Planks',  mats: TEX.birchPlanks,   cost: 4, isVariant: true },
+    { name: 'Spruce Planks', mats: TEX.sprucePlanks,  cost: 4, isVariant: true },
+    { name: 'Cracked Planks',mats: TEX.crackedPlanks, cost: 4, isVariant: true },
     { name: 'Coarse Dirt',   mats: TEX.coarseDirt,    isVariant: true },
     { name: 'Mud',           mats: TEX.mud,           isVariant: true },
     { name: 'Clay',          mats: TEX.clay,          isVariant: true },
@@ -834,25 +986,25 @@
     { name: 'Clay Sand',     mats: TEX.claySand,      isVariant: true },
     // White concrete is deliberately listed first among the concrete
     // variants, per request ("5 different colours inc white").
-    { name: 'White Concrete', mats: TEX.concreteWhite, isVariant: true },
-    { name: 'Red Concrete',   mats: TEX.concreteRed,   isVariant: true },
-    { name: 'Blue Concrete',  mats: TEX.concreteBlue,  isVariant: true },
-    { name: 'Black Concrete', mats: TEX.concreteBlack, isVariant: true },
-    { name: 'Red Glass',    mats: TEX.glassRed,    transparent: true, isVariant: true },
-    { name: 'Green Glass',  mats: TEX.glassGreen,  transparent: true, isVariant: true },
-    { name: 'Yellow Glass', mats: TEX.glassYellow, transparent: true, isVariant: true },
-    { name: 'Black Glass',  mats: TEX.glassBlack,  transparent: true, isVariant: true },
-    { name: 'Birch Wood',   mats: { top: TEX.birchLogTop,   side: TEX.birchLogSide,   bottom: TEX.birchLogTop },   isVariant: true },
-    { name: 'Spruce Wood',  mats: { top: TEX.spruceLogTop,  side: TEX.spruceLogSide,  bottom: TEX.spruceLogTop },  isVariant: true },
-    { name: 'Dark Oak Wood',mats: { top: TEX.darkOakLogTop, side: TEX.darkOakLogSide, bottom: TEX.darkOakLogTop }, isVariant: true },
-    { name: 'Acacia Wood',  mats: { top: TEX.acaciaLogTop,  side: TEX.acaciaLogSide,  bottom: TEX.acaciaLogTop },  isVariant: true },
+    { name: 'White Concrete', mats: TEX.concreteWhite, cost: 4, isVariant: true },
+    { name: 'Red Concrete',   mats: TEX.concreteRed,   cost: 4, isVariant: true },
+    { name: 'Blue Concrete',  mats: TEX.concreteBlue,  cost: 4, isVariant: true },
+    { name: 'Black Concrete', mats: TEX.concreteBlack, cost: 4, isVariant: true },
+    { name: 'Red Glass',    mats: TEX.glassRed,    transparent: true, cost: 4, isVariant: true },
+    { name: 'Green Glass',  mats: TEX.glassGreen,  transparent: true, cost: 4, isVariant: true },
+    { name: 'Yellow Glass', mats: TEX.glassYellow, transparent: true, cost: 4, isVariant: true },
+    { name: 'Black Glass',  mats: TEX.glassBlack,  transparent: true, cost: 4, isVariant: true },
+    { name: 'Birch Wood',   mats: { top: TEX.birchLogTop,   side: TEX.birchLogSide,   bottom: TEX.birchLogTop },   cost: 4, isVariant: true },
+    { name: 'Spruce Wood',  mats: { top: TEX.spruceLogTop,  side: TEX.spruceLogSide,  bottom: TEX.spruceLogTop },  cost: 4, isVariant: true },
+    { name: 'Dark Oak Wood',mats: { top: TEX.darkOakLogTop, side: TEX.darkOakLogSide, bottom: TEX.darkOakLogTop }, cost: 4, isVariant: true },
+    { name: 'Acacia Wood',  mats: { top: TEX.acaciaLogTop,  side: TEX.acaciaLogSide,  bottom: TEX.acaciaLogTop },  cost: 4, isVariant: true },
     // White step is deliberately listed first among the step variants,
     // per request ("a selection of steps inc some white ones"). The rest
     // reuse existing block textures rather than needing new ones.
-    { name: 'White Step', mats: TEX.concreteWhite, half: true, isVariant: true },
-    { name: 'Brick Step',  mats: TEX.brick,   half: true, isVariant: true },
-    { name: 'Wood Step',   mats: TEX.planks,  half: true, isVariant: true },
-    { name: 'Sand Step',   mats: TEX.sand,    half: true, isVariant: true },
+    { name: 'White Step', mats: TEX.concreteWhite, half: true, cost: 4, isVariant: true },
+    { name: 'Brick Step',  mats: TEX.brick,   half: true, cost: 4, isVariant: true },
+    { name: 'Wood Step',   mats: TEX.planks,  half: true, cost: 4, isVariant: true },
+    { name: 'Sand Step',   mats: TEX.sand,    half: true, cost: 4, isVariant: true },
   ];
   // Primary hotbar index -> its 5 family members (itself first, then its
   // 4 variants), in the order the popup lists them.
@@ -966,20 +1118,44 @@
   // Maps/Sets, untouched by any of this, so recovery is just re-uploading
   // it to the GPU via a rebuild — nothing needs re-fetching.
   let contextLost = false;
+  // Some Android GPUs/browsers, especially under memory pressure, never
+  // actually fire 'webglcontextrestored' at all — the tab just stays
+  // permanently blue with no further signal, which is what forced players
+  // to fully close and reopen the app to recover. Two safety nets on top of
+  // the normal restore path below: a manual reload button appears after a
+  // few seconds so the player has an immediate way out without leaving the
+  // game, and if nothing has restored things after longer than that, we
+  // reload automatically so most players never even see the button.
+  let reconnectManualTimer = null, reconnectAutoTimer = null;
   renderer.domElement.addEventListener('webglcontextlost', (e) => {
     e.preventDefault();
     contextLost = true;
     const ov = document.getElementById('reconnectOverlay');
+    const btn = document.getElementById('reconnectReloadBtn');
     if (ov) ov.style.display = 'flex';
+    if (btn) btn.style.display = 'none';
+    clearTimeout(reconnectManualTimer);
+    clearTimeout(reconnectAutoTimer);
+    reconnectManualTimer = setTimeout(() => { if (btn) btn.style.display = 'inline-block'; }, 3500);
+    reconnectAutoTimer = setTimeout(() => {
+      console.warn('[voxel] WebGL context never restored — reloading automatically');
+      location.reload();
+    }, 9000);
     console.warn('[voxel] WebGL context lost — waiting for restore');
   }, false);
   renderer.domElement.addEventListener('webglcontextrestored', () => {
     contextLost = false;
     needsRebuild = true; // re-upload block/water/fixture geometry from the still-intact world data
+    clearTimeout(reconnectManualTimer);
+    clearTimeout(reconnectAutoTimer);
     const ov = document.getElementById('reconnectOverlay');
+    const btn = document.getElementById('reconnectReloadBtn');
     if (ov) ov.style.display = 'none';
+    if (btn) btn.style.display = 'none';
     console.log('[voxel] WebGL context restored — rebuilding');
   }, false);
+  document.getElementById('reconnectReloadBtn').addEventListener('click', () => location.reload());
+  document.getElementById('rotateReloadBtn').addEventListener('click', () => location.reload());
 
   const hemi = new THREE.HemisphereLight(0xffffff, 0x4a5a35, 0.55);
   scene.add(hemi);
@@ -1094,6 +1270,173 @@
         }
       }
     }
+  }
+
+  // ================= BUY TERRAIN =================
+  // Bulk-generates a 100x100 patch using the exact same noise (fbm) and
+  // layering approach as generateNewWorld() above — reusing a technique
+  // already proven to work in this game, just applied over a much larger
+  // area with per-kind height/surface parameters instead of one fixed
+  // profile. Worth being upfront about the scale here: generateNewWorld's
+  // own default area is only 30x30 (900 columns) — this is 10,000
+  // columns, potentially 50,000-150,000+ individual blocks in one
+  // purchase depending on kind (mountain being the tallest/most). That's
+  // untested at this scale for save size and one-time rebuild cost; it
+  // should work, following the same code path as everything else, but is
+  // worth watching the first time it's actually used.
+  const TERRAIN_SIZE = 100;
+  const TERRAIN_DEPTH_CAP = 4; // how many layers deep from the surface each column fills — see the comment where it's used, in generateTerrainPatch below
+  const TERRAIN_KINDS = [
+    { key: 'flat',     label: 'Flat',     cost: 1000 },
+    { key: 'mountain', label: 'Mountain', cost: 1000 },
+    { key: 'water',    label: 'Water',    cost: 1000 },
+    { key: 'forest',   label: 'Forest',   cost: 1000 },
+    { key: 'beach',    label: 'Beach',    cost: 1000 },
+  ];
+  // The patch's near edge starts at the player's own position and
+  // extends 100 blocks in whichever cardinal direction they're currently
+  // facing (snapped to the nearest of N/S/E/W — an arbitrary-angle
+  // rotated 100x100 area isn't practical on a block grid), centred on
+  // them along the other axis.
+  function computeTerrainPlacement() {
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    let baseX, baseZ;
+    // Near edge starts one block PAST the player's own standing column,
+    // not on it — that off-by-one was the actual bug behind "it needs to
+    // attach to existing blocks": the footprint used to include whatever
+    // column the player was already standing on, which is almost always
+    // occupied (their existing build, or the world's own default
+    // terrain), so isTerrainAreaEmpty() would reject it even when
+    // everything the patch would actually cover was genuinely empty. This
+    // starts immediately adjacent instead — touching/bordering whatever's
+    // already there, never overlapping it.
+    if (Math.abs(fx) > Math.abs(fz)) {
+      baseX = fx > 0 ? px+1 : px - TERRAIN_SIZE;
+      baseZ = pz - Math.floor(TERRAIN_SIZE/2);
+    } else {
+      baseZ = fz > 0 ? pz+1 : pz - TERRAIN_SIZE;
+      baseX = px - Math.floor(TERRAIN_SIZE/2);
+    }
+    return { baseX, baseZ };
+  }
+  // Checked at every height (not just ground level) across all 10,000
+  // columns before any purchase — deliberately thorough over fast, since
+  // a false "yes it's empty" here would let someone's build get
+  // overwritten, which is exactly what blocking the purchase here is
+  // supposed to prevent.
+  function isTerrainAreaEmpty(baseX, baseZ, size) {
+    for (let lx = 0; lx < size; lx++) {
+      for (let lz = 0; lz < size; lz++) {
+        const x = baseX+lx, z = baseZ+lz;
+        for (let y = 0; y < WORLD_HEIGHT; y++) {
+          if (blocks.has(key(x,y,z))) return false;
+        }
+      }
+    }
+    return true;
+  }
+  function generateTerrainPatch(baseX, baseZ, kindKey) {
+    const size = TERRAIN_SIZE;
+    for (let lx = 0; lx < size; lx++) {
+      for (let lz = 0; lz < size; lz++) {
+        const x = baseX+lx, z = baseZ+lz;
+        // Sampled using LOCAL patch coordinates (lx,lz — always 0-99),
+        // not absolute world position (x,z) — otherwise the same "kind"
+        // bought in two different spots on the map would come out at
+        // different average heights purely because of where its noise
+        // happened to land, since fbm's output depends on the actual
+        // coordinates fed in. This way every "Mountain" (or Water/
+        // Forest/Beach) patch always samples the exact same underlying
+        // shape and sits on the exact same SEA_LEVEL-based baseline,
+        // anywhere on the map — height only ever depends on which kind
+        // was bought, never where.
+        const n = fbm(lx*0.6, lz*0.6); // same noise scale generateNewWorld uses
+        let h, surfaceType, treeChance = 0, floodToSeaLevel = false;
+        if (kindKey === 'flat') {
+          h = SEA_LEVEL + 1; surfaceType = 0; // grass, dead level
+        } else if (kindKey === 'mountain') {
+          h = Math.round(SEA_LEVEL + 4 + n*14); // tall, noisy peaks
+          surfaceType = h > SEA_LEVEL+6 ? 2 /*stone*/ : 0 /*grass at the base*/;
+        } else if (kindKey === 'water') {
+          h = Math.round(SEA_LEVEL - 4 + n*3); // mostly below sea level — floods into a lake below
+          surfaceType = 5; // sand bed
+          floodToSeaLevel = true;
+        } else if (kindKey === 'forest') {
+          h = Math.round(SEA_LEVEL + 1 + n*3); // mild rolling ground
+          surfaceType = 0;
+          treeChance = 0.13; // well above generateNewWorld's own 0.025, for a dense patch of woodland
+        } else { // beach
+          h = Math.round(SEA_LEVEL + n*2); // very mild, hugging sea level
+          surfaceType = 5;
+        }
+        h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
+        // Filled only TERRAIN_DEPTH_CAP layers deep from the surface down,
+        // not all the way to y=0 — this turned out to be the actual cause
+        // of "not loading" for both a saved world and the Mill after
+        // buying terrain: filling to bedrock across 10,000 columns meant
+        // Mountain alone could reach ~150,000+ blocks in one purchase,
+        // and rebuildMeshes() (called on every world load) loops the
+        // ENTIRE block set synchronously, parsing each one's string key
+        // back into numbers — fine at the game's normal scale of a few
+        // thousand blocks, but a multi-second-or-worse freeze at that
+        // size, indistinguishable from a genuine hang since it throws no
+        // error. Capped at 4, a Mountain patch drops to ~40,000 — still a
+        // lot, but a very different order of magnitude. The one real
+        // trade-off: digging underneath a purchased patch now reveals
+        // empty space a few blocks down rather than solid ground all the
+        // way to bedrock, same as biome "chunks" in many voxel games.
+        const fillFrom = Math.max(0, h - TERRAIN_DEPTH_CAP + 1);
+        for (let y = fillFrom; y <= h; y++) {
+          let type;
+          if (y === h) type = surfaceType;
+          else if (y >= h-2) type = (surfaceType === 5 ? 5 : 1);
+          else type = 2;
+          blocks.set(key(x,y,z), type);
+        }
+        if (floodToSeaLevel && h < SEA_LEVEL) {
+          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
+        }
+        if (treeChance && Math.random() < treeChance) {
+          const trunkH = 3 + Math.floor(Math.random()*2);
+          for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
+          const topY = h + trunkH;
+          for (let tx=-1; tx<=1; tx++) for (let tz=-1; tz<=1; tz++) for (let ty=0; ty<=1; ty++)
+            if (Math.random() < 0.8) blocks.set(key(x+tx, topY+ty, z+tz), 4);
+          blocks.set(key(x, topY+2, z), 4);
+        }
+      }
+    }
+  }
+  function buyTerrain(kind) {
+    if (visitMode) return; // read-only when visiting someone else's world (or The Mill without your own edit access) — same guard doPlace() uses for every other build action
+    const meta = TERRAIN_KINDS.find(k => k.key === kind);
+    if (!meta) return;
+    const { baseX, baseZ } = computeTerrainPlacement();
+    if (!isTerrainAreaEmpty(baseX, baseZ, TERRAIN_SIZE)) {
+      showSaveStatus('⚠ That 100x100 area already has something built there', true);
+      return;
+    }
+    if (!trySpendCoins(meta.cost, meta.label+' Terrain')) return;
+    // The near-edge-inside-the-player's-own-column bug above (now fixed
+    // in computeTerrainPlacement) was the actual cause of the player
+    // ending up buried in solid ground — with that corrected, their
+    // standing column is no longer part of the footprint at all, so the
+    // 2-block shove this used to do isn't needed any more. Keeping a
+    // small lift only, purely as a margin for their collision radius
+    // (0.3) poking very slightly into the first new column if they were
+    // standing right at the edge — gravity settles them next frame.
+    player.pos.y += 1.5;
+    player.vel.set(0, 0, 0);
+    generateTerrainPatch(baseX, baseZ, kind);
+    needsRebuild = true; // same one-time rebuild every other bulk-block change (world load, Mill generation) already relies on
+    // No immediate saveWorld() here — placing a single block doesn't
+    // force one either; the existing 20s auto-save interval (see its own
+    // comment further down) picks this up the same way, avoiding an
+    // extra full-world save spike stacked right on top of the generation
+    // cost itself.
+    playThud(500);
+    showSaveStatus('🌍 '+meta.label+' terrain placed', false);
   }
 
   // ================= INSTANCED MESHES =================
@@ -1224,11 +1567,41 @@
     return solidAt(x+1,y,z) && solidAt(x-1,y,z) && solidAt(x,y+1,z) && solidAt(x,y-1,z) && solidAt(x,y,z+1) && solidAt(x,y,z-1);
   }
 
+  // Chunked instead of one giant synchronous pass over every block —
+  // this is the actual fix for "not loading": beginPlaying() used to call
+  // rebuildMeshes() and block the entire tab until literally every block
+  // was processed, which at terrain-purchase scale (tens/hundreds of
+  // thousands of blocks) could run long enough to look exactly like a
+  // hang, with no error to show for it. Below a few thousand blocks (the
+  // game's normal scale) REBUILD_CHUNK_SIZE covers the whole world in one
+  // pass anyway, so nothing changes there — this only matters once a
+  // world is genuinely huge, which is exactly when it matters most.
+  // rebuildMeshes() itself now just (re)starts the process — actual work
+  // happens in continueRebuild(), called once per frame from animate()
+  // for as long as rebuildInProgress stays true — see the comment there
+  // for what "loads the basic terrain first, then the rest" means in
+  // practice: whatever's already in the mesh from prior chunks stays
+  // visible and interactive while later chunks keep filling in.
+  const REBUILD_CHUNK_SIZE = 4000;
+  let rebuildInProgress = false, rebuildQueue = null, rebuildCounts = null, rebuildStepUpperCounts = null;
   function rebuildMeshes() {
-    const counts = new Array(BLOCK_TYPES.length).fill(0);
-    const stepUpperCounts = new Array(BLOCK_TYPES.length).fill(0);
-    for (const [k, type] of blocks) {
-      const [x,y,z] = k.split(',').map(Number);
+    rebuildQueue = Array.from(blocks.entries());
+    rebuildCounts = new Array(BLOCK_TYPES.length).fill(0);
+    rebuildStepUpperCounts = new Array(BLOCK_TYPES.length).fill(0);
+    rebuildInProgress = true;
+    continueRebuild();
+  }
+  function continueRebuild() {
+    if (!rebuildInProgress) return;
+    const chunk = rebuildQueue.splice(0, REBUILD_CHUNK_SIZE);
+    for (const [k, type] of chunk) {
+      // Manual parse instead of k.split(',').map(Number) — avoids the
+      // intermediate array both of those allocate per block, which adds
+      // up meaningfully once a world has tens/hundreds of thousands of
+      // them (see TERRAIN_DEPTH_CAP's comment above for why that's now a
+      // real scale this needs to hold up at, not just a few thousand).
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
+      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       const isHalf = BLOCK_TYPES[type] && BLOCK_TYPES[type].half;
       if (!isHalf && neighborsAllSolid(x,y,z)) continue;
       if (isHalf) {
@@ -1237,7 +1610,7 @@
         dummy.position.set(x+0.5, y+0.25, z+0.5);
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
-        const li = counts[type]++;
+        const li = rebuildCounts[type]++;
         if (li < MAX_INSTANCES) meshes[type].setMatrixAt(li, dummy.matrix);
 
         // Upper quarter — its position offset from the cell centre AND
@@ -1252,25 +1625,33 @@
         dummy.position.set(x+0.5+ox, y+0.75, z+0.5+oz);
         dummy.rotation.set(0, theta, 0);
         dummy.updateMatrix();
-        const ui = stepUpperCounts[type]++;
+        const ui = rebuildStepUpperCounts[type]++;
         if (ui < MAX_INSTANCES) stepUpperMeshes[type].setMatrixAt(ui, dummy.matrix);
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
-        const idx = counts[type]++;
+        const idx = rebuildCounts[type]++;
         if (idx < MAX_INSTANCES) meshes[type].setMatrixAt(idx, dummy.matrix);
       }
     }
+    // Pushed to the GPU after every chunk, not just at the very end — so
+    // whatever's processed so far is actually visible on screen while
+    // later chunks are still coming, rather than the world staying blank
+    // until the entire (potentially huge) queue has drained.
     for (let i=0;i<BLOCK_TYPES.length;i++){
-      meshes[i].count = counts[i];
+      meshes[i].count = rebuildCounts[i];
       meshes[i].instanceMatrix.needsUpdate = true;
       if (stepUpperMeshes[i]) {
-        stepUpperMeshes[i].count = stepUpperCounts[i];
+        stepUpperMeshes[i].count = rebuildStepUpperCounts[i];
         stepUpperMeshes[i].instanceMatrix.needsUpdate = true;
       }
     }
-    rebuildWaterGeometry();
+    if (rebuildQueue.length === 0) {
+      rebuildInProgress = false;
+      rebuildQueue = null;
+      rebuildWaterGeometry();
+    }
   }
 
   // Water is meshed as one merged, hole-punched surface instead of a pile
@@ -2385,6 +2766,45 @@
     group.add(panel);
     return group;
   }
+  function buildDrinksCabinet() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x3a2a1a, shininess: 20 });
+    const shelfMat = new THREE.MeshPhongMaterial({ color: 0x2a1c10, shininess: 10 });
+    const bottleColors = [0x2e6b3a, 0x8a1f2a, 0xd9962a, 0x3a3a8a, 0xc9c9c9];
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.5, 0.4), bodyMat);
+    body.position.set(0, 0.75, 0);
+    group.add(body);
+    [0.35, 0.75, 1.15].forEach(y => {
+      const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.03, 0.36), shelfMat);
+      shelf.position.set(0, y, 0);
+      group.add(shelf);
+      for (let i = 0; i < 4; i++) {
+        const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.035,0.04,0.22,8), new THREE.MeshPhongMaterial({ color: bottleColors[(i+Math.round(y*3))%bottleColors.length], shininess: 70, transparent: true, opacity: 0.85 }));
+        bottle.position.set(-0.32 + i*0.21, y+0.13, 0);
+        group.add(bottle);
+      }
+    });
+    return group;
+  }
+  function buildGlasswash() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xb0b8bd, shininess: 60 });
+    const basinMat = new THREE.MeshPhongMaterial({ color: 0x8a9298, shininess: 70 });
+    const glassMat = new THREE.MeshPhongMaterial({ color: 0xdcefe0, shininess: 90, transparent: true, opacity: 0.35 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.85, 0.55), bodyMat);
+    body.position.set(0, 0.425, 0);
+    group.add(body);
+    const basin = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.12, 0.4), basinMat);
+    basin.position.set(0, 0.87, 0);
+    group.add(basin);
+    // A rack of empty glasses waiting to be washed, on top.
+    for (let i = 0; i < 5; i++) {
+      const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.038, 0.12, 8), glassMat);
+      glass.position.set(-0.24 + i*0.12, 0.99, 0);
+      group.add(glass);
+    }
+    return group;
+  }
   const FURNITURE_TYPES = [
     { name: '2-Seater Couch', build: buildCouch,     swatch: 0x35577a, cost: 80, category: 'room' },
     { name: 'TV',             build: buildTV,        swatch: 0x1a1a1a, cost: 120, category: 'room' },
@@ -2402,6 +2822,9 @@
     { name: 'Chair',               build: buildChair,        swatch: 0x5a3a20, cost: 32,  category: 'bar' },
     { name: 'Fruit Machine',       build: buildFruitMachine, swatch: 0x2a2a2a, cost: 160, category: 'bar' },
     { name: 'Wall TV',              build: buildWallTV,       swatch: 0x1a1a1a, cost: 120, category: 'bar' },
+    { name: 'Drinks Cabinet',       build: buildDrinksCabinet, swatch: 0x3a2a1a, cost: 90, isCabinetSpot: true, category: 'bar' },
+    { name: 'Glasswash',            build: buildGlasswash,    swatch: 0xb0b8bd, cost: 90, isGlasswashSpot: true, category: 'bar' },
+    { name: 'Fridge',               build: buildFridge,       swatch: 0xe4e6e8, cost: 100, category: 'bar' }, // same fixture as the kitchen one below (task lookups match on name, not category) — listed here too so it's placeable from the Bar Furniture menu
     { name: 'Kitchen Sink',        build: buildKitchenSink,    swatch: 0xd8d3c8, cost: 60, category: 'kitchen' },
     { name: 'Fridge',                build: buildFridge,         swatch: 0xe4e6e8, cost: 100, category: 'kitchen' },
     { name: 'Oven',                  build: buildOven,           swatch: 0xe8e8e8, cost: 100, category: 'kitchen' },
@@ -2417,7 +2840,7 @@
     { name: 'Chest of Drawers',       build: buildChestOfDrawers, swatch: 0x6b4a2a, cost: 60, category: 'bedroom' },
     { name: 'Toy Box',                build: buildToyBox,         swatch: 0xe8703a, cost: 48, category: 'bedroom' },
   ];
-  let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 16, cellarTypeIdx = 21, bedroomTypeIdx = 26; // default selection per category — indices into FURNITURE_TYPES above
+  let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 19, cellarTypeIdx = 24, bedroomTypeIdx = 28; // default selection per category — indices into FURNITURE_TYPES above
   function addFurniture(bx,by,bz,rot,typeIdx) {
     const fk = key(bx,by,bz);
     if (furniture.has(fk)) return fk;
@@ -2458,6 +2881,9 @@
   function clearPubExtras() {
     pubExtraProps.forEach(o => scene.remove(o));
     pubExtraProps = [];
+    pubTableSpots = [];
+    pubObstacles = [];
+    wanderingCustomers = [];
   }
   function fillBlocks(x0,x1,y0,y1,z0,z1,type) {
     for (let x=x0; x<=x1; x++) for (let y=y0; y<=y1; y++) for (let z=z0; z<=z1; z++) blocks.set(key(x,y,z), type);
@@ -2496,6 +2922,946 @@
       group.add(sleg);
     });
     return group;
+  }
+  let pubTableSpots = []; // {x,z,area:'floor'|'garden'} — world positions of seats at pub tables, used to pick delivery/collection points for work tasks; repopulated whenever the Mill (re)builds, cleared in clearPubExtras
+  function buildCustomerFigure(seated) {
+    // Minecraft-proportioned: blocky head/torso/limbs, flat colours, no
+    // curves anywhere — reads instantly as "customer" rather than a
+    // realistic figure. Randomised skin/hair/shirt/pants so a crowd of
+    // them doesn't look cloned.
+    const skinTones = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
+    const hairTones = [0x2a2018, 0x6a4a2a, 0x1a1a1a, 0x8a6a3a, 0xb0a898, 0xd4a017];
+    const shirtTones = [0x4a6a9a, 0x9a4a4a, 0x4a9a5a, 0xd4a017, 0x6a4a9a, 0x3a3a3a, 0xc98a5a, 0xe0e0e0];
+    const pantsTones = [0x2a2a30, 0x3a4a6a, 0x4a3a2a, 0x1a1a1a];
+    const skin = skinTones[Math.floor(Math.random()*skinTones.length)];
+    const hair = hairTones[Math.floor(Math.random()*hairTones.length)];
+    const shirt = shirtTones[Math.floor(Math.random()*shirtTones.length)];
+    const pants = pantsTones[Math.floor(Math.random()*pantsTones.length)];
+    const group = new THREE.Group();
+    const skinMat = new THREE.MeshPhongMaterial({ color: skin, shininess: 0, flatShading: true });
+    const hairMat = new THREE.MeshPhongMaterial({ color: hair, shininess: 0, flatShading: true });
+    const shirtMat = new THREE.MeshPhongMaterial({ color: shirt, shininess: 0, flatShading: true });
+    const pantsMat = new THREE.MeshPhongMaterial({ color: pants, shininess: 0, flatShading: true });
+    // Legs — two separate blocks, Minecraft-style, feet at y=0. Seated
+    // figures get short legs instead of scaling the whole body down, so
+    // hips land right at stool-seat height (0.46) with feet still on the
+    // floor, and shoulders stay full width instead of looking shrunken.
+    const legHeight = seated ? 0.46 : 0.72;
+    [-0.11, 0.11].forEach(x => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.19, legHeight, 0.19), pantsMat);
+      leg.position.set(x, legHeight/2, 0);
+      leg.name = 'leg';
+      group.add(leg);
+    });
+    const torsoY = legHeight + 0.29;
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.58, 0.22), shirtMat);
+    torso.position.y = torsoY;
+    group.add(torso);
+    [-0.28, 0.28].forEach(x => {
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.58, 0.19), shirtMat);
+      arm.position.set(x, torsoY, 0);
+      arm.name = 'arm';
+      group.add(arm);
+    });
+    const headY = legHeight + 0.79;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), skinMat);
+    head.position.y = headY;
+    group.add(head);
+    // Face — flat dark features on the local +Z side (the side the walk
+    // logic and seat-facing rotations both treat as "front").
+    const faceMat = new THREE.MeshBasicMaterial({ color: 0x241a12 });
+    [-0.1, 0.1].forEach(x => {
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.02), faceMat);
+      eye.position.set(x, headY+0.05, 0.215);
+      group.add(eye);
+    });
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), faceMat);
+    mouth.position.set(0, headY-0.09, 0.215);
+    group.add(mouth);
+    const hairCap = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.44), hairMat);
+    hairCap.position.y = headY+0.24;
+    group.add(hairCap);
+    return group;
+  }
+  function placeCustomersAtTable(tx, ty, tz, area) {
+    // Mirrors the four stool offsets baked into buildPubTable() itself.
+    const seats = [[0.75,0],[-0.75,0],[0,0.75],[0,-0.75]];
+    seats.forEach(([sx,sz]) => pubTableSpots.push({ x: tx+sx, z: tz+sz, area }));
+    const occupied = seats.filter(() => Math.random() < 0.45);
+    occupied.forEach(([sx,sz]) => {
+      placeProp(() => buildCustomerFigure(true), tx+sx*0.82, ty, tz+sz*0.82, Math.atan2(-sx,-sz));
+    });
+  }
+  let wanderingCustomers = []; // { mesh, target:{x,z}, waitTimer } — a handful of patrons that walk between random spots instead of just sitting
+  let pubObstacles = []; // {x,z,r} — table footprints, for wandering-customer avoidance (furniture already has its own tracked positions via the `furniture` map)
+  function positionBlocked(x, z, bounds) {
+    if (isSolid(x, bounds.y+0.1, z) || isSolid(x, bounds.y+1.3, z)) return true; // walls, counters built from blocks, etc.
+    for (const f of furniture.values()) {
+      const dx = x-(f.bx+0.5), dz = z-(f.bz+0.5);
+      if (dx*dx+dz*dz < 0.6*0.6) return true;
+    }
+    for (const o of pubObstacles) {
+      const dx = x-o.x, dz = z-o.z;
+      if (dx*dx+dz*dz < o.r*o.r) return true;
+    }
+    return false;
+  }
+  function pickWanderTarget(bounds) {
+    for (let i = 0; i < 8; i++) {
+      const x = bounds.xMin + Math.random()*(bounds.xMax-bounds.xMin);
+      const z = bounds.zMin + Math.random()*(bounds.zMax-bounds.zMin);
+      if (!positionBlocked(x, z, bounds)) return { x, z };
+    }
+    return { x: (bounds.xMin+bounds.xMax)/2, z: (bounds.zMin+bounds.zMax)/2 }; // open enough in practice that 8 tries rarely all fail
+  }
+  function spawnWanderingCustomers(bounds, count) {
+    for (let i = 0; i < count; i++) {
+      const spot = pickWanderTarget(bounds);
+      const mesh = placeProp(buildCustomerFigure, spot.x, bounds.y, spot.z, 0);
+      const w = { mesh, target: pickWanderTarget(bounds), waitTimer: Math.random()*2, bounds };
+      wanderingCustomers.push(w);
+    }
+  }
+  function updateWanderingCustomers(dt) {
+    const t = performance.now()*0.005;
+    wanderingCustomers.forEach(w => {
+      if (w.waitTimer > 0) {
+        w.waitTimer -= dt;
+        w.mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; }); // standing still while waiting
+        return;
+      }
+      const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      if (dist < 0.15) {
+        w.target = pickWanderTarget(w.bounds);
+        w.waitTimer = 1 + Math.random()*3; // pause a moment before wandering off again
+        return;
+      }
+      const speed = 0.9;
+      const nx = w.mesh.position.x + (dx/dist) * speed * dt;
+      const nz = w.mesh.position.z + (dz/dist) * speed * dt;
+      if (positionBlocked(nx, nz, w.bounds)) {
+        // Something's in the way (wall, furniture, table) — stop and head
+        // somewhere else instead of clipping through it.
+        w.target = pickWanderTarget(w.bounds);
+        w.waitTimer = 0.4;
+        return;
+      }
+      w.mesh.position.x = nx;
+      w.mesh.position.z = nz;
+      w.mesh.rotation.y = Math.atan2(dx, dz);
+      const swing = Math.sin(t*4) * 0.5;
+      w.mesh.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    });
+  }
+  // Decorative extras that aren't part of the saved world data (kegs, pub
+  // tables, and customers — all raw THREE props, not blocks/furniture) —
+  // called once when The Mill is first generated, AND again every time an
+  // already-saved Mill is loaded, since applyWorldData() clears these out
+  // but has no record of them to restore.
+  function buildTableNumberSign(num) {
+    // A canvas-texture plaque laid flat on the tabletop, facing up — sized
+    // to the full tabletop (which is a 0.45-radius disc) so it's unmissable,
+    // with plain white digits.
+    const canvas = document.createElement('canvas');
+    canvas.width = 128; canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 84px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(num), 64, 66);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide });
+    const plane = new THREE.Mesh(new THREE.CircleGeometry(0.44, 24), mat); // matches the tabletop's own 0.45 radius
+    plane.rotation.x = -Math.PI/2;
+    const group = new THREE.Group();
+    group.add(plane);
+    return group;
+  }
+  let nextTableNumber = 1; // reset to 1 at the top of spawnPubDecorations() each time it runs
+  function placeNumberedTable(builder, x, y, z, area) {
+    placeProp(builder, x, y, z, 0);
+    pubObstacles.push({ x, z, r: 1.0 });
+    placeCustomersAtTable(x, y, z, area);
+    placeProp(() => buildTableNumberSign(nextTableNumber), x, y+0.785, z, 0); // just above the tabletop's actual top surface (0.75 centre + half its 0.06 thickness) — was inside the wood before
+    nextTableNumber++;
+  }
+
+  // ================= APP MAKE — ORDER SCREEN + AUTO-MAKING =================
+  // The App Make role's own mechanic: a standing screen in the staff nook
+  // lists up to 5 queued drink orders. Walking up to the Bar Counter while
+  // on this role hands control over to a short automated sequence — the
+  // camera locks to a fixed cinematic angle and the held-item prop works
+  // through the top order, drops it on the on-counter tray, and moves to
+  // the next one, looping until you tap Leave Role. Bar/Bar Team Leader
+  // keep the older manual walk-up-and-tap task system untouched — this is
+  // App Make only.
+  const APP_MAKE_ORDER_KINDS = {
+    // All three share the same 'drink' held-prop visual (a generic pint
+    // glass) rather than three separate hand-built models — a distinct
+    // cocktail/bottle prop would look nicer but isn't worth the risk of
+    // getting proportions wrong without being able to see it rendered;
+    // the on-screen label/emoji is what actually distinguishes them.
+    pint:     { label: 'Pint of Beer',   emoji: '🍺', makeSeconds: 1.8 },
+    cocktail: { label: 'Cocktail',       emoji: '🍸', makeSeconds: 2.6 },
+    bottle:   { label: 'Bottle of Beer', emoji: '🍾', makeSeconds: 1.4 },
+  };
+  const APP_MAKE_ORDER_KIND_NAMES = Object.keys(APP_MAKE_ORDER_KINDS);
+  let appMakeQueue = []; // [{id, kind}] — always topped back up to 5 as orders are made
+  let appMakeOrderSeq = 0;
+  function appMakeQueuePush() {
+    const kind = APP_MAKE_ORDER_KIND_NAMES[Math.floor(Math.random()*APP_MAKE_ORDER_KIND_NAMES.length)];
+    appMakeQueue.push({ id: appMakeOrderSeq++, kind });
+  }
+  function appMakeQueueFillTo5() {
+    while (appMakeQueue.length < 5) appMakeQueuePush();
+  }
+  let orderScreenCanvas = null, orderScreenCtx = null, orderScreenTex = null;
+  function buildOrderScreen() {
+    // A hanging mounted panel (no floor stand) rather than a freestanding
+    // kiosk — the staff nook's floor is already fairly packed (Drinks
+    // Cabinet/Fridge/Glasswash), so this sits up above the back-bar shelf
+    // instead, clear of all three and dead-centre in the pulled-back
+    // camera's fixed view (see APP_MAKE_CAMERA_POS below).
+    const g = new THREE.Group();
+    const bezelMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 20 });
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.7, 0.05), bezelMat);
+    g.add(bezel);
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 320;
+    const ctx = canvas.getContext('2d');
+    const tex = new THREE.CanvasTexture(canvas);
+    const screenMat = new THREE.MeshBasicMaterial({ map: tex });
+    // Plane's default normal is +Z, which is exactly the direction the
+    // pulled-back camera looks from (see APP_MAKE_CAMERA_POS — it sits
+    // at a larger Z, facing -Z toward the bar) — no rotation needed for
+    // the screen to face the camera.
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.48, 0.62), screenMat);
+    screen.position.z = 0.026;
+    g.add(screen);
+    orderScreenCanvas = canvas; orderScreenCtx = ctx; orderScreenTex = tex;
+    redrawOrderScreen();
+    return g;
+  }
+  function redrawOrderScreen() {
+    if (!orderScreenCtx) return;
+    const ctx = orderScreenCtx, W = orderScreenCanvas.width, H = orderScreenCanvas.height;
+    ctx.fillStyle = '#0c1f14'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ffd866'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('ORDERS', W/2, 34);
+    ctx.strokeStyle = 'rgba(255,216,102,0.4)';
+    ctx.beginPath(); ctx.moveTo(16, 46); ctx.lineTo(W-16, 46); ctx.stroke();
+    ctx.textAlign = 'left';
+    for (let i = 0; i < 5; i++) {
+      const order = appMakeQueue[i];
+      const y = 82 + i*52;
+      ctx.fillStyle = i === 0 ? 'rgba(255,216,102,0.18)' : 'rgba(255,255,255,0.04)';
+      ctx.fillRect(14, y-32, W-28, 46);
+      if (order) {
+        const kind = APP_MAKE_ORDER_KINDS[order.kind];
+        ctx.font = '26px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(kind.emoji, 24, y);
+        ctx.font = (i === 0 ? 'bold ' : '') + '15px sans-serif';
+        ctx.fillStyle = i === 0 ? '#ffd866' : '#cfd6da';
+        ctx.fillText(kind.label, 62, y);
+      } else {
+        ctx.font = '13px sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fillText('—', 24, y);
+      }
+    }
+    orderScreenTex.needsUpdate = true;
+  }
+  // The tray sitting on the counter's staff-side edge — a static disc that
+  // accumulates small drink props as orders get made, capped at 4 so it
+  // doesn't visually overflow; the oldest just quietly drops off, standing
+  // in for "someone's collected it" without needing an actual collection
+  // mechanic.
+  let trayGroup = null, trayItems = [];
+  const TRAY_MAX = 4;
+  const TRAY_SPOTS = [[-0.12,-0.06],[0.12,-0.06],[-0.12,0.08],[0.12,0.08]];
+  function buildBarTray() {
+    const g = new THREE.Group();
+    const trayMat = new THREE.MeshPhongMaterial({ color: 0xc7c9cc, shininess: 50 });
+    const tray = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.018, 16), trayMat);
+    g.add(tray);
+    trayGroup = g;
+    trayItems = [];
+    return g;
+  }
+  function addDrinkToTray() {
+    if (!trayGroup) return;
+    const glass = buildPintGlass(0.6);
+    if (trayItems.length >= TRAY_MAX) {
+      const old = trayItems.shift();
+      trayGroup.remove(old);
+    }
+    const spot = TRAY_SPOTS[trayItems.length % TRAY_SPOTS.length];
+    glass.position.set(spot[0], 0.07, spot[1]);
+    glass.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    trayGroup.add(glass);
+    trayItems.push(glass);
+  }
+  // Player still needs to physically stand near the counter (see
+  // isOnDutyForRole/isInZone('bar'), which requires being within
+  // WORK_DISTANCE of it) — this is that "stand here" spot, verified clear
+  // of the room's hazards: the Glasswash fixture at world (4.5,13.5) and,
+  // more seriously, the cellar access shaft (a genuine 1-block hole
+  // straight down to the cellar, carved at grid cell x=3,z=13 — see
+  // clearBlocksRange(3,3,-4,0,13,13), ladder pillar at x=2). z=12.2 sits
+  // right up against the counter's own back edge (its solid body only
+  // spans world z≈11.3-11.8), ~0.9 blocks clear of the hole's nearest
+  // edge. This no longer has anything to do with the camera itself — see
+  // APP_MAKE_CAMERA_POS below, which is a fully separate, pulled-back
+  // vantage point rather than sitting at the player's own eyes.
+  const APP_MAKE_STAND_POS = { x: 4.5, y: 2, z: 12.2 };
+  // Pulled-back "security camera" shot, watching the counter from outside
+  // rather than through the player's own eyes. Panned slightly right of
+  // dead-centre per request (negative yaw = right, same convention as the
+  // mouselook handler: `yaw -= movementX*k` on a rightward mouse move).
+  // Widened to 85° FOV (default is 75, restored in stopAppMakeAutomation)
+  // and pulled back to z=14.2 (still 0.8 clear of the back wall at z=15)
+  // so all three stations below — spread wider than the original
+  // single-spot version now that there's an avatar actually walking
+  // between them — comfortably fit in frame together, not just the
+  // centreline.
+  const APP_MAKE_CAMERA_POS = { x: 4.5, y: 3.3, z: 14.2 };
+  const APP_MAKE_CAMERA_YAW = -0.18, APP_MAKE_CAMERA_PITCH = -0.65;
+  const APP_MAKE_CAMERA_FOV = 85, DEFAULT_CAMERA_FOV = 75; // camera was created with fov 75 — see `new THREE.PerspectiveCamera(75, ...)`
+  // Where the avatar stands to "make" each kind, and where it walks to
+  // drop the finished drink off — reusing the original single-task
+  // system's own fixture choice per kind (Bar Counter/Drinks
+  // Cabinet/Fridge), but standing at floor level a short, verified-safe
+  // distance from each rather than literally on top of them. All kept at
+  // z=12.0, comfortably clear (1+ blocks) of the z=13 cellar hole in
+  // every direction, unlike the fixtures' own exact centres.
+  const APP_MAKE_STATIONS = {
+    pint:     { x: 4.5, y: 1, z: 12.5 }, // Bar Counter — half a block closer to camera than the other two (see below), on request
+    cocktail: { x: 3.3, y: 1, z: 12.0 }, // Drinks Cabinet side
+    bottle:   { x: 5.7, y: 1, z: 11.9 }, // Fridge side — its solid body starts at world z≈12.16 (BoxGeometry(0.75,1.7,0.68) at world centre 5.5,1.85,12.5), so pulled back slightly further than the other two stations for real clearance
+  };
+  // Same spot as the pint station — the Bar Counter's own solid body
+  // (world x:3.7-5.3, y:1.0-1.96, z:11.3-11.8, from its BoxGeometry(1.6,
+  // 0.9,0.5) placed at (4.5,1,11.5)) was found to actually overlap the
+  // original z=11.6 drop-off point here, which is what the avatar was
+  // clipping into ("walking through the blocks") every time it went to
+  // place a drink. z=12.5 sits comfortably outside that box (even more so
+  // than the original 12.0 fix) — the small drink prop itself still
+  // travels onto the counter/tray during the placing animation below
+  // (correct — it's meant to land there), only the avatar's own feet
+  // needed to stay clear of the solid mesh.
+  const APP_MAKE_DROPOFF = { x: 4.5, y: 1, z: 12.5 };
+  const APP_MAKE_WALK_SPEED = 1.3;
+  let makingPropGroup = null;
+  function getMakingPropGroup() {
+    if (!makingPropGroup) {
+      makingPropGroup = buildPintGlass(1);
+      makingPropGroup.visible = false;
+      scene.add(makingPropGroup);
+    }
+    return makingPropGroup;
+  }
+  // The App Make "actor" — same figure customers use (buildCustomerFigure),
+  // same walk-cycle math as updateWanderingCustomers below (leg/arm swing,
+  // rotate to face the direction of travel), just driven by this role's own
+  // station/order state machine instead of random wandering. Lazily built
+  // once and reused for the rest of the session, starting parked at the
+  // drop-off spot rather than at the THREE.Group default of (0,0,0) — it
+  // would otherwise make one long, visible cross-map walk in from the
+  // origin the first time automation ever starts.
+  let appMakeAvatar = null;
+  function getAppMakeAvatar() {
+    if (!appMakeAvatar) {
+      appMakeAvatar = buildCustomerFigure(false);
+      appMakeAvatar.visible = false;
+      appMakeAvatar.position.set(APP_MAKE_DROPOFF.x, APP_MAKE_DROPOFF.y, APP_MAKE_DROPOFF.z);
+      scene.add(appMakeAvatar);
+    }
+    return appMakeAvatar;
+  }
+  // Steps a figure toward a target at the given speed, swinging its
+  // leg/arm parts and facing the direction of travel — identical logic to
+  // updateWanderingCustomers' own movement step below, factored out so
+  // both can share it. Returns true once it's arrived (and stops the
+  // swing), false while still walking.
+  function walkFigureToward(mesh, target, dt, speed) {
+    const dx = target.x - mesh.position.x, dz = target.z - mesh.position.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    if (dist < 0.08) {
+      mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+      return true;
+    }
+    const step = Math.min(dist, speed*dt);
+    mesh.position.x += (dx/dist) * step;
+    mesh.position.z += (dz/dist) * step;
+    mesh.rotation.y = Math.atan2(dx, dz);
+    const t = performance.now()*0.005;
+    const swing = Math.sin(t*4) * 0.5;
+    mesh.traverse(o => {
+      if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+      if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+    });
+    return false;
+  }
+  // Shared by every "viewing role" scene (App Make/Bar/Bar Team
+  // Leader/Kitchen) — each scene sets the camera to its own fixed base
+  // yaw/pitch every frame, and this is added on top of that, driven by
+  // the look joystick (touch) or mouse (desktop) — see the animate()
+  // loop's touch-look branch and the mousemove listener below. Clamped to
+  // a limited range rather than letting it spin freely, since the point
+  // is still a fixed "camera watching the scene" shot, just one you can
+  // glance around from — and reset to 0 whenever a scene starts or stops,
+  // so it never carries over stale between one visit and the next.
+  let sceneCamYawOffset = 0, sceneCamPitchOffset = 0;
+  const SCENE_CAM_YAW_RANGE = 1.0, SCENE_CAM_PITCH_RANGE = 0.5;
+  function anySceneActive() { return appMakeAuto.active || barServeAuto.active || kitchenAuto.active; }
+  let appMakeAuto = {
+    active: false,        // automation currently running (camera locked, avatar walking/making)
+    pausedUntilFar: false,// true right after Leave Role, until the player walks far enough from the bar to re-arm
+    currentOrder: null,   // the queue[0] entry currently being made
+    phase: null,          // 'walkToStation' | 'making' | 'walkToTray' | 'placing'
+    phaseTimer: 0,
+  };
+  function updateAppMakeAutomation(dt) {
+    // Pin the camera to the fixed, pulled-back pose every frame — decoupled
+    // entirely from player.pos/yaw/pitch (those just need to keep the
+    // player within on-duty range of the counter, handled separately in
+    // updateAppMakeRole). Mouse/touch look is separately blocked from
+    // touching yaw/pitch while active (see the mousemove listener and the
+    // animate() loop's `locked && !appMakeAuto.active` guard), so none of
+    // that leaks into this shot either.
+    if (camera.fov !== APP_MAKE_CAMERA_FOV) { camera.fov = APP_MAKE_CAMERA_FOV; camera.updateProjectionMatrix(); }
+    camera.position.set(APP_MAKE_CAMERA_POS.x, APP_MAKE_CAMERA_POS.y, APP_MAKE_CAMERA_POS.z);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = APP_MAKE_CAMERA_YAW + sceneCamYawOffset;
+    camera.rotation.x = APP_MAKE_CAMERA_PITCH + sceneCamPitchOffset;
+    outline.visible = false;
+    document.getElementById('waterOverlay').style.display = 'none';
+    workHeldRoot.visible = false; // the normal first-person held-item makes no sense from this outside angle
+
+    const avatar = getAppMakeAvatar();
+    avatar.visible = true;
+    const prop = getMakingPropGroup();
+
+    if (!appMakeAuto.currentOrder) {
+      if (appMakeQueue.length === 0) { appMakeQueuePush(); redrawOrderScreen(); }
+      appMakeAuto.currentOrder = appMakeQueue[0];
+      appMakeAuto.phase = 'walkToStation';
+      appMakeAuto.phaseTimer = 0;
+      prop.visible = false;
+    }
+    const kindInfo = APP_MAKE_ORDER_KINDS[appMakeAuto.currentOrder.kind];
+    const station = APP_MAKE_STATIONS[appMakeAuto.currentOrder.kind];
+    appMakeAuto.phaseTimer += dt;
+
+    if (appMakeAuto.phase === 'walkToStation') {
+      if (walkFigureToward(avatar, station, dt, APP_MAKE_WALK_SPEED)) {
+        appMakeAuto.phase = 'making';
+        appMakeAuto.phaseTimer = 0;
+      }
+    } else if (appMakeAuto.phase === 'making') {
+      // small shake/bob on the glass, held roughly at chest/hand height
+      // just in front of wherever the avatar's currently standing, to
+      // read as pouring/mixing. 2.0 matches the figure's own geometry —
+      // buildCustomerFigure's arms/torso sit at local y 0.72-1.30 with the
+      // group placed at world y=1 (standing height), i.e. world 1.72-2.30
+      // — so 2.0 is roughly chest/hand height. The previous 1.35 was
+      // actually down in the figure's LEG range (world 1.0-1.72), which
+      // is why the drink was appearing to float around his legs instead.
+      prop.visible = true;
+      const t = performance.now();
+      prop.position.set(avatar.position.x, 2.0 + Math.sin(t*0.012)*0.02, avatar.position.z + 0.15);
+      prop.rotation.z = Math.sin(t*0.01)*0.08;
+      prop.scale.setScalar(1.4);
+      if (appMakeAuto.phaseTimer >= kindInfo.makeSeconds) {
+        appMakeAuto.phase = 'walkToTray';
+        appMakeAuto.phaseTimer = 0;
+      }
+    } else if (appMakeAuto.phase === 'walkToTray') {
+      // keeps "carrying" the glass along at chest/hand height while it walks over
+      prop.position.set(avatar.position.x, 2.0, avatar.position.z + 0.15);
+      prop.rotation.z = 0;
+      if (walkFigureToward(avatar, APP_MAKE_DROPOFF, dt, APP_MAKE_WALK_SPEED)) {
+        appMakeAuto.phase = 'placing';
+        appMakeAuto.phaseTimer = 0;
+      }
+    } else if (appMakeAuto.phase === 'placing') {
+      const t = Math.min(1, appMakeAuto.phaseTimer / 0.5);
+      // small motion down from hand height (2.0) onto the tray (1.93)
+      prop.position.set(4.5, 2.0 + (1.93-2.0)*t, (avatar.position.z+0.15) + (11.65-(avatar.position.z+0.15))*t);
+      prop.scale.setScalar(1.4 - t*0.4);
+      if (t >= 1) {
+        addDrinkToTray();
+        prop.visible = false;
+        appMakeQueue.shift();
+        appMakeQueuePush();
+        redrawOrderScreen();
+        playThud(500);
+        appMakeAuto.currentOrder = null; // next frame: picks the new queue[0], phase restarts at 'walkToStation'
+      }
+    }
+  }
+
+  function ensureAppMakeFixtures() {
+    // Moved the pint station/drop-off half a block toward the camera
+    // (z 12.0->12.5) on request, which put them at the exact same z as
+    // this screen — so instead of another fragile z-gap, the screen is
+    // raised well above the avatar's own maximum reach instead (a
+    // standing figure's tallest point, the hair, tops out around world
+    // y=2.82 — see buildCustomerFigure), which clears it regardless of
+    // how close the avatar gets in x/z. y raised from 2.6 to 3.3.
+    placeProp(buildOrderScreen, 4.5, 3.3, 12.5, 0); // hanging screen, above the back-bar shelf, dead-centre in the pulled-back camera's view
+    const tray = placeProp(buildBarTray, 4.5, 1.93, 11.65, 0); // sits on the counter's staff-side top edge, directly below the screen
+    trayGroup = tray;
+  }
+
+  // ================= BAR / BAR TEAM LEADER — CUSTOMER SERVING SCENE =================
+  // Reuses the same avatar/walk/prop/pulled-back-camera machinery as App
+  // Make above, but with a reactive state machine instead of App Make's
+  // own proactive order queue: a customer walks in, waits, gets served,
+  // and leaves — then the next one arrives and it repeats. Bar Team
+  // Leader plays the identical scene (a member of staff doing the
+  // serving) but adds a second, non-serving "supervisor" figure standing
+  // in for the player, gesturing nearby rather than serving themselves.
+  const BAR_CUSTOMER_SPAWN = { x: 9,   y: 1, z: 10.5 }; // hall side, near the archway into the bar nook
+  const BAR_CUSTOMER_SPOT  = { x: 3.7, y: 1, z: 10.3 }; // the counter's customer-facing side, clear of the two static regulars already placed at (4.7,10.3)/(5.3,10.7)
+  const BAR_WORKER_SPOT    = { x: 4.5, y: 1, z: 12.5 }; // same verified-safe spot as App Make's pint station, on the staff side
+  const BAR_SUPERVISOR_SPOT= { x: 6.3, y: 1, z: 12.25 }; // Bar Team Leader only — quarter-block closer to camera than the original 12.0 (arm/hand were reading as hidden behind the Fridge from the camera's angle); still clear of the Fridge's own solid body (world x:5.125-5.875) since the separation that matters is in x, not z
+  let barCustomerAvatar = null, barWorkerAvatar = null, barSupervisorAvatar = null;
+  function getBarCustomerAvatar() {
+    if (!barCustomerAvatar) {
+      barCustomerAvatar = buildCustomerFigure(false);
+      barCustomerAvatar.visible = false;
+      barCustomerAvatar.position.set(BAR_CUSTOMER_SPAWN.x, BAR_CUSTOMER_SPAWN.y, BAR_CUSTOMER_SPAWN.z);
+      scene.add(barCustomerAvatar);
+    }
+    return barCustomerAvatar;
+  }
+  function getBarWorkerAvatar() {
+    if (!barWorkerAvatar) {
+      barWorkerAvatar = buildCustomerFigure(false);
+      barWorkerAvatar.visible = false;
+      barWorkerAvatar.position.set(BAR_WORKER_SPOT.x, BAR_WORKER_SPOT.y, BAR_WORKER_SPOT.z);
+      // Previously left at the THREE.js default (rotation.y=0), which
+      // faces local +Z — and since buildCustomerFigure's face is built on
+      // local +Z, that means facing world +Z. The camera sits at a larger
+      // z (14.2) than this spot (12.5), so "facing world +Z" was exactly
+      // "facing the camera" — the reported bug. Facing the customer
+      // instead, via the same atan2(dx,dz) the walk code itself uses.
+      barWorkerAvatar.rotation.y = Math.atan2(BAR_CUSTOMER_SPOT.x - BAR_WORKER_SPOT.x, BAR_CUSTOMER_SPOT.z - BAR_WORKER_SPOT.z);
+      scene.add(barWorkerAvatar);
+    }
+    return barWorkerAvatar;
+  }
+  function getBarSupervisorAvatar() {
+    if (!barSupervisorAvatar) {
+      barSupervisorAvatar = buildCustomerFigure(false);
+      barSupervisorAvatar.visible = false;
+      barSupervisorAvatar.position.set(BAR_SUPERVISOR_SPOT.x, BAR_SUPERVISOR_SPOT.y, BAR_SUPERVISOR_SPOT.z);
+      barSupervisorAvatar.rotation.y = Math.atan2(BAR_WORKER_SPOT.x - BAR_SUPERVISOR_SPOT.x, BAR_WORKER_SPOT.z - BAR_SUPERVISOR_SPOT.z); // faces the worker, same atan2(dx,dz) convention as everything else here
+      scene.add(barSupervisorAvatar);
+    }
+    return barSupervisorAvatar;
+  }
+  let barServeAuto = {
+    active: false,
+    pausedUntilFar: false,
+    isTeamLeader: false, // which role variant is currently running this scene — only affects whether the supervisor shows up
+    phase: null,         // 'customerArriving' | 'workerWalkToStation' | 'making' | 'workerWalkToServe' | 'serving' | 'customerLeaving' | 'pause'
+    phaseTimer: 0,
+    orderKind: null,     // which of App Make's 3 stations the worker walks to this cycle, for a bit of variety/movement (see workerWalkToStation)
+  };
+  function updateBarServeScene(dt) {
+    if (camera.fov !== APP_MAKE_CAMERA_FOV) { camera.fov = APP_MAKE_CAMERA_FOV; camera.updateProjectionMatrix(); }
+    camera.position.set(APP_MAKE_CAMERA_POS.x, APP_MAKE_CAMERA_POS.y, APP_MAKE_CAMERA_POS.z);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = APP_MAKE_CAMERA_YAW + sceneCamYawOffset;
+    camera.rotation.x = APP_MAKE_CAMERA_PITCH + sceneCamPitchOffset;
+    outline.visible = false;
+    document.getElementById('waterOverlay').style.display = 'none';
+    workHeldRoot.visible = false;
+
+    const customer = getBarCustomerAvatar();
+    const worker = getBarWorkerAvatar();
+    customer.visible = true;
+    worker.visible = true;
+    const prop = getMakingPropGroup();
+
+    if (barServeAuto.isTeamLeader) {
+      // idle gesture loop — one arm raised toward the worker with a small
+      // side-to-side wave, independent of whatever phase the serving loop
+      // below is in, so it reads as "giving instruction" the whole time
+      const supervisor = getBarSupervisorAvatar();
+      supervisor.visible = true;
+      const t = performance.now();
+      supervisor.traverse(o => {
+        if (o.name !== 'arm') return;
+        if (o.position.x < 0) { o.rotation.x = -1.1 + Math.sin(t*0.004)*0.15; o.rotation.z = Math.sin(t*0.003)*0.2; }
+        else { o.rotation.x = 0; o.rotation.z = 0; }
+      });
+    } else if (barSupervisorAvatar) {
+      barSupervisorAvatar.visible = false;
+    }
+
+    if (!barServeAuto.phase) {
+      barServeAuto.phase = 'customerArriving';
+      barServeAuto.phaseTimer = 0;
+      barServeAuto.orderKind = APP_MAKE_ORDER_KIND_NAMES[Math.floor(Math.random()*APP_MAKE_ORDER_KIND_NAMES.length)];
+    }
+    barServeAuto.phaseTimer += dt;
+    const station = APP_MAKE_STATIONS[barServeAuto.orderKind];
+
+    if (barServeAuto.phase === 'customerArriving') {
+      if (walkFigureToward(customer, BAR_CUSTOMER_SPOT, dt, APP_MAKE_WALK_SPEED)) {
+        barServeAuto.phase = 'workerWalkToStation';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'workerWalkToStation') {
+      // the worker actually walks to make the drink now, same as App
+      // Make's own avatar — this was the "member of staff isn't moving"
+      // bug: the old version just left the worker standing at
+      // BAR_WORKER_SPOT for the whole scene with no walk cycle at all.
+      if (walkFigureToward(worker, station, dt, APP_MAKE_WALK_SPEED)) {
+        barServeAuto.phase = 'making';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'making') {
+      // same "shake/bob at chest height" as App Make's own making phase
+      prop.visible = true;
+      const t = performance.now();
+      prop.position.set(worker.position.x, 2.0 + Math.sin(t*0.012)*0.02, worker.position.z + 0.15);
+      prop.rotation.z = Math.sin(t*0.01)*0.08;
+      prop.scale.setScalar(1.4);
+      if (barServeAuto.phaseTimer >= APP_MAKE_ORDER_KINDS[barServeAuto.orderKind].makeSeconds) {
+        barServeAuto.phase = 'workerWalkToServe';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'workerWalkToServe') {
+      // carries the glass back to the counter while walking
+      prop.position.set(worker.position.x, 2.0, worker.position.z + 0.15);
+      prop.rotation.z = 0;
+      if (walkFigureToward(worker, BAR_WORKER_SPOT, dt, APP_MAKE_WALK_SPEED)) {
+        // face the customer explicitly on arrival, rather than trusting
+        // whatever direction the walk itself left it facing
+        worker.rotation.y = Math.atan2(customer.position.x - worker.position.x, customer.position.z - worker.position.z);
+        barServeAuto.phase = 'serving';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'serving') {
+      // the drink travels from the worker's hands, across the counter, to
+      // the waiting customer
+      const t = Math.min(1, barServeAuto.phaseTimer / 0.6);
+      prop.position.set(
+        worker.position.x + (customer.position.x - worker.position.x) * t,
+        2.0,
+        (worker.position.z+0.15) + (customer.position.z - (worker.position.z+0.15)) * t
+      );
+      prop.rotation.z = 0;
+      if (t >= 1) {
+        prop.visible = false;
+        playThud(500);
+        barServeAuto.phase = 'customerLeaving';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'customerLeaving') {
+      if (walkFigureToward(customer, BAR_CUSTOMER_SPAWN, dt, APP_MAKE_WALK_SPEED)) {
+        customer.visible = false;
+        barServeAuto.phase = 'pause';
+        barServeAuto.phaseTimer = 0;
+      }
+    } else if (barServeAuto.phase === 'pause') {
+      // brief gap before the next customer walks in
+      if (barServeAuto.phaseTimer >= 1.5) {
+        customer.visible = true;
+        customer.position.set(BAR_CUSTOMER_SPAWN.x, BAR_CUSTOMER_SPAWN.y, BAR_CUSTOMER_SPAWN.z);
+        barServeAuto.phase = 'customerArriving';
+        barServeAuto.phaseTimer = 0;
+      }
+    }
+  }
+  function stopBarServeScene() {
+    if (!barServeAuto.active) return;
+    sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+    barServeAuto.active = false;
+    barServeAuto.phase = null;
+    workHeldRoot.visible = true;
+    if (makingPropGroup) makingPropGroup.visible = false;
+    if (barCustomerAvatar) barCustomerAvatar.visible = false;
+    if (barWorkerAvatar) barWorkerAvatar.visible = false;
+    if (barSupervisorAvatar) barSupervisorAvatar.visible = false;
+    camera.fov = DEFAULT_CAMERA_FOV; camera.updateProjectionMatrix();
+  }
+
+  // ================= KITCHEN — WORKING SCENE =================
+  // Same pulled-back-camera/avatar idea as the bar scenes above, but the
+  // kitchen (unlike the bar) is built from plain voxel blocks, not
+  // `furniture` pieces — counters/prep table (STEP blocks) and a stove
+  // (a solid block), from generatePubWorld()'s "---- Kitchen ----"
+  // section: fillBlocks(2,6,1,1,18,18) counters, blocks.set(4,1,19) stove,
+  // fillBlocks(2,4,1,1,17,17) prep table. Rather than hand-measuring
+  // clearances against each of those like the bar fixtures (which took
+  // several rounds to get right), this walks using the game's own
+  // existing solid-block/furniture collision check — positionBlocked(),
+  // already proven by the wandering customers — so it can't clip through
+  // any of them regardless of exact coordinates, and a simple one-axis
+  // "wall slide" if a direct step is blocked rather than freezing solid.
+  function walkFigureTowardSafe(mesh, target, dt, speed) {
+    const dx = target.x - mesh.position.x, dz = target.z - mesh.position.z;
+    const dist = Math.sqrt(dx*dx + dz*dz);
+    if (dist < 0.08) {
+      mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+      return true;
+    }
+    const step = Math.min(dist, speed*dt);
+    const nx = mesh.position.x + (dx/dist) * step;
+    const nz = mesh.position.z + (dz/dist) * step;
+    const bounds = { y: mesh.position.y };
+    let moved = false;
+    if (!positionBlocked(nx, nz, bounds)) {
+      mesh.position.x = nx; mesh.position.z = nz; moved = true;
+    } else if (!positionBlocked(nx, mesh.position.z, bounds)) {
+      mesh.position.x = nx; moved = true; // slide along x only
+    } else if (!positionBlocked(mesh.position.x, nz, bounds)) {
+      mesh.position.z = nz; moved = true; // slide along z only
+    }
+    if (moved) {
+      mesh.rotation.y = Math.atan2(dx, dz);
+      const t = performance.now()*0.005;
+      const swing = Math.sin(t*4) * 0.5;
+      mesh.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    } else {
+      // genuinely boxed in on all three tries this frame — stand still
+      // rather than jitter against whatever it's blocked by
+      mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+    }
+    return false;
+  }
+  // Room is only ~4 deep (door to back wall) with equipment eating most
+  // of it — z=17-18 (prep table) then z=18-19 (counters) then z=19-20
+  // (stove) — so the previous stations (z=16.9/17.8) were only 0.1-0.2
+  // clear of those, thin enough that the avatar's own body depth
+  // (~0.11 either side of centre) put it right on top of the edge —
+  // reported as being visibly stuck inside the block. z=16.6 for all
+  // four gives genuine clearance from everything: ~0.49 from the door
+  // wall (world z 15-16) behind, ~0.29 from the prep table ahead, and
+  // ~1.29 from the counters — verified against the actual block ranges,
+  // not eyeballed, this time with real margin instead of a hair's width.
+  const KITCHEN_STATIONS = [
+    { x: 3,   y: 1, z: 16.6 }, // prep table
+    { x: 3.7, y: 1, z: 16.6 }, // counter, west
+    { x: 4.3, y: 1, z: 16.6 }, // counter, centre
+    { x: 5,   y: 1, z: 16.6 }, // counter, east
+  ];
+  // Moved from an elevated shot centred over the room to one on the
+  // door/entrance side (z=15-16, wall solid up to world z=16) looking
+  // toward the equipment on the back wall — swapped with where the
+  // avatar stands, on request. The room's only ~4 deep (door to back
+  // wall), so there's little room to pull back; compensated with a wide
+  // FOV and the tightened station spread above rather than distance.
+  const KITCHEN_CAMERA_POS = { x: 4, y: 3.6, z: 16.3 };
+  // Yaw 0 faces -Z (established convention throughout this file — see
+  // e.g. the Bar Counter's own "facing south" comment), which from a
+  // camera sitting at z=16.3 pointed straight at the z=15-16 door wall
+  // right behind it — reported as "looking at the wall". π faces +Z,
+  // toward the equipment/stations this camera is actually meant to watch.
+  const KITCHEN_CAMERA_YAW = Math.PI, KITCHEN_CAMERA_PITCH = -0.97, KITCHEN_CAMERA_FOV = 100;
+  let kitchenAvatar = null;
+  function getKitchenAvatar() {
+    if (!kitchenAvatar) {
+      kitchenAvatar = buildCustomerFigure(false);
+      kitchenAvatar.visible = false;
+      kitchenAvatar.position.set(KITCHEN_STATIONS[0].x, KITCHEN_STATIONS[0].y, KITCHEN_STATIONS[0].z);
+      scene.add(kitchenAvatar);
+    }
+    return kitchenAvatar;
+  }
+  let kitchenAuto = {
+    active: false,
+    pausedUntilFar: false,
+    phase: null,     // 'walking' | 'working'
+    phaseTimer: 0,
+    stationIdx: 0,
+  };
+  function updateKitchenScene(dt) {
+    if (camera.fov !== KITCHEN_CAMERA_FOV) { camera.fov = KITCHEN_CAMERA_FOV; camera.updateProjectionMatrix(); }
+    camera.position.set(KITCHEN_CAMERA_POS.x, KITCHEN_CAMERA_POS.y, KITCHEN_CAMERA_POS.z);
+    camera.rotation.order = 'YXZ';
+    camera.rotation.y = KITCHEN_CAMERA_YAW + sceneCamYawOffset;
+    camera.rotation.x = KITCHEN_CAMERA_PITCH + sceneCamPitchOffset;
+    outline.visible = false;
+    document.getElementById('waterOverlay').style.display = 'none';
+    workHeldRoot.visible = false;
+
+    const avatar = getKitchenAvatar();
+    avatar.visible = true;
+    const prop = getMakingPropGroup(); // reused as a generic "working on something" prop
+
+    if (!kitchenAuto.phase) { kitchenAuto.phase = 'walking'; kitchenAuto.phaseTimer = 0; prop.visible = false; }
+    kitchenAuto.phaseTimer += dt;
+    const target = KITCHEN_STATIONS[kitchenAuto.stationIdx];
+
+    if (kitchenAuto.phase === 'walking') {
+      if (walkFigureTowardSafe(avatar, target, dt, APP_MAKE_WALK_SPEED)) {
+        kitchenAuto.phase = 'working';
+        kitchenAuto.phaseTimer = 0;
+      }
+    } else if (kitchenAuto.phase === 'working') {
+      prop.visible = true;
+      const t = performance.now();
+      prop.position.set(avatar.position.x, 2.0 + Math.sin(t*0.012)*0.02, avatar.position.z + 0.15);
+      prop.rotation.z = Math.sin(t*0.01)*0.08;
+      prop.scale.setScalar(1.2);
+      if (kitchenAuto.phaseTimer >= 2.2) {
+        prop.visible = false;
+        kitchenAuto.stationIdx = (kitchenAuto.stationIdx + 1) % KITCHEN_STATIONS.length;
+        kitchenAuto.phase = 'walking';
+        kitchenAuto.phaseTimer = 0;
+      }
+    }
+  }
+  function stopKitchenScene() {
+    if (!kitchenAuto.active) return;
+    sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+    kitchenAuto.active = false;
+    kitchenAuto.phase = null;
+    workHeldRoot.visible = true;
+    if (makingPropGroup) makingPropGroup.visible = false;
+    if (kitchenAvatar) kitchenAvatar.visible = false;
+    camera.fov = DEFAULT_CAMERA_FOV; camera.updateProjectionMatrix();
+  }
+  // No fixture to measure distance from (unlike the bar scenes' Bar
+  // Counter) — isInZone('kitchen') (x:1-7,z:16-19) is already required
+  // just to reach onDuty at all for this role, so being here at all
+  // already counts as "reached it".
+  function updateKitchenRole(dt) {
+    const panel = document.getElementById('taskPanel');
+    const textEl = document.getElementById('taskPanelText');
+    const btn = document.getElementById('taskActionBtn');
+    const leaveBtn = document.getElementById('appMakeLeaveBtn');
+
+    if (kitchenAuto.active) {
+      updateKitchenScene(dt);
+      panel.style.display = 'block';
+      textEl.textContent = '👨\u200d🍳 Working in the kitchen…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      updateTaskArrow();
+      return;
+    }
+    leaveBtn.style.display = 'none';
+
+    if (!kitchenAuto.pausedUntilFar) {
+      kitchenAuto.active = true;
+      sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+      kitchenAuto.phase = null;
+      player.pos.set(4, 2, 17); // arbitrary safe spot inside the zone bounds — the camera/avatar don't depend on it
+      player.vel.set(0, 0, 0);
+      yaw = 0; pitch = 0;
+      panel.style.display = 'block';
+      textEl.textContent = '👨\u200d🍳 Starting up…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      return;
+    }
+    panel.style.display = 'none';
+    updateTaskArrow();
+  }
+  // Guarantees the Drinks Cabinet, Fridge, and Glasswash exist at the
+  // canonical spot behind the bar counter (staff side, z=12+ — the
+  // customer regulars stand in front at z=10.3/10.7). If one already
+  // exists somewhere OTHER than that spot — a leftover from an earlier
+  // version of this function that used different coordinates — it gets
+  // moved there too, rather than leaving a stray copy in the old spot
+  // that the task system can never actually be near. A Fridge inside the
+  // kitchen is left alone (it's a legitimate kitchen appliance, not a
+  // stray bar one) and a fresh bar-side one is added alongside it.
+  function forcePlaceFixture(bx, bz, rot, typeIdx) {
+    const fk = key(bx, 0, bz);
+    const existing = furniture.get(fk);
+    if (existing) { scene.remove(existing.group); furniture.delete(fk); }
+    const type = FURNITURE_TYPES[typeIdx];
+    const group = type.build();
+    group.position.set(bx+0.5, 1, bz+0.5);
+    group.rotation.y = rot * Math.PI/2;
+    group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(group);
+    furniture.set(fk, { group, bx, by: 0, bz, rot, typeIdx });
+  }
+  function ensureFixtureAt(matchFn, canonBx, canonBz, typeIdx, protectFn) {
+    const all = Array.from(furniture.values()).filter(matchFn);
+    const hasCanonical = all.some(f => Math.abs(f.bx-canonBx)<=2 && Math.abs(f.bz-canonBz)<=2);
+    if (hasCanonical) return;
+    for (const f of all) {
+      if (protectFn && protectFn(f)) continue; // leave it — it's not actually a stray
+      scene.remove(f.group);
+      furniture.delete(key(f.bx, f.by, f.bz));
+    }
+    forcePlaceFixture(canonBx, canonBz, 0, typeIdx);
+  }
+  function ensureBarFixtures() {
+    ensureFixtureAt(f => FURNITURE_TYPES[f.typeIdx]?.isCabinetSpot, 3, 12, 16);
+    ensureFixtureAt(f => FURNITURE_TYPES[f.typeIdx]?.name === 'Fridge', 5, 12, 18, f => f.bx>=1 && f.bx<=7 && f.bz>=16 && f.bz<=19);
+    ensureFixtureAt(f => FURNITURE_TYPES[f.typeIdx]?.isGlasswashSpot, 4, 13, 17);
+  }
+  // Walls off the bar's staff nook from the rest of the hall, for a Mill
+  // saved before this was part of the default layout — 8 blocks out from
+  // the west exterior wall, from the existing hall|back-of-house
+  // partition at z=15 (1 block past the cellar below, which stops at
+  // z=14) forward 4 blocks to z=11. Only the east wall needs building —
+  // west and north are already exterior/partition walls, and south stays
+  // open onto the hall so customers can still reach the counter.
+  function ensureBarRoom() {
+    let changed = false;
+    for (let z = 11; z <= 15; z++) for (let y = 1; y <= 4; y++) {
+      if (z === 12 || z === 13) continue; // archway gap — no door, staff walk straight through
+      const k = key(8, y, z);
+      if (!blocks.has(k)) { blocks.set(k, 7 /* BRICK */); changed = true; }
+    }
+    if (changed) needsRebuild = true;
+  }
+  function spawnPubDecorations() {
+    nextTableNumber = 1;
+    // Reset App Make's queue/automation/tray state too — spawnPubDecorations
+    // runs fresh every time The Mill is (re)entered, and none of this is
+    // part of the saved world data (same reasoning as kegs/tables/customers
+    // above), so a leftover queue or mid-animation state from a previous
+    // visit this session must never carry over.
+    appMakeQueue = [];
+    appMakeOrderSeq = 0;
+    appMakeAuto = { active: false, pausedUntilFar: false, currentOrder: null, phase: null, phaseTimer: 0 };
+    orderScreenCanvas = null; orderScreenCtx = null; orderScreenTex = null;
+    trayGroup = null; trayItems = [];
+    placeNumberedTable(buildPubTable, 3, 1, 9, 'floor'); // a table/stools by the bar
+    // A couple of regulars propped up at the counter itself, on its
+    // customer-facing side (the model's own -Z face — the back-bar
+    // shelf/bottles sit at local +Z, behind the staff side).
+    [[4.7,10.3],[5.3,10.7]].forEach(([x,z]) => placeProp(buildCustomerFigure, x, 1, z, 0));
+    [[4,-3.7,9],[6,-3.7,9],[4,-3.7,12],[6,-3.7,12]].forEach(([x,y,z]) => placeProp(buildKeg, x, y, z, 0));
+    ensureAppMakeFixtures();
+    // Original 4 tables (east side) + 4 more where the dancefloor used to
+    // be (centre of the hall) — 8 in total.
+    [[22,9],[26,9],[22,12],[26,12],[13,9],[17,9],[13,12],[17,12]].forEach(([x,z]) => {
+      placeNumberedTable(buildPubTable, x+0.5, 1, z+0.5, 'floor');
+    });
+    // Original 6 beer garden tables + 4 more in a third row — 10 in total.
+    [[6,25],[12,25],[18,25],[24,25],[9,30],[19,30],[6,33],[12,33],[18,33],[24,33]].forEach(([x,z]) => {
+      placeNumberedTable(() => buildPubTable(true), x, 1, z, 'garden');
+    });
+    // 7 walking customers spread across every customer-facing area — hall,
+    // both toilets, and the beer garden — each confined to their own zone
+    // rather than trying to path between rooms through doorways.
+    spawnWanderingCustomers({ xMin: 6,  xMax: 26, zMin: 8, zMax: 14, y: 1 }, 3); // hall, kept clear of the bar counter's own column (x<6)
+    spawnWanderingCustomers({ xMin: 2,  xMax: 7,  zMin: 1, zMax: 6,  y: 1 }, 1); // men's
+    spawnWanderingCustomers({ xMin: 21, xMax: 27, zMin: 1, zMax: 6,  y: 1 }, 1); // women's
+    spawnWanderingCustomers({ xMin: 2,  xMax: 26, zMin: 23, zMax: 33, y: 1 }, 2); // beer garden
   }
   function placeProp(builder, x, y, z, rotY) {
     const g = builder();
@@ -2571,15 +3937,26 @@
 
     // ---- Bar (west strip of the main hall) ----
     addFurniture(4, 0, 11, 0, 5); // Bar Counter (typeIdx 5), facing south into the hall
+    // Cabinet/Fridge/Glasswash go on the STAFF side (z=12+, behind the
+    // counter) — the customer regulars stand on the other side, in front
+    // at z=10.3/10.7 (see spawnPubDecorations below).
+    addFurniture(3, 0, 12, 0, 16); // Drinks Cabinet
+    addFurniture(5, 0, 12, 0, 18); // Fridge
+    addFurniture(4, 0, 13, 0, 17); // Glasswash
     for (let z=8; z<=14; z++) addWallpaper(0, 2, z, 1, 0, 0, 4); // Charcoal Wallpaper behind the bar
-    placeProp(buildPubTable, 3, 0, 9, 0); // a table/stools by the bar
+    // Bar area enclosure — 8 blocks out from the west wall, back to the
+    // existing hall|back-of-house partition at z=15 (1 block past the
+    // cellar below, which stops at z=14), i.e. 4 blocks deep. Only the
+    // east wall needs building — west, north are already exterior/
+    // partition walls, and south stays open onto the hall for customers.
+    fillBlocks(8,8,1,4,11,15, BRICK);
+    clearBlocksRange(8,8,1,4,12,13); // archway through to the rest of the hall — no door, staff walk straight through
 
     // ---- Cellar ----
     fillBlocks(0,9,-5,-5,7,14, STONE); // floor
     fillBlocks(0,0,-4,-1,7,14, STONE); fillBlocks(9,9,-4,-1,7,14, STONE);
     fillBlocks(1,8,-4,-1,7,7, STONE);  fillBlocks(1,8,-4,-1,14,14, STONE);
     clearBlocksRange(1,8,-4,-1,8,13); // hollow interior
-    [[4,-4.7,9],[6,-4.7,9],[4,-4.7,12],[6,-4.7,12]].forEach(([x,y,z]) => placeProp(buildKeg, x, y, z, 0));
     addFixture(0,-3,10,1,0,0); addFixture(9,-3,10,-1,0,0);
 
     // Cellar access shaft — carved AFTER the cellar's own hollow-out above,
@@ -2590,7 +3967,6 @@
     for (let y=-4; y<=0; y++) addLadder(2, y, 13, 1, 0, 0);
 
     // ---- Tables & chairs (east side of the main hall) ----
-    [[22,9],[26,9],[22,12],[26,12]].forEach(([x,z]) => placeProp(buildPubTable, x+0.5, 0, z+0.5, 0));
 
     // ---- Toilets ----
     addWallpaper(4,2,0,0,0,1,2); addWallpaper(23,2,0,0,0,1,3); // Sky (men's) / Blush (women's) accent wall — mounted on the south exterior wall, facing into each room
@@ -2622,10 +3998,10 @@
     // the fence would wall off the only way in.
     fillBlocks(0,28,1,1,22,34, STEP);
     clearBlocksRange(1,27,1,1,22,33);
-    [[6,25],[12,25],[18,25],[24,25],[9,30],[19,30]].forEach(([x,z]) => placeProp(() => buildPubTable(true), x, 0, z, 0));
     [[3,22],[25,22],[3,33],[25,33]].forEach(([x,z]) => blocks.set(key(x,1,z), LEAVES));
     addFixture(0,1,25,1,0,0); addFixture(28,1,25,-1,0,0);
 
+    spawnPubDecorations();
     needsRebuild = true;
   }
   // The Mill lives at a fixed, well-known world id in the same
@@ -2643,7 +4019,7 @@
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
     const saved = await loadWorldData(PUB_WORLD_ID);
-    if (saved) applyWorldData(saved);
+    if (saved) { applyWorldData(saved); spawnPubDecorations(); ensureBarFixtures(); ensureBarRoom(); needsRebuild = true; }
     else generatePubWorld(); // nobody has created it yet — show the template, but this visit still won't save (visitMode guards that)
     visitMode = true; // read-only — but working a shift still earns coins, same as visiting any other world's bar
     assignRandomRole();
@@ -2662,6 +4038,7 @@
     generatePubWorld();
     visitMode = false;
     currentRole = null;
+    lastSavedChunkPayloads = new Map(); // same reasoning as newWorldBtn's handler above — this is also a from-scratch world with no loadWorldData() call to reset it otherwise
     player.pos.set(13.5, 2, -2);
     yaw = Math.PI; pitch = 0;
     saveWorld();
@@ -2709,12 +4086,21 @@
     if (idx >= 6) { currentRole = null; return; } // Pub Manager — no role, earns anywhere in the pub
     const pool = ALL_ROLES.filter(r => idx >= r.minRank && (r.maxRank === undefined || idx <= r.maxRank));
     currentRole = pool[Math.floor(Math.random()*pool.length)];
+    // Temporary diagnostic — reported App Make never once coming up across
+    // 25 clock-ins at Team Leader (pool size 9, so a true 25/25 miss by
+    // chance alone is only ~5% likely), but nothing found on read-through
+    // of this function or ALL_ROLES that would explain it structurally.
+    // Logging the actual pool + pick so the next few clock-ins show real
+    // data instead of more guessing. Safe to remove once this is resolved.
+    console.log('[voxel] assignRandomRole — rank idx', idx, 'pool:', pool.map(r=>r.name), 'picked:', currentRole && currentRole.name);
   }
   function nearestBarCounter() {
+    return nearestFixtureOfType(f => FURNITURE_TYPES[f.typeIdx]?.isWorkSpot);
+  }
+  function nearestFixtureOfType(matchFn) {
     let best = null, bestDist = WORK_DISTANCE;
     furniture.forEach(f => {
-      const type = FURNITURE_TYPES[f.typeIdx];
-      if (!type || !type.isWorkSpot) return;
+      if (!matchFn(f)) return;
       const cx = f.bx+0.5, cz = f.bz+0.5;
       const dx = player.pos.x - cx, dz = player.pos.z - cz;
       const dist = Math.sqrt(dx*dx + dz*dz);
@@ -2734,17 +4120,65 @@
       default: return false;
     }
   }
+  // Whole-building footprint (interior + cellar + beer garden) — used so a
+  // task already in progress doesn't get cancelled just because its own
+  // steps require walking between rooms that belong to different work
+  // zones (e.g. Food Run's kitchen pickup, Beer Garden's bar drop-off).
+  // Earning the per-interval wage still requires being in your actual
+  // assigned zone — this only keeps an accepted task alive in transit.
+  function isAnywhereInPub() {
+    const p = player.pos;
+    return p.x>=-1 && p.x<=29 && p.z>=-1 && p.z<=35 && p.y>-6 && p.y<8;
+  }
+  function isOnDutyForRole(role) {
+    if (isInZone(role.zone)) return true;
+    if (currentTask && isAnywhereInPub()) return true;
+    return false;
+  }
   function updateWork(dt) {
     const workStatusEl = document.getElementById('workStatus');
     // Pub Manager earns anywhere in the pub (roughly the whole building
     // footprint including the beer garden and cellar), no specific zone.
     const onDuty = rankIndex() >= 6 && currentRole === null && (currentWorldId === PUB_WORLD_ID)
       ? true
-      : currentRole ? isInZone(currentRole.zone) : !!nearestBarCounter();
+      : currentRole ? isOnDutyForRole(currentRole) : !!nearestBarCounter();
     if (!onDuty) {
       if (working) { working = false; workTimer = 0; }
       if (workStatusEl) workStatusEl.style.display = 'none';
       setWorkHeldVisual(null);
+      currentTask = null;
+      stopAppMakeAutomation(); // safety net — shouldn't normally be reachable mid-automation since movement is locked, but never leave the camera stuck if it somehow is
+      stopBarServeScene(); // same safety net, for Bar/Bar Team Leader's customer-serving scene
+      stopKitchenScene(); // same safety net, for Kitchen's working scene
+      // The real fix for "Leave Role, walk around, come back — it didn't
+      // animate again": updateAppMakeRole (and the pausedUntilFar-clearing
+      // check that used to live inside it) is ONLY ever called further
+      // down, in the branch below that requires onDuty to be true — i.e.
+      // within WORK_DISTANCE (1.7) of the counter. That check can only
+      // ever ask "have you gone far enough away yet?" while you're
+      // simultaneously required to be within 1.7 of the counter to reach
+      // it at all, which can never both be true — so the flag could never
+      // actually clear, regardless of what distance threshold it used.
+      // !onDuty firing at all already means "away from the counter", so
+      // clearing it right here — no separate distance check needed — is
+      // what actually works. Same fix applies to barServeAuto/kitchenAuto's
+      // own flags.
+      appMakeAuto.pausedUntilFar = false;
+      barServeAuto.pausedUntilFar = false;
+      kitchenAuto.pausedUntilFar = false;
+      const panel = document.getElementById('taskPanel');
+      if (performance.now() < taskCompleteUntil) {
+        // Just finished a task's last step somewhere outside your work
+        // zone (e.g. dropping glasses off at the Glasswash, which sits in
+        // the bar, not the beer garden) — say so instead of the panel
+        // just silently going stale until you happen to walk back.
+        panel.style.display = 'block';
+        document.getElementById('taskPanelText').textContent = '✅ Nice one — head back to your work area to keep going.';
+        document.getElementById('taskActionBtn').style.display = 'none';
+      } else {
+        panel.style.display = 'none';
+      }
+      updateTaskArrow();
       return;
     }
     if (!working) { working = true; workTimer = 0; promotionOfferDismissed = false; }
@@ -2766,7 +4200,264 @@
       addCoins(payRate);
       playThud(700);
     }
+    if (currentRole && currentRole.name === 'App Make') {
+      updateAppMakeRole(dt);
+    } else if (currentRole && (currentRole.name === 'Bar' || currentRole.name === 'Bar Team Leader')) {
+      updateBarRole(dt, currentRole.name === 'Bar Team Leader');
+    } else if (currentRole && currentRole.name === 'Kitchen') {
+      updateKitchenRole(dt);
+    } else {
+      updateTask(dt);
+    }
   }
+  function updateAppMakeRole(dt) {
+    const panel = document.getElementById('taskPanel');
+    const textEl = document.getElementById('taskPanelText');
+    const btn = document.getElementById('taskActionBtn');
+    const leaveBtn = document.getElementById('appMakeLeaveBtn');
+
+    if (appMakeAuto.active) {
+      updateAppMakeAutomation(dt);
+      const kind = APP_MAKE_ORDER_KINDS[appMakeAuto.currentOrder ? appMakeAuto.currentOrder.kind : 'pint'];
+      panel.style.display = 'block';
+      textEl.textContent = '🍹 Making: ' + kind.emoji + ' ' + kind.label + '…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      updateTaskArrow();
+      return;
+    }
+    leaveBtn.style.display = 'none';
+
+    const barPos = fixturePos(nearestBarCounter());
+    // pausedUntilFar clears in updateWork's !onDuty branch above, the
+    // moment you're actually away from the counter — see the comment
+    // there. By the time we're here (onDuty is true), it's already false
+    // again if it's ever going to be.
+    if (!appMakeAuto.pausedUntilFar && barPos && Math.hypot(player.pos.x-barPos.x, player.pos.z-barPos.z) < 3.2) {
+      // Reached the bar — hand over to the automation. Snaps player.pos to
+      // the verified-safe standing spot (the camera itself is a fully
+      // separate pulled-back shot — see updateAppMakeAutomation), matching
+      // "the automation takes over when we reach it".
+      appMakeQueueFillTo5();
+      redrawOrderScreen();
+      appMakeAuto.active = true;
+      sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+      appMakeAuto.currentOrder = null;
+      player.pos.set(APP_MAKE_STAND_POS.x, APP_MAKE_STAND_POS.y, APP_MAKE_STAND_POS.z);
+      player.vel.set(0, 0, 0);
+      yaw = 0; pitch = 0; // sane defaults for whenever manual control resumes — irrelevant while the pulled-back camera is active
+      panel.style.display = 'block';
+      textEl.textContent = '🍹 Starting up…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      return;
+    }
+    panel.style.display = 'none';
+    updateTaskArrow();
+  }
+  function stopAppMakeAutomation() {
+    if (!appMakeAuto.active) return;
+    sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+    appMakeAuto.active = false;
+    appMakeAuto.currentOrder = null;
+    positionWorkHeldRoot(); // undoes any leftover transform, though it's unused during automation now
+    workHeldRoot.visible = true; // restore the normal first-person held-item, hidden while the pulled-back camera was active
+    if (makingPropGroup) makingPropGroup.visible = false;
+    if (appMakeAvatar) appMakeAvatar.visible = false;
+    camera.fov = DEFAULT_CAMERA_FOV; camera.updateProjectionMatrix(); // undo the widened automation FOV
+    const leaveBtn = document.getElementById('appMakeLeaveBtn');
+    if (leaveBtn) leaveBtn.style.display = 'none';
+  }
+  // Bar and Bar Team Leader share this exact dispatcher shape (and the
+  // same Leave Role button/UI) with updateAppMakeRole above — only the
+  // underlying scene (updateBarServeScene vs updateAppMakeAutomation)
+  // differs, plus the status text and whether the supervisor shows up.
+  function updateBarRole(dt, isTeamLeader) {
+    const panel = document.getElementById('taskPanel');
+    const textEl = document.getElementById('taskPanelText');
+    const btn = document.getElementById('taskActionBtn');
+    const leaveBtn = document.getElementById('appMakeLeaveBtn');
+
+    if (barServeAuto.active) {
+      updateBarServeScene(dt);
+      panel.style.display = 'block';
+      textEl.textContent = isTeamLeader ? '🧑\u200d💼 Supervising the bar…' : '🍹 Serving customers…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      updateTaskArrow();
+      return;
+    }
+    leaveBtn.style.display = 'none';
+
+    const barPos = fixturePos(nearestBarCounter());
+    if (!barServeAuto.pausedUntilFar && barPos && Math.hypot(player.pos.x-barPos.x, player.pos.z-barPos.z) < 3.2) {
+      barServeAuto.active = true;
+      sceneCamYawOffset = 0; sceneCamPitchOffset = 0;
+      barServeAuto.isTeamLeader = isTeamLeader;
+      barServeAuto.phase = null;
+      player.pos.set(APP_MAKE_STAND_POS.x, APP_MAKE_STAND_POS.y, APP_MAKE_STAND_POS.z);
+      player.vel.set(0, 0, 0);
+      yaw = 0; pitch = 0;
+      panel.style.display = 'block';
+      textEl.textContent = '🍹 Starting up…';
+      btn.style.display = 'none';
+      leaveBtn.style.display = 'inline-block';
+      return;
+    }
+    panel.style.display = 'none';
+    updateTaskArrow();
+  }
+  document.getElementById('appMakeLeaveBtn').addEventListener('click', () => {
+    // Shared by App Make and Bar/Bar Team Leader — stops whichever of the
+    // two scenes is actually running (only one is ever active at once,
+    // since they're driven by mutually exclusive roles).
+    if (appMakeAuto.active) {
+      stopAppMakeAutomation();
+      appMakeAuto.pausedUntilFar = true; // stay paused until you've actually walked away — see updateAppMakeRole
+    }
+    if (barServeAuto.active) {
+      stopBarServeScene();
+      barServeAuto.pausedUntilFar = true; // same reasoning, see updateBarRole
+    }
+    if (kitchenAuto.active) {
+      stopKitchenScene();
+      kitchenAuto.pausedUntilFar = true; // same reasoning, see updateKitchenRole
+    }
+  });
+
+  // ================= WORK TASKS =================
+  // Small role-specific jobs that pop up while on shift, on top of the
+  // steady per-interval pay above. Each has 1-2 steps; a step is "done"
+  // once the player is standing near the right spot and taps the action
+  // button. Completing the last step pays a one-off bonus (~one work
+  // interval's wage) and a fresh task is offered shortly after.
+  let currentTask = null; // { steps: [{text, inRange(), label, onDone()}], stepIdx, label }
+  let taskCooldown = 0; // seconds until a new task may be offered, ticks down while idle with no task
+  let taskCompleteUntil = 0; // performance.now() timestamp; while in the future, show a brief "nice one, head back" message even if you've stepped off duty finishing the last step somewhere else
+  function randTableSpot(area) {
+    const pool = pubTableSpots.filter(s => s.area === area);
+    // Fall back to any placed 'Table' furniture (e.g. in a player's own
+    // pub) if there are no tracked Mill table spots for this world.
+    if (!pool.length) {
+      furniture.forEach(f => { if (FURNITURE_TYPES[f.typeIdx]?.name === 'Table') pool.push({ x: f.bx+0.5, z: f.bz+0.5, area }); });
+    }
+    if (!pool.length) return null;
+    return pool[Math.floor(Math.random()*pool.length)];
+  }
+  function nearSpot(spot, radius) {
+    if (!spot) return false;
+    const dx = player.pos.x - spot.x, dz = player.pos.z - spot.z;
+    return Math.sqrt(dx*dx + dz*dz) < radius;
+  }
+  function fixturePos(f) {
+    return f ? { x: f.bx+0.5, z: f.bz+0.5 } : null;
+  }
+  // Floating marker for "make the drink here" style steps — a downward
+  // arrow that bobs gently just above head height over the right fixture,
+  // built once and repositioned/shown per frame rather than rebuilt.
+  // Rendered through walls and ignoring fog/distance (depthTest off, fog
+  // off, drawn last) so it's visible from anywhere in the pub, not just
+  // once you're standing right next to the fixture with a clear view.
+  const taskArrowGroup = new THREE.Group();
+  (() => {
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffd866, fog: false, depthTest: false, depthWrite: false, transparent: true });
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.42, 8), mat);
+    shaft.position.y = 0.21;
+    shaft.renderOrder = 999;
+    taskArrowGroup.add(shaft);
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.32, 10), mat);
+    head.position.y = -0.16;
+    head.rotation.x = Math.PI; // cone points down
+    head.renderOrder = 999;
+    taskArrowGroup.add(head);
+  })();
+  taskArrowGroup.visible = false;
+  taskArrowGroup.renderOrder = 999;
+  scene.add(taskArrowGroup);
+  function updateTaskArrow() {
+    const step = currentTask ? currentTask.steps[currentTask.stepIdx] : null;
+    const pos = step && step.markerPos ? step.markerPos() : null;
+    if (!pos) { taskArrowGroup.visible = false; return; }
+    taskArrowGroup.visible = true;
+    const bob = Math.sin(performance.now()*0.004) * 0.08;
+    taskArrowGroup.position.set(pos.x, 2.8 + bob, pos.z); // ~1.1 above a standing player's head
+  }
+  function buildTaskForRole(role) {
+    // App Make and Bar no longer use this — see updateAppMakeRole/
+    // updateBarServeRole above, which replace the walk-up-and-tap tasks
+    // with proper cinematic scenes (order-queue auto-making for App
+    // Make; a customer-serving loop for Bar and Bar Team Leader).
+    if (role.name === 'App Run') {
+      const table = randTableSpot('floor');
+      return { label: 'App order', steps: [
+        { text: '📱 A tray of drinks is ready on the bar.', inRange: () => !!nearestBarCounter(), actionLabel: 'Pick up tray', markerPos: () => fixturePos(nearestBarCounter()) },
+        { text: table ? '🚶 Take it to table '+(Math.floor(pubTableSpots.indexOf(table)/4)+1)+'.' : '🚶 Take it to a table.', inRange: () => nearSpot(table, 1.4), actionLabel: 'Deliver', markerPos: () => table }
+      ] };
+    }
+    if (role.name === 'Food Run' || role.name === 'Floor Team Leader' || role.name === 'Compliance') {
+      const table = randTableSpot('floor');
+      return { label: 'Food order', steps: [
+        { text: '🍽️ A plate is ready in the kitchen.', inRange: () => isInZone('kitchen'), actionLabel: 'Pick up plate' },
+        { text: table ? '🚶 Run it to table '+(Math.floor(pubTableSpots.indexOf(table)/4)+1)+'.' : '🚶 Run it to a table.', inRange: () => nearSpot(table, 1.4), actionLabel: 'Deliver', markerPos: () => table }
+      ] };
+    }
+    if (role.name === 'Beer Garden') {
+      const table = randTableSpot('garden');
+      const tableNum = table ? Math.floor(pubTableSpots.indexOf(table)/4)+1 : null;
+      return { label: 'Glass collection', steps: [
+        { text: tableNum ? '🍻 Table '+tableNum+' outside has left a tray of dirty glasses.' : '🍻 A table outside has left a tray of dirty glasses.', inRange: () => nearSpot(table, 1.4), actionLabel: 'Collect tray', markerPos: () => table },
+        { text: '🚶 Take the tray to the Glasswash behind the bar.', inRange: () => !!nearestFixtureOfType(f => FURNITURE_TYPES[f.typeIdx]?.isGlasswashSpot), actionLabel: 'Drop off at Glasswash', markerPos: () => fixturePos(nearestFixtureOfType(f => FURNITURE_TYPES[f.typeIdx]?.isGlasswashSpot)) }
+      ] };
+    }
+    if (role.name === 'Cellar') {
+      const beers = ['Lager', 'IPA', 'Cider', 'Guinness', 'Ale', 'Stout'];
+      const beer = beers[Math.floor(Math.random()*beers.length)];
+      return { label: 'Line change', steps: [
+        { text: '🔧 The '+beer+' line needs changing.', inRange: () => isInZone('cellar'), actionLabel: 'Change line' }
+      ] };
+    }
+    return null;
+  }
+  const TASK_ROLE_NAMES = new Set(['App Run','Food Run','Floor Team Leader','Compliance','Beer Garden','Cellar']);
+  function updateTask(dt) {
+    const panel = document.getElementById('taskPanel');
+    const textEl = document.getElementById('taskPanelText');
+    const btn = document.getElementById('taskActionBtn');
+    if (!currentTask) {
+      if (currentRole && TASK_ROLE_NAMES.has(currentRole.name)) {
+        taskCooldown -= dt;
+        if (taskCooldown <= 0) {
+          currentTask = buildTaskForRole(currentRole);
+          if (currentTask) currentTask.stepIdx = 0;
+        }
+      }
+      if (!currentTask) { panel.style.display = 'none'; updateTaskArrow(); return; }
+    }
+    const step = currentTask.steps[currentTask.stepIdx];
+    panel.style.display = 'block';
+    textEl.textContent = step.text;
+    const ready = step.inRange();
+    btn.style.display = 'inline-block';
+    btn.textContent = step.actionLabel + (ready ? '' : ' (get closer)');
+    btn.disabled = !ready;
+    btn.style.opacity = ready ? '1' : '0.5';
+    updateTaskArrow();
+  }
+  function doTaskAction() {
+    if (!currentTask) return;
+    const step = currentTask.steps[currentTask.stepIdx];
+    if (!step.inRange()) return;
+    currentTask.stepIdx++;
+    if (currentTask.stepIdx >= currentTask.steps.length) {
+      playThud(900); // done — no separate payout, the standard per-interval wage already covers it
+      currentTask = null;
+      taskCooldown = 6 + Math.random()*8; // a short breather before the next order comes in
+      taskCompleteUntil = performance.now() + 3500; // lets the "nice one, head back" message show even if you're not in your work zone right now (e.g. just dropped off at the Glasswash, which is in the bar)
+    } else {
+      playThud(600);
+    }
+  }
+  document.getElementById('taskActionBtn').addEventListener('click', () => { doTaskAction(); });
 
   // ================= eLEARNING / PROMOTION QUIZ =================
   // General knowledge, not pub-related — same style as the TASKMILL task
@@ -2949,76 +4640,81 @@
     promotionOfferDismissed = true; // won't re-offer again until the current shift ends and a new one starts
     document.getElementById('promoOfferModal').style.display = 'none';
   }
-  // Marks each question's options right after submission: correct answer
-  // highlighted green, a wrong pick (if any) highlighted red, and a
-  // ✅/❌ next to the question text — instead of just hiding the quiz and
-  // stating a bare score. Radios are disabled so the review stays put.
-  function markQuizReview() {
-    const container = document.getElementById('quizQuestions');
-    activeQuiz.questions.forEach((q, qi) => {
-      const picked = document.querySelector(`input[name="quizq${qi}"]:checked`);
-      const pickedIdx = picked ? parseInt(picked.value) : -1;
+  // Builds the view-only summary: every question with the correct answer
+  // highlighted green and, if different, the picked wrong answer red — a
+  // dedicated review screen rather than markup bolted onto the live quiz.
+  function buildQuizSummary(questions, pickedAnswers) {
+    const container = document.getElementById('quizSummaryQuestions');
+    container.innerHTML = '';
+    questions.forEach((q, qi) => {
+      const pickedIdx = pickedAnswers[qi];
       const isCorrect = pickedIdx === q.a;
-      const block = container.children[qi];
-      if (!block) return;
-      block.querySelectorAll('input[type="radio"]').forEach(r => r.disabled = true);
-      const rows = block.querySelectorAll('label');
-      rows.forEach((row, oi) => {
-        row.style.borderRadius = '4px';
-        row.style.padding = '2px 4px';
-        if (oi === q.a) {
+      const block = document.createElement('div');
+      block.style.cssText = 'margin-bottom:14px;';
+      const label = document.createElement('div');
+      label.textContent = (qi+1) + '. ' + q.q + (isCorrect ? ' ✅' : ' ❌');
+      label.style.cssText = 'margin-bottom:6px;font-weight:600;';
+      block.appendChild(label);
+      q.o.forEach((opt, oi) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:3px;border-radius:4px;padding:2px 4px;';
+        if (isCorrect && oi === q.a) {
+          // Only reveal the correct answer when they actually got it right —
+          // getting it wrong marks their own pick as wrong and stops there,
+          // without handing them the answer.
           row.style.background = 'rgba(70,200,120,0.28)';
           row.style.color = '#8ef0a8';
-        } else if (oi === pickedIdx) {
+        } else if (!isCorrect && oi === pickedIdx) {
           row.style.background = 'rgba(220,70,70,0.28)';
           row.style.color = '#ff9a9a';
         }
+        row.textContent = opt;
+        block.appendChild(row);
       });
-      const qLabel = block.children[0];
-      if (qLabel) {
-        const marker = document.createElement('span');
-        marker.textContent = isCorrect ? ' ✅' : ' ❌';
-        qLabel.appendChild(marker);
-      }
+      container.appendChild(block);
     });
   }
   function submitQuiz() {
     if (!activeQuiz) return;
     let correct = 0;
-    activeQuiz.questions.forEach((q, qi) => {
+    const pickedAnswers = activeQuiz.questions.map((q, qi) => {
       const picked = document.querySelector(`input[name="quizq${qi}"]:checked`);
-      if (picked && parseInt(picked.value) === q.a) correct++;
+      const pickedIdx = picked ? parseInt(picked.value) : -1;
+      if (pickedIdx === q.a) correct++;
+      return pickedIdx;
     });
-    markQuizReview(); // quizModal stays open underneath so right/wrong answers are visible for review
+    document.getElementById('quizModal').style.display = 'none';
+    buildQuizSummary(activeQuiz.questions, pickedAnswers);
+    document.getElementById('quizSummaryModal').style.display = 'flex';
     if (correct === activeQuiz.questions.length) {
       const newRankIdx = activeQuiz.nextRankIdx;
       rank = RANKS[newRankIdx];
       hoursWorked = 0;
       promoThreshold = 50;
       activeQuiz = null;
+      stopAppMakeAutomation(); appMakeAuto.pausedUntilFar = false; // promotion can reassign currentRole away from App Make mid-shift — never leave the cinematic camera stuck locked if that happens to land mid-automation
+      stopBarServeScene(); barServeAuto.pausedUntilFar = false; // same reasoning, for Bar/Bar Team Leader's scene
+      stopKitchenScene(); kitchenAuto.pausedUntilFar = false; // same reasoning, for Kitchen's scene
       assignRandomRole(); // new rank may open up a wider (or, at Shift Manager, narrower — Office is replaced) pool of roles
       updateRoleTag();
       scheduleStatsSave();
-      document.getElementById('quizResultTitle').textContent = '🎉 Promoted!';
-      document.getElementById('quizResultText').textContent = `Congratulations — you're now ${rank}. Pay's gone up, and new roles may be available next time you clock in.`;
-      document.getElementById('quizResultModal').style.display = 'flex';
-      document.getElementById('quizResultRetryBtn').style.display = 'none';
+      document.getElementById('quizSummaryTitle').textContent = '🎉 Promoted!';
+      document.getElementById('quizSummaryText').textContent = `${correct}/5 correct — congratulations, you're now ${rank}. Pay's gone up, and new roles may be available next time you clock in.`;
+      document.getElementById('quizSummaryRetryBtn').style.display = 'none';
     } else {
       activeQuiz.attemptsLeft--;
       if (activeQuiz.attemptsLeft > 0) {
-        document.getElementById('quizResultTitle').textContent = '❌ Not quite';
-        document.getElementById('quizResultText').textContent = `${correct}/5 correct — you need all 5. ${activeQuiz.attemptsLeft} ${activeQuiz.attemptsLeft===1?'try':'tries'} left.`;
-        document.getElementById('quizResultModal').style.display = 'flex';
-        document.getElementById('quizResultRetryBtn').style.display = 'inline-block';
+        document.getElementById('quizSummaryTitle').textContent = '❌ Not quite';
+        document.getElementById('quizSummaryText').textContent = `${correct}/5 correct — you need all 5. ${activeQuiz.attemptsLeft} ${activeQuiz.attemptsLeft===1?'try':'tries'} left.`;
+        document.getElementById('quizSummaryRetryBtn').style.display = 'inline-block';
       } else {
         hoursWorked = 0;
         promoThreshold = 25;
         activeQuiz = null;
         scheduleStatsSave();
-        document.getElementById('quizResultTitle').textContent = '📚 Out of tries';
-        document.getElementById('quizResultText').textContent = `You'll get another shot — with a different set of questions — after 25 more hours worked.`;
-        document.getElementById('quizResultModal').style.display = 'flex';
-        document.getElementById('quizResultRetryBtn').style.display = 'none';
+        document.getElementById('quizSummaryTitle').textContent = '📚 Out of tries';
+        document.getElementById('quizSummaryText').textContent = `${correct}/5 correct. You'll get another shot — with a different set of questions — after 25 more hours worked.`;
+        document.getElementById('quizSummaryRetryBtn').style.display = 'none';
       }
     }
   }
@@ -3262,6 +4958,7 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyF') toggleFly();
+    if (e.code === 'KeyT' && terrainSlotEl) showTerrainPopup(terrainSlotEl);
   });
   document.addEventListener('keyup', e => {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -3318,6 +5015,14 @@
 
   document.addEventListener('mousemove', e => {
     if (document.pointerLockElement !== renderer.domElement) return;
+    if (anySceneActive()) {
+      // Desktop equivalent of the touch look-joystick handling in
+      // animate() — nudges the scene camera offset instead of the normal
+      // yaw/pitch, same clamped range.
+      sceneCamYawOffset = Math.max(-SCENE_CAM_YAW_RANGE, Math.min(SCENE_CAM_YAW_RANGE, sceneCamYawOffset - e.movementX*0.0022));
+      sceneCamPitchOffset = Math.max(-SCENE_CAM_PITCH_RANGE, Math.min(SCENE_CAM_PITCH_RANGE, sceneCamPitchOffset - e.movementY*0.0022));
+      return;
+    }
     yaw -= e.movementX * 0.0022;
     pitch -= e.movementY * 0.0022;
     pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, pitch));
@@ -3854,6 +5559,24 @@
     scene.fog.color = mixed;
     sun.intensity = 0.25 + dayFactor*0.9;
     hemi.intensity = 0.25 + dayFactor*0.4;
+    updateSkyDecor(dt, dayFactor);
+    updateClockDisplay();
+  }
+
+  // dayTime 0 is defined (via the sun-height formula above) as sunrise —
+  // sin(dayTime*2π) crosses 0 going upward there — so this maps that
+  // directly onto a 24-hour clock with dayTime=0 => 6am, 0.25 => noon,
+  // 0.5 => 6pm/sunset, 0.75 => midnight.
+  function updateClockDisplay() {
+    const el = document.getElementById('clockDisplay');
+    if (!el) return;
+    el.style.display = 'block';
+    const hourFloat = (dayTime*24 + 6) % 24;
+    const hh = Math.floor(hourFloat);
+    const mm = Math.floor((hourFloat-hh)*60);
+    const period = hh >= 12 ? 'PM' : 'AM';
+    let h12 = hh % 12; if (h12 === 0) h12 = 12;
+    el.textContent = '🕐 ' + h12 + ':' + String(mm).padStart(2,'0') + ' ' + period;
   }
 
   // ================= SEASONS & WEATHER =================
@@ -3909,7 +5632,8 @@
       if (count >= MAX_INSTANCES) break;
       const type = BLOCK_TYPES[t];
       if (!type || type.half || (type.name||'').includes('Glass')) continue;
-      const [x,y,z] = k.split(',').map(Number);
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
+      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue; // skip anything under a roof
@@ -3957,7 +5681,8 @@
     for (const [k, t] of blocks) {
       if (count >= MAX_INSTANCES || petalCount + PETALS_PER_FLOWER >= MAX_INSTANCES) break;
       if (t !== 0) continue; // Grass only
-      const [x,y,z] = k.split(',').map(Number);
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
+      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue;
@@ -4009,6 +5734,79 @@
   const precipPoints = new THREE.Points(precipGeom, precipMat);
   precipPoints.visible = false;
   scene.add(precipPoints);
+
+  // ================= STARS + CLOUDS =================
+  // Stars: a fixed field of points scattered over the upper hemisphere of
+  // a large sphere, re-centred on the player every frame (same "always
+  // follows you" trick precipPoints above already uses) so it always
+  // looks like a full sky regardless of where you are. Opacity is driven
+  // entirely by updateSky() below, fading in as dayFactor drops toward
+  // night and out again by mid-morning.
+  const STAR_COUNT = 600;
+  const starPositions = new Float32Array(STAR_COUNT * 3);
+  for (let i=0;i<STAR_COUNT;i++) {
+    const theta = Math.random()*Math.PI*2;
+    const phi = Math.random()*Math.PI*0.5; // upper hemisphere only (0=straight up, PI/2=horizon)
+    const r = 150;
+    starPositions[i*3]   = r*Math.sin(phi)*Math.cos(theta);
+    starPositions[i*3+1] = r*Math.cos(phi);
+    starPositions[i*3+2] = r*Math.sin(phi)*Math.sin(theta);
+  }
+  const starGeom = new THREE.BufferGeometry();
+  starGeom.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+  // fog:false is the actual fix here — PointsMaterial respects scene fog
+  // by default, and scene.fog.far only reaches ~40-70 (see fogTarget
+  // below) while these sit at radius 150 for the "always overhead"
+  // effect, so without this they were being fully fog-blended into the
+  // background and rendering completely invisible regardless of the
+  // day/night opacity below. Size bumped 0.9->1.6 too, on the small side
+  // otherwise for a sizeAttenuation:false point at typical screen sizes.
+  const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, transparent: true, opacity: 0, depthWrite: false, sizeAttenuation: false, fog: false });
+  const starPoints = new THREE.Points(starGeom, starMat);
+  scene.add(starPoints);
+
+  // Clouds: small blocky clusters (matching the game's low-poly look
+  // rather than a smooth/photoreal cloud), drifting slowly on a fixed
+  // wind direction, recycled to the upwind side once they drift too far
+  // from the player — same "recycle when out of range" idea as the
+  // precipitation particles above, just horizontal instead of vertical.
+  function buildCloud() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false });
+    const puffCount = 3 + Math.floor(Math.random()*3);
+    for (let i=0;i<puffCount;i++) {
+      const w = 6+Math.random()*6, h=1.8+Math.random()*1, d=6+Math.random()*6; // roughly doubled on request
+      const box = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+      box.position.set((Math.random()-0.5)*9, (Math.random()-0.5)*0.8, (Math.random()-0.5)*9);
+      g.add(box);
+    }
+    g.userData.mat = mat;
+    return g;
+  }
+  const CLOUD_COUNT = 14;
+  const cloudsGroup = new THREE.Group();
+  const cloudData = [];
+  for (let i=0;i<CLOUD_COUNT;i++) {
+    const cloud = buildCloud();
+    const angle = Math.random()*Math.PI*2, dist = 20+Math.random()*70;
+    cloud.position.set(Math.cos(angle)*dist, 32+Math.random()*8, Math.sin(angle)*dist);
+    cloudsGroup.add(cloud);
+    cloudData.push({ mesh: cloud, speed: 0.4+Math.random()*0.4, mat: cloud.userData.mat });
+  }
+  scene.add(cloudsGroup);
+  function updateSkyDecor(dt, dayFactor) {
+    starPoints.position.set(player.pos.x, player.pos.y, player.pos.z);
+    starMat.opacity = Math.max(0, 1 - dayFactor*2.2) * 0.9;
+    cloudData.forEach(c => {
+      c.mesh.position.x += c.speed*dt; // single fixed wind direction, simplest reliable option
+      const dx = c.mesh.position.x-player.pos.x, dz = c.mesh.position.z-player.pos.z;
+      if (dx*dx+dz*dz > 90*90) {
+        // recycled upwind (west) of the player at a random distance/depth
+        c.mesh.position.set(player.pos.x-70-Math.random()*20, 32+Math.random()*8, player.pos.z+(Math.random()-0.5)*140);
+      }
+      c.mat.opacity = 0.15 + dayFactor*0.7; // faint at night rather than fully invisible, since real clouds don't vanish either
+    });
+  }
 
   let currentSeason = -1; // forces the very first updateWeather() call to run its one-time setup
   let weatherState = 'clear'; // 'clear' | 'precip' | 'fog'
@@ -4103,9 +5901,20 @@
     const dt = Math.min(clock.getDelta(), 0.05);
     waterTime += dt;
     waterMat.uniforms.uTime.value = waterTime;
+    updateWanderingCustomers(dt);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
 
-    if (locked) {
+    // While App Make/Bar/Bar Team Leader/Kitchen's automated scenes are
+    // running, all of movement/look/mining/placing/camera below is
+    // skipped entirely — each scene's own update function (called from
+    // updateWork, further down this same loop) drives the camera itself
+    // from its own fixed pose instead. This used to only check
+    // appMakeAuto.active — barServeAuto being missing here happened to be
+    // harmless (that scene's camera uses fixed constants rather than the
+    // live yaw/pitch this block would otherwise touch, and no movement
+    // keys are pressed during it anyway), but it was luck, not
+    // correctness, and kitchenAuto needs the same treatment properly.
+    if (locked && !appMakeAuto.active && !barServeAuto.active && !kitchenAuto.active) {
       if (isTouchDevice) {
         const turnSpeed = 3.4; // was 2.6 (too slow) then 4.2 (too fast) — settling in the middle
         yaw -= lookState.x * turnSpeed * dt;
@@ -4134,15 +5943,19 @@
 
       if (flying) {
         // Walking's `forward` above is deliberately flat (yaw only, no
-        // pitch) so looking down never makes you walk into the ground —
-        // but flying should genuinely follow where you're looking, the
-        // same way a real aircraft or Minecraft's creative flight does:
-        // aim 33° down and pushing forward dives you down at that angle,
-        // not just glide forward while staring at the floor. Rebuilding
-        // move from a pitch-aware forward vector here, instead of reusing
-        // the shared flat `move` above, is what gets that — `right` stays
-        // the flat one, since strafing shouldn't climb/dive even when
-        // forward does.
+        // pitch) so looking down never makes you walk into the ground.
+        // Keyboard flying still follows where you're looking (aim down and
+        // pushing forward dives at that angle, aircraft-style) via this
+        // pitch-aware forward vector — `right` stays the flat one, since
+        // strafing shouldn't climb/dive even when forward does.
+        //
+        // Touch is deliberately different: the move joystick just pans the
+        // player flat (left/right/forward/back), same as walking, with no
+        // pitch-following — altitude while flying is the fly lever's job
+        // alone on touch. Mixing pitch-follow into the joystick too made it
+        // fight the lever (looking down while pushing the stick forward
+        // dived you even with the lever centered), which is confusing on a
+        // stick that's only supposed to handle horizontal movement.
         const flyForward = new THREE.Vector3(
           -Math.sin(yaw)*Math.cos(pitch),
           Math.sin(pitch),
@@ -4150,7 +5963,7 @@
         );
         let flyMove = new THREE.Vector3();
         if (isTouchDevice) {
-          flyMove.addScaledVector(flyForward, -moveState.y);
+          flyMove.addScaledVector(forward, -moveState.y);
           flyMove.addScaledVector(right, moveState.x);
           if (flyMove.lengthSq() > 1) flyMove.normalize();
         } else {
@@ -4324,6 +6137,17 @@
           lastPlaceKey = null; // nothing valid right now — clear so a fresh target fires immediately once found
         }
       }
+    } else if (locked && isTouchDevice && anySceneActive()) {
+      // The look joystick still works while one of the "viewing role"
+      // scenes is running — nudges sceneCamYawOffset/PitchOffset (added on
+      // top of each scene's own fixed base angle, see where those are
+      // applied) rather than the normal yaw/pitch, and clamped to a
+      // limited range so it stays a "glance around from a fixed shot"
+      // rather than free-look. Desktop mouse gets the equivalent in the
+      // mousemove listener below.
+      const turnSpeed = 3.4;
+      sceneCamYawOffset = Math.max(-SCENE_CAM_YAW_RANGE, Math.min(SCENE_CAM_YAW_RANGE, sceneCamYawOffset - lookState.x*turnSpeed*dt));
+      sceneCamPitchOffset = Math.max(-SCENE_CAM_PITCH_RANGE, Math.min(SCENE_CAM_PITCH_RANGE, sceneCamPitchOffset - lookState.y*turnSpeed*dt));
     }
 
     if (performance.now() - lastWaterTick >= WATER_TICK_MS) {
@@ -4337,10 +6161,12 @@
     updateWeather(dt);
     if (!contextLost) {
       if (needsRebuild) { rebuildMeshes(); needsRebuild = false; }
+      else if (rebuildInProgress) { continueRebuild(); } // drains the rest of a chunked rebuild over subsequent frames — see rebuildMeshes()/continueRebuild()'s own comments
       renderer.render(scene, camera);
     }
   }
 
+  let rotateStuckTimer = null;
   function updateRotatePromptVisibility() {
     // Driven by the exact same window.innerWidth/innerHeight the renderer
     // itself uses, rather than trusting the CSS "orientation" media
@@ -4352,8 +6178,27 @@
     // specificity unless the stylesheet uses !important, which it
     // doesn't), so this is authoritative.
     const el = document.getElementById('rotatePrompt');
-    if (!document.documentElement.classList.contains('gameplay-active')) { el.style.display = 'none'; return; }
-    el.style.display = (window.innerHeight > window.innerWidth) ? 'flex' : 'none';
+    const reloadBtn = document.getElementById('rotateReloadBtn');
+    if (!document.documentElement.classList.contains('gameplay-active')) {
+      el.style.display = 'none';
+      if (reloadBtn) reloadBtn.style.display = 'none';
+      clearTimeout(rotateStuckTimer); rotateStuckTimer = null;
+      return;
+    }
+    const shouldShow = window.innerHeight > window.innerWidth;
+    el.style.display = shouldShow ? 'flex' : 'none';
+    if (shouldShow) {
+      // If this is still showing a few seconds after the player rotates,
+      // something's gone wrong with dimension detection (seen on Android
+      // after resuming from a locked/backgrounded screen — the prompt gets
+      // stuck even in landscape). Rather than leaving them with no way out
+      // but fully closing the app, offer a manual reload once it's been up
+      // for a while — a fresh load re-measures everything from scratch.
+      if (!rotateStuckTimer) rotateStuckTimer = setTimeout(() => { if (reloadBtn) reloadBtn.style.display = 'inline-block'; }, 4000);
+    } else {
+      clearTimeout(rotateStuckTimer); rotateStuckTimer = null;
+      if (reloadBtn) reloadBtn.style.display = 'none';
+    }
   }
   function handleViewResize() {
     const size = getViewSize();
@@ -4599,6 +6444,63 @@
     slot.appendChild(c);
     slot.addEventListener('click', () => selectSlot(LADDER_SLOT));
     slotElByIndex[LADDER_SLOT] = slot;
+    hotbar.appendChild(slot);
+  }
+  // Buy Terrain — unlike every other hotbar slot, this doesn't select
+  // anything to place with a later click; it's a one-shot bulk action
+  // (generates a whole 100x100 patch immediately, in front of wherever
+  // the player's currently standing/facing), so clicking it opens a
+  // small popup of the 5 kinds instead, same visual pattern as the block
+  // family popups above.
+  let openTerrainPopup = null;
+  function closeTerrainPopup() {
+    if (openTerrainPopup) { openTerrainPopup.remove(); openTerrainPopup = null; }
+  }
+  function showTerrainPopup(slotEl) {
+    closeTerrainPopup();
+    closeFamilyPopup();
+    const rect = slotEl.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;`;
+    TERRAIN_KINDS.forEach(k => {
+      const btn = document.createElement('div');
+      btn.className = 'slot';
+      btn.style.cssText = 'position:relative;width:auto;padding:0 10px;white-space:nowrap;';
+      btn.title = k.label + ' Terrain (100x100)' + costLabel(k.cost);
+      btn.textContent = k.label;
+      const priceBadge = document.createElement('span');
+      priceBadge.className = 'price-badge';
+      priceBadge.textContent = '💰'+k.cost;
+      priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
+      btn.appendChild(priceBadge);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        buyTerrain(k.key);
+        closeTerrainPopup();
+      });
+      popup.appendChild(btn);
+    });
+    document.body.appendChild(popup);
+    openTerrainPopup = popup;
+  }
+  document.addEventListener('click', e => {
+    if (openTerrainPopup && !openTerrainPopup.contains(e.target)) closeTerrainPopup();
+  });
+  let terrainSlotEl = null;
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Buy Terrain — generates a 100x100 patch in front of you (blocked if that area isn\'t empty)';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'T';
+    slot.appendChild(keyEl);
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#6b4a2a'; ctx.fillRect(0,0,34,34); // dirt
+    ctx.fillStyle = '#5c9e3f'; ctx.fillRect(0,0,34,10); // grass strip on top
+    ctx.fillStyle = '#3f6e2b'; ctx.fillRect(0,8,34,2);
+    slot.appendChild(c);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showTerrainPopup(slot); });
+    terrainSlotEl = slot;
     hotbar.appendChild(slot);
   }
   function wallpaperSwatchCanvas(colorIdx) {
@@ -4977,14 +6879,13 @@
   document.getElementById('promoStartBtn').addEventListener('click', () => { startQuiz(); });
   document.getElementById('promoLaterBtn').addEventListener('click', () => { closePromoOffer(); });
   document.getElementById('quizSubmitBtn').addEventListener('click', () => { submitQuiz(); });
-  document.getElementById('quizResultCloseBtn').addEventListener('click', () => {
-    document.getElementById('quizResultModal').style.display = 'none';
-    document.getElementById('quizModal').style.display = 'none'; // quiz stayed open behind the result for review; close it now too
+  document.getElementById('quizSummaryCloseBtn').addEventListener('click', () => {
+    document.getElementById('quizSummaryModal').style.display = 'none';
   });
-  document.getElementById('quizResultRetryBtn').addEventListener('click', () => {
-    document.getElementById('quizResultModal').style.display = 'none';
+  document.getElementById('quizSummaryRetryBtn').addEventListener('click', () => {
+    document.getElementById('quizSummaryModal').style.display = 'none';
     document.exitPointerLock && document.exitPointerLock();
-    renderQuiz();
+    renderQuiz(); // attempt #2/#3 of the same 5 questions
     document.getElementById('quizModal').style.display = 'flex';
   });
   document.getElementById('startBtn').addEventListener('click', () => {
@@ -5096,6 +6997,7 @@
             const data = await loadWorldData(id);
             if (data) {
               applyWorldData(data);
+              if (id === PUB_WORLD_ID) { spawnPubDecorations(); ensureBarFixtures(); ensureBarRoom(); needsRebuild = true; }
               currentWorldId = id;
               currentWorldName = row.querySelector('.wName').firstChild.textContent;
               // Reset in case a previous world in this same session was
@@ -5173,6 +7075,7 @@
     currentWorldName = name;
     visitMode = false; // guard against stale state left over from a previous visit this session
     currentRole = null; // …and any role assigned from a previous Mill visit
+    lastSavedChunkPayloads = new Map(); // guard against stale chunk-tracking state left over from whatever world was open before this one this session — loadWorldData() never runs for a brand new world, so nothing else resets this
     generateNewWorld();
     spawnDefault();
     beginPlaying();

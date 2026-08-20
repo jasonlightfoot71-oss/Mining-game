@@ -492,6 +492,56 @@
     }
     return { blocks: blockArr, water: waterArr, chunkPayloads };
   }
+  // ---- New infinite-world diff save/load — see the INFINITE TERRAIN
+  // section further down for blockEdits/waterEdits/dirtyChunks. Reuses
+  // the exact same taskmill_voxel_chunks table/columns as the old
+  // full-content system above (no new Supabase schema needed) — the only
+  // difference is what the blocks/water arrays actually MEAN: entries
+  // here are edits (type/level -1 = "explicitly empty"), not a full
+  // terrain snapshot, so an unmodified chunk never needs a row at all.
+  async function saveDirtyEditChunks(worldId) {
+    if (dirtyChunks.size === 0) return true; // nothing edited since the last save — no request needed
+    const rows = [];
+    for (const ck of dirtyChunks) {
+      const [cx, cz] = ck.split('_').map(Number);
+      const blocksOut = [], waterOut = [];
+      for (const [k, type] of blockEdits) {
+        const parts = k.split(',');
+        if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
+        const rot = stepRotEdits.get(k);
+        blocksOut.push(rot ? [+parts[0], +parts[1], +parts[2], type, rot] : [+parts[0], +parts[1], +parts[2], type]);
+      }
+      for (const [k, level] of waterEdits) {
+        const parts = k.split(',');
+        if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
+        waterOut.push([+parts[0], +parts[1], +parts[2], level]);
+      }
+      rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: blocksOut, water: waterOut, updated_at: new Date().toISOString() });
+    }
+    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks`, {
+      method: 'POST', headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify(rows)
+    });
+    if (!res.ok) return false;
+    dirtyChunks.clear(); // only once the request actually succeeded — a failed save leaves chunks marked dirty so the next attempt retries them
+    return true;
+  }
+  async function loadWorldEditChunks(worldId) {
+    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(worldId)}&select=blocks,water`, { headers: SB_HEADERS });
+    if (!res.ok) return false;
+    const rows = await res.json();
+    for (const row of rows) {
+      for (const [x,y,z,t,rot] of (row.blocks||[])) {
+        const k = key(x,y,z);
+        blockEdits.set(k, t);
+        if (rot) stepRotEdits.set(k, rot);
+      }
+      for (const [x,y,z,lvl] of (row.water||[])) {
+        waterEdits.set(key(x,y,z), lvl);
+      }
+    }
+    return true;
+  }
 
   let playerUid = null;
   try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
@@ -581,15 +631,28 @@
     const rows = await res.json();
     const data = rows[0] ? rows[0].data : null;
     if (!data) return null;
-    // Chunked worlds don't carry blocks/water inline any more (see the
-    // big comment by CHUNK_SIZE above) — fetch and stitch them back in
-    // here, so applyWorldData() and everywhere that calls loadWorldData()
-    // stay completely unaware any of this changed; they still just get
-    // back a data object with data.blocks/data.water populated, exactly
-    // like before. Old, never-yet-migrated worlds have no `chunked` flag
-    // and already have blocks/water sitting inline as they always did —
-    // left entirely alone here.
-    if (data.chunked) {
+    // Three possible formats, oldest to newest:
+    // 1. No `chunked` flag at all — a pre-chunking save, blocks/water
+    //    still sitting inline in `data` exactly as they always were.
+    // 2. `chunked: true` — the old finite full-content chunk system
+    //    (still used by The Mill, and by any regular world saved before
+    //    this infinite-terrain feature existed). Fetches full terrain
+    //    snapshots per chunk, same as before.
+    // 3. `chunkMode: 'edits'` — the new infinite-terrain system. Fetches
+    //    only player EDITS (not terrain snapshots) into blockEdits/
+    //    waterEdits; the terrain itself regenerates procedurally as
+    //    chunks stream in around wherever the player loads in.
+    infiniteWorldActive = data.chunkMode === 'edits';
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    generatedChunks.clear(); lastStreamChunkKey = null;
+    if (infiniteWorldActive) {
+      await loadWorldEditChunks(id);
+      // data.blocks/data.water are deliberately left unset — there is no
+      // terrain snapshot to apply for an infinite world; the chunk
+      // streaming system (see updateChunkStreaming) populates terrain
+      // around the player once play begins.
+      lastSavedChunkPayloads = new Map();
+    } else if (data.chunked) {
       const chunkData = await loadWorldChunks(id);
       data.blocks = chunkData ? chunkData.blocks : [];
       data.water = chunkData ? chunkData.water : [];
@@ -597,9 +660,6 @@
     } else {
       // Old, never-yet-migrated world — blocks/water are already sitting
       // inline in `data` exactly as they always were, nothing to fetch.
-      // Starts with an empty map, so its first save (which is also the
-      // migration into chunked storage) correctly treats every chunk as
-      // new — which it is, from the chunks table's point of view.
       lastSavedChunkPayloads = new Map();
     }
     return data;
@@ -705,7 +765,8 @@
     const furnitureArr = [];
     for (const f of furniture.values()) furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]);
     return {
-      chunked: true, // tells loadWorldData() to fetch blocks/water from taskmill_voxel_chunks instead of expecting them inline here
+      chunked: !infiniteWorldActive, // legacy full-content chunk flag — only set for the old finite system (Mill, pre-existing worlds); infinite worlds use chunkMode instead
+      chunkMode: infiniteWorldActive ? 'edits' : undefined, // tells loadWorldData() this world's terrain is procedural + edit-diffs, not a stored snapshot
       lights: lightsArr, ladders: laddersArr,
       wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
@@ -720,7 +781,7 @@
       // marked chunked:true once the chunk data backing that flag has
       // actually landed. Saving them the other way round risks a world
       // claiming "blocks live in chunks" a moment before they actually do.
-      const chunksOk = await saveChangedChunks(currentWorldId);
+      const chunksOk = infiniteWorldActive ? await saveDirtyEditChunks(currentWorldId) : await saveChangedChunks(currentWorldId);
       if (!chunksOk) {
         console.error('[voxel] chunk save failed');
         showSaveStatus('⚠ Save failed (chunks)', true);
@@ -1272,121 +1333,86 @@
     }
   }
 
-  // ================= BUY TERRAIN =================
-  // Bulk-generates a 100x100 patch using the exact same noise (fbm) and
-  // layering approach as generateNewWorld() above — reusing a technique
-  // already proven to work in this game, just applied over a much larger
-  // area with per-kind height/surface parameters instead of one fixed
-  // profile. Worth being upfront about the scale here: generateNewWorld's
-  // own default area is only 30x30 (900 columns) — this is 10,000
-  // columns, potentially 50,000-150,000+ individual blocks in one
-  // purchase depending on kind (mountain being the tallest/most). That's
-  // untested at this scale for save size and one-time rebuild cost; it
-  // should work, following the same code path as everything else, but is
-  // worth watching the first time it's actually used.
-  const TERRAIN_SIZE = 100;
-  const TERRAIN_DEPTH_CAP = 4; // how many layers deep from the surface each column fills — see the comment where it's used, in generateTerrainPatch below
-  const TERRAIN_KINDS = [
-    { key: 'flat',     label: 'Flat',     cost: 1000 },
-    { key: 'mountain', label: 'Mountain', cost: 1000 },
-    { key: 'water',    label: 'Water',    cost: 1000 },
-    { key: 'forest',   label: 'Forest',   cost: 1000 },
-    { key: 'beach',    label: 'Beach',    cost: 1000 },
-  ];
-  // The patch's near edge starts at the player's own position and
-  // extends 100 blocks in whichever cardinal direction they're currently
-  // facing (snapped to the nearest of N/S/E/W — an arbitrary-angle
-  // rotated 100x100 area isn't practical on a block grid), centred on
-  // them along the other axis.
-  function computeTerrainPlacement() {
-    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
-    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
-    let baseX, baseZ;
-    // Near edge starts one block PAST the player's own standing column,
-    // not on it — that off-by-one was the actual bug behind "it needs to
-    // attach to existing blocks": the footprint used to include whatever
-    // column the player was already standing on, which is almost always
-    // occupied (their existing build, or the world's own default
-    // terrain), so isTerrainAreaEmpty() would reject it even when
-    // everything the patch would actually cover was genuinely empty. This
-    // starts immediately adjacent instead — touching/bordering whatever's
-    // already there, never overlapping it.
-    if (Math.abs(fx) > Math.abs(fz)) {
-      baseX = fx > 0 ? px+1 : px - TERRAIN_SIZE;
-      baseZ = pz - Math.floor(TERRAIN_SIZE/2);
-    } else {
-      baseZ = fz > 0 ? pz+1 : pz - TERRAIN_SIZE;
-      baseX = px - Math.floor(TERRAIN_SIZE/2);
-    }
-    return { baseX, baseZ };
+  // ================= INFINITE TERRAIN (chunk streaming) =================
+  // Terrain generates on the fly as the player moves, instead of a fixed
+  // finite area — and, critically, ONLY the player's actual edits (blocks
+  // mined or placed) ever get saved to Supabase. Procedurally-generated
+  // terrain itself is never saved: it's regenerated for free from the
+  // same seeded noise every time a chunk is (re)loaded, since the same
+  // coordinates always produce the same output. This is the actual fix
+  // for the storage blow-up that killed the TASKMILL version — a
+  // fully-explored open world used to mean saving every single grass/
+  // dirt/stone block that ever loaded, however untouched; now an
+  // unmodified chunk costs zero rows in Supabase, no matter how far
+  // someone's walked.
+  //
+  // Only applies to normal player worlds — The Mill stays exactly as it
+  // was (a small, hand-built, finite space via generatePubWorld()), and
+  // any world saved before this feature keeps behaving the old finite
+  // way too (see the data.chunkMode check in loadWorldData). Both are
+  // gated behind infiniteWorldActive below.
+  let infiniteWorldActive = false;
+  // Medium load radius — chunks are CHUNK_SIZE (32 blocks) each, radius 2
+  // means a 5x5 chunk area (160x160 blocks) generated around the player.
+  // Unload radius is one ring further out than that, so a player walking
+  // back and forth right at the edge doesn't thrash generate/unload every
+  // frame.
+  const CHUNK_LOAD_RADIUS = 2;
+  const CHUNK_UNLOAD_RADIUS = CHUNK_LOAD_RADIUS + 1;
+  // Same reasoning as Buy Terrain's old TERRAIN_DEPTH_CAP — filling every
+  // column all the way down to y=0 across a wide streamed area gets
+  // expensive fast for no visual benefit (you'd have to dig a long way
+  // down to ever see it). A few layers below the visible surface is
+  // already enough headroom for normal digging.
+  const CHUNK_FILL_DEPTH_CAP = 6;
+  const generatedChunks = new Set(); // chunkKey -> currently populated in the live blocks/water maps
+  // Player edits, global (not grouped by chunk) — the actual source of
+  // truth for what gets saved. -1 in either map means "explicitly empty
+  // here", overriding whatever the procedural generator would otherwise
+  // put in that cell (e.g. a player mining a hill flat, or draining a
+  // lake). Reset whenever a different world is loaded.
+  const blockEdits = new Map();   // cellKey -> type (-1 = removed)
+  const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
+  const waterEdits = new Map();   // cellKey -> level (-1 = removed)
+  const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
+  function recordBlockEdit(x, y, z, type, rot) {
+    if (!infiniteWorldActive) return; // Mill / legacy finite worlds don't use the diff system at all
+    const k = key(x, y, z);
+    blockEdits.set(k, type);
+    if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
+    dirtyChunks.add(chunkKeyOf(x, z));
   }
-  // Checked at every height (not just ground level) across all 10,000
-  // columns before any purchase — deliberately thorough over fast, since
-  // a false "yes it's empty" here would let someone's build get
-  // overwritten, which is exactly what blocking the purchase here is
-  // supposed to prevent.
-  function isTerrainAreaEmpty(baseX, baseZ, size) {
-    for (let lx = 0; lx < size; lx++) {
-      for (let lz = 0; lz < size; lz++) {
-        const x = baseX+lx, z = baseZ+lz;
-        for (let y = 0; y < WORLD_HEIGHT; y++) {
-          if (blocks.has(key(x,y,z))) return false;
-        }
-      }
-    }
-    return true;
+  function recordWaterEdit(x, y, z, level) {
+    if (!infiniteWorldActive) return;
+    waterEdits.set(key(x, y, z), level);
+    dirtyChunks.add(chunkKeyOf(x, z));
   }
-  function generateTerrainPatch(baseX, baseZ, kindKey) {
-    const size = TERRAIN_SIZE;
-    for (let lx = 0; lx < size; lx++) {
-      for (let lz = 0; lz < size; lz++) {
-        const x = baseX+lx, z = baseZ+lz;
-        // Sampled using LOCAL patch coordinates (lx,lz — always 0-99),
-        // not absolute world position (x,z) — otherwise the same "kind"
-        // bought in two different spots on the map would come out at
-        // different average heights purely because of where its noise
-        // happened to land, since fbm's output depends on the actual
-        // coordinates fed in. This way every "Mountain" (or Water/
-        // Forest/Beach) patch always samples the exact same underlying
-        // shape and sits on the exact same SEA_LEVEL-based baseline,
-        // anywhere on the map — height only ever depends on which kind
-        // was bought, never where.
-        const n = fbm(lx*0.6, lz*0.6); // same noise scale generateNewWorld uses
-        let h, surfaceType, treeChance = 0, floodToSeaLevel = false;
-        if (kindKey === 'flat') {
-          h = SEA_LEVEL + 1; surfaceType = 0; // grass, dead level
-        } else if (kindKey === 'mountain') {
-          h = Math.round(SEA_LEVEL + 4 + n*14); // tall, noisy peaks
-          surfaceType = h > SEA_LEVEL+6 ? 2 /*stone*/ : 0 /*grass at the base*/;
-        } else if (kindKey === 'water') {
-          h = Math.round(SEA_LEVEL - 4 + n*3); // mostly below sea level — floods into a lake below
-          surfaceType = 5; // sand bed
-          floodToSeaLevel = true;
-        } else if (kindKey === 'forest') {
-          h = Math.round(SEA_LEVEL + 1 + n*3); // mild rolling ground
-          surfaceType = 0;
-          treeChance = 0.13; // well above generateNewWorld's own 0.025, for a dense patch of woodland
-        } else { // beach
-          h = Math.round(SEA_LEVEL + n*2); // very mild, hugging sea level
-          surfaceType = 5;
-        }
+  // Deterministic tree placement — Math.random() would make a chunk look
+  // different every time it's regenerated (e.g. walking away and back),
+  // since nothing reloaded would remember which trees "really" grew
+  // there. hash(x,z) is the same seeded, reproducible noise the terrain
+  // heightmap itself already uses.
+  function chunkTreeRoll(x, z, salt) { return hash(x*7.13 + salt, z*3.71 + salt); }
+  // Fills ONE chunk's worth of base terrain (procedural only), then
+  // layers any saved player edits on top. Safe to call repeatedly — it's
+  // a no-op if this chunk is already generated this session.
+  function generateChunkTerrain(cx, cz) {
+    const ck = cx + '_' + cz;
+    if (generatedChunks.has(ck)) return;
+    const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+        const x = x0+lx, z = z0+lz;
+        // Wider noise spacing than the old fixed 30x30 area (0.6) — at
+        // infinite scale, the tighter spacing would make hills look small
+        // and repetitive; 0.045 gives broad, natural-looking rolling
+        // terrain that doesn't visibly repeat within any reasonable
+        // walking distance.
+        const n = fbm(x*0.045, z*0.045);
+        let h = Math.round(SEA_LEVEL - 2 + n*10);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
-        // Filled only TERRAIN_DEPTH_CAP layers deep from the surface down,
-        // not all the way to y=0 — this turned out to be the actual cause
-        // of "not loading" for both a saved world and the Mill after
-        // buying terrain: filling to bedrock across 10,000 columns meant
-        // Mountain alone could reach ~150,000+ blocks in one purchase,
-        // and rebuildMeshes() (called on every world load) loops the
-        // ENTIRE block set synchronously, parsing each one's string key
-        // back into numbers — fine at the game's normal scale of a few
-        // thousand blocks, but a multi-second-or-worse freeze at that
-        // size, indistinguishable from a genuine hang since it throws no
-        // error. Capped at 4, a Mountain patch drops to ~40,000 — still a
-        // lot, but a very different order of magnitude. The one real
-        // trade-off: digging underneath a purchased patch now reveals
-        // empty space a few blocks down rather than solid ground all the
-        // way to bedrock, same as biome "chunks" in many voxel games.
-        const fillFrom = Math.max(0, h - TERRAIN_DEPTH_CAP + 1);
+        const surfaceType = h <= SEA_LEVEL ? 5 /*sand*/ : 0 /*grass*/;
+        const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -1394,49 +1420,80 @@
           else type = 2;
           blocks.set(key(x,y,z), type);
         }
-        if (floodToSeaLevel && h < SEA_LEVEL) {
+        if (h < SEA_LEVEL) {
           for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
         }
-        if (treeChance && Math.random() < treeChance) {
-          const trunkH = 3 + Math.floor(Math.random()*2);
+        if (h > SEA_LEVEL && chunkTreeRoll(x,z,0) < 0.025) {
+          const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
-          for (let tx=-1; tx<=1; tx++) for (let tz=-1; tz<=1; tz++) for (let ty=0; ty<=1; ty++)
-            if (Math.random() < 0.8) blocks.set(key(x+tx, topY+ty, z+tz), 4);
+          for (let lx2=-1; lx2<=1; lx2++)
+            for (let lz2=-1; lz2<=1; lz2++)
+              for (let ly=0; ly<=1; ly++)
+                if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
           blocks.set(key(x, topY+2, z), 4);
         }
       }
     }
-  }
-  function buyTerrain(kind) {
-    if (visitMode) return; // read-only when visiting someone else's world (or The Mill without your own edit access) — same guard doPlace() uses for every other build action
-    const meta = TERRAIN_KINDS.find(k => k.key === kind);
-    if (!meta) return;
-    const { baseX, baseZ } = computeTerrainPlacement();
-    if (!isTerrainAreaEmpty(baseX, baseZ, TERRAIN_SIZE)) {
-      showSaveStatus('⚠ That 100x100 area already has something built there', true);
-      return;
+    // Layer saved player edits on top of what was just generated — this
+    // is what makes mining/building persist correctly across a chunk
+    // being unloaded (walked away from) and later regenerated (walked
+    // back to).
+    for (const [k, type] of blockEdits) {
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
+      const ex = +k.slice(0,c1), ey = +k.slice(c1+1,c2), ez = +k.slice(c2+1);
+      if (chunkKeyOf(ex,ez) !== ck) continue;
+      if (type === -1) blocks.delete(k); else blocks.set(k, type);
+      const rot = stepRotEdits.get(k);
+      if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
     }
-    if (!trySpendCoins(meta.cost, meta.label+' Terrain')) return;
-    // The near-edge-inside-the-player's-own-column bug above (now fixed
-    // in computeTerrainPlacement) was the actual cause of the player
-    // ending up buried in solid ground — with that corrected, their
-    // standing column is no longer part of the footprint at all, so the
-    // 2-block shove this used to do isn't needed any more. Keeping a
-    // small lift only, purely as a margin for their collision radius
-    // (0.3) poking very slightly into the first new column if they were
-    // standing right at the edge — gravity settles them next frame.
-    player.pos.y += 1.5;
-    player.vel.set(0, 0, 0);
-    generateTerrainPatch(baseX, baseZ, kind);
-    needsRebuild = true; // same one-time rebuild every other bulk-block change (world load, Mill generation) already relies on
-    // No immediate saveWorld() here — placing a single block doesn't
-    // force one either; the existing 20s auto-save interval (see its own
-    // comment further down) picks this up the same way, avoiding an
-    // extra full-world save spike stacked right on top of the generation
-    // cost itself.
-    playThud(500);
-    showSaveStatus('🌍 '+meta.label+' terrain placed', false);
+    for (const [k, level] of waterEdits) {
+      const parts = k.split(',');
+      if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
+      if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+    }
+    generatedChunks.add(ck);
+  }
+  // Removes a chunk's terrain from the live maps (its edits stay recorded
+  // in blockEdits/waterEdits regardless, so nothing is lost — this is
+  // purely freeing memory/render cost for terrain currently out of
+  // range).
+  function unloadChunkTerrain(cx, cz) {
+    const ck = cx + '_' + cz;
+    if (!generatedChunks.has(ck)) return;
+    const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+        const x = x0+lx, z = z0+lz;
+        for (let y = 0; y < WORLD_HEIGHT; y++) {
+          const k = key(x,y,z);
+          blocks.delete(k);
+          stepRotations.delete(k);
+          waterBlocks.delete(k);
+        }
+      }
+    }
+    generatedChunks.delete(ck);
+  }
+  let lastStreamChunkKey = null;
+  function updateChunkStreaming() {
+    if (!infiniteWorldActive) return;
+    const pcx = Math.floor(player.pos.x / CHUNK_SIZE), pcz = Math.floor(player.pos.z / CHUNK_SIZE);
+    const curKey = pcx + '_' + pcz;
+    if (curKey === lastStreamChunkKey) return; // still in the same chunk as last check — cheap early exit, this only needs to run when a chunk boundary is actually crossed
+    lastStreamChunkKey = curKey;
+    let changed = false;
+    for (let dx = -CHUNK_LOAD_RADIUS; dx <= CHUNK_LOAD_RADIUS; dx++) {
+      for (let dz = -CHUNK_LOAD_RADIUS; dz <= CHUNK_LOAD_RADIUS; dz++) {
+        const cx = pcx+dx, cz = pcz+dz;
+        if (!generatedChunks.has(cx+'_'+cz)) { generateChunkTerrain(cx, cz); changed = true; }
+      }
+    }
+    for (const ck of Array.from(generatedChunks)) {
+      const [cx, cz] = ck.split('_').map(Number);
+      if (Math.max(Math.abs(cx-pcx), Math.abs(cz-pcz)) > CHUNK_UNLOAD_RADIUS) { unloadChunkTerrain(cx, cz); changed = true; }
+    }
+    if (changed) needsRebuild = true; // one full rebuild covering whatever streamed in/out — only happens on a chunk-boundary crossing, not every frame, so this doesn't reintroduce the old per-edit flash
   }
 
   // ================= INSTANCED MESHES =================
@@ -4119,7 +4176,9 @@
   async function visitPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
+    infiniteWorldActive = false; // The Mill is always the old hand-built, finite system — never chunk-streamed. Set explicitly here since loadWorldData() below only touches this flag if a saved row is actually found; without this, a stale true left over from whatever world was open before could otherwise leak in.
     const saved = await loadWorldData(PUB_WORLD_ID);
+    infiniteWorldActive = false; // and again after — loadWorldData() would only ever set this true here if the Mill were somehow saved with chunkMode:'edits', which should never happen, but this guards against it regardless
     if (saved) { applyWorldData(saved); spawnPubDecorations(); ensureBarFixtures(); ensureBarRoom(); needsRebuild = true; }
     else generatePubWorld(); // nobody has created it yet — show the template, but this visit still won't save (visitMode guards that)
     visitMode = true; // read-only — but working a shift still earns coins, same as visiting any other world's bar
@@ -4136,6 +4195,7 @@
   async function createPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
+    infiniteWorldActive = false; // always the old finite hand-built system, never chunk-streamed — see visitPub()'s own comment on this
     generatePubWorld();
     visitMode = false;
     currentRole = null;
@@ -5059,7 +5119,6 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyF') toggleFly();
-    if (e.code === 'KeyT' && terrainSlotEl) showTerrainPopup(terrainSlotEl);
   });
   document.addEventListener('keyup', e => {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -5290,6 +5349,7 @@
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
+      recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, -1);
       rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all
       playThud(220);
       return;
@@ -5436,15 +5496,19 @@
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
     if (selectedSlot === WATER_SLOT) {
-      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); rebuildWaterGeometry(); playThud(280); }
+      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); recordWaterEdit(x, y, z, 0); rebuildWaterGeometry(); playThud(280); }
     } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
       if (type && type.cost && !trySpendCoins(type.cost, type.name)) return;
       blocks.set(k, selectedSlot);
       waterBlocks.delete(k); // displace any water that was there
+      let placedRot = 0;
       if (type && type.half) {
-        stepRotations.set(k, snapYawToStepIndex(yaw));
+        placedRot = snapYawToStepIndex(yaw);
+        stepRotations.set(k, placedRot);
       }
+      recordBlockEdit(x, y, z, selectedSlot, placedRot);
+      if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
       playThud(300);
     }
@@ -6206,6 +6270,7 @@
             const minedWasHalf = minedType !== undefined && BLOCK_TYPES[minedType] && BLOCK_TYPES[minedType].half;
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
+            recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
             removeFixturesForBlock(bx, by, bz);
             removeLaddersForBlock(bx, by, bz);
             removeWallpapersForBlock(bx, by, bz);
@@ -6266,6 +6331,7 @@
       lastWaterTick = performance.now();
       updateWaterFlow();
     }
+    updateChunkStreaming(); // cheap early-exit unless a chunk boundary was actually just crossed — see its own comment
     updateDoors(dt);
     updateWork(dt);
 
@@ -6558,63 +6624,9 @@
     slotElByIndex[LADDER_SLOT] = slot;
     hotbar.appendChild(slot);
   }
-  // Buy Terrain — unlike every other hotbar slot, this doesn't select
-  // anything to place with a later click; it's a one-shot bulk action
-  // (generates a whole 100x100 patch immediately, in front of wherever
-  // the player's currently standing/facing), so clicking it opens a
-  // small popup of the 5 kinds instead, same visual pattern as the block
-  // family popups above.
-  let openTerrainPopup = null;
-  function closeTerrainPopup() {
-    if (openTerrainPopup) { openTerrainPopup.remove(); openTerrainPopup = null; }
-  }
-  function showTerrainPopup(slotEl) {
-    closeTerrainPopup();
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
-    const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;`;
-    TERRAIN_KINDS.forEach(k => {
-      const btn = document.createElement('div');
-      btn.className = 'slot';
-      btn.style.cssText = 'position:relative;width:auto;padding:0 10px;white-space:nowrap;';
-      btn.title = k.label + ' Terrain (100x100)' + costLabel(k.cost);
-      btn.textContent = k.label;
-      const priceBadge = document.createElement('span');
-      priceBadge.className = 'price-badge';
-      priceBadge.textContent = '💰'+k.cost;
-      priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
-      btn.appendChild(priceBadge);
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        buyTerrain(k.key);
-        closeTerrainPopup();
-      });
-      popup.appendChild(btn);
-    });
-    document.body.appendChild(popup);
-    openTerrainPopup = popup;
-  }
-  document.addEventListener('click', e => {
-    if (openTerrainPopup && !openTerrainPopup.contains(e.target)) closeTerrainPopup();
-  });
-  let terrainSlotEl = null;
-  {
-    const slot = document.createElement('div');
-    slot.className = 'slot';
-    slot.title = 'Buy Terrain — generates a 100x100 patch in front of you (blocked if that area isn\'t empty)';
-    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'T';
-    slot.appendChild(keyEl);
-    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#6b4a2a'; ctx.fillRect(0,0,34,34); // dirt
-    ctx.fillStyle = '#5c9e3f'; ctx.fillRect(0,0,34,10); // grass strip on top
-    ctx.fillStyle = '#3f6e2b'; ctx.fillRect(0,8,34,2);
-    slot.appendChild(c);
-    slot.addEventListener('click', (e) => { e.stopPropagation(); showTerrainPopup(slot); });
-    terrainSlotEl = slot;
-    hotbar.appendChild(slot);
-  }
+  // Buy Terrain hotbar slot removed — infinite terrain (see the INFINITE
+  // TERRAIN section) generates the world automatically as you walk, so
+  // there's no longer a need to manually purchase and place patches.
   function wallpaperSwatchCanvas(colorIdx) {
     const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
     const ctx = c.getContext('2d'); ctx.imageSmoothingEnabled = false;
@@ -7071,6 +7083,7 @@
   }
 
   function beginPlaying() {
+    updateChunkStreaming(); // for infinite worlds, generate terrain around wherever the player is BEFORE the first mesh build — otherwise rebuildMeshes() below runs on an empty map until the next animate() frame catches up
     rebuildMeshes();
     document.getElementById('worldSelect').style.display = 'none';
     document.getElementById('overlay').style.display = 'flex';
@@ -7188,7 +7201,17 @@
     visitMode = false; // guard against stale state left over from a previous visit this session
     currentRole = null; // …and any role assigned from a previous Mill visit
     lastSavedChunkPayloads = new Map(); // guard against stale chunk-tracking state left over from whatever world was open before this one this session — loadWorldData() never runs for a brand new world, so nothing else resets this
-    generateNewWorld();
+    // New worlds always use the infinite-terrain system — see the
+    // INFINITE TERRAIN section. No fixed-size generateNewWorld() call any
+    // more; terrain streams in around the player instead, starting here
+    // with the chunks around spawn (0,0).
+    infiniteWorldActive = true;
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    generatedChunks.clear(); lastStreamChunkKey = null;
+    blocks.clear(); waterBlocks.clear(); stepRotations.clear();
+    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
+    clearPubExtras(); // in case the last thing loaded was the community pub
+    updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
     spawnDefault();
     beginPlaying();
     saveWorld();

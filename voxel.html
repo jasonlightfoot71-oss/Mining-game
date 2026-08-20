@@ -1542,8 +1542,8 @@
   const chunkGenQueued = new Set();   // chunkKey -> already queued, avoids duplicate entries
   const chunkUnloadQueue = [];
   const chunkUnloadQueued = new Set();
-  const CHUNKS_GEN_PER_FRAME = 2;    // keeps each frame's extra cost small and smooth
-  const CHUNKS_UNLOAD_PER_FRAME = 3; // unloading is just Map deletions — cheaper than generating, so a bit more per frame is fine
+  const CHUNKS_GEN_PER_FRAME = 5;    // raised from 2 — with the smaller load radius and higher instance cap now in place, there's real headroom to generate faster so flying/fast movement doesn't outrun it, without reintroducing the earlier freeze
+  const CHUNKS_UNLOAD_PER_FRAME = 6; // scaled up to match — unloading is just Map deletions, cheaper than generating, so it can comfortably keep pace
   let lastStreamChunkKey = null;
   function updateChunkStreaming() {
     if (!infiniteWorldActive) return;

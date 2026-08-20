@@ -1352,12 +1352,20 @@
   // way too (see the data.chunkMode check in loadWorldData). Both are
   // gated behind infiniteWorldActive below.
   let infiniteWorldActive = false;
-  // Medium load radius — chunks are CHUNK_SIZE (32 blocks) each, radius 2
-  // means a 5x5 chunk area (160x160 blocks) generated around the player.
-  // Unload radius is one ring further out than that, so a player walking
-  // back and forth right at the edge doesn't thrash generate/unload every
-  // frame.
-  const CHUNK_LOAD_RADIUS = 2;
+  // Reduced from an earlier "medium" (radius 2) after testing revealed a
+  // real capacity problem: each block type's mesh has a fixed maximum of
+  // MAX_INSTANCES rendered instances at once (a fixed-size GPU buffer,
+  // allocated upfront for performance — it can't just grow on demand).
+  // At radius 2, the unload buffer below could keep up to 7x7=49 chunks
+  // resident at once — over 50,000 exposed grass/sand-surface blocks
+  // alone, comfortably past that cap. Once a type hits its cap, any
+  // further blocks of that type silently stop rendering at all — solid
+  // for collision, just invisible — which is exactly what was reported.
+  // Radius 1 keeps the worst case (7x7 becomes 5x5 = 25 chunks) safely
+  // under the increased cap below with real headroom, and in practice
+  // looks no different: the scene's own fog already fades everything out
+  // by ~70 blocks in clear weather, well within even this smaller radius.
+  const CHUNK_LOAD_RADIUS = 1;
   const CHUNK_UNLOAD_RADIUS = CHUNK_LOAD_RADIUS + 1;
   // Same reasoning as Buy Terrain's old TERRAIN_DEPTH_CAP — filling every
   // column all the way down to y=0 across a wide streamed area gets
@@ -1615,7 +1623,7 @@
   const stepLowerGeometry = new THREE.BoxGeometry(1, 0.5, 1);   // full footprint, half height
   const stepUpperGeometry = new THREE.BoxGeometry(0.5, 0.5, 1); // quarter footprint (rot=0 shape), half height
 
-  const MAX_INSTANCES = 30000;
+  const MAX_INSTANCES = 40000; // raised from 30000 for extra headroom against the same cap — see CHUNK_LOAD_RADIUS's own comment above for why the cap matters now that terrain streams infinitely
   const meshes = BLOCK_TYPES.map(entry => {
     const mat = buildMaterialArray(entry);
     const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : geometry, mat, MAX_INSTANCES);

@@ -6194,6 +6194,16 @@
           if (mining.nextTick === undefined) mining.nextTick = performance.now() + 90;
           if (performance.now() >= mining.nextTick) { playMineTick(); mining.nextTick = performance.now() + 90; }
           if (prog >= 1) {
+            // Captured BEFORE deleting — handleLocalBlockChange's own
+            // half/step check looks at the CURRENT contents of `blocks`,
+            // which by definition no longer includes this cell once it's
+            // deleted below. Without checking this first, mining a step
+            // silently skipped the full-rebuild fallback its two-piece
+            // mesh actually needs, leaving its old instance stuck on
+            // screen until some unrelated later edit happened to trigger
+            // a full rebuild anyway.
+            const minedType = blocks.get(mining.k);
+            const minedWasHalf = minedType !== undefined && BLOCK_TYPES[minedType] && BLOCK_TYPES[minedType].half;
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
             removeFixturesForBlock(bx, by, bz);
@@ -6202,7 +6212,8 @@
             removeSignsForBlock(bx, by, bz);
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
-            handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            if (minedWasHalf) { needsRebuild = true; rebuildWaterGeometry(); }
+            else handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
             playThud(150);
             mining = null;
             crackMesh.visible = false;

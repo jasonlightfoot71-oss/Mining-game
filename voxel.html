@@ -1638,7 +1638,7 @@
     for (const [cx,cy,cz] of cells) {
       const t = blocks.get(key(cx,cy,cz));
       if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) {
-        needsRebuild = true; // a half/step block is involved — safest to just do the full rebuild this one time
+        rebuildMeshes(); // rebuild immediately and directly — see the same reasoning in the step-mining fallback above
         rebuildWaterGeometry();
         return;
       }
@@ -6212,7 +6212,7 @@
             removeSignsForBlock(bx, by, bz);
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
-            if (minedWasHalf) { needsRebuild = true; rebuildWaterGeometry(); }
+            if (minedWasHalf) { rebuildMeshes(); rebuildWaterGeometry(); } // rebuild immediately and directly, rather than only flagging needsRebuild for next frame — removes any possible gap between the block disappearing from data and disappearing from the screen
             else handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
             playThud(150);
             mining = null;

@@ -70,7 +70,7 @@
     background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px; text-align: right;
   }
   #clockDisplay {
-    position: fixed; top: 100px; left: 12px; z-index: 10;
+    position: fixed; top: 46px; left: 12px; z-index: 10;
     color: #fff; font-size: 14px; font-weight: 600; letter-spacing: 0.5px;
     background: rgba(0,0,0,0.35); padding: 6px 12px; border-radius: 6px; display: none;
   }
@@ -1403,15 +1403,23 @@
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
-        // Wider noise spacing than the old fixed 30x30 area (0.6) — at
-        // infinite scale, the tighter spacing would make hills look small
-        // and repetitive; 0.045 gives broad, natural-looking rolling
-        // terrain that doesn't visibly repeat within any reasonable
-        // walking distance.
-        const n = fbm(x*0.045, z*0.045);
-        let h = Math.round(SEA_LEVEL - 2 + n*10);
+        // Regional biome — a much lower-frequency noise layer than the
+        // local height detail below, so it only changes gradually over
+        // hundreds of blocks. This is what gives infinite terrain the
+        // same kind of variety Buy Terrain's fixed kinds (Flat, Mountain,
+        // Water, Forest, Beach) used to offer, but continuous and
+        // automatic — wander far enough in any direction and you'll
+        // naturally drift from low, watery lowlands through rolling
+        // forested grassland into tall stony mountains, with no seams
+        // since everything blends off the same smooth 0..1 value.
+        const regional = fbm(x*0.008, z*0.008);
+        const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
+        const amp = 4 + regional*16;          // 4 (near-flat lowlands) .. 20 (tall mountains)
+        const baseline = SEA_LEVEL - 3 + regional*8; // lowlands sit near/below sea level, mountains sit well above it
+        let h = Math.round(baseline + n*amp);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
-        const surfaceType = h <= SEA_LEVEL ? 5 /*sand*/ : 0 /*grass*/;
+        const surfaceType = h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/);
+        const treeChance = (regional > 0.3 && regional < 0.75) ? 0.03 : 0.008; // denser forest in the mid "normal" band, sparse elsewhere
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         for (let y = fillFrom; y <= h; y++) {
           let type;
@@ -1423,7 +1431,7 @@
         if (h < SEA_LEVEL) {
           for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
         }
-        if (h > SEA_LEVEL && chunkTreeRoll(x,z,0) < 0.025) {
+        if (h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -1475,25 +1483,68 @@
     }
     generatedChunks.delete(ck);
   }
+  // Generation is deliberately spread across multiple frames instead of
+  // happening all at once — the actual cause of the grey flash while
+  // moving. Crossing a chunk boundary can suddenly need a whole new ring
+  // of chunks (or, on first spawn, all 25 in the load radius), and each
+  // one involves real work (noise sampling + tree placement across 1024
+  // columns) — doing that synchronously in one frame is what froze the
+  // frame long enough to show a blank grey screen. Now a boundary
+  // crossing just queues the chunks it needs; a small, fixed number
+  // actually generate each frame (see updateChunkStreaming below), so
+  // terrain quietly streams in over a few hundred milliseconds instead.
+  const chunkGenQueue = [];      // [cx,cz] pending generation, nearest-to-player first
+  const chunkGenQueued = new Set();   // chunkKey -> already queued, avoids duplicate entries
+  const chunkUnloadQueue = [];
+  const chunkUnloadQueued = new Set();
+  const CHUNKS_GEN_PER_FRAME = 2;    // keeps each frame's extra cost small and smooth
+  const CHUNKS_UNLOAD_PER_FRAME = 3; // unloading is just Map deletions — cheaper than generating, so a bit more per frame is fine
   let lastStreamChunkKey = null;
   function updateChunkStreaming() {
     if (!infiniteWorldActive) return;
     const pcx = Math.floor(player.pos.x / CHUNK_SIZE), pcz = Math.floor(player.pos.z / CHUNK_SIZE);
     const curKey = pcx + '_' + pcz;
-    if (curKey === lastStreamChunkKey) return; // still in the same chunk as last check — cheap early exit, this only needs to run when a chunk boundary is actually crossed
-    lastStreamChunkKey = curKey;
-    let changed = false;
-    for (let dx = -CHUNK_LOAD_RADIUS; dx <= CHUNK_LOAD_RADIUS; dx++) {
-      for (let dz = -CHUNK_LOAD_RADIUS; dz <= CHUNK_LOAD_RADIUS; dz++) {
-        const cx = pcx+dx, cz = pcz+dz;
-        if (!generatedChunks.has(cx+'_'+cz)) { generateChunkTerrain(cx, cz); changed = true; }
+    if (curKey !== lastStreamChunkKey) {
+      lastStreamChunkKey = curKey;
+      // Queued nearest-ring-first (r=0 is the player's own chunk, then
+      // r=1's ring, then r=2's) rather than in simple raster order — this
+      // is what guarantees the ground right under the player is always
+      // the very first thing generated, even though generation is now
+      // spread across frames, so spawning/teleporting never leaves you
+      // floating over an ungenerated void waiting for a raster-ordered
+      // queue to eventually get around to your own chunk.
+      for (let r = 0; r <= CHUNK_LOAD_RADIUS; r++) {
+        for (let dx = -r; dx <= r; dx++) {
+          for (let dz = -r; dz <= r; dz++) {
+            if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue; // only this radius' outer ring — smaller r already covered it
+            const cx = pcx+dx, cz = pcz+dz, ck = cx+'_'+cz;
+            if (!generatedChunks.has(ck) && !chunkGenQueued.has(ck)) { chunkGenQueue.push([cx,cz]); chunkGenQueued.add(ck); }
+          }
+        }
+      }
+      for (const ck of Array.from(generatedChunks)) {
+        const [cx, cz] = ck.split('_').map(Number);
+        if (Math.max(Math.abs(cx-pcx), Math.abs(cz-pcz)) > CHUNK_UNLOAD_RADIUS && !chunkUnloadQueued.has(ck)) { chunkUnloadQueue.push([cx,cz]); chunkUnloadQueued.add(ck); }
       }
     }
-    for (const ck of Array.from(generatedChunks)) {
-      const [cx, cz] = ck.split('_').map(Number);
-      if (Math.max(Math.abs(cx-pcx), Math.abs(cz-pcz)) > CHUNK_UNLOAD_RADIUS) { unloadChunkTerrain(cx, cz); changed = true; }
+    // Drains a small amount of queued work every frame this runs
+    // (called unconditionally from animate() — see its own call site),
+    // not only on a boundary crossing, so a big burst of newly-needed
+    // chunks streams in smoothly over the next several frames.
+    let changed = false;
+    for (let i = 0; i < CHUNKS_GEN_PER_FRAME && chunkGenQueue.length > 0; i++) {
+      const [cx, cz] = chunkGenQueue.shift();
+      const ck = cx+'_'+cz;
+      chunkGenQueued.delete(ck);
+      if (!generatedChunks.has(ck)) { generateChunkTerrain(cx, cz); changed = true; }
     }
-    if (changed) needsRebuild = true; // one full rebuild covering whatever streamed in/out — only happens on a chunk-boundary crossing, not every frame, so this doesn't reintroduce the old per-edit flash
+    for (let i = 0; i < CHUNKS_UNLOAD_PER_FRAME && chunkUnloadQueue.length > 0; i++) {
+      const [cx, cz] = chunkUnloadQueue.shift();
+      const ck = cx+'_'+cz;
+      chunkUnloadQueued.delete(ck);
+      if (generatedChunks.has(ck)) { unloadChunkTerrain(cx, cz); changed = true; }
+    }
+    if (changed) needsRebuild = true;
   }
 
   // ================= INSTANCED MESHES =================

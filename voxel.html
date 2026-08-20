@@ -1553,6 +1553,99 @@
 
   const dummy = new THREE.Object3D();
   let needsRebuild = true;
+  // Per-block instance tracking — lets a single mine/place update just
+  // that one instance (and its immediate neighbours, whose own visibility
+  // can change too) instead of the old behaviour of re-scanning and
+  // re-uploading EVERY block in the world on every single edit. That full
+  // rescan is what was producing the blue flash on every mine/place: it's
+  // cheap on a small world but still blocking/synchronous, and blocking
+  // the main thread for even one frame is enough to show the renderer's
+  // raw clear colour (sky blue) for an instant before the rebuilt frame
+  // paints over it.
+  // instanceIndex: blockKey -> { type, idx } for the FULL-CUBE instance
+  // (non-half blocks only — half/step blocks still fall back to a full
+  // rebuild, see handleLocalBlockChange below, since they use a second
+  // mesh + rotation-dependent geometry that isn't worth tracking
+  // incrementally for how rarely they're placed one at a time).
+  // reverseFullIndex[type][idx] -> blockKey, the reverse lookup needed to
+  // fix up whichever OTHER block gets moved when swap-removing an
+  // instance from the middle of an InstancedMesh's packed array.
+  const instanceIndex = new Map();
+  const reverseFullIndex = BLOCK_TYPES.map(() => []);
+  const tempMatrix = new THREE.Matrix4();
+  function addFullInstance(k, x, y, z, type) {
+    const mesh = meshes[type];
+    if (mesh.count >= MAX_INSTANCES) return; // silently skip, same cap the old bulk rebuild always had
+    const idx = mesh.count;
+    dummy.position.set(x+0.5, y+0.5, z+0.5);
+    dummy.rotation.set(0,0,0);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(idx, dummy.matrix);
+    mesh.count = idx+1;
+    mesh.instanceMatrix.needsUpdate = true;
+    instanceIndex.set(k, { type, idx });
+    reverseFullIndex[type][idx] = k;
+  }
+  function removeFullInstance(k) {
+    const rec = instanceIndex.get(k);
+    if (!rec) return;
+    const { type, idx } = rec;
+    const mesh = meshes[type];
+    const lastIdx = mesh.count - 1;
+    if (idx !== lastIdx) {
+      mesh.getMatrixAt(lastIdx, tempMatrix);
+      mesh.setMatrixAt(idx, tempMatrix);
+      const movedKey = reverseFullIndex[type][lastIdx];
+      if (movedKey !== undefined) {
+        instanceIndex.set(movedKey, { type, idx });
+        reverseFullIndex[type][idx] = movedKey;
+      }
+    }
+    reverseFullIndex[type][lastIdx] = undefined;
+    mesh.count = lastIdx;
+    mesh.instanceMatrix.needsUpdate = true;
+    instanceIndex.delete(k);
+  }
+  // Re-evaluates ONE cell: adds/removes/updates its instance to match
+  // whatever should currently be showing there (accounting for the
+  // "hidden because every neighbour is solid" occlusion rule). Called on
+  // the edited block itself plus its 6 neighbours, since removing/adding
+  // one block can reveal or hide faces on the blocks next to it too.
+  function updateFullInstanceAt(x, y, z) {
+    const k = key(x, y, z);
+    const type = blocks.get(k);
+    const hasInstance = instanceIndex.has(k);
+    if (type === undefined || (BLOCK_TYPES[type] && BLOCK_TYPES[type].half)) {
+      if (hasInstance) removeFullInstance(k);
+      return;
+    }
+    const shouldShow = !neighborsAllSolid(x, y, z);
+    const existing = hasInstance ? instanceIndex.get(k) : null;
+    if (existing && existing.type !== type) { removeFullInstance(k); }
+    const stillHas = instanceIndex.has(k);
+    if (shouldShow && !stillHas) addFullInstance(k, x, y, z, type);
+    else if (!shouldShow && stillHas) removeFullInstance(k);
+  }
+  // Handles a single block being placed or mined at (x,y,z). Falls back
+  // to a full rebuild (safe, just slower) if a half/step block is
+  // involved anywhere in the affected area, since those aren't tracked
+  // incrementally. Otherwise updates just the 7 affected cells (the block
+  // itself + its 6 neighbours) and the water surface, which is by far the
+  // common case (building/mining full-cube blocks) and is what was
+  // causing the every-edit flash.
+  function handleLocalBlockChange(x, y, z) {
+    const cells = [[x,y,z],[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
+    for (const [cx,cy,cz] of cells) {
+      const t = blocks.get(key(cx,cy,cz));
+      if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) {
+        needsRebuild = true; // a half/step block is involved — safest to just do the full rebuild this one time
+        rebuildWaterGeometry();
+        return;
+      }
+    }
+    for (const [cx,cy,cz] of cells) updateFullInstanceAt(cx,cy,cz);
+    rebuildWaterGeometry(); // cheap relative to the block rebuild — keeps water's own occlusion in sync with whatever changed
+  }
 
   function neighborsAllSolid(x,y,z) {
     const solidAt = (xx,yy,zz) => {
@@ -1589,6 +1682,10 @@
     rebuildCounts = new Array(BLOCK_TYPES.length).fill(0);
     rebuildStepUpperCounts = new Array(BLOCK_TYPES.length).fill(0);
     rebuildInProgress = true;
+    // Full rebuild always starts the incremental index fresh — whatever
+    // was tracked before is about to be entirely re-laid-out.
+    instanceIndex.clear();
+    for (let i=0;i<BLOCK_TYPES.length;i++) reverseFullIndex[i] = [];
     continueRebuild();
   }
   function continueRebuild() {
@@ -1632,7 +1729,11 @@
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
-        if (idx < MAX_INSTANCES) meshes[type].setMatrixAt(idx, dummy.matrix);
+        if (idx < MAX_INSTANCES) {
+          meshes[type].setMatrixAt(idx, dummy.matrix);
+          instanceIndex.set(k, { type, idx });
+          reverseFullIndex[type][idx] = k;
+        }
       }
     }
     // Pushed to the GPU after every chunk, not just at the very end — so
@@ -5189,7 +5290,7 @@
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
-      needsRebuild = true;
+      rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all
       playThud(220);
       return;
     }
@@ -5335,7 +5436,7 @@
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
     if (selectedSlot === WATER_SLOT) {
-      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); needsRebuild = true; playThud(280); }
+      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); rebuildWaterGeometry(); playThud(280); }
     } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
       if (type && type.cost && !trySpendCoins(type.cost, type.name)) return;
@@ -5344,7 +5445,7 @@
       if (type && type.half) {
         stepRotations.set(k, snapYawToStepIndex(yaw));
       }
-      needsRebuild = true;
+      handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
       playThud(300);
     }
   }
@@ -6101,7 +6202,7 @@
             removeSignsForBlock(bx, by, bz);
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
-            needsRebuild = true;
+            handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
             playThud(150);
             mining = null;
             crackMesh.visible = false;

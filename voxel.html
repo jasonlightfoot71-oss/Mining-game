@@ -1483,6 +1483,43 @@
     }
     generatedChunks.delete(ck);
   }
+  // Reconciles just ONE chunk's worth of mesh instances (plus a 1-block
+  // border into each neighbouring chunk, since a chunk streaming in or
+  // out can reveal/hide faces on whatever's immediately next to it)
+  // against the live `blocks` map — reusing the same per-instance
+  // add/remove system built for single-block mining/placing, instead of
+  // a full needsRebuild=true/rebuildMeshes() call. This is the actual
+  // fix for the grey stutter: a full rebuild resets and reprocesses the
+  // ENTIRE visible world's mesh, which — since it's spread across
+  // several frames for performance — meant every chunk boundary crossing
+  // made ALL currently-loaded terrain briefly vanish while it caught
+  // back up, not just the one chunk that actually changed. This only
+  // ever touches the one chunk (+border) that changed.
+  // Call this AFTER the chunk's blocks/water have already been written
+  // (by generateChunkTerrain) or deleted (by unloadChunkTerrain) — it
+  // works for both cases by just asking "what SHOULD be here now?" per
+  // cell via updateFullInstanceAt, which already knows how to add,
+  // remove, or leave a cell alone based on current `blocks` state.
+  // Returns false (and does nothing further useful — caller should fall
+  // back to a full rebuild) if a half/step block is involved anywhere in
+  // range, since those aren't tracked by this incremental system. Plain
+  // procedural terrain never contains one; only a saved player edit
+  // could, so this fallback is rare in practice.
+  function syncChunkInstances(cx, cz) {
+    const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    let hasHalf = false;
+    for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
+      for (let lz = -1; lz <= CHUNK_SIZE; lz++) {
+        const x = x0+lx, z = z0+lz;
+        for (let y = 0; y < WORLD_HEIGHT; y++) {
+          const t = blocks.get(key(x,y,z));
+          if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) { hasHalf = true; continue; }
+          updateFullInstanceAt(x, y, z);
+        }
+      }
+    }
+    return !hasHalf;
+  }
   // Generation is deliberately spread across multiple frames instead of
   // happening all at once — the actual cause of the grey flash while
   // moving. Crossing a chunk boundary can suddenly need a whole new ring
@@ -1531,20 +1568,34 @@
     // (called unconditionally from animate() — see its own call site),
     // not only on a boundary crossing, so a big burst of newly-needed
     // chunks streams in smoothly over the next several frames.
-    let changed = false;
+    let changed = false, needsFullFallback = false;
     for (let i = 0; i < CHUNKS_GEN_PER_FRAME && chunkGenQueue.length > 0; i++) {
       const [cx, cz] = chunkGenQueue.shift();
       const ck = cx+'_'+cz;
       chunkGenQueued.delete(ck);
-      if (!generatedChunks.has(ck)) { generateChunkTerrain(cx, cz); changed = true; }
+      if (!generatedChunks.has(ck)) {
+        generateChunkTerrain(cx, cz);
+        if (!syncChunkInstances(cx, cz)) needsFullFallback = true;
+        changed = true;
+      }
     }
     for (let i = 0; i < CHUNKS_UNLOAD_PER_FRAME && chunkUnloadQueue.length > 0; i++) {
       const [cx, cz] = chunkUnloadQueue.shift();
       const ck = cx+'_'+cz;
       chunkUnloadQueued.delete(ck);
-      if (generatedChunks.has(ck)) { unloadChunkTerrain(cx, cz); changed = true; }
+      if (generatedChunks.has(ck)) {
+        unloadChunkTerrain(cx, cz);
+        if (!syncChunkInstances(cx, cz)) needsFullFallback = true;
+        changed = true;
+      }
     }
-    if (changed) needsRebuild = true;
+    // Only a genuinely rare half-block-involved case falls back to a
+    // full rebuild now — ordinary generated terrain (the vast majority
+    // of streaming activity) is handled entirely by the incremental
+    // per-chunk sync above, with no visible disruption to already-loaded
+    // terrain elsewhere in view.
+    if (needsFullFallback) needsRebuild = true;
+    else if (changed) rebuildWaterGeometry(); // keep the water surface in sync too — cheap relative to a full block rebuild, since it only touches actual water cells
   }
 
   // ================= INSTANCED MESHES =================

@@ -558,6 +558,25 @@
       return false;
     }
   }
+  // Applies every currently-loaded block/water edit directly, with no
+  // chunk filtering — used once, right after generatePubWorld() lays
+  // down the building's template, so any player mining/building done
+  // INSIDE the building on a previous visit is restored immediately.
+  // (Edits to the open ground outside the building don't need this: they
+  // get reapplied naturally as each of those chunks streams in via
+  // generateChunkTerrain's own per-chunk edit step — this just covers
+  // the building's interior, which isn't part of that chunk-streaming
+  // system at all.)
+  function applyAllBlockEdits() {
+    for (const [k, type] of blockEdits) {
+      if (type === -1) blocks.delete(k); else blocks.set(k, type);
+      const rot = stepRotEdits.get(k);
+      if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+    }
+    for (const [k, level] of waterEdits) {
+      if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+    }
+  }
 
   let playerUid = null;
   try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
@@ -1445,12 +1464,12 @@
   // location. For a normal world this is exactly what visitMode already
   // meant (false while it's your own or you've been let in to build;
   // true — blocked — while visiting someone else's, unchanged). The Mill
-  // is the one special case: visitMode itself stays false there (so the
-  // surrounding open ground behaves like a completely normal, saveable,
-  // editable world), and only the building's own exact footprint is
-  // blocked, checked here directly instead.
+  // is fully editable too, building included — see applyAllBlockEdits(),
+  // which is what makes changes to the building itself actually survive
+  // a revisit, since the building is otherwise regenerated fresh every
+  // time via generatePubWorld().
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) return !isPubColumn(x, z);
+    if (currentWorldId === PUB_WORLD_ID) return true;
     return !visitMode;
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
@@ -4458,14 +4477,11 @@
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
     player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
     yaw = Math.PI; pitch = 0;
-    await loadWorldEditChunks(PUB_WORLD_ID); // any previous mining/building on the open ground around The Mill
-    generatePubWorld(); // the building itself — always regenerated fresh; already handles its own decorations/fixtures internally, nothing further needed here
-    // Deliberately NOT setting visitMode = true. The building itself is
-    // protected by canEditAt()'s zone check instead (see its own
-    // comment) — but the open ground around it is meant to be a
-    // genuinely normal, editable, saveable world, and visitMode is a
-    // blanket switch that would block that everywhere, not just inside
-    // the building.
+    await loadWorldEditChunks(PUB_WORLD_ID); // any previous mining/building anywhere around (and now inside) The Mill
+    generatePubWorld(); // the building's template — always regenerated fresh; already handles its own decorations/fixtures internally
+    applyAllBlockEdits(); // restores any player edits to the building's interior — see its own comment for why this is separate from the chunk-streaming edit system
+    // The building is now fully editable, same as the open ground around
+    // it — no location-based restriction any more (see canEditAt).
     visitMode = false;
     assignRandomRole();
     terrainStreamingActive = true; // only now — see the comment above

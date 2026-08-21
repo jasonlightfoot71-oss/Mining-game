@@ -1530,10 +1530,18 @@
   // Fills ONE chunk's worth of base terrain (procedural only), then
   // layers any saved player edits on top. Safe to call repeatedly — it's
   // a no-op if this chunk is already generated this session.
+  // Tracks the actual vertical range of blocks each chunk ended up using
+  // (terrain, trees, saved edits) — lets syncChunkInstances scan just
+  // that band instead of blindly checking all WORLD_HEIGHT levels for
+  // every cell, which was the single biggest cost in the whole streaming
+  // system and the main cause of stutter during continuous movement.
+  const chunkYBounds = new Map(); // chunkKey -> [minY, maxY]
+  let anyWaterTouchedThisStream = false; // reset per streaming update — see updateChunkStreaming
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    let minY = WORLD_HEIGHT, maxY = -1;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
@@ -1568,6 +1576,8 @@
         const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/ : (h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/));
         const treeChance = blend < 1 ? 0 : ((regional > 0.3 && regional < 0.75) ? 0.03 : 0.008); // denser forest in the mid "normal" band, sparse elsewhere, none right against the building
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
+        if (fillFrom < minY) minY = fillFrom;
+        if (h > maxY) maxY = h;
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -1577,6 +1587,7 @@
         }
         if (allowWater && h < SEA_LEVEL) {
           for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
+          anyWaterTouchedThisStream = true;
         }
         if (treeChance && h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
@@ -1587,6 +1598,7 @@
               for (let ly=0; ly<=1; ly++)
                 if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
           blocks.set(key(x, topY+2, z), 4);
+          if (topY+2 > maxY) maxY = topY+2;
         }
       }
     }
@@ -1601,13 +1613,21 @@
       if (type === -1) blocks.delete(k); else blocks.set(k, type);
       const rot = stepRotEdits.get(k);
       if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+      if (ey < minY) minY = ey;
+      if (ey > maxY) maxY = ey;
     }
     for (const [k, level] of waterEdits) {
       const parts = k.split(',');
       if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
       if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+      anyWaterTouchedThisStream = true;
     }
     generatedChunks.add(ck);
+    // Falls back to the full range for chunks where nothing was actually
+    // processed (fully inside The Mill's protected footprint) — safe
+    // default rather than a potentially-wrong guess.
+    if (maxY < minY) { minY = 0; maxY = WORLD_HEIGHT - 1; }
+    chunkYBounds.set(ck, [Math.max(0, minY-1), Math.min(WORLD_HEIGHT-1, maxY+3)]); // small buffer either side for neighbour-occlusion checks and tree canopy
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -1617,19 +1637,22 @@
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    const bounds = chunkYBounds.get(ck);
+    const yMin = bounds ? bounds[0] : 0, yMax = bounds ? bounds[1] : WORLD_HEIGHT - 1;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z)) continue; // never touch The Mill's own building
-        for (let y = 0; y < WORLD_HEIGHT; y++) {
+        for (let y = yMin; y <= yMax; y++) {
           const k = key(x,y,z);
           blocks.delete(k);
           stepRotations.delete(k);
-          waterBlocks.delete(k);
+          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
       }
     }
     generatedChunks.delete(ck);
+    chunkYBounds.delete(ck);
   }
   // Reconciles just ONE chunk's worth of mesh instances (plus a 1-block
   // border into each neighbouring chunk, since a chunk streaming in or
@@ -1655,11 +1678,25 @@
   // could, so this fallback is rare in practice.
   function syncChunkInstances(cx, cz) {
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    // Scans only the vertical band this chunk (and its immediate
+    // neighbours, since the border cells belong to them) actually uses,
+    // instead of every one of WORLD_HEIGHT levels for every single cell
+    // — that full scan was the single biggest cost in the whole
+    // streaming system, easily the main cause of stutter while moving
+    // continuously. Falls back to the full range for any neighbour
+    // whose bounds aren't known yet (e.g. it hasn't generated), which is
+    // always safe, just less of a saving in that specific case.
+    let yMin = WORLD_HEIGHT - 1, yMax = 0;
+    for (const [ncx, ncz] of [[cx,cz],[cx+1,cz],[cx-1,cz],[cx,cz+1],[cx,cz-1]]) {
+      const b = chunkYBounds.get(ncx+'_'+ncz);
+      if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; }
+      else { yMin = 0; yMax = WORLD_HEIGHT - 1; break; }
+    }
     let hasHalf = false;
     for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
       for (let lz = -1; lz <= CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
-        for (let y = 0; y < WORLD_HEIGHT; y++) {
+        for (let y = yMin; y <= yMax; y++) {
           const t = blocks.get(key(x,y,z));
           if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) { hasHalf = true; continue; }
           updateFullInstanceAt(x, y, z);
@@ -1682,8 +1719,8 @@
   const chunkGenQueued = new Set();   // chunkKey -> already queued, avoids duplicate entries
   const chunkUnloadQueue = [];
   const chunkUnloadQueued = new Set();
-  const CHUNKS_GEN_PER_FRAME = 5;    // raised from 2 — with the smaller load radius and higher instance cap now in place, there's real headroom to generate faster so flying/fast movement doesn't outrun it, without reintroducing the earlier freeze
-  const CHUNKS_UNLOAD_PER_FRAME = 6; // scaled up to match — unloading is just Map deletions, cheaper than generating, so it can comfortably keep pace
+  const CHUNKS_GEN_PER_FRAME = 3;    // dialled back from 5 as an extra safety margin — the real fix for stutter was the Y-bounds work above (syncChunkInstances no longer scans irrelevant vertical space), this just adds some headroom on top
+  const CHUNKS_UNLOAD_PER_FRAME = 4; // scaled down to match, same reasoning
   let lastStreamChunkKey = null;
   function updateChunkStreaming() {
     if (!terrainStreamingActive) return;
@@ -1717,6 +1754,7 @@
     // not only on a boundary crossing, so a big burst of newly-needed
     // chunks streams in smoothly over the next several frames.
     let changed = false, needsFullFallback = false;
+    anyWaterTouchedThisStream = false;
     for (let i = 0; i < CHUNKS_GEN_PER_FRAME && chunkGenQueue.length > 0; i++) {
       const [cx, cz] = chunkGenQueue.shift();
       const ck = cx+'_'+cz;
@@ -1743,7 +1781,12 @@
     // per-chunk sync above, with no visible disruption to already-loaded
     // terrain elsewhere in view.
     if (needsFullFallback) needsRebuild = true;
-    else if (changed) rebuildWaterGeometry(); // keep the water surface in sync too — cheap relative to a full block rebuild, since it only touches actual water cells
+    // Only rebuilds the water surface when a chunk that streamed in/out
+    // actually touched water — most terrain has none, so this used to
+    // rebuild the ENTIRE water surface (a scan of every water cell in
+    // the whole loaded world) on every single chunk boundary crossing
+    // regardless of whether any water was nearby at all.
+    else if (changed && anyWaterTouchedThisStream) rebuildWaterGeometry();
   }
   // Synchronously generates a wider ring of chunks around wherever the
   // player currently is, all at once, rather than letting the normal

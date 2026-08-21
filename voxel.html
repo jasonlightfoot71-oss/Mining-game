@@ -1546,19 +1546,24 @@
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z)) continue; // The Mill's own building lives here — never procedurally generate over it
-        // Regional biome — a much lower-frequency noise layer than the
-        // local height detail below, so it only changes gradually over
-        // hundreds of blocks. This is what gives infinite terrain the
-        // same kind of variety Buy Terrain's fixed kinds (Flat, Mountain,
-        // Water, Forest, Beach) used to offer, but continuous and
-        // automatic — wander far enough in any direction and you'll
-        // naturally drift from low, watery lowlands through rolling
-        // forested grassland into tall stony mountains, with no seams
-        // since everything blends off the same smooth 0..1 value.
-        const regional = fbm(x*0.008, z*0.008);
+        // Regional biome — two DECOUPLED low-frequency noise layers, not
+        // just one. Previously a single "regional" value drove both
+        // height AND vegetation/surface together, which meant terrain
+        // always followed the same pattern: low areas were always
+        // watery and bare, high areas were always rocky — a fairly
+        // narrow, predictable range of combinations. `elevation` still
+        // drives height the same way; `moisture` is a second, unrelated
+        // noise field (different frequency and offset, so it doesn't
+        // just track elevation) that independently governs how sandy,
+        // grassy, or forested an area is — so you can now get a dry
+        // rocky lowland, a lush high plateau, a sparse mountain forest,
+        // and everything between, not just the one gradient from
+        // before.
+        const elevation = fbm(x*0.008, z*0.008);
+        const moisture = fbm(x*0.006 + 500, z*0.006 + 500);
         const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
-        const amp = 4 + regional*16;          // 4 (near-flat lowlands) .. 20 (tall mountains)
-        const baseline = SEA_LEVEL - 3 + regional*8; // lowlands sit near/below sea level, mountains sit well above it
+        const amp = 4 + elevation*18;          // 4 (near-flat lowlands) .. 22 (tall mountains) — widened slightly for more dramatic peaks within the world's height limit
+        const baseline = SEA_LEVEL - 3 + elevation*8; // lowlands sit near/below sea level, mountains sit well above it
         let h = Math.round(baseline + n*amp);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
         // Near The Mill, taper generated height down toward the pad's
@@ -1573,8 +1578,19 @@
         const blend = pubBlendFactor(x, z);
         if (blend < 1) h = Math.max(0, Math.round(h * blend));
         const allowWater = pubWaterAllowed(x, z);
-        const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/ : (h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/));
-        const treeChance = blend < 1 ? 0 : ((regional > 0.3 && regional < 0.75) ? 0.03 : 0.008); // denser forest in the mid "normal" band, sparse elsewhere, none right against the building
+        // Surface now depends on BOTH axes: rocky peaks still need real
+        // height, but low moisture gives sandy/dry ground even inland
+        // (not just at the waterline), and everything else defaults to
+        // grass.
+        const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/
+          : (h <= SEA_LEVEL ? 5 /*sand at the waterline*/
+          : (elevation > 0.62 && h > SEA_LEVEL+5 ? 2 /*stone peaks*/
+          : (moisture < 0.28 ? 5 /*dry/desert-like ground, independent of height*/
+          : 0 /*grass*/)));
+        // Forest density now follows moisture, not elevation — dense
+        // woodland can happen on a hill OR a plain, sparse/none in dry
+        // areas regardless of how high or low they are.
+        const treeChance = blend < 1 ? 0 : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         if (fillFrom < minY) minY = fillFrom;
         if (h > maxY) maxY = h;
@@ -1680,18 +1696,21 @@
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     // Scans only the vertical band this chunk (and its immediate
     // neighbours, since the border cells belong to them) actually uses,
-    // instead of every one of WORLD_HEIGHT levels for every single cell
-    // — that full scan was the single biggest cost in the whole
-    // streaming system, easily the main cause of stutter while moving
-    // continuously. Falls back to the full range for any neighbour
-    // whose bounds aren't known yet (e.g. it hasn't generated), which is
-    // always safe, just less of a saving in that specific case.
-    let yMin = WORLD_HEIGHT - 1, yMax = 0;
+    // instead of every one of WORLD_HEIGHT levels for every single cell.
+    // Neighbours with no recorded bounds are simply skipped (not treated
+    // as "fall back to scanning everything") — a chunk with no bounds
+    // yet hasn't been generated at all, meaning there's nothing there to
+    // find regardless of what Y range gets scanned, so skipping it loses
+    // nothing. This matters a lot in practice: at the leading edge of
+    // movement, neighbouring chunks are very often brand new and
+    // wouldn't have bounds yet, which is exactly when this optimisation
+    // needs to actually work.
+    let yMin = WORLD_HEIGHT - 1, yMax = 0, found = false;
     for (const [ncx, ncz] of [[cx,cz],[cx+1,cz],[cx-1,cz],[cx,cz+1],[cx,cz-1]]) {
       const b = chunkYBounds.get(ncx+'_'+ncz);
-      if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; }
-      else { yMin = 0; yMax = WORLD_HEIGHT - 1; break; }
+      if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; found = true; }
     }
+    if (!found) { yMin = 0; yMax = WORLD_HEIGHT - 1; } // shouldn't happen in practice — this chunk's own bounds are always set immediately before this is called — but a safe fallback regardless
     let hasHalf = false;
     for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
       for (let lz = -1; lz <= CHUNK_SIZE; lz++) {

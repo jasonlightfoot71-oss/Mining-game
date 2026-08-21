@@ -258,6 +258,11 @@
   <button id="startBtn">Click to Start</button>
 </div>
 
+<div id="terrainLoadingOverlay" style="display:none;position:fixed;inset:0;background:rgba(15,20,25,0.95);z-index:22;color:#fff;align-items:center;justify-content:center;text-align:center;flex-direction:column;gap:14px;">
+  <div style="font-size:32px;">🌍</div>
+  <div style="font-size:16px;font-weight:600;">Generating terrain…</div>
+</div>
+
 <div id="crosshair" style="display:none;"></div>
 <div id="hotbar" style="display:none;"></div>
 <div id="hint" style="display:none;"></div>
@@ -1401,6 +1406,17 @@
     const t = Math.max(0, Math.min(1, pubEdgeDistance(x, z) / PUB_BLEND_WIDTH));
     return t*t*(3-2*t);
   }
+  // Deliberately much wider than PUB_BLEND_WIDTH — the height taper only
+  // needs a short distance to look smooth, but regional noise has no
+  // awareness of "leave the area in front of the entrance dry", so a
+  // lake could still land just past the blend zone and be the first
+  // thing you see stepping out the door. This keeps a comfortably dry
+  // margin all the way around the building regardless of what the
+  // normal biome noise would otherwise put there.
+  const PUB_NO_WATER_RADIUS = 40;
+  function pubWaterAllowed(x, z) {
+    return currentWorldId !== PUB_WORLD_ID || pubEdgeDistance(x, z) >= PUB_NO_WATER_RADIUS;
+  }
   // Whether the player is currently allowed to mine/place at this
   // location. For a normal world this is exactly what visitMode already
   // meant (false while it's your own or you've been let in to build;
@@ -1498,16 +1514,14 @@
         // own fixed ground level (y=0) instead of cutting off abruptly —
         // this is what actually lets you walk straight from the
         // building onto the surrounding land instead of hitting a cliff
-        // or a gap. Water generation is suppressed in the blend zone too
-        // (the pad is dry land — without this, tapering height down
-        // below sea level would flood a moat around the building that
-        // was never actually part of its design).
+        // or a gap. Water is kept out of a much wider radius around the
+        // building entirely (see pubWaterAllowed) — the blend zone alone
+        // isn't wide enough to guarantee a lake won't land right outside
+        // the entrance, since regional noise has no idea it should leave
+        // that area dry.
         const blend = pubBlendFactor(x, z);
-        let allowWater = true;
-        if (blend < 1) {
-          h = Math.max(0, Math.round(h * blend));
-          allowWater = false;
-        }
+        if (blend < 1) h = Math.max(0, Math.round(h * blend));
+        const allowWater = pubWaterAllowed(x, z);
         const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/ : (h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/));
         const treeChance = blend < 1 ? 0 : ((regional > 0.3 && regional < 0.75) ? 0.03 : 0.008); // denser forest in the mid "normal" band, sparse elsewhere, none right against the building
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
@@ -1687,6 +1701,31 @@
     // terrain elsewhere in view.
     if (needsFullFallback) needsRebuild = true;
     else if (changed) rebuildWaterGeometry(); // keep the water surface in sync too — cheap relative to a full block rebuild, since it only touches actual water cells
+  }
+  // Synchronously generates a wider ring of chunks around wherever the
+  // player currently is, all at once, rather than letting the normal
+  // per-frame trickle (see updateChunkStreaming above) catch up over
+  // time. Used once, right when a world is first entered — this is what
+  // guarantees the area immediately around spawn (including anything
+  // built close to The Mill) is actually there from the very first
+  // frame, instead of only however much the frame-by-frame stream has
+  // reached by the time the "Click to Start" screen appears. Uses
+  // CHUNK_UNLOAD_RADIUS rather than a bigger number specifically because
+  // that's already the same worst-case footprint the instance-count cap
+  // (see MAX_INSTANCES) was sized around — going further than what the
+  // ongoing streaming system already tolerates would reintroduce the
+  // earlier invisible-block bug.
+  function eagerGenerateAroundPlayer(radius) {
+    const pcx = Math.floor(player.pos.x / CHUNK_SIZE), pcz = Math.floor(player.pos.z / CHUNK_SIZE);
+    for (let r = 0; r <= radius; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dz = -r; dz <= r; dz++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          generateChunkTerrain(pcx+dx, pcz+dz);
+        }
+      }
+    }
+    lastStreamChunkKey = pcx + '_' + pcz; // matches what updateChunkStreaming would set on its own next call, so it correctly sees nothing new needed for this chunk and just proceeds with normal frame-by-frame streaming from here
   }
 
   // ================= INSTANCED MESHES =================
@@ -4394,7 +4433,7 @@
     assignRandomRole();
     player.pos.set(13.5, 2, -2);
     yaw = Math.PI; pitch = 0;
-    beginPlaying();
+    await beginPlaying();
   }
   // One-time setup: saves an initial row under YOUR account so The Mill
   // shows up in "Your Worlds" afterward. The createPubBtn only shows when
@@ -4414,8 +4453,8 @@
     currentRole = null;
     player.pos.set(13.5, 2, -2);
     yaw = Math.PI; pitch = 0;
+    await beginPlaying();
     saveWorld();
-    beginPlaying();
   }
 
   // ================= WORKING (roles & zones) =================
@@ -7294,10 +7333,23 @@
     return Math.floor(s/86400)+'d ago';
   }
 
-  function beginPlaying() {
-    updateChunkStreaming(); // for infinite worlds, generate terrain around wherever the player is BEFORE the first mesh build — otherwise rebuildMeshes() below runs on an empty map until the next animate() frame catches up
+  async function beginPlaying() {
+    document.getElementById('worldSelect').style.display = 'none'; // hidden first — otherwise it sits on top of (z-index 25) and completely hides the loading overlay below (z-index 22)
+    if (terrainStreamingActive) {
+      // Shown while the wider initial area generates all at once — this
+      // replaces what used to be an unexplained flicker with an honest,
+      // labelled pause. The double requestAnimationFrame wait is what
+      // actually lets the browser paint this overlay before the
+      // synchronous generation work below blocks the main thread —
+      // without it, the overlay would be set to visible and then
+      // immediately covered by the freeze before ever appearing on screen.
+      document.getElementById('terrainLoadingOverlay').style.display = 'flex';
+      await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
+      eagerGenerateAroundPlayer(CHUNK_UNLOAD_RADIUS);
+      document.getElementById('terrainLoadingOverlay').style.display = 'none';
+    }
+    updateChunkStreaming(); // catches anything eagerGenerateAroundPlayer didn't cover (e.g. for non-streaming worlds, this is just a no-op)
     rebuildMeshes();
-    document.getElementById('worldSelect').style.display = 'none';
     document.getElementById('overlay').style.display = 'flex';
     if (currentWorldId) {
       if (window._voxelAutosave) clearInterval(window._voxelAutosave);
@@ -7343,7 +7395,7 @@
               // your own world.
               visitMode = false;
               currentRole = null; // guard against a stale role from a previous Mill visit
-              beginPlaying();
+              await beginPlaying();
             } else { msg.textContent = 'Could not load that world — try again.'; }
           });
           row.querySelector('.delBtn').addEventListener('click', async (e) => {
@@ -7387,7 +7439,7 @@
             visitMode = true;
             currentRole = null; // guard against a stale role from a previous Mill visit
             document.getElementById('visitBannerName').textContent = currentWorldName;
-            beginPlaying();
+            await beginPlaying();
           } else { msg.textContent = 'Could not load that world — try again.'; }
         });
       });
@@ -7405,7 +7457,7 @@
   document.getElementById('visitPubBtn').addEventListener('click', () => { visitPub(); });
   document.getElementById('createPubBtn').addEventListener('click', () => { createPub(); });
 
-  document.getElementById('newWorldBtn').addEventListener('click', () => {
+  document.getElementById('newWorldBtn').addEventListener('click', async () => {
     const input = document.getElementById('newWorldName');
     const name = (input.value || 'My World').trim().slice(0,40) || 'My World';
     currentWorldId = newWorldId();
@@ -7426,7 +7478,7 @@
     clearPubExtras(); // in case the last thing loaded was the community pub
     updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
     spawnDefault();
-    beginPlaying();
+    await beginPlaying();
     saveWorld();
   });
 

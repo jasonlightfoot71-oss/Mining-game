@@ -422,7 +422,6 @@
   // save after opening a world does a full upload, same as the old
   // behaviour always did every time).
   let lastSavedChunkPayloads = new Map();
-  let lastSavedPubPayloads = new Map(); // same idea as lastSavedChunkPayloads, but dedicated to The Mill's own protected building footprint — see savePubChunks/loadPubWorldData
   function computeChunkGroups() {
     const groups = new Map(); // chunkKey -> { blocks: [...], water: [...] }
     for (const [k, t] of blocks) {
@@ -542,88 +541,6 @@
       }
     }
     return true;
-  }
-
-  // ---- The Mill's hybrid save/load. The building's own protected
-  // footprint (see isPubProtectedChunk) still uses the old full-snapshot
-  // approach — appropriate since it's small, fixed, and (now that
-  // editing is blocked there entirely) essentially never changes after
-  // its first save. The open ground beyond it uses the same diff-edit
-  // system as a normal infinite world, via saveDirtyEditChunks/
-  // recordBlockEdit — that's what actually makes mining/building out
-  // there persist without ballooning storage the same way a full
-  // snapshot of an infinite, explorable area would.
-  async function savePubChunks(worldId) {
-    const groups = new Map();
-    for (const [k, t] of blocks) {
-      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
-      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
-      if (!isPubProtectedChunk(Math.floor(x/CHUNK_SIZE), Math.floor(z/CHUNK_SIZE))) continue;
-      const ck = chunkKeyOf(x, z);
-      if (!groups.has(ck)) groups.set(ck, { blocks: [], water: [] });
-      const rot = stepRotations.get(k);
-      groups.get(ck).blocks.push(rot ? [x,y,z,t,rot] : [x,y,z,t]);
-    }
-    for (const [k, lvl] of waterBlocks) {
-      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
-      const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
-      if (!isPubProtectedChunk(Math.floor(x/CHUNK_SIZE), Math.floor(z/CHUNK_SIZE))) continue;
-      const ck = chunkKeyOf(x, z);
-      if (!groups.has(ck)) groups.set(ck, { blocks: [], water: [] });
-      groups.get(ck).water.push([x,y,z,lvl]);
-    }
-    const rows = [];
-    for (const [ck, g] of groups) {
-      const payload = JSON.stringify(g);
-      if (lastSavedPubPayloads.get(ck) === payload) continue; // unchanged since last save — and since the building can't be edited any more, this is true for every save after the first
-      const [cx, cz] = ck.split('_').map(Number);
-      rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: g.blocks, water: g.water, updated_at: new Date().toISOString() });
-    }
-    const editsOk = await saveDirtyEditChunks(worldId); // the surrounding open ground — the part that actually changes session to session
-    if (rows.length === 0) return editsOk;
-    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks`, {
-      method: 'POST', headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(rows)
-    });
-    if (!res.ok) return false;
-    for (const [ck, g] of groups) lastSavedPubPayloads.set(ck, JSON.stringify(g));
-    return editsOk;
-  }
-  async function loadPubWorldData() {
-    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(PUB_WORLD_ID)}&select=data`, { headers: SB_HEADERS });
-    if (!res.ok) return null;
-    const rows = await res.json();
-    const data = rows[0] ? rows[0].data : null;
-    if (!data) return null;
-    // One fetch covering every saved chunk row for The Mill, then routed
-    // per-row: rows inside the building's protected footprint are a full
-    // terrain snapshot (old system); rows outside it are edit diffs (new
-    // system) — see savePubChunks above for how each kind gets written.
-    const res2 = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(PUB_WORLD_ID)}&select=chunk_x,chunk_z,blocks,water`, { headers: SB_HEADERS });
-    const rows2 = res2.ok ? await res2.json() : [];
-    const blockArr = [], waterArr = [];
-    lastSavedPubPayloads = new Map();
-    for (const row of rows2) {
-      if (isPubProtectedChunk(row.chunk_x, row.chunk_z)) {
-        const b = row.blocks || [], w = row.water || [];
-        blockArr.push(...b);
-        waterArr.push(...w);
-        lastSavedPubPayloads.set(row.chunk_x+'_'+row.chunk_z, JSON.stringify({ blocks: b, water: w }));
-      } else {
-        for (const entry of (row.blocks||[])) {
-          const [x,y,z,t,rot] = entry;
-          const k = key(x,y,z);
-          blockEdits.set(k, t);
-          if (rot) stepRotEdits.set(k, rot);
-        }
-        for (const [x,y,z,lvl] of (row.water||[])) {
-          waterEdits.set(key(x,y,z), lvl);
-        }
-      }
-    }
-    data.blocks = blockArr;
-    data.water = waterArr;
-    return data;
   }
 
   let playerUid = null;
@@ -865,8 +782,7 @@
       // marked chunked:true once the chunk data backing that flag has
       // actually landed. Saving them the other way round risks a world
       // claiming "blocks live in chunks" a moment before they actually do.
-      const chunksOk = currentWorldId === PUB_WORLD_ID ? await savePubChunks(currentWorldId)
-        : infiniteWorldActive ? await saveDirtyEditChunks(currentWorldId) : await saveChangedChunks(currentWorldId);
+      const chunksOk = infiniteWorldActive ? await saveDirtyEditChunks(currentWorldId) : await saveChangedChunks(currentWorldId);
       if (!chunksOk) {
         console.error('[voxel] chunk save failed');
         showSaveStatus('⚠ Save failed (chunks)', true);
@@ -1454,8 +1370,36 @@
   // in this range entirely whenever inside The Mill specifically, so the
   // hand-built structure is never procedurally overwritten or deleted —
   // only genuinely open ground beyond it ever streams terrain.
-  function isPubProtectedChunk(cx, cz) {
-    return currentWorldId === PUB_WORLD_ID && cx >= -1 && cx <= 1 && cz >= -1 && cz <= 1;
+  // The Mill's building sits on a fixed ground pad from roughly x:-4..32,
+  // z:-4..38 (see generatePubWorld()'s fillBlocks(-4,32,0,0,-4,38,...)).
+  // Checked by EXACT column, not by whole chunk — chunks are 32 blocks
+  // wide, considerably bigger than the building itself, so protecting
+  // entire chunks left a large empty buffer of unfilled void between the
+  // building's actual edge and wherever real terrain started, which is
+  // what stranded the building without a way to reach the surrounding
+  // land on foot. Protecting only the exact footprint lets terrain
+  // generate right up to the building's own walls.
+  const PUB_BOUNDS = { x0: -4, x1: 32, z0: -4, z1: 38 };
+  function isPubColumn(x, z) {
+    return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
+  }
+  // How far outside the pad we are, in blocks (0 = inside or right on
+  // its edge) — used to taper generated terrain height smoothly down to
+  // the pad's own ground level near the building, instead of a sudden
+  // cliff where flat pad meets normal generated height.
+  function pubEdgeDistance(x, z) {
+    const dx = Math.max(PUB_BOUNDS.x0 - x, 0, x - PUB_BOUNDS.x1);
+    const dz = Math.max(PUB_BOUNDS.z0 - z, 0, z - PUB_BOUNDS.z1);
+    return Math.sqrt(dx*dx + dz*dz);
+  }
+  const PUB_BLEND_WIDTH = 14; // blocks beyond the pad's edge over which generated height ramps up to its normal value
+  // 0 = fully blended down to the pad's own ground level, 1 = fully
+  // normal generated terrain, smoothly ramped between via smoothstep
+  // (same easing already used elsewhere in this file, e.g. smoothNoise).
+  function pubBlendFactor(x, z) {
+    if (currentWorldId !== PUB_WORLD_ID) return 1;
+    const t = Math.max(0, Math.min(1, pubEdgeDistance(x, z) / PUB_BLEND_WIDTH));
+    return t*t*(3-2*t);
   }
   // Whether the player is currently allowed to mine/place at this
   // location. For a normal world this is exactly what visitMode already
@@ -1463,12 +1407,10 @@
   // true — blocked — while visiting someone else's, unchanged). The Mill
   // is the one special case: visitMode itself stays false there (so the
   // surrounding open ground behaves like a completely normal, saveable,
-  // editable world), and only the building's own protected footprint is
-  // blocked, checked here directly by chunk position instead.
+  // editable world), and only the building's own exact footprint is
+  // blocked, checked here directly instead.
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) {
-      return !isPubProtectedChunk(Math.floor(x/CHUNK_SIZE), Math.floor(z/CHUNK_SIZE));
-    }
+    if (currentWorldId === PUB_WORLD_ID) return !isPubColumn(x, z);
     return !visitMode;
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
@@ -1503,11 +1445,12 @@
   const waterEdits = new Map();   // cellKey -> level (-1 = removed)
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
   function recordBlockEdit(x, y, z, type, rot) {
-    // Gated on terrainStreamingActive, not infiniteWorldActive — The Mill
-    // has streaming on but keeps its own separate save format (see
-    // savePubChunks), and still needs edits to the open ground around it
-    // recorded here. A legacy finite world has neither flag set, so this
-    // correctly stays a no-op for those.
+    // Gated on terrainStreamingActive rather than checking currentWorldId
+    // directly — The Mill now sets both this and infiniteWorldActive, so
+    // in practice they're equivalent there, but terrainStreamingActive is
+    // the more directly relevant flag (streaming being on is exactly
+    // what implies there's a diff system to record into). A legacy
+    // finite world has neither flag set, so this stays a no-op there.
     if (!terrainStreamingActive) return;
     const k = key(x, y, z);
     blockEdits.set(k, type);
@@ -1531,11 +1474,11 @@
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (generatedChunks.has(ck)) return;
-    if (isPubProtectedChunk(cx, cz)) { generatedChunks.add(ck); return; } // The Mill's own building lives here — never procedurally generate over it
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
+        if (isPubColumn(x, z)) continue; // The Mill's own building lives here — never procedurally generate over it
         // Regional biome — a much lower-frequency noise layer than the
         // local height detail below, so it only changes gradually over
         // hundreds of blocks. This is what gives infinite terrain the
@@ -1551,8 +1494,22 @@
         const baseline = SEA_LEVEL - 3 + regional*8; // lowlands sit near/below sea level, mountains sit well above it
         let h = Math.round(baseline + n*amp);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
-        const surfaceType = h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/);
-        const treeChance = (regional > 0.3 && regional < 0.75) ? 0.03 : 0.008; // denser forest in the mid "normal" band, sparse elsewhere
+        // Near The Mill, taper generated height down toward the pad's
+        // own fixed ground level (y=0) instead of cutting off abruptly —
+        // this is what actually lets you walk straight from the
+        // building onto the surrounding land instead of hitting a cliff
+        // or a gap. Water generation is suppressed in the blend zone too
+        // (the pad is dry land — without this, tapering height down
+        // below sea level would flood a moat around the building that
+        // was never actually part of its design).
+        const blend = pubBlendFactor(x, z);
+        let allowWater = true;
+        if (blend < 1) {
+          h = Math.max(0, Math.round(h * blend));
+          allowWater = false;
+        }
+        const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/ : (h <= SEA_LEVEL ? 5 /*sand*/ : (regional > 0.65 && h > SEA_LEVEL+6 ? 2 /*stone peaks*/ : 0 /*grass*/));
+        const treeChance = blend < 1 ? 0 : ((regional > 0.3 && regional < 0.75) ? 0.03 : 0.008); // denser forest in the mid "normal" band, sparse elsewhere, none right against the building
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         for (let y = fillFrom; y <= h; y++) {
           let type;
@@ -1561,10 +1518,10 @@
           else type = 2;
           blocks.set(key(x,y,z), type);
         }
-        if (h < SEA_LEVEL) {
+        if (allowWater && h < SEA_LEVEL) {
           for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
         }
-        if (h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
+        if (treeChance && h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -1602,11 +1559,11 @@
   function unloadChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
-    if (isPubProtectedChunk(cx, cz)) return; // never touch The Mill's building — it was never actually procedurally generated here in the first place (see generateChunkTerrain), so there's nothing of ours to unload
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
+        if (isPubColumn(x, z)) continue; // never touch The Mill's own building
         for (let y = 0; y < WORLD_HEIGHT; y++) {
           const k = key(x,y,z);
           blocks.delete(k);
@@ -4412,21 +4369,24 @@
   async function visitPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
-    infiniteWorldActive = false; // The Mill's building keeps the old full-snapshot save system — see savePubChunks/loadPubWorldData for the hybrid approach used here
-    terrainStreamingActive = true; // the open ground beyond the building streams infinite terrain — see isPubProtectedChunk, which keeps this from ever touching the building's own footprint
-    // Guaranteed-clean state regardless of what the previous world (if
-    // any) left behind.
+    // The building itself is fully deterministic (generatePubWorld() has
+    // no randomness in its structural placement — every wall, door, and
+    // fixture sits at a fixed coordinate) and editing it is blocked
+    // entirely, so there's never anything of its own to actually save or
+    // load — it's simplest and safest to just always rebuild it fresh.
+    // Only the open ground beyond it needs real persistence, via the
+    // same lightweight diff system any other infinite world uses.
+    infiniteWorldActive = true;
+    terrainStreamingActive = true;
     generatedChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
-    lastSavedPubPayloads = new Map();
-    const saved = await loadPubWorldData();
-    if (saved) { applyWorldData(saved); spawnPubDecorations(); ensureBarFixtures(); ensureBarRoom(); needsRebuild = true; }
-    else generatePubWorld(); // nobody has created it yet — show the template; this visit still won't be able to save the building itself either way
-    // Deliberately NOT setting visitMode = true any more. The building
-    // itself is protected by canEditAt()'s zone check instead (see its
-    // own comment) — but the open ground around it is meant to be a
+    await loadWorldEditChunks(PUB_WORLD_ID); // any previous mining/building on the open ground around The Mill
+    generatePubWorld(); // the building itself — always regenerated fresh; already handles its own decorations/fixtures internally, nothing further needed here
+    // Deliberately NOT setting visitMode = true. The building itself is
+    // protected by canEditAt()'s zone check instead (see its own
+    // comment) — but the open ground around it is meant to be a
     // genuinely normal, editable, saveable world, and visitMode is a
     // blanket switch that would block that everywhere, not just inside
     // the building.
@@ -4436,24 +4396,22 @@
     yaw = Math.PI; pitch = 0;
     beginPlaying();
   }
-  // One-time setup: generates the base layout and saves it under YOUR
-  // account, which is what makes it show up in "Your Worlds" afterward.
-  // The createPubBtn only shows when it's missing from your own list, so
-  // this never needs running again once it's done.
+  // One-time setup: saves an initial row under YOUR account so The Mill
+  // shows up in "Your Worlds" afterward. The createPubBtn only shows when
+  // it's missing from your own list, so this never needs running again
+  // once it's done.
   async function createPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
-    infiniteWorldActive = false; // always the old finite hand-built save system for the building itself — see visitPub()'s own comment on this
-    terrainStreamingActive = true; // decorative-turned-editable streamed terrain beyond the building, same as visitPub()
+    infiniteWorldActive = true; // see visitPub()'s own comment — the building always regenerates fresh, only the open ground needs saving
+    terrainStreamingActive = true;
     generatedChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
-    lastSavedPubPayloads = new Map();
     generatePubWorld();
     visitMode = false;
     currentRole = null;
-    lastSavedChunkPayloads = new Map(); // same reasoning as newWorldBtn's handler above — this is also a from-scratch world with no loadWorldData() call to reset it otherwise
     player.pos.set(13.5, 2, -2);
     yaw = Math.PI; pitch = 0;
     saveWorld();

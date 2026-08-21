@@ -532,20 +532,31 @@
     return true;
   }
   async function loadWorldEditChunks(worldId) {
-    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(worldId)}&select=blocks,water`, { headers: SB_HEADERS });
-    if (!res.ok) return false;
-    const rows = await res.json();
-    for (const row of rows) {
-      for (const [x,y,z,t,rot] of (row.blocks||[])) {
-        const k = key(x,y,z);
-        blockEdits.set(k, t);
-        if (rot) stepRotEdits.set(k, rot);
+    // Wrapped in try/catch deliberately — an uncaught error or rejected
+    // fetch here would otherwise propagate out of whatever awaited this
+    // (visitPub(), for one) and silently abort everything AFTER it in
+    // that function, including generatePubWorld() itself. That failure
+    // mode would look exactly like "the building's gone", with no
+    // on-screen error to explain why.
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(worldId)}&select=blocks,water`, { headers: SB_HEADERS });
+      if (!res.ok) { console.warn('[voxel] loadWorldEditChunks failed', res.status); return false; }
+      const rows = await res.json();
+      for (const row of rows) {
+        for (const [x,y,z,t,rot] of (row.blocks||[])) {
+          const k = key(x,y,z);
+          blockEdits.set(k, t);
+          if (rot) stepRotEdits.set(k, rot);
+        }
+        for (const [x,y,z,lvl] of (row.water||[])) {
+          waterEdits.set(key(x,y,z), lvl);
+        }
       }
-      for (const [x,y,z,lvl] of (row.water||[])) {
-        waterEdits.set(key(x,y,z), lvl);
-      }
+      return true;
+    } catch (e) {
+      console.warn('[voxel] loadWorldEditChunks error', e);
+      return false;
     }
-    return true;
   }
 
   let playerUid = null;
@@ -648,7 +659,20 @@
     //    waterEdits; the terrain itself regenerates procedurally as
     //    chunks stream in around wherever the player loads in.
     infiniteWorldActive = data.chunkMode === 'edits';
-    terrainStreamingActive = infiniteWorldActive; // kept in sync here — regular worlds always stream and save the same way; The Mill overrides this pairing explicitly itself (see visitPub/createPub)
+    // terrainStreamingActive is explicitly forced OFF here (not just left
+    // alone) — even though it usually matches infiniteWorldActive, this
+    // function still has an await below (loadWorldEditChunks), during
+    // which the game's normal per-frame loop keeps running in the
+    // background. If streaming were still flagged "on" from whatever the
+    // PREVIOUS world had it set to, it would start generating terrain
+    // around the stale player position left over from that previous
+    // world, and the caller's subsequent applyWorldData() (which
+    // unconditionally clears the block map to load the new world) would
+    // wipe that out again without knowing to regenerate it — a real bug
+    // that produced permanent holes near spawn. Instead, each caller
+    // turns streaming back on itself, only once position and world state
+    // are fully settled, right before beginPlaying().
+    terrainStreamingActive = false;
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
     generatedChunks.clear(); lastStreamChunkKey = null;
     if (infiniteWorldActive) {
@@ -4416,11 +4440,24 @@
     // Only the open ground beyond it needs real persistence, via the
     // same lightweight diff system any other infinite world uses.
     infiniteWorldActive = true;
-    terrainStreamingActive = true;
+    // terrainStreamingActive stays OFF through all of the setup below —
+    // this used to be set true right here, before the awaited network
+    // fetch a few lines down. During that await, the game's normal
+    // per-frame loop keeps running, and with streaming already flagged
+    // "on", it would generate terrain around whatever position the
+    // player was left at from the PREVIOUS world. generatePubWorld()
+    // below then unconditionally clears the entire block map to rebuild
+    // the building fresh — wiping that prematurely-generated terrain out
+    // again, but WITHOUT clearing the "already generated" bookkeeping,
+    // so the streaming system never regenerated it: a permanent hole
+    // right around the building. Turned on only at the very end instead,
+    // once position and world state are fully settled.
     generatedChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
+    yaw = Math.PI; pitch = 0;
     await loadWorldEditChunks(PUB_WORLD_ID); // any previous mining/building on the open ground around The Mill
     generatePubWorld(); // the building itself — always regenerated fresh; already handles its own decorations/fixtures internally, nothing further needed here
     // Deliberately NOT setting visitMode = true. The building itself is
@@ -4431,8 +4468,7 @@
     // the building.
     visitMode = false;
     assignRandomRole();
-    player.pos.set(13.5, 2, -2);
-    yaw = Math.PI; pitch = 0;
+    terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
   // One-time setup: saves an initial row under YOUR account so The Mill
@@ -4443,7 +4479,6 @@
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
     infiniteWorldActive = true; // see visitPub()'s own comment — the building always regenerates fresh, only the open ground needs saving
-    terrainStreamingActive = true;
     generatedChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
@@ -4453,6 +4488,7 @@
     currentRole = null;
     player.pos.set(13.5, 2, -2);
     yaw = Math.PI; pitch = 0;
+    terrainStreamingActive = true; // no awaited network call happens before this in createPub(), so there's no real race here, but set at the same point as visitPub() for consistency
     await beginPlaying();
     saveWorld();
   }
@@ -7345,8 +7381,16 @@
       // immediately covered by the freeze before ever appearing on screen.
       document.getElementById('terrainLoadingOverlay').style.display = 'flex';
       await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
-      eagerGenerateAroundPlayer(CHUNK_UNLOAD_RADIUS);
-      document.getElementById('terrainLoadingOverlay').style.display = 'none';
+      try {
+        eagerGenerateAroundPlayer(CHUNK_UNLOAD_RADIUS);
+      } catch (e) {
+        // Never leave the loading screen stuck open over a broken game —
+        // that would look exactly like "everything's gone", with no clue
+        // why. Logged so it's actually diagnosable if it ever fires.
+        console.error('[voxel] eager terrain generation failed', e);
+      } finally {
+        document.getElementById('terrainLoadingOverlay').style.display = 'none';
+      }
     }
     updateChunkStreaming(); // catches anything eagerGenerateAroundPlayer didn't cover (e.g. for non-streaming worlds, this is just a no-op)
     rebuildMeshes();
@@ -7395,6 +7439,10 @@
               // your own world.
               visitMode = false;
               currentRole = null; // guard against a stale role from a previous Mill visit
+              // Turned on here, only now that position/world state are
+              // fully settled — see loadWorldData()'s own comment on why
+              // this can't safely happen any earlier.
+              terrainStreamingActive = infiniteWorldActive;
               await beginPlaying();
             } else { msg.textContent = 'Could not load that world — try again.'; }
           });
@@ -7439,6 +7487,7 @@
             visitMode = true;
             currentRole = null; // guard against a stale role from a previous Mill visit
             document.getElementById('visitBannerName').textContent = currentWorldName;
+            terrainStreamingActive = infiniteWorldActive; // turned on only now — see loadWorldData()'s own comment on why
             await beginPlaying();
           } else { msg.textContent = 'Could not load that world — try again.'; }
         });

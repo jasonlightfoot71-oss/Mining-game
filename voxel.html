@@ -7407,11 +7407,15 @@
     const msg = document.getElementById('worldSelectMsg');
     const list = document.getElementById('worldList');
     try {
-      const worlds = await fetchWorldList();
-      // The Mill only ever needs the ＋Create button once — once it's a
-      // real saved row under this account it'll show up in the list
-      // above like any other world, same Play button, same everything.
-      document.getElementById('createPubBtn').style.display = worlds.some(w => w.id === PUB_WORLD_ID) ? 'none' : 'block';
+      const allWorlds = await fetchWorldList();
+      document.getElementById('createPubBtn').style.display = allWorlds.some(w => w.id === PUB_WORLD_ID) ? 'none' : 'block';
+      // The Mill is deliberately excluded from this list — its own
+      // dedicated "Visit The Mill" button (visitPub()) is the only path
+      // that actually calls generatePubWorld() to build the structure.
+      // This generic Play path only ever applies saved data on top of
+      // whatever's already there, which for the Mill is nothing — it
+      // would show an empty lot with decorations floating in it.
+      const worlds = allWorlds.filter(w => w.id !== PUB_WORLD_ID);
       if (!worlds.length) {
         msg.textContent = 'No saved worlds yet — create one below.';
         list.innerHTML = '';
@@ -7430,7 +7434,6 @@
             const data = await loadWorldData(id);
             if (data) {
               applyWorldData(data);
-              if (id === PUB_WORLD_ID) { spawnPubDecorations(); ensureBarFixtures(); ensureBarRoom(); needsRebuild = true; }
               currentWorldId = id;
               currentWorldName = row.querySelector('.wName').firstChild.textContent;
               // Reset in case a previous world in this same session was

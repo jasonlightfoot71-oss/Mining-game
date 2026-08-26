@@ -174,11 +174,11 @@
   }
   #btnMine { left: 40px; bottom: 210px; }
   #btnPlace { right: 40px; bottom: 210px; }
-  /* Sits just left of the look joystick (right:18px, 104px wide — so its
-     left edge is at right:122px from the screen edge), vertically centered
-     on it (that joystick spans bottom:90px to bottom:194px, center 142px). */
+  /* Now sits level with btnPlace (same bottom offset), just further in
+     from the edge, rather than lower down and further right — lines the
+     two up in a row instead of jump sitting off on its own. */
   #btnJump {
-    right: 136px; bottom: 115px;
+    right: 136px; bottom: 210px;
     width: 54px; height: 54px; font-size: 22px;
   }
 
@@ -947,6 +947,18 @@
     }
     return total / maxAmp;
   }
+  // fbm() sums several octaves of independent noise together, which —
+  // like averaging several dice rolls — naturally clusters its output
+  // around 0.5 and rarely reaches genuinely low or high values. Used
+  // directly, that made biome variety (mountains, deserts) rare enough
+  // that you could fly for a long time without ever crossing into one.
+  // This pushes values outward from the centre before they're used for
+  // anything else, so the full range of biomes actually shows up over a
+  // much shorter distance, without changing the underlying noise's
+  // smooth, continuous shape (still clamped to a valid 0..1 result).
+  function biomeStretch(v) {
+    return Math.max(0, Math.min(1, 0.5 + (v - 0.5) * 2.2));
+  }
 
   // ================= TEXTURES (procedural, pixel-art style) =================
   function makeCanvasTexture(draw) {
@@ -1582,20 +1594,24 @@
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z)) continue; // The Mill's own building lives here — never procedurally generate over it
         // Regional biome — two DECOUPLED low-frequency noise layers, not
-        // just one. Previously a single "regional" value drove both
-        // height AND vegetation/surface together, which meant terrain
-        // always followed the same pattern: low areas were always
-        // watery and bare, high areas were always rocky — a fairly
-        // narrow, predictable range of combinations. `elevation` still
-        // drives height the same way; `moisture` is a second, unrelated
-        // noise field (different frequency and offset, so it doesn't
-        // just track elevation) that independently governs how sandy,
-        // grassy, or forested an area is — so you can now get a dry
-        // rocky lowland, a lush high plateau, a sparse mountain forest,
-        // and everything between, not just the one gradient from
-        // before.
-        const elevation = fbm(x*0.008, z*0.008);
-        const moisture = fbm(x*0.006 + 500, z*0.006 + 500);
+        // just one. `elevation` drives height, `moisture` independently
+        // governs how sandy, grassy, or forested an area is, so you get
+        // combinations like a dry rocky lowland or a lush high plateau
+        // instead of one simple gradient.
+        //
+        // fbm() sums several independently-random octaves together,
+        // which — like averaging several dice rolls — naturally clusters
+        // its output around the middle of its range and rarely reaches
+        // the extremes. Left as-is, that meant genuinely mountainous or
+        // sandy areas were rare enough that a long flight could easily
+        // never encounter one, which is what was actually being
+        // reported ("only grass and trees generated"). biomeStretch()
+        // pushes the distribution outward from the middle before it's
+        // used for anything else, so the full range of biomes shows up
+        // over a much shorter distance, without changing the underlying
+        // noise's smooth, continuous shape.
+        const elevation = biomeStretch(fbm(x*0.008, z*0.008));
+        const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
         const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
         const amp = 4 + elevation*18;          // 4 (near-flat lowlands) .. 22 (tall mountains) — widened slightly for more dramatic peaks within the world's height limit
         const baseline = SEA_LEVEL - 3 + elevation*8; // lowlands sit near/below sea level, mountains sit well above it
@@ -1616,11 +1632,13 @@
         // Surface now depends on BOTH axes: rocky peaks still need real
         // height, but low moisture gives sandy/dry ground even inland
         // (not just at the waterline), and everything else defaults to
-        // grass.
+        // grass. Thresholds loosened a bit (0.62->0.55, 0.28->0.35) to
+        // work together with the stretch above — both changes push
+        // these biomes to show up meaningfully more often.
         const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/
           : (h <= SEA_LEVEL ? 5 /*sand at the waterline*/
-          : (elevation > 0.62 && h > SEA_LEVEL+5 ? 2 /*stone peaks*/
-          : (moisture < 0.28 ? 5 /*dry/desert-like ground, independent of height*/
+          : (elevation > 0.55 && h > SEA_LEVEL+5 ? 2 /*stone peaks*/
+          : (moisture < 0.35 ? 5 /*dry/desert-like ground, independent of height*/
           : 0 /*grass*/)));
         // Forest density now follows moisture, not elevation — dense
         // woodland can happen on a hill OR a plain, sparse/none in dry
@@ -2327,7 +2345,14 @@
   }
 
   // ================= FLAME TORCH FIXTURES =================
-  const MAX_LIGHTS = 60; // raised from 10 now that lights no longer cast shadows — a shadowless point light is cheap (basically just extra per-pixel lighting math), so the old cap (sized around 10 shadow-casting cube-map lights being expensive) doesn't apply the same way any more
+  // Raised again, since active-at-once count is now bounded separately
+  // by distance (see updateLightVisibility below) rather than by total
+  // count — a light far from the player switches off entirely rather
+  // than staying lit, so a big, heavily-lit world stays cheap regardless
+  // of how many are placed across it in total. This cap is now mostly
+  // just a sanity ceiling against unbounded growth, not a performance
+  // limit.
+  const MAX_LIGHTS = 400;
   const fixtures = new Map(); // "bx,by,bz|nx,ny,nz" -> { light, stick, flame, flameOuter, flameInner, bx,by,bz,nx,ny,nz }
 
   function faceKeyFor(bx,by,bz,nx,ny,nz) { return `${bx},${by},${bz}|${nx},${ny},${nz}`; }
@@ -2407,6 +2432,29 @@
     for (const [fk,f] of Array.from(fixtures.entries())) {
       if (f.bx===bx && f.by===by && f.bz===bz) removeFixture(fk);
     }
+  }
+  // Switches lights off entirely (not removed — just not lit or rendered)
+  // once they're far enough from the player, and back on again when the
+  // player returns nearby. This is what actually keeps a big, densely-lit
+  // world cheap regardless of MAX_LIGHTS' total: only a bounded handful
+  // near the player are ever actually contributing light or drawing
+  // their stick/flame models at once, no matter how many exist across the
+  // whole world. Throttled rather than checked every frame, since a
+  // distance check per light is cheap but still needless work 60 times a
+  // second for something that only needs to change occasionally.
+  const LIGHT_ACTIVE_RADIUS = 40;
+  let lastLightVisibilityCheck = 0;
+  function updateLightVisibility() {
+    const now = performance.now();
+    if (now - lastLightVisibilityCheck < 400) return;
+    lastLightVisibilityCheck = now;
+    fixtures.forEach(f => {
+      const dx = player.pos.x - (f.bx+0.5), dz = player.pos.z - (f.bz+0.5);
+      const within = (dx*dx + dz*dz) < LIGHT_ACTIVE_RADIUS*LIGHT_ACTIVE_RADIUS;
+      f.light.visible = within;
+      f.stick.visible = within;
+      f.flame.visible = within;
+    });
   }
 
   // ================= LADDERS =================
@@ -6116,7 +6164,7 @@
   // turning, exactly like picking up a mouse and putting it down again
   // mid-swipe.
   function setupFreeLookZone(el) {
-    const sensitivity = 0.01; // raised substantially from 0.0022 (which matched the desktop mouse) — a phone screen has much less physical drag distance to work with than a mouse on a desk, so matching mouse sensitivity 1:1 made it take several full swipes to turn around at all
+    const sensitivity = 0.02; // raised again from 0.01 per feedback — still not sensitive enough there
     let touchId = null, lastX = 0, lastY = 0;
     el.addEventListener('touchstart', e => {
       e.preventDefault();
@@ -6892,6 +6940,7 @@
       updateWaterFlow();
     }
     updateChunkStreaming(); // cheap early-exit unless a chunk boundary was actually just crossed — see its own comment
+    updateLightVisibility(); // throttled internally — see its own comment
     updateDoors(dt);
     updateWork(dt);
 

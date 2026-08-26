@@ -957,7 +957,7 @@
   // much shorter distance, without changing the underlying noise's
   // smooth, continuous shape (still clamped to a valid 0..1 result).
   function biomeStretch(v) {
-    return Math.max(0, Math.min(1, 0.5 + (v - 0.5) * 2.2));
+    return Math.max(0, Math.min(1, 0.5 + (v - 0.5) * 1.2)); // reduced from 2.2 — dialled back per feedback, both to make terrain change less often and to keep height swings gentler (a direct, predictable performance win too, alongside the earlier per-column fix)
   }
 
   // ================= TEXTURES (procedural, pixel-art style) =================
@@ -1618,8 +1618,8 @@
         const elevation = biomeStretch(fbm(x*0.008, z*0.008));
         const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
         const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
-        const amp = 4 + elevation*18;          // 4 (near-flat lowlands) .. 22 (tall mountains) — widened slightly for more dramatic peaks within the world's height limit
-        const baseline = SEA_LEVEL - 3 + elevation*8; // lowlands sit near/below sea level, mountains sit well above it
+        const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
+        const baseline = SEA_LEVEL - 2 + elevation*5; // reduced spread, same reasoning
         let h = Math.round(baseline + n*amp);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
         // Near The Mill, taper generated height down toward the pad's

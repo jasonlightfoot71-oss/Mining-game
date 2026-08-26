@@ -1678,7 +1678,7 @@
     // processed (fully inside The Mill's protected footprint) — safe
     // default rather than a potentially-wrong guess.
     if (maxY < minY) { minY = 0; maxY = WORLD_HEIGHT - 1; }
-    chunkYBounds.set(ck, [Math.max(0, minY-1), Math.min(WORLD_HEIGHT-1, maxY+3)]); // small buffer either side for neighbour-occlusion checks and tree canopy
+    chunkYBounds.set(ck, [Math.max(0, minY-1), maxY+3]); // small buffer either side for neighbour-occlusion checks and tree canopy — deliberately NOT capped at WORLD_HEIGHT-1: a tall tree on a tall mountain can genuinely reach a few blocks above that, and clamping the scan range there was cutting those blocks out of the mesh entirely (still solid, just never instanced) — exactly the "invisible blocks past a certain height" being reported
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -1689,7 +1689,7 @@
     if (!generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     const bounds = chunkYBounds.get(ck);
-    const yMin = bounds ? bounds[0] : 0, yMax = bounds ? bounds[1] : WORLD_HEIGHT - 1;
+    const yMin = bounds ? bounds[0] : 0, yMax = bounds ? bounds[1] : WORLD_HEIGHT + 6; // +6 headroom for tall tree canopies on tall terrain, same reasoning as generateChunkTerrain's own bounds — WORLD_HEIGHT-1 was cutting real content off
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
@@ -1738,7 +1738,7 @@
       const b = chunkYBounds.get(ncx+'_'+ncz);
       if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; found = true; }
     }
-    if (!found) { yMin = 0; yMax = WORLD_HEIGHT - 1; } // shouldn't happen in practice — this chunk's own bounds are always set immediately before this is called — but a safe fallback regardless
+    if (!found) { yMin = 0; yMax = WORLD_HEIGHT + 6; } // shouldn't happen in practice — this chunk's own bounds are always set immediately before this is called — but a safe fallback regardless (+6 for the same tall-tree headroom reasoning as elsewhere)
     for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
       for (let lz = -1; lz <= CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
@@ -2193,9 +2193,17 @@
     rebuildStepUpperCounts = new Array(BLOCK_TYPES.length).fill(0);
     rebuildInProgress = true;
     // Full rebuild always starts the incremental index fresh — whatever
-    // was tracked before is about to be entirely re-laid-out.
+    // was tracked before is about to be entirely re-laid-out. Steps need
+    // the same reset as full cubes do (see continueRebuild(), which now
+    // populates stepInstanceIndex/stepUpperInstanceIndex too) — without
+    // it, a step mined after a fresh rebuild would find no matching
+    // record to remove, and silently fail to disappear until the next
+    // full reload re-synced everything from scratch.
     instanceIndex.clear();
     for (let i=0;i<BLOCK_TYPES.length;i++) reverseFullIndex[i] = [];
+    stepInstanceIndex.clear();
+    stepUpperInstanceIndex.clear();
+    for (let i=0;i<BLOCK_TYPES.length;i++) { reverseStepIndex[i] = []; reverseStepUpperIndex[i] = []; }
     continueRebuild();
   }
   function continueRebuild() {
@@ -2218,7 +2226,11 @@
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
         const li = rebuildCounts[type]++;
-        if (li < MAX_INSTANCES) meshes[type].setMatrixAt(li, dummy.matrix);
+        if (li < MAX_INSTANCES) {
+          meshes[type].setMatrixAt(li, dummy.matrix);
+          stepInstanceIndex.set(k, { type, idx: li });
+          reverseStepIndex[type][li] = k;
+        }
 
         // Upper quarter — its position offset from the cell centre AND
         // its own orientation both need to rotate together by the same
@@ -2233,7 +2245,11 @@
         dummy.rotation.set(0, theta, 0);
         dummy.updateMatrix();
         const ui = rebuildStepUpperCounts[type]++;
-        if (ui < MAX_INSTANCES) stepUpperMeshes[type].setMatrixAt(ui, dummy.matrix);
+        if (ui < MAX_INSTANCES) {
+          stepUpperMeshes[type].setMatrixAt(ui, dummy.matrix);
+          stepUpperInstanceIndex.set(k, { type, idx: ui });
+          reverseStepUpperIndex[type][ui] = k;
+        }
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
         dummy.rotation.set(0,0,0);

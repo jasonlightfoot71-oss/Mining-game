@@ -1577,12 +1577,17 @@
   // Fills ONE chunk's worth of base terrain (procedural only), then
   // layers any saved player edits on top. Safe to call repeatedly — it's
   // a no-op if this chunk is already generated this session.
-  // Tracks the actual vertical range of blocks each chunk ended up using
-  // (terrain, trees, saved edits) — lets syncChunkInstances scan just
-  // that band instead of blindly checking all WORLD_HEIGHT levels for
-  // every cell, which was the single biggest cost in the whole streaming
-  // system and the main cause of stutter during continuous movement.
-  const chunkYBounds = new Map(); // chunkKey -> [minY, maxY]
+  // Per-COLUMN height, not per-chunk — this is what actually fixes the
+  // grey-flash-while-generating regression. The chunk-wide bounds above
+  // forced EVERY column in a chunk to scan up to whatever the single
+  // tallest point anywhere in that chunk reached — harmless back when
+  // tall terrain was rare, but once biome variety made real mountains
+  // common, most chunks now contain both flat ground and a much taller
+  // point somewhere in them, so nearly every column ended up scanning a
+  // needlessly huge vertical range. This tracks each individual column's
+  // own height instead, so syncChunkInstances only ever scans a tight
+  // band around what's ACTUALLY there in that specific column.
+  const columnHeight = new Map(); // "x,z" -> terrain height at that column
   let anyWaterTouchedThisStream = false; // reset per streaming update — see updateChunkStreaming
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
@@ -1647,6 +1652,7 @@
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         if (fillFrom < minY) minY = fillFrom;
         if (h > maxY) maxY = h;
+        columnHeight.set(x+','+z, h); // tree height (if any) merged in just below, once it's known
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -1668,6 +1674,18 @@
                 if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
           blocks.set(key(x, topY+2, z), 4);
           if (topY+2 > maxY) maxY = topY+2;
+          // A tree's canopy spills 1 column into each neighbour, so their
+          // own tracked height needs to account for it too, not just this
+          // column's — otherwise a neighbouring column with genuinely low
+          // terrain of its own would still get its scan range clipped
+          // right through someone else's leaves sitting above it.
+          for (let lx2=-1; lx2<=1; lx2++) {
+            for (let lz2=-1; lz2<=1; lz2++) {
+              const nk = (x+lx2)+','+(z+lz2);
+              const prev = columnHeight.get(nk);
+              if (prev === undefined || topY+2 > prev) columnHeight.set(nk, topY+2);
+            }
+          }
         }
       }
     }
@@ -1684,6 +1702,9 @@
       if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
       if (ey < minY) minY = ey;
       if (ey > maxY) maxY = ey;
+      const colKey = ex+','+ez;
+      const prevColH = columnHeight.get(colKey);
+      if (type !== -1 && (prevColH === undefined || ey > prevColH)) columnHeight.set(colKey, ey); // a player-built tower can reach higher than whatever the terrain generator put there
     }
     for (const [k, level] of waterEdits) {
       const parts = k.split(',');
@@ -1692,11 +1713,6 @@
       anyWaterTouchedThisStream = true;
     }
     generatedChunks.add(ck);
-    // Falls back to the full range for chunks where nothing was actually
-    // processed (fully inside The Mill's protected footprint) — safe
-    // default rather than a potentially-wrong guess.
-    if (maxY < minY) { minY = 0; maxY = WORLD_HEIGHT - 1; }
-    chunkYBounds.set(ck, [Math.max(0, minY-1), maxY+3]); // small buffer either side for neighbour-occlusion checks and tree canopy — deliberately NOT capped at WORLD_HEIGHT-1: a tall tree on a tall mountain can genuinely reach a few blocks above that, and clamping the scan range there was cutting those blocks out of the mesh entirely (still solid, just never instanced) — exactly the "invisible blocks past a certain height" being reported
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -1706,22 +1722,24 @@
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
-    const bounds = chunkYBounds.get(ck);
-    const yMin = bounds ? bounds[0] : 0, yMax = bounds ? bounds[1] : WORLD_HEIGHT + 6; // +6 headroom for tall tree canopies on tall terrain, same reasoning as generateChunkTerrain's own bounds — WORLD_HEIGHT-1 was cutting real content off
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z)) continue; // never touch The Mill's own building
+        const colKey = x+','+z;
+        const colH = columnHeight.get(colKey);
+        if (colH === undefined) continue; // nothing was ever generated for this column
+        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 2), yMax = colH + 3;
         for (let y = yMin; y <= yMax; y++) {
           const k = key(x,y,z);
           blocks.delete(k);
           stepRotations.delete(k);
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
+        columnHeight.delete(colKey);
       }
     }
     generatedChunks.delete(ck);
-    chunkYBounds.delete(ck);
   }
   // Reconciles just ONE chunk's worth of mesh instances (plus a 1-block
   // border into each neighbouring chunk, since a chunk streaming in or
@@ -1740,26 +1758,21 @@
   // case left here at all.
   function syncChunkInstances(cx, cz) {
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
-    // Scans only the vertical band this chunk (and its immediate
-    // neighbours, since the border cells belong to them) actually uses,
-    // instead of every one of WORLD_HEIGHT levels for every single cell.
-    // Neighbours with no recorded bounds are simply skipped (not treated
-    // as "fall back to scanning everything") — a chunk with no bounds
-    // yet hasn't been generated at all, meaning there's nothing there to
-    // find regardless of what Y range gets scanned, so skipping it loses
-    // nothing. This matters a lot in practice: at the leading edge of
-    // movement, neighbouring chunks are very often brand new and
-    // wouldn't have bounds yet, which is exactly when this optimisation
-    // needs to actually work.
-    let yMin = WORLD_HEIGHT - 1, yMax = 0, found = false;
-    for (const [ncx, ncz] of [[cx,cz],[cx+1,cz],[cx-1,cz],[cx,cz+1],[cx,cz-1]]) {
-      const b = chunkYBounds.get(ncx+'_'+ncz);
-      if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; found = true; }
-    }
-    if (!found) { yMin = 0; yMax = WORLD_HEIGHT + 6; } // shouldn't happen in practice — this chunk's own bounds are always set immediately before this is called — but a safe fallback regardless (+6 for the same tall-tree headroom reasoning as elsewhere)
+    // Scans a tight per-COLUMN band (that column's own tracked height,
+    // ±headroom for tree canopy) instead of a chunk-wide range — a
+    // chunk-wide bound meant one mountain peak anywhere in the chunk
+    // forced every OTHER column in it, however flat, to scan just as
+    // high. columnHeight has no entry for a column that hasn't
+    // generated yet (a neighbouring chunk that isn't loaded), which is
+    // correctly treated as "nothing to find" rather than "scan
+    // everything", the same reasoning as before.
     for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
       for (let lz = -1; lz <= CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
+        const colH = columnHeight.get(x+','+z);
+        if (colH === undefined) continue;
+        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 2);
+        const yMax = colH + 3;
         for (let y = yMin; y <= yMax; y++) {
           updateFullInstanceAt(x, y, z);
         }

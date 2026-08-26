@@ -6,6 +6,14 @@
 <title>Mining World</title>
 <style>
   html, body { margin: 0; padding: 0; overflow: hidden; background: #7ec0ee; font-family: -apple-system, sans-serif; }
+  /* Stops long-pressing anything on screen (block names, labels, etc.)
+     from triggering the browser's own text-selection / "Search Google
+     for…" popup — this is a touch browser behaviour, not something the
+     game was doing on purpose. Re-enabled specifically for real text
+     inputs below, since sign text / world name fields still need normal
+     selection and editing. */
+  * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  input, textarea { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
   canvas { display: block; image-rendering: pixelated; }
 
   #crosshair {
@@ -133,7 +141,8 @@
     bottom: 90px; z-index: 15; touch-action: none;
   }
   .joystick-move { left: 18px; }
-  .joystick-look { right: 18px; }
+  /* .joystick-look removed — replaced by the full-right-half free-look
+     drag zone (#lookZone), see setupFreeLookZone in the script below. */
   .joyKnob {
     position: absolute; width: 42px; height: 42px; border-radius: 50%;
     background: rgba(255,255,255,0.55); top: 50%; left: 50%;
@@ -343,7 +352,7 @@
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
-  <div class="joystick joystick-look" id="joyLook"><div class="joyKnob" id="joyLookKnob"></div></div>
+  <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:14; touch-action:none;"></div>
   <button class="touchBtn" id="btnMine">⛏️</button>
   <button class="touchBtn" id="btnPlace">🧱</button>
   <button class="touchBtn" id="btnJump">⤴️</button>
@@ -354,6 +363,11 @@
   <div style="font-size:16px;font-weight:600;margin-bottom:6px;">Turn your phone sideways</div>
   <div style="font-size:13px;opacity:0.75;max-width:300px;">Mining World plays best in landscape — rotate your device to continue.</div>
   <button id="rotateReloadBtn" style="display:none;margin-top:16px;background:rgba(212,160,23,0.85);border:none;color:#1a1a1a;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;">Already sideways? Tap to reload</button>
+</div>
+
+<div id="resumeFullscreenPrompt" style="display:none;position:fixed;inset:0;z-index:997;background:rgba(15,20,25,0.9);color:#fff;align-items:center;justify-content:center;flex-direction:column;gap:10px;text-align:center;font-family:-apple-system,sans-serif;">
+  <div style="font-size:15px;opacity:0.85;max-width:280px;">Tap to keep playing full screen</div>
+  <button id="resumeFullscreenBtn" style="background:rgba(212,160,23,0.85);border:none;color:#1a1a1a;border-radius:6px;padding:12px 22px;font-size:15px;font-weight:600;cursor:pointer;">Tap to continue</button>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -872,12 +886,7 @@
       if (rot) stepRotations.set(k, rot); // rot undefined/0 for older saves or non-step blocks — nothing to store
     });
     (data.water||[]).forEach(([x,y,z,lvl]) => waterBlocks.set(key(x,y,z), lvl||0)); // lvl||0 — older saves have no 4th element, treat as source
-    (data.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => addFixture(bx,by,bz,nx,ny,nz));
-    (data.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => addLadder(bx,by,bz,nx,ny,nz));
-    (data.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0));
-    (data.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''));
-    (data.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => addDoor(bx,by,bz,rot||0,typeIdx||0));
-    (data.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => addFurniture(bx,by,bz,rot||0,typeIdx||0));
+    applyFixtureData(data);
     if (data.player) player.pos.set(data.player.x, data.player.y, data.player.z);
     if (typeof data.yaw === 'number') yaw = data.yaw;
     if (typeof data.pitch === 'number') pitch = data.pitch;
@@ -885,6 +894,32 @@
     if (typeof data.selectedSlot === 'number') selectSlot(data.selectedSlot);
     if (typeof data.dayTime === 'number') dayTime = data.dayTime;
     needsRebuild = true;
+  }
+  // Just the fixtures/ladders/wallpapers/signs/doors/furniture fields,
+  // factored out of applyWorldData() so The Mill can reuse it — the
+  // Mill's blocks/water/player position are all handled separately
+  // (chunk streaming + a hardcoded spawn point), but its fixtures and
+  // furniture are ordinary saved data exactly like any other world's,
+  // and need the SAME restore step or anything added/removed there is
+  // silently lost the moment the building regenerates on the next visit.
+  function applyFixtureData(data) {
+    (data.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => addFixture(bx,by,bz,nx,ny,nz));
+    (data.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => addLadder(bx,by,bz,nx,ny,nz));
+    (data.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0));
+    (data.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''));
+    (data.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => addDoor(bx,by,bz,rot||0,typeIdx||0));
+    (data.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => addFurniture(bx,by,bz,rot||0,typeIdx||0));
+  }
+  async function loadPubFixtureData() {
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(PUB_WORLD_ID)}&select=data`, { headers: SB_HEADERS });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] ? rows[0].data : null;
+    } catch (e) {
+      console.warn('[voxel] loadPubFixtureData error', e);
+      return null;
+    }
   }
 
   // ================= SEEDED NOISE =================
@@ -1681,17 +1716,10 @@
   // several frames for performance — meant every chunk boundary crossing
   // made ALL currently-loaded terrain briefly vanish while it caught
   // back up, not just the one chunk that actually changed. This only
-  // ever touches the one chunk (+border) that changed.
-  // Call this AFTER the chunk's blocks/water have already been written
-  // (by generateChunkTerrain) or deleted (by unloadChunkTerrain) — it
-  // works for both cases by just asking "what SHOULD be here now?" per
-  // cell via updateFullInstanceAt, which already knows how to add,
-  // remove, or leave a cell alone based on current `blocks` state.
-  // Returns false (and does nothing further useful — caller should fall
-  // back to a full rebuild) if a half/step block is involved anywhere in
-  // range, since those aren't tracked by this incremental system. Plain
-  // procedural terrain never contains one; only a saved player edit
-  // could, so this fallback is rare in practice.
+  // ever touches the one chunk (+border) that changed. Steps/slabs are
+  // handled by the same updateFullInstanceAt call as everything else now
+  // (see addStepInstance/removeStepInstance), so there's no fallback
+  // case left here at all.
   function syncChunkInstances(cx, cz) {
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     // Scans only the vertical band this chunk (and its immediate
@@ -1711,18 +1739,14 @@
       if (b) { if (b[0] < yMin) yMin = b[0]; if (b[1] > yMax) yMax = b[1]; found = true; }
     }
     if (!found) { yMin = 0; yMax = WORLD_HEIGHT - 1; } // shouldn't happen in practice — this chunk's own bounds are always set immediately before this is called — but a safe fallback regardless
-    let hasHalf = false;
     for (let lx = -1; lx <= CHUNK_SIZE; lx++) {
       for (let lz = -1; lz <= CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
         for (let y = yMin; y <= yMax; y++) {
-          const t = blocks.get(key(x,y,z));
-          if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) { hasHalf = true; continue; }
           updateFullInstanceAt(x, y, z);
         }
       }
     }
-    return !hasHalf;
   }
   // Generation is deliberately spread across multiple frames instead of
   // happening all at once — the actual cause of the grey flash while
@@ -1772,7 +1796,7 @@
     // (called unconditionally from animate() — see its own call site),
     // not only on a boundary crossing, so a big burst of newly-needed
     // chunks streams in smoothly over the next several frames.
-    let changed = false, needsFullFallback = false;
+    let changed = false;
     anyWaterTouchedThisStream = false;
     for (let i = 0; i < CHUNKS_GEN_PER_FRAME && chunkGenQueue.length > 0; i++) {
       const [cx, cz] = chunkGenQueue.shift();
@@ -1780,7 +1804,7 @@
       chunkGenQueued.delete(ck);
       if (!generatedChunks.has(ck)) {
         generateChunkTerrain(cx, cz);
-        if (!syncChunkInstances(cx, cz)) needsFullFallback = true;
+        syncChunkInstances(cx, cz);
         changed = true;
       }
     }
@@ -1790,22 +1814,25 @@
       chunkUnloadQueued.delete(ck);
       if (generatedChunks.has(ck)) {
         unloadChunkTerrain(cx, cz);
-        if (!syncChunkInstances(cx, cz)) needsFullFallback = true;
+        syncChunkInstances(cx, cz);
         changed = true;
       }
     }
-    // Only a genuinely rare half-block-involved case falls back to a
-    // full rebuild now — ordinary generated terrain (the vast majority
-    // of streaming activity) is handled entirely by the incremental
-    // per-chunk sync above, with no visible disruption to already-loaded
-    // terrain elsewhere in view.
-    if (needsFullFallback) needsRebuild = true;
-    // Only rebuilds the water surface when a chunk that streamed in/out
+    // Water surface only rebuilds when a chunk that streamed in/out
     // actually touched water — most terrain has none, so this used to
     // rebuild the ENTIRE water surface (a scan of every water cell in
     // the whole loaded world) on every single chunk boundary crossing
     // regardless of whether any water was nearby at all.
-    else if (changed && anyWaterTouchedThisStream) rebuildWaterGeometry();
+    if (changed && anyWaterTouchedThisStream) rebuildWaterGeometry();
+    // Keeps the flower/snow ground-cover overlay in sync with whatever
+    // terrain just streamed in or out — without this, newly generated
+    // grass never grows flowers/snow at all, and any that WAS on a tile
+    // before it changed (e.g. mined away, or paved over) is left behind,
+    // floating on top of whatever's there now. Debounced (see its own
+    // definition), so calling it on every streaming update is cheap —
+    // it only actually rescans the world at most a couple of times a
+    // second regardless of how often this fires.
+    if (changed) { const s = getSeasonState().season; if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s); }
   }
   // Synchronously generates a wider ring of chunks around wherever the
   // player currently is, all at once, rather than letting the normal
@@ -2000,19 +2027,105 @@
     mesh.instanceMatrix.needsUpdate = true;
     instanceIndex.delete(k);
   }
+  // Same idea as the full-cube instance tracking above, but for step/slab
+  // blocks — these render as TWO separate instanced pieces (a lower slab
+  // in meshes[type], an upper quarter-piece in stepUpperMeshes[type]),
+  // so each needs its own index/reverse-index pair. Steps are never
+  // occlusion-culled (matching the original bulk rebuild's own
+  // behaviour — see continueRebuild), so there's no visibility check
+  // here, just add-if-missing / remove-if-gone.
+  const stepInstanceIndex = new Map();      // cellKey -> { type, idx } in meshes[type] (lower piece)
+  const stepUpperInstanceIndex = new Map(); // cellKey -> { type, idx } in stepUpperMeshes[type] (upper piece)
+  const reverseStepIndex = BLOCK_TYPES.map(() => []);
+  const reverseStepUpperIndex = BLOCK_TYPES.map(() => []);
+  function addStepInstance(k, x, y, z, type, rot) {
+    const mesh = meshes[type];
+    if (mesh.count < MAX_INSTANCES) {
+      const idx = mesh.count;
+      dummy.position.set(x+0.5, y+0.25, z+0.5);
+      dummy.rotation.set(0,0,0);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(idx, dummy.matrix);
+      mesh.count = idx+1;
+      mesh.instanceMatrix.needsUpdate = true;
+      stepInstanceIndex.set(k, { type, idx });
+      reverseStepIndex[type][idx] = k;
+    }
+    const umesh = stepUpperMeshes[type];
+    if (umesh.count < MAX_INSTANCES) {
+      const uidx = umesh.count;
+      const theta = rot * Math.PI/2;
+      const ox = -0.25*Math.cos(theta), oz = 0.25*Math.sin(theta);
+      dummy.position.set(x+0.5+ox, y+0.75, z+0.5+oz);
+      dummy.rotation.set(0, theta, 0);
+      dummy.updateMatrix();
+      umesh.setMatrixAt(uidx, dummy.matrix);
+      umesh.count = uidx+1;
+      umesh.instanceMatrix.needsUpdate = true;
+      stepUpperInstanceIndex.set(k, { type, idx: uidx });
+      reverseStepUpperIndex[type][uidx] = k;
+    }
+  }
+  function removeStepInstance(k) {
+    const rec = stepInstanceIndex.get(k);
+    if (rec) {
+      const { type, idx } = rec;
+      const mesh = meshes[type];
+      const lastIdx = mesh.count - 1;
+      if (idx !== lastIdx) {
+        mesh.getMatrixAt(lastIdx, tempMatrix);
+        mesh.setMatrixAt(idx, tempMatrix);
+        const movedKey = reverseStepIndex[type][lastIdx];
+        if (movedKey !== undefined) { stepInstanceIndex.set(movedKey, { type, idx }); reverseStepIndex[type][idx] = movedKey; }
+      }
+      reverseStepIndex[type][lastIdx] = undefined;
+      mesh.count = lastIdx;
+      mesh.instanceMatrix.needsUpdate = true;
+      stepInstanceIndex.delete(k);
+    }
+    const urec = stepUpperInstanceIndex.get(k);
+    if (urec) {
+      const { type, idx } = urec;
+      const umesh = stepUpperMeshes[type];
+      const lastIdx = umesh.count - 1;
+      if (idx !== lastIdx) {
+        umesh.getMatrixAt(lastIdx, tempMatrix);
+        umesh.setMatrixAt(idx, tempMatrix);
+        const movedKey = reverseStepUpperIndex[type][lastIdx];
+        if (movedKey !== undefined) { stepUpperInstanceIndex.set(movedKey, { type, idx }); reverseStepUpperIndex[type][idx] = movedKey; }
+      }
+      reverseStepUpperIndex[type][lastIdx] = undefined;
+      umesh.count = lastIdx;
+      umesh.instanceMatrix.needsUpdate = true;
+      stepUpperInstanceIndex.delete(k);
+    }
+  }
   // Re-evaluates ONE cell: adds/removes/updates its instance to match
-  // whatever should currently be showing there (accounting for the
-  // "hidden because every neighbour is solid" occlusion rule). Called on
-  // the edited block itself plus its 6 neighbours, since removing/adding
-  // one block can reveal or hide faces on the blocks next to it too.
+  // whatever should currently be showing there. Full cubes get the
+  // "hidden because every neighbour is solid" occlusion check; steps
+  // never did (matching the original bulk rebuild's own behaviour) so
+  // they're just kept in sync with whatever `blocks` currently says is
+  // there. Called on the edited block itself plus its 6 neighbours,
+  // since removing/adding one block can reveal or hide faces on the
+  // blocks next to it too.
   function updateFullInstanceAt(x, y, z) {
     const k = key(x, y, z);
     const type = blocks.get(k);
-    const hasInstance = instanceIndex.has(k);
-    if (type === undefined || (BLOCK_TYPES[type] && BLOCK_TYPES[type].half)) {
-      if (hasInstance) removeFullInstance(k);
+    const isHalfType = type !== undefined && BLOCK_TYPES[type] && BLOCK_TYPES[type].half;
+    if (type === undefined) {
+      if (instanceIndex.has(k)) removeFullInstance(k);
+      if (stepInstanceIndex.has(k) || stepUpperInstanceIndex.has(k)) removeStepInstance(k);
       return;
     }
+    if (isHalfType) {
+      if (instanceIndex.has(k)) removeFullInstance(k); // shouldn't normally coexist, but safe regardless
+      const existing = stepInstanceIndex.get(k);
+      if (existing && existing.type !== type) removeStepInstance(k);
+      if (!stepInstanceIndex.has(k)) addStepInstance(k, x, y, z, type, stepRotations.get(k) || 0);
+      return;
+    }
+    if (stepInstanceIndex.has(k) || stepUpperInstanceIndex.has(k)) removeStepInstance(k); // type changed away from a step
+    const hasInstance = instanceIndex.has(k);
     const shouldShow = !neighborsAllSolid(x, y, z);
     const existing = hasInstance ? instanceIndex.get(k) : null;
     if (existing && existing.type !== type) { removeFullInstance(k); }
@@ -2020,26 +2133,29 @@
     if (shouldShow && !stillHas) addFullInstance(k, x, y, z, type);
     else if (!shouldShow && stillHas) removeFullInstance(k);
   }
-  // Handles a single block being placed or mined at (x,y,z). Falls back
-  // to a full rebuild (safe, just slower) if a half/step block is
-  // involved anywhere in the affected area, since those aren't tracked
-  // incrementally. Otherwise updates just the 7 affected cells (the block
-  // itself + its 6 neighbours) and the water surface, which is by far the
-  // common case (building/mining full-cube blocks) and is what was
-  // causing the every-edit flash.
+  // Handles a single block being placed or mined at (x,y,z) — updates
+  // just the 7 affected cells (the block itself + its 6 neighbours) and
+  // the water surface. Steps/slabs are now tracked incrementally too
+  // (see addStepInstance/removeStepInstance above), so this no longer
+  // needs a full-rebuild fallback for them — that fallback was itself
+  // the cause of steps (and whatever they were next to) briefly
+  // vanishing on every placement, since a full rebuild resets and
+  // reprocesses the ENTIRE loaded world, not just the one block that
+  // changed, and the loaded world is now large enough for that to take
+  // multiple frames.
   function handleLocalBlockChange(x, y, z) {
     const cells = [[x,y,z],[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
-    for (const [cx,cy,cz] of cells) {
-      const t = blocks.get(key(cx,cy,cz));
-      if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].half) {
-        rebuildMeshes(); // rebuild immediately and directly — see the same reasoning in the step-mining fallback above
-        rebuildWaterGeometry();
-        return;
-      }
-    }
     for (const [cx,cy,cz] of cells) updateFullInstanceAt(cx,cy,cz);
     rebuildWaterGeometry(); // cheap relative to the block rebuild — keeps water's own occlusion in sync with whatever changed
+    // Keeps flowers/snow in sync with whatever just changed — without
+    // this, mining a grass block left its flower floating in place, and
+    // newly-placed grass never grew any at all, since the overlay only
+    // used to refresh on much rarer full-rebuild events. Debounced, so
+    // safe to call on every edit.
+    const s = getSeasonState().season;
+    if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s);
   }
+
 
   function neighborsAllSolid(x,y,z) {
     const solidAt = (xx,yy,zz) => {
@@ -2195,7 +2311,7 @@
   }
 
   // ================= FLAME TORCH FIXTURES =================
-  const MAX_LIGHTS = 10; // cap so lots of lights don't tank framerate
+  const MAX_LIGHTS = 60; // raised from 10 now that lights no longer cast shadows — a shadowless point light is cheap (basically just extra per-pixel lighting math), so the old cap (sized around 10 shadow-casting cube-map lights being expensive) doesn't apply the same way any more
   const fixtures = new Map(); // "bx,by,bz|nx,ny,nz" -> { light, stick, flame, flameOuter, flameInner, bx,by,bz,nx,ny,nz }
 
   function faceKeyFor(bx,by,bz,nx,ny,nz) { return `${bx},${by},${bz}|${nx},${ny},${nz}`; }
@@ -2213,24 +2329,18 @@
     // smoothly. Fixed properly now by switching block materials to
     // MeshPhongMaterial (per-pixel lighting) instead.
     //
-    // Shadow-casting is back on now too — with that root cause actually
-    // fixed, there's no reason a torch's light should still pass straight
-    // through solid blocks the way it was doing with shadows off. Point
-    // light shadows render as 6-face cube maps internally, so with up to
-    // MAX_LIGHTS=10 torches active at once this is a real perf cost —
-    // 768 stops short of the sun's own 1024 for that reason. normalBias
-    // (offsets the shadow sample along the surface normal) matters more
-    // than resolution for clean edges on blocky geometry, and is cheap
-    // regardless of resolution.
+    // Shadow-casting turned back off — with the game's world now much
+    // larger (infinite streamed terrain, not the original small fixed
+    // area), point-light shadows became the single biggest lag source:
+    // each one renders as a 6-face cube-map shadow pass, so with several
+    // torches lit at once that's dozens of extra full render passes
+    // every frame. This is also effectively "a cheap way to bring
+    // sunlight indoors" in its own right — a light with no shadow
+    // computation costs a small fraction of what a shadow-casting one
+    // does, which is exactly what's needed for lighting up a building
+    // interior without the outdoor sun reaching in.
     const light = new THREE.PointLight(0xff9a3c, 1.875, 10, 0.35); // halved again per feedback — was 3.75
-    light.castShadow = true;
-    light.shadow.mapSize.width = 768;
-    light.shadow.mapSize.height = 768;
-    light.shadow.camera.near = 0.2;
-    light.shadow.camera.far = 10;
-    light.shadow.bias = -0.0008;
-    light.shadow.normalBias = 0.03;
-    light.shadow.radius = 4;
+    light.castShadow = false;
     light.position.set(px, py, pz);
     scene.add(light);
 
@@ -4513,13 +4623,14 @@
   async function visitPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
-    // The building itself is fully deterministic (generatePubWorld() has
-    // no randomness in its structural placement — every wall, door, and
-    // fixture sits at a fixed coordinate) and editing it is blocked
-    // entirely, so there's never anything of its own to actually save or
-    // load — it's simplest and safest to just always rebuild it fresh.
-    // Only the open ground beyond it needs real persistence, via the
-    // same lightweight diff system any other infinite world uses.
+    // The building's own STRUCTURE (walls, floor, roof) is fully
+    // deterministic — generatePubWorld() always lays down the exact same
+    // thing, so there's nothing to save/load for that part. Its
+    // fixtures/furniture/doors/wallpaper/signs are a different matter
+    // though: since editing is now allowed there too, anything added or
+    // removed needs to actually persist — see loadPubFixtureData/
+    // applyFixtureData below, which restore that saved state on top of
+    // generatePubWorld()'s starting template.
     infiniteWorldActive = true;
     // terrainStreamingActive stays OFF through all of the setup below —
     // this used to be set true right here, before the awaited network
@@ -4539,8 +4650,19 @@
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
     player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
     yaw = Math.PI; pitch = 0;
-    await loadWorldEditChunks(PUB_WORLD_ID); // any previous mining/building anywhere around (and now inside) The Mill
+    const [, savedData] = await Promise.all([
+      loadWorldEditChunks(PUB_WORLD_ID), // any previous mining/building anywhere around (and now inside) The Mill
+      loadPubFixtureData(),              // any previous fixture/furniture/door/wallpaper/sign changes
+    ]);
     generatePubWorld(); // the building's template — always regenerated fresh; already handles its own decorations/fixtures internally
+    if (savedData) {
+      // Overrides generatePubWorld()'s starting fixtures/furniture with
+      // whatever was actually saved last time — this is what makes
+      // adding or removing things inside The Mill actually stick,
+      // instead of quietly reverting to the template on every visit.
+      clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
+      applyFixtureData(savedData);
+    }
     applyAllBlockEdits(); // restores any player edits to the building's interior — see its own comment for why this is separate from the chunk-streaming edit system
     // The building is now fully editable, same as the open ground around
     // it — no location-based restriction any more (see canEditAt).
@@ -5892,7 +6014,6 @@
 
   // ================= TOUCH CONTROLS =================
   const moveState = { x: 0, y: 0 };
-  const lookState = { x: 0, y: 0 };
   const flyState = { x: 0, y: 0 }; // only .y is used — drag up/down to ascend/descend
   let touchJumpQueued = false;
 
@@ -5958,10 +6079,62 @@
     el.addEventListener('touchend', end);
     el.addEventListener('touchcancel', end);
   }
+  // Free-look drag zone — replaces the old fixed-position look joystick.
+  // Touching down ANYWHERE in the zone (the whole right half of the
+  // screen) marks that spot as the current reference point but causes no
+  // movement by itself; dragging the finger from there turns the camera
+  // in that direction, updating yaw/pitch DIRECTLY the instant a
+  // touchmove event fires — the same way the desktop mousemove listener
+  // already works with e.movementX/Y — rather than storing a value for
+  // the main per-frame loop to keep re-applying every frame. That
+  // distinction matters: a per-frame "current joystick offset" value is
+  // correct to keep re-applying (holding a joystick pushed over means
+  // continuous turning), but a raw per-touchmove drag delta is not — if
+  // it were stored and re-applied every frame instead of consumed once,
+  // the camera would keep spinning after a quick flick even once the
+  // finger had already stopped moving, since nothng would ever clear it
+  // between touchmove events. Reference point continuously follows the
+  // finger (reset after every touchmove) rather than staying fixed at
+  // the initial touch-down point, so there's no hard maximum drag
+  // distance to run out of — keep moving your thumb and it keeps
+  // turning, exactly like picking up a mouse and putting it down again
+  // mid-swipe.
+  function setupFreeLookZone(el) {
+    const sensitivity = 0.0022; // matches the desktop mouse listener's own e.movementX sensitivity, so touch and mouse turn at a consistent rate
+    let touchId = null, lastX = 0, lastY = 0;
+    el.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      touchId = t.identifier;
+      lastX = t.clientX; lastY = t.clientY; // the touch-down itself never causes any look movement, only subsequent dragging does
+    }, { passive: false });
+    el.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const t = Array.from(e.changedTouches).find(tt => tt.identifier === touchId);
+      if (!t) return;
+      const dx = t.clientX - lastX, dy = t.clientY - lastY;
+      lastX = t.clientX; lastY = t.clientY;
+      if (anySceneActive()) {
+        sceneCamYawOffset = Math.max(-SCENE_CAM_YAW_RANGE, Math.min(SCENE_CAM_YAW_RANGE, sceneCamYawOffset - dx*sensitivity));
+        sceneCamPitchOffset = Math.max(-SCENE_CAM_PITCH_RANGE, Math.min(SCENE_CAM_PITCH_RANGE, sceneCamPitchOffset - dy*sensitivity));
+      } else {
+        yaw -= dx*sensitivity;
+        pitch -= dy*sensitivity;
+        pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, pitch));
+      }
+    }, { passive: false });
+    function end(e) {
+      const t = Array.from(e.changedTouches).find(tt => tt.identifier === touchId);
+      if (!t) return;
+      touchId = null;
+    }
+    el.addEventListener('touchend', end);
+    el.addEventListener('touchcancel', end);
+  }
 
   if (isTouchDevice) {
     setupJoystick(document.getElementById('joyMove'), document.getElementById('joyMoveKnob'), moveState);
-    setupJoystick(document.getElementById('joyLook'), document.getElementById('joyLookKnob'), lookState);
+    setupFreeLookZone(document.getElementById('lookZone'));
     setupLever(document.getElementById('flyLever'), document.getElementById('flyLeverHandle'), flyState);
     const btnMine = document.getElementById('btnMine');
     const btnPlace = document.getElementById('btnPlace');
@@ -6055,8 +6228,18 @@
       if (blockedHere) {
         const raisedY = y + STEP_HEIGHT;
         const clearUpThere = !test(newPos.x, raisedY, newPos.z);
-        const groundToLandOn = isSolid(newPos.x, raisedY-0.1, newPos.z);
-        if (window._stepDebug) console.log('[step-up]', { y, raisedY, clearUpThere, groundToLandOn, willStep: clearUpThere && groundToLandOn });
+        // A step/slab's lower half is ALWAYS exactly 0.5 tall regardless
+        // of which way it's rotated — so if the thing actually blocking
+        // the way is specifically a step, it's always safe ground to
+        // rise onto (as long as the space above is clear, still checked
+        // via clearUpThere) without needing to also pass the more
+        // detailed quadrant-shaped collision check a step's UPPER half
+        // uses, which existed only to stop walking through the tall
+        // side, not to gate stepping onto the low side.
+        const targetType = blocks.get(key(Math.floor(newPos.x), Math.floor(y), Math.floor(newPos.z)));
+        const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half;
+        const groundToLandOn = targetIsStep || isSolid(newPos.x, raisedY-0.1, newPos.z);
+        if (window._stepDebug) console.log('[step-up]', { y, raisedY, clearUpThere, groundToLandOn, targetIsStep, willStep: clearUpThere && groundToLandOn });
         if (clearUpThere && groundToLandOn) y = raisedY;
       }
     }
@@ -6445,12 +6628,10 @@
     // keys are pressed during it anyway), but it was luck, not
     // correctness, and kitchenAuto needs the same treatment properly.
     if (locked && !appMakeAuto.active && !barServeAuto.active && !kitchenAuto.active) {
-      if (isTouchDevice) {
-        const turnSpeed = 3.4; // was 2.6 (too slow) then 4.2 (too fast) — settling in the middle
-        yaw -= lookState.x * turnSpeed * dt;
-        pitch -= lookState.y * turnSpeed * dt;
-        pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, pitch));
-      }
+      // Touch look is no longer handled here — setupFreeLookZone updates
+      // yaw/pitch directly the moment a touchmove event fires, the same
+      // way the desktop mousemove listener already does, instead of
+      // storing a value for this per-frame loop to keep re-applying.
       const sprinting = keys['ShiftLeft'] && !flying;
       const submerged = !flying && waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z)));
       const speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
@@ -6623,16 +6804,12 @@
           if (mining.nextTick === undefined) mining.nextTick = performance.now() + 90;
           if (performance.now() >= mining.nextTick) { playMineTick(); mining.nextTick = performance.now() + 90; }
           if (prog >= 1) {
-            // Captured BEFORE deleting — handleLocalBlockChange's own
-            // half/step check looks at the CURRENT contents of `blocks`,
-            // which by definition no longer includes this cell once it's
-            // deleted below. Without checking this first, mining a step
-            // silently skipped the full-rebuild fallback its two-piece
-            // mesh actually needs, leaving its old instance stuck on
-            // screen until some unrelated later edit happened to trigger
-            // a full rebuild anyway.
-            const minedType = blocks.get(mining.k);
-            const minedWasHalf = minedType !== undefined && BLOCK_TYPES[minedType] && BLOCK_TYPES[minedType].half;
+            // Steps/slabs are now tracked incrementally too (see
+            // addStepInstance/removeStepInstance), so there's no need any
+            // more to special-case them here — handleLocalBlockChange
+            // below correctly removes whichever kind of instance (full
+            // cube or step) actually existed, just by looking at what's
+            // in `blocks` now versus before.
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
             recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
@@ -6642,8 +6819,7 @@
             removeSignsForBlock(bx, by, bz);
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
-            if (minedWasHalf) { rebuildMeshes(); rebuildWaterGeometry(); } // rebuild immediately and directly, rather than only flagging needsRebuild for next frame — removes any possible gap between the block disappearing from data and disappearing from the screen
-            else handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
             playThud(150);
             mining = null;
             crackMesh.visible = false;
@@ -6679,18 +6855,11 @@
           lastPlaceKey = null; // nothing valid right now — clear so a fresh target fires immediately once found
         }
       }
-    } else if (locked && isTouchDevice && anySceneActive()) {
-      // The look joystick still works while one of the "viewing role"
-      // scenes is running — nudges sceneCamYawOffset/PitchOffset (added on
-      // top of each scene's own fixed base angle, see where those are
-      // applied) rather than the normal yaw/pitch, and clamped to a
-      // limited range so it stays a "glance around from a fixed shot"
-      // rather than free-look. Desktop mouse gets the equivalent in the
-      // mousemove listener below.
-      const turnSpeed = 3.4;
-      sceneCamYawOffset = Math.max(-SCENE_CAM_YAW_RANGE, Math.min(SCENE_CAM_YAW_RANGE, sceneCamYawOffset - lookState.x*turnSpeed*dt));
-      sceneCamPitchOffset = Math.max(-SCENE_CAM_PITCH_RANGE, Math.min(SCENE_CAM_PITCH_RANGE, sceneCamPitchOffset - lookState.y*turnSpeed*dt));
     }
+    // Touch look during a "viewing role" scene (nudging sceneCamYawOffset/
+    // PitchOffset instead of yaw/pitch) is now handled directly inside
+    // setupFreeLookZone's own touchmove listener, the same way it updates
+    // yaw/pitch directly outside a scene — see its own comment for why.
 
     if (performance.now() - lastWaterTick >= WATER_TICK_MS) {
       lastWaterTick = performance.now();
@@ -6761,12 +6930,30 @@
   // available (tab/app visibility, bfcache restore, window refocus),
   // force a fresh size read and retry landscape lock, rather than
   // trusting whatever state was left over from before backgrounding.
+  function isInFullscreen() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement);
+  }
   function handleResume() {
     handleViewResize();
     if (isTouchDevice && document.documentElement.classList.contains('gameplay-active')) {
-      tryLockLandscape().finally(handleViewResize);
+      // requestFullscreen() only succeeds when called directly inside a
+      // genuine tap/click — browsers silently refuse it from a
+      // background event like this one (resuming from another app,
+      // regaining focus, etc.), which is exactly why the address bar
+      // stayed visible after navigating away and back but not on a
+      // fresh load (which starts from the Start-button tap itself).
+      // There's no way around that restriction from code — the best
+      // option is asking for one more real tap to satisfy it.
+      tryLockLandscape().finally(() => {
+        handleViewResize();
+        if (!isInFullscreen()) document.getElementById('resumeFullscreenPrompt').style.display = 'flex';
+      });
     }
   }
+  document.getElementById('resumeFullscreenBtn').addEventListener('click', () => {
+    document.getElementById('resumeFullscreenPrompt').style.display = 'none';
+    tryLockLandscape().finally(handleViewResize);
+  });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') handleResume(); });
   window.addEventListener('pageshow', (e) => { if (e.persisted) handleResume(); }); // iOS Safari back/forward-cache restore
   window.addEventListener('focus', handleResume);

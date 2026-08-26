@@ -352,7 +352,7 @@
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
-  <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:14; touch-action:none;"></div>
+  <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:5; touch-action:none;"></div>
   <button class="touchBtn" id="btnMine">⛏️</button>
   <button class="touchBtn" id="btnPlace">🧱</button>
   <button class="touchBtn" id="btnJump">⤴️</button>
@@ -6100,7 +6100,7 @@
   // turning, exactly like picking up a mouse and putting it down again
   // mid-swipe.
   function setupFreeLookZone(el) {
-    const sensitivity = 0.0022; // matches the desktop mouse listener's own e.movementX sensitivity, so touch and mouse turn at a consistent rate
+    const sensitivity = 0.01; // raised substantially from 0.0022 (which matched the desktop mouse) — a phone screen has much less physical drag distance to work with than a mouse on a desk, so matching mouse sensitivity 1:1 made it take several full swipes to turn around at all
     let touchId = null, lastX = 0, lastY = 0;
     el.addEventListener('touchstart', e => {
       e.preventDefault();
@@ -6227,20 +6227,30 @@
       const blockedHere = test(newPos.x, y, z) || test(x, y, newPos.z);
       if (blockedHere) {
         const raisedY = y + STEP_HEIGHT;
-        const clearUpThere = !test(newPos.x, raisedY, newPos.z);
         // A step/slab's lower half is ALWAYS exactly 0.5 tall regardless
-        // of which way it's rotated — so if the thing actually blocking
-        // the way is specifically a step, it's always safe ground to
-        // rise onto (as long as the space above is clear, still checked
-        // via clearUpThere) without needing to also pass the more
-        // detailed quadrant-shaped collision check a step's UPPER half
-        // uses, which existed only to stop walking through the tall
-        // side, not to gate stepping onto the low side.
+        // of rotation, so stepping up onto one is always geometrically
+        // safe — approaching from anywhere except its one raised "riser"
+        // side. The previous version ALSO required clearUpThere to pass
+        // (a check against the step's upper quadrant, which only exists
+        // on one side) before allowing the step at all — meaning it only
+        // ever worked from the exact side directly opposite the riser,
+        // and refused everywhere else, matching "still can't walk up".
+        // Now a confirmed step always attempts the rise; if you're
+        // actually walking straight into the solid riser face itself,
+        // the normal horizontal collision check just below (now
+        // evaluated at this raised height) correctly stops that
+        // specific case on its own, without needing to gate the attempt
+        // itself in advance.
         const targetType = blocks.get(key(Math.floor(newPos.x), Math.floor(y), Math.floor(newPos.z)));
         const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half;
-        const groundToLandOn = targetIsStep || isSolid(newPos.x, raisedY-0.1, newPos.z);
-        if (window._stepDebug) console.log('[step-up]', { y, raisedY, clearUpThere, groundToLandOn, targetIsStep, willStep: clearUpThere && groundToLandOn });
-        if (clearUpThere && groundToLandOn) y = raisedY;
+        if (targetIsStep) {
+          y = raisedY;
+        } else {
+          const clearUpThere = !test(newPos.x, raisedY, newPos.z);
+          const groundToLandOn = isSolid(newPos.x, raisedY-0.1, newPos.z);
+          if (window._stepDebug) console.log('[step-up]', { y, raisedY, clearUpThere, groundToLandOn, willStep: clearUpThere && groundToLandOn });
+          if (clearUpThere && groundToLandOn) y = raisedY;
+        }
       }
     }
 

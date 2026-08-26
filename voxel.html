@@ -6602,19 +6602,22 @@
 
   let overlayRebuildTimer = null;
   function scheduleOverlayRebuild(season) {
-    // Debounced rather than immediate — without this, placing/mining
-    // blocks rapidly during an active building session (very much the
-    // normal case) triggered one full-world rescan PER BLOCK, since
-    // needsRebuild fires on every single change. That's almost certainly
-    // what was tripping the render-loop stall warning repeatedly rather
-    // than as a rare one-off. Waiting for a short pause in building
-    // activity means a burst of changes costs one rescan, not dozens —
-    // the overlay just trails reality by up to ~400ms, which is
-    // unnoticeable for something as slow-moving as snow/flowers anyway.
+    // Debounced rather than immediate. This rebuild scans the ENTIRE
+    // loaded block map (every chunk currently in view) to place/clear
+    // flower and snow decoration — with infinite terrain now loading a
+    // lot more area than the original fixed-size world ever held, that
+    // full scan got expensive enough to cause a visible stall by itself.
+    // Since this now also gets triggered by ordinary chunk streaming (not
+    // just placing/mining), a short debounce meant it could still end up
+    // firing every ~400ms during continuous flying/walking — exactly
+    // the "everything goes grey" symptom, just from a different cause
+    // than the original one. Stretched out to 3 seconds: flowers/snow
+    // trail reality by a few seconds after a change now instead of ~400ms,
+    // which is an easy trade for something this decorative.
     clearTimeout(overlayRebuildTimer);
     overlayRebuildTimer = setTimeout(() => {
       if (season === 0) rebuildSnowOverlay(); else rebuildFlowerOverlay();
-    }, 400);
+    }, 3000);
   }
   function updateWeather(dt) {
     const { season } = getSeasonState();
@@ -7008,6 +7011,7 @@
   function isInFullscreen() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement);
   }
+  let gameplayActiveSince = 0; // set when Start is pressed — the periodic fullscreen check below waits a few seconds past this before ever showing its prompt, so it never fires during the initial fullscreen request's own normal (async) startup window
   function handleResume() {
     handleViewResize();
     if (isTouchDevice && document.documentElement.classList.contains('gameplay-active')) {
@@ -7049,6 +7053,22 @@
     if (!contextLost && !document.hidden && performance.now() - lastFrameTime > 2000) {
       console.warn('[voxel] render loop appeared stalled — forcing a frame');
       try { renderer.render(scene, camera); } catch(e) {}
+    }
+    // Same belt-and-braces reasoning as above, applied to fullscreen —
+    // locking/unlocking the phone's screen doesn't reliably fire the
+    // same visibilitychange/focus/pageshow events on every browser that
+    // resuming from another app does, so relying on those alone
+    // sometimes left the address bar showing with no prompt ever
+    // appearing to fix it. This checks unconditionally on a timer
+    // instead, regardless of whether any specific event fired, and only
+    // shows the prompt if it isn't already up. Gated behind a 3-second
+    // grace period since gameplay started — otherwise this would also
+    // fire during a perfectly normal game start, before the initial
+    // fullscreen request (itself async) has even had a chance to resolve.
+    if (isTouchDevice && document.documentElement.classList.contains('gameplay-active') && !isInFullscreen()
+        && performance.now() - gameplayActiveSince > 3000
+        && document.getElementById('resumeFullscreenPrompt').style.display !== 'flex') {
+      document.getElementById('resumeFullscreenPrompt').style.display = 'flex';
     }
   }, 1000);
 
@@ -7679,6 +7699,7 @@
       // browsers); iOS has no such API, so the rotate prompt is what
       // actually gets iPhone players into landscape.
       document.documentElement.classList.add('gameplay-active');
+      gameplayActiveSince = performance.now();
       tryLockLandscape().finally(handleViewResize);
 
     } else {

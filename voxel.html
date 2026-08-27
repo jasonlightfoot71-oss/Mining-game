@@ -277,7 +277,11 @@
 <div id="hint" style="display:none;"></div>
 <div id="modeTag" style="display:none;"></div>
 <div id="coinsDisplay" style="display:none;"></div>
+<div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
 <div id="clockDisplay" style="display:none;"></div>
+<div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
+  <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
+</div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
 <div id="taskPanel" style="display:none;position:fixed;left:12px;bottom:210px;z-index:10;max-width:220px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
@@ -1619,7 +1623,7 @@
         const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
         const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
         const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
-        const baseline = SEA_LEVEL - 2 + elevation*5; // reduced spread, same reasoning
+        const baseline = SEA_LEVEL - 3 + elevation*5; // lowered back to -3 (from -2) specifically so water becomes reachable across a wider elevation range again — the calmer overall variety made genuinely low elevation rare enough that water had nearly stopped appearing at all; the elevation*5 slope itself is unchanged, so this doesn't affect how dramatic mountains get, just how easy it is to dip below sea level
         let h = Math.round(baseline + n*amp);
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
         // Near The Mill, taper generated height down toward the pad's
@@ -1652,7 +1656,18 @@
         const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         if (fillFrom < minY) minY = fillFrom;
         if (h > maxY) maxY = h;
-        columnHeight.set(x+','+z, h); // tree height (if any) merged in just below, once it's known
+        // Takes the max against whatever's already tracked for this
+        // column, rather than overwriting outright — a neighbouring
+        // chunk's tree can spill its canopy one column into this one,
+        // recording a taller height here BEFORE this column ever gets
+        // its own turn to generate. Overwriting that unconditionally
+        // with this column's own (often lower) height was losing track
+        // of the leaf block sitting above, which is exactly what made
+        // leaves occasionally disappear near chunk boundaries — once
+        // this column's own height "forgot" about it, nothing ever
+        // scanned high enough to notice or re-show it again.
+        const prevColH = columnHeight.get(x+','+z);
+        columnHeight.set(x+','+z, prevColH !== undefined ? Math.max(prevColH, h) : h);
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -6412,6 +6427,34 @@
     el.textContent = '🕐 ' + h12 + ':' + String(mm).padStart(2,'0') + ' ' + period;
   }
 
+  // Coordinates + a compass pointing back at (0,0) — the same origin
+  // point every world spawns at, and where The Mill's own building
+  // sits, so this doubles as "which way is the Mill" whenever you're
+  // actually in that world, and "which way is spawn" in any other.
+  // Throttled rather than updated every frame — a DOM text/style write
+  // 60 times a second is needless cost for something that only needs to
+  // feel responsive, not instantaneous.
+  let lastHudExtrasUpdate = 0;
+  function updateHudExtras() {
+    const now = performance.now();
+    if (now - lastHudExtrasUpdate < 150) return;
+    lastHudExtrasUpdate = now;
+    const coordsEl = document.getElementById('coordsDisplay');
+    if (coordsEl) coordsEl.textContent = `📍 X: ${Math.round(player.pos.x)}  Z: ${Math.round(player.pos.z)}`;
+    const arrowEl = document.getElementById('millCompassArrow');
+    if (arrowEl) {
+      // yaw=0 faces -Z in this game's convention (forward = (-sin(yaw),
+      // -cos(yaw))) — solving that for "which yaw faces the origin from
+      // here" simplifies neatly to atan2(player.x, player.z). Subtracting
+      // the player's own current yaw turns that into a relative angle,
+      // so the arrow always points at true (0,0) regardless of which way
+      // the camera itself is currently facing.
+      const yawToOrigin = Math.atan2(player.pos.x, player.pos.z);
+      const rel = yawToOrigin - yaw;
+      arrowEl.style.transform = `rotate(${rel}rad)`;
+    }
+  }
+
   // ================= SEASONS & WEATHER =================
   // Season is derived from real wall-clock time rather than saved
   // per-player state — like real seasons, everyone visiting at a given
@@ -6990,6 +7033,7 @@
     }
     updateChunkStreaming(); // cheap early-exit unless a chunk boundary was actually just crossed — see its own comment
     updateLightVisibility(); // throttled internally — see its own comment
+    updateHudExtras(); // throttled internally — see its own comment
     updateDoors(dt);
     updateWork(dt);
 
@@ -7711,6 +7755,8 @@
     if (!visitMode) document.getElementById('hotbar').style.display = 'flex';
     document.getElementById('modeTag').style.display = 'block';
     document.getElementById('coinsDisplay').style.display = 'block';
+    document.getElementById('coordsDisplay').style.display = 'block';
+    document.getElementById('millCompass').style.display = 'flex';
     updateCoinsDisplay();
     updateRoleTag();
     if (currentRole) {

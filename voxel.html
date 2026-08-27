@@ -6939,7 +6939,15 @@
         player.onGround = false;
         const newPos = player.pos.clone();
         newPos.x += move.x; newPos.z += move.z; newPos.y += player.vel.y*dt;
-        tryMove(newPos, wasGrounded);
+        // Swimming counts as eligible for the same auto-step lift a
+        // normal step block gets, not just standing on solid ground —
+        // otherwise climbing out onto a bank even slightly higher than
+        // the water's surface has nothing to lift you over it: you're
+        // never technically "grounded" while still in the water, so the
+        // step-up logic never engaged at all, and jumping while
+        // submerged only pushes you straight up through the water, not
+        // up and onto the land beside it.
+        tryMove(newPos, wasGrounded || submerged);
         if (player.pos.y < -10) { player.pos.set(0.5, WORLD_HEIGHT+5, 0.5); player.vel.set(0,0,0); }
 
         if (submerged !== window._voxelWasSubmerged) { playSplash(); }

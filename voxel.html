@@ -1736,10 +1736,31 @@
           stepRotations.delete(k);
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
-        columnHeight.delete(colKey);
+        // columnHeight is deliberately NOT cleared here — syncChunkInstances
+        // (always called right after this, by the same caller) still needs
+        // it to know what range to scan in order to actually remove the
+        // now-stale mesh instances. Clearing it here left syncChunkInstances
+        // with nothing to look up for this chunk at all, so it skipped
+        // these columns entirely — the block DATA was correctly deleted
+        // above, but the old 3D instances were never told to disappear,
+        // silently leaving them behind on screen. Left for
+        // clearColumnHeightForChunk to clean up once sync has actually run.
       }
     }
     generatedChunks.delete(ck);
+  }
+  // Cleans up columnHeight bookkeeping for a chunk that's already been
+  // unloaded — kept as a separate step, called only AFTER
+  // syncChunkInstances has run for this chunk (see updateChunkStreaming),
+  // since sync still needs the old height data to find and remove the
+  // stale instances in the first place.
+  function clearColumnHeightForChunk(cx, cz) {
+    const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+        columnHeight.delete((x0+lx)+','+(z0+lz));
+      }
+    }
   }
   // Reconciles just ONE chunk's worth of mesh instances (plus a 1-block
   // border into each neighbouring chunk, since a chunk streaming in or
@@ -1856,7 +1877,8 @@
       chunkUnloadQueued.delete(ck);
       if (generatedChunks.has(ck)) {
         unloadChunkTerrain(cx, cz);
-        syncChunkInstances(cx, cz);
+        syncChunkInstances(cx, cz); // still needs the (not-yet-cleared) old columnHeight data to find and remove the now-stale instances
+        clearColumnHeightForChunk(cx, cz); // only now — see its own comment
         changed = true;
       }
     }

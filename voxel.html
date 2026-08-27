@@ -1898,11 +1898,15 @@
       }
     }
     // Water surface only rebuilds when a chunk that streamed in/out
-    // actually touched water — most terrain has none, so this used to
-    // rebuild the ENTIRE water surface (a scan of every water cell in
-    // the whole loaded world) on every single chunk boundary crossing
-    // regardless of whether any water was nearby at all.
-    if (changed && anyWaterTouchedThisStream) rebuildWaterGeometry();
+    // actually touched water — most terrain has none, so this rarely
+    // fired at all while water was rare. Now that water is common again,
+    // debounced the same way the flower/snow overlay already is (see
+    // scheduleOverlayRebuild) rather than rebuilding immediately every
+    // time: rebuildWaterGeometry() scans every water cell in the WHOLE
+    // loaded world to rebuild one merged surface, and firing that on
+    // every single streaming update during continuous flight was exactly
+    // what brought the grey flash back.
+    if (changed && anyWaterTouchedThisStream) scheduleWaterRebuild();
     // Keeps the flower/snow ground-cover overlay in sync with whatever
     // terrain just streamed in or out — without this, newly generated
     // grass never grows flowers/snow at all, and any that WAS on a tile
@@ -2403,6 +2407,19 @@
     geom.computeBoundingSphere();
     geom.attributes.position.needsUpdate = true;
     geom.attributes.normal.needsUpdate = true;
+  }
+  // Debounced wrapper for chunk streaming's use specifically — mining/
+  // placing water directly still calls rebuildWaterGeometry() itself for
+  // an instant response, since that's a rare, deliberate single action.
+  // Streaming can trigger this far more often (every chunk boundary
+  // crossed near any water), and each rebuild re-scans every water cell
+  // in the whole loaded world, so debouncing it the same way the flower/
+  // snow overlay already is keeps continuous flight through watery areas
+  // from re-triggering that full scan on nearly every frame.
+  let waterRebuildTimer = null;
+  function scheduleWaterRebuild() {
+    clearTimeout(waterRebuildTimer);
+    waterRebuildTimer = setTimeout(rebuildWaterGeometry, 1000);
   }
 
   // ================= FLAME TORCH FIXTURES =================

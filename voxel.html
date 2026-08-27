@@ -6926,9 +6926,18 @@
           touchJumpQueued = false;
         } else if (submerged) {
           player.vel.y += GRAVITY*0.12*dt;
-          if (keys['Space'] || touchJumpQueued) player.vel.y = 3.2;
+          // Raised from a gentle capped rise (3.2, good for just
+          // reaching the surface) to a proper hop — the old version
+          // could get you TO the surface but had nothing left to carry
+          // you UP AND OVER a bank once there, so you'd bob right at the
+          // edge and fall back in. This gives enough height to clear a
+          // couple of blocks onto land, the same kind of boost a normal
+          // jump gives on dry ground, with gravity naturally arcing you
+          // back down once you're clear of the water (this branch stops
+          // applying the moment you're no longer submerged).
+          if (keys['Space'] || touchJumpQueued) player.vel.y = 6.5;
           else if (keys['ShiftLeft']) player.vel.y = -2.5;
-          player.vel.y = Math.max(-3.2, Math.min(3.2, player.vel.y));
+          player.vel.y = Math.max(-3.2, Math.min(6.5, player.vel.y));
           touchJumpQueued = false;
         } else {
           player.vel.y += GRAVITY*dt;

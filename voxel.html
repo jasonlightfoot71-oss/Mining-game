@@ -1794,7 +1794,6 @@
   const chunkUnloadQueue = [];
   const chunkUnloadQueued = new Set();
   const CHUNKS_GEN_PER_FRAME = 3;    // dialled back from 5 as an extra safety margin — the real fix for stutter was the Y-bounds work above (syncChunkInstances no longer scans irrelevant vertical space), this just adds some headroom on top
-  const CHUNKS_UNLOAD_PER_FRAME = 4; // scaled down to match, same reasoning
   let lastStreamChunkKey = null;
   function updateChunkStreaming() {
     if (!terrainStreamingActive) return;
@@ -1839,7 +1838,19 @@
         changed = true;
       }
     }
-    for (let i = 0; i < CHUNKS_UNLOAD_PER_FRAME && chunkUnloadQueue.length > 0; i++) {
+    // Unload drains the ENTIRE queue every frame, not a capped amount
+    // like generation — unloading is just Map deletions (genuinely
+    // cheap, no noise sampling), and capping it the same way generation
+    // is capped meant a long, fast, uninterrupted flight could queue
+    // distant chunks for unload faster than the cap let them actually
+    // drain. That backlog just kept growing the longer you flew without
+    // pausing, and since MAX_INSTANCES is a hard ceiling on how many
+    // blocks of one type can be shown at once, a large enough backlog
+    // eventually pushed past it — blocks still there, just silently
+    // stopped rendering. Draining fully every frame means the backlog
+    // can never accumulate in the first place, regardless of how far or
+    // fast you fly.
+    while (chunkUnloadQueue.length > 0) {
       const [cx, cz] = chunkUnloadQueue.shift();
       const ck = cx+'_'+cz;
       chunkUnloadQueued.delete(ck);

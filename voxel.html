@@ -1389,7 +1389,27 @@
       const existing = waterBlocks.get(to);
       if (existing === undefined || existing > lvl) waterBlocks.set(to, lvl);
     });
-    needsRebuild = true;
+    // Water settling/spreading only ever changes waterBlocks — it never
+    // touches the terrain block map or its mesh instances at all, so
+    // there's no reason for it to trigger a full needsRebuild (which
+    // resets and reprocesses the ENTIRE loaded world's terrain mesh, not
+    // just water). That mismatch is very likely the real, persistent
+    // cause of the flash: this runs on its own timer roughly 4 times a
+    // second, completely independent of chunk streaming, and with water
+    // now common, it's almost always finding something to settle —
+    // meaning it was quietly forcing a full terrain rebuild on a tight
+    // recurring timer the whole time, regardless of any of the
+    // streaming-specific fixes made so far. Only the water surface
+    // itself actually needs updating here.
+    scheduleWaterRebuild();
+    // Also nudges the snow/flower overlay to re-check itself — water
+    // spreading into a new spot over time (not just at generation) is
+    // exactly how snow could end up left behind sitting on top of water
+    // that only arrived there afterward, since nothing else was telling
+    // the overlay that water had moved. Already debounced on its own, so
+    // this is cheap to call here regardless of how often flow ticks.
+    const flowSeason = getSeasonState().season;
+    if (flowSeason === 0 || flowSeason === 1 || flowSeason === 2) scheduleOverlayRebuild(flowSeason);
   }
 
   function generateNewWorld() {

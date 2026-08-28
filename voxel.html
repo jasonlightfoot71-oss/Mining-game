@@ -5221,40 +5221,51 @@
     }
     scene.add(group);
     pubExtraProps.push(group);
+    slConnectorMeshes.push(group);
   }
+  const SNAKE_COLORS = [0xdd1e1e, 0xff8c00, 0x8a2be2, 0x1e9e4a, 0x1e6fdd, 0xdd2e9e, 0x1ec4c4, 0xc9a11e];
+  let slNextSnakeColor = 0;
   function buildSnakeConnector(fromN, toN) {
     // fromN is always the higher square (the mouth, where the snake
     // "bites" — see generateSnakesAndLadders' own ordering), toN the
-    // lower one it slides down to. Bright red throughout now, matching
-    // the generator block's own colour, and a tighter wiggle that stays
-    // close to a straight line between the two squares instead of
-    // ballooning out — that's what was reading as "messy".
+    // lower one it slides down to. A genuine continuous tube now instead
+    // of a chain of separate spheres — that's what was actually reading
+    // as "dots" rather than a body — with a much tighter wiggle (barely
+    // a curve at all) so it doesn't look stretched out over a long
+    // connection, and each one gets a different colour from the game's
+    // own generated set rather than every snake being identical.
     const pa = squareToBlockPos(fromN), pb = squareToBlockPos(toN);
     const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+1.05), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+1.05);
     const dir = new THREE.Vector3().subVectors(end, start);
     const length = Math.max(0.5, dir.length());
     const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize();
-    const group = new THREE.Group();
-    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xdd1e1e, emissive: 0x3a0808, shininess: 35 });
-    const headMat = new THREE.MeshPhongMaterial({ color: 0xa81212, emissive: 0x2a0505, shininess: 35 });
-    const segments = Math.max(6, Math.round(length*2.2));
-    for (let i = 0; i <= segments; i++) {
-      const t = i/segments;
-      const wave = Math.sin(t*Math.PI*2.5) * Math.min(0.18, length*0.05); // much tighter than before — a slight wiggle, not a wide S-curve
-      const pos = new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(perp, wave);
-      const size = 0.24 * (1 - t*0.55); // tapers from a fat head to a thin tail
-      const seg = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), i === 0 ? headMat : bodyMat);
-      seg.position.copy(pos);
-      group.add(seg);
+    const color = SNAKE_COLORS[slNextSnakeColor % SNAKE_COLORS.length];
+    slNextSnakeColor++;
+    const pointCount = Math.max(5, Math.round(length*1.4));
+    const curvePoints = [];
+    for (let i = 0; i <= pointCount; i++) {
+      const t = i/pointCount;
+      const wave = Math.sin(t*Math.PI*2) * Math.min(0.12, length*0.03); // barely a wiggle — enough to read as organic, not enough to look stretched
+      curvePoints.push(new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(perp, wave));
     }
+    const curve = new THREE.CatmullRomCurve3(curvePoints);
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color, shininess: 40 });
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(24, pointCount*4), 0.15, 6, false), bodyMat);
+    group.add(tube);
+    const headMat = new THREE.MeshPhongMaterial({ color: new THREE.Color(color).multiplyScalar(0.65), shininess: 40 });
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 10, 8), headMat);
+    head.position.copy(start);
+    group.add(head);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe27a });
-    [-0.09, 0.09].forEach(ox => {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.045,6,4), eyeMat);
-      eye.position.copy(start).add(new THREE.Vector3(ox, 0.06, 0.16));
+    [-0.08, 0.08].forEach(ox => {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.04,6,4), eyeMat);
+      eye.position.copy(start).add(new THREE.Vector3(ox, 0.05, 0.14));
       group.add(eye);
     });
     scene.add(group);
     pubExtraProps.push(group);
+    slConnectorMeshes.push(group);
   }
   // The Mill lives at a fixed, well-known world id in the same
   // taskmill_voxel_worlds table everything else uses — that's what lets
@@ -6460,6 +6471,32 @@
     o.connect(g).connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime+0.18);
   }
+  // A rising, triumphant chime for climbing a ladder.
+  function playLadderClimb() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(300, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(950, audioCtx.currentTime+0.4);
+    g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.45);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.45);
+  }
+  // A descending "uh-oh" swoosh for sliding down a snake.
+  function playSnakeSlide() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(700, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(140, audioCtx.currentTime+0.5);
+    g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.55);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.55);
+  }
   function playJump() {
     if (!audioCtx) return;
     const o = audioCtx.createOscillator();
@@ -7593,6 +7630,12 @@
           updateFootballScoreHud();
         }
       });
+      // Someone is starting a fresh game after the previous one ended —
+      // clear our own old board/tokens so we're ready for the new
+      // layout that follows right after this.
+      channel.on('broadcast', { event: 'slReset' }, () => {
+        resetSlGame();
+      });
       // Snakes & Ladders — the generating client sends the actual random
       // layout it rolled, and everyone else applies that exact same
       // layout rather than rolling their own (which would give every
@@ -7620,7 +7663,7 @@
         animateSlTokenSteps(p, payload.startSquare||0, rawLanding, () => {
           p.square = payload.square; // authoritative final square from the roller, already includes any ladder/snake
           p.tokenGroup.position.copy(squareToWorldPos(payload.square));
-          if (payload.square !== rawLanding) playTokenMove(); // extra sound for the ladder/snake warp, matching what the roller heard
+          if (payload.square !== rawLanding) { if (payload.square > rawLanding) playLadderClimb(); else playSnakeSlide(); }
           slTurnIndex = payload.turnIndex;
           slGameWon = payload.won;
           const viaText = payload.square !== rawLanding ? (payload.square > rawLanding ? ' — climbed a ladder!' : ' — slid down a snake!') : '';
@@ -7807,7 +7850,9 @@
     footballBall = { mesh, pos: FOOTBALL_CENTER.clone(), vel: new THREE.Vector3(0,0,0) };
     footballScoreP1 = 0; footballScoreP2 = 0;
     updateFootballScoreHud();
-    document.getElementById('footballScoreHud').style.display = 'block';
+    // Left hidden here deliberately — shown only when actually near the
+    // pitch (see updateFootballBall's own visibility check), not for the
+    // whole time someone's anywhere in the Mill.
   }
   function despawnFootball() {
     if (!footballBall) return;
@@ -7871,6 +7916,12 @@
   function updateFootballBall(dt) {
     if (!footballBall || currentWorldId !== PUB_WORLD_ID) return;
     checkFootballDistanceReset();
+    // Only actually visible while reasonably near the pitch — the same
+    // 10-block threshold the score-reset already uses, so "close enough
+    // to see the score matter" and "close enough that wandering off
+    // resets it" line up with each other.
+    const hudEl = document.getElementById('footballScoreHud');
+    if (hudEl) hudEl.style.display = footballDistanceFromPitch(player.pos.x, player.pos.z) < 10 ? 'block' : 'none';
     const b = footballBall;
     b.vel.multiplyScalar(Math.max(0, 1 - dt*1.1)); // rolling friction
     b.pos.x += b.vel.x*dt;
@@ -7910,22 +7961,51 @@
   let slPlayers = []; // { uid, name, colorIdx, square, tokenGroup }
   let slTurnIndex = 0, slGameWon = false;
   const SL_TOKEN_COLORS = [0xe64545, 0x4488ff, 0xffcc22, 0x44dd66, 0xaa55dd, 0xff8833];
+  // Cycles hue continuously rather than staying one flat colour — makes
+  // a token much easier to spot at a glance against the busy chequered
+  // wall, which plain solid cones weren't managing.
   function buildSlToken(colorHex) {
-    const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.42, 8), new THREE.MeshPhongMaterial({ color: colorHex, shininess: 30 }));
+    const mat = new THREE.MeshPhongMaterial({ color: colorHex, emissive: colorHex, emissiveIntensity: 0.35, shininess: 50 });
+    const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.5, 8), mat);
     mesh.rotation.x = Math.PI; // point-down cone looks like a flat-bottomed playing piece rather than an ice-cream cone
+    mesh.userData.slMat = mat;
+    mesh.userData.slHueOffset = Math.random();
     return mesh;
   }
+  function updateSlTokenColors() {
+    if (currentWorldId !== PUB_WORLD_ID || slPlayers.length === 0) return;
+    const t = performance.now() * 0.00018;
+    slPlayers.forEach(p => {
+      const mat = p.tokenGroup && p.tokenGroup.userData.slMat;
+      if (!mat) return;
+      const hue = (t + p.tokenGroup.userData.slHueOffset) % 1;
+      mat.color.setHSL(hue, 0.85, 0.55);
+      mat.emissive.setHSL(hue, 0.85, 0.35);
+    });
+  }
+  let slConnectorMeshes = []; // ladders/snakes for THIS generation — cleared and rebuilt on every fresh game, unlike the number labels/trigger labels in pubExtraProps which persist for the whole Mill visit
   function resetSlGame() {
-    slLaddersMap = {}; slSnakesMap = {}; slGenerated = false;
+    slLaddersMap = {}; slSnakesMap = {}; slGenerated = false; slNextSnakeColor = 0;
     slPlayers.forEach(p => { if (p.tokenGroup) scene.remove(p.tokenGroup); });
     slPlayers = []; slTurnIndex = 0; slGameWon = false;
+    slConnectorMeshes.forEach(m => scene.remove(m));
+    slConnectorMeshes = [];
+    slFocusToken = null; slCamBlend = 0; // in case a game resets mid-animation, so the camera never keeps chasing a token that's about to be removed
   }
   // Rolls the actual random layout — one player's client does this and
   // broadcasts the exact resulting map (see broadcastSlGenerated), so
   // every other client applies the SAME layout rather than each
   // generating their own independently different one.
   function generateSnakesAndLadders() {
-    if (slGenerated || currentWorldId !== PUB_WORLD_ID) return;
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    if (slGenerated && !slGameWon) return; // a game is already in progress — don't disrupt it with a re-roll
+    if (slGenerated && slGameWon) {
+      // Previous game finished — this IS how a new one starts. Clears
+      // the old board/tokens/players first so nothing from the last
+      // game lingers into the new one.
+      resetSlGame();
+      broadcastSlReset();
+    }
     slGenerated = true;
     const used = new Set([1, 100]);
     function pickSquare() {
@@ -7954,6 +8034,15 @@
       try { mpChannel.send({ type: 'broadcast', event: 'slGenerate', payload: { ladders: slLaddersMap, snakes: slSnakesMap } }); } catch(e) {}
     }
   }
+  // Tells other players to clear their own old board/tokens right
+  // before the new layout arrives — without this, starting a fresh game
+  // after a win would reset the generating player's own view but leave
+  // everyone else still looking at the finished game.
+  function broadcastSlReset() {
+    if (mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'slReset', payload: {} }); } catch(e) {}
+    }
+  }
   function slJoinLocal(uid, name, colorIdx) {
     let p = slPlayers.find(pl => pl.uid === uid);
     if (p) return p;
@@ -7969,11 +8058,43 @@
       try { mpChannel.send({ type: 'broadcast', event: 'slJoin', payload: { uid: p.uid, name: p.name, colorIdx: p.colorIdx } }); } catch(e) {}
     }
   }
+  // Smoothly pulls the camera toward whichever token is currently
+  // moving (so its progress is actually visible on a busy 10x10 wall),
+  // then eases back to the player's normal view afterwards — reuses the
+  // same underlying camera-override mechanism already used for the
+  // Mill's work-scene camera (app-make, kitchen), just aimed at a moving
+  // point instead of a fixed one. slCamBlend ramps gradually rather than
+  // snapping, which is what actually makes this read as a deliberate
+  // zoom rather than a jarring cut.
+  let slFocusToken = null, slFocusUntil = 0, slCamBlend = 0;
+  function slFocusCameraOnToken(tokenGroup, durationMs) {
+    slFocusToken = tokenGroup;
+    slFocusUntil = performance.now() + durationMs;
+  }
+  function updateSlCameraFocus(dt) {
+    if (currentWorldId !== PUB_WORLD_ID) { slCamBlend = 0; return; }
+    const active = slFocusToken && performance.now() < slFocusUntil;
+    const targetBlend = active ? 1 : 0;
+    slCamBlend += (targetBlend - slCamBlend) * Math.min(1, dt*1.4); // eased, not instant — a full zoom in/out takes the best part of a second
+    if (slCamBlend < 0.004) { slCamBlend = 0; if (!active) slFocusToken = null; return; }
+    if (!slFocusToken) return;
+    const tokenPos = slFocusToken.position;
+    const desiredPos = new THREE.Vector3(tokenPos.x, tokenPos.y + 0.6, tokenPos.z + 3.2); // pulled back along the tower's own facing direction, works regardless of which row the token's on
+    camera.position.lerp(desiredPos, slCamBlend);
+    const lookDir = new THREE.Vector3().subVectors(tokenPos, camera.position).normalize();
+    const targetQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,-1), lookDir);
+    camera.quaternion.slerp(targetQuat, slCamBlend);
+  }
   // Moves a token one square at a time toward a target, playing a sound
   // on each hop, rather than teleporting straight there — calls
-  // onComplete once it actually arrives.
+  // onComplete once it actually arrives. Also pulls the camera in to
+  // actually show the move happening (see slFocusCameraOnToken above),
+  // held a little past the last hop so a following ladder/snake warp
+  // still happens while the camera's still on it.
   function animateSlTokenSteps(p, fromSquare, toSquare, onComplete) {
     const dir = toSquare >= fromSquare ? 1 : -1;
+    const totalSteps = Math.max(1, Math.abs(toSquare - fromSquare));
+    slFocusCameraOnToken(p.tokenGroup, totalSteps*260 + 1400);
     let current = fromSquare;
     function nextStep() {
       if (current === toSquare) { if (onComplete) onComplete(); return; }
@@ -8015,12 +8136,12 @@
     const startSquare = p.square;
     const rawLanding = Math.min(100, startSquare + roll);
     animateSlTokenSteps(p, startSquare, rawLanding, () => {
-      let finalSquare = rawLanding, viaText = '';
-      if (slLaddersMap[rawLanding]) { viaText = ' — climbed a ladder!'; finalSquare = slLaddersMap[rawLanding]; }
+      let finalSquare = rawLanding, viaText = '', wasLadder = false;
+      if (slLaddersMap[rawLanding]) { viaText = ' — climbed a ladder!'; finalSquare = slLaddersMap[rawLanding]; wasLadder = true; }
       else if (slSnakesMap[rawLanding]) { viaText = ' — slid down a snake!'; finalSquare = slSnakesMap[rawLanding]; }
       p.square = finalSquare;
       p.tokenGroup.position.copy(squareToWorldPos(finalSquare));
-      if (viaText) playTokenMove();
+      if (viaText) { if (wasLadder) playLadderClimb(); else playSnakeSlide(); }
       if (finalSquare >= 100) {
         slGameWon = true;
         showChatLogLine('🏆', p.name + ' rolled a ' + roll + ' and reached square ' + finalSquare + viaText + ' — WINS!');
@@ -8242,6 +8363,7 @@
       camera.rotation.order = 'YXZ';
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
+      updateSlCameraFocus(dt); // blends the camera toward a moving Snakes & Ladders token when relevant, then back — no-ops instantly everywhere else
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -8356,6 +8478,7 @@
     updateMultiplayer(dt); // throttled internally — see its own comment
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateSlTriggers(); // debounced internally — see its own comment
+    updateSlTokenColors();
     updateDoors(dt);
     updateWork(dt);
 

@@ -5122,8 +5122,8 @@
   // dice are rolled, the same way a real board-game piece does.
   const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46;
   const TOWER_BASE_Y = 2; // one above ground level, on its own visible plinth — square row 0 sitting flush with the surrounding ground read as sunk into it
-  const SL_GENERATOR_POS = { x: TOWER_X0, y: 1, z: TOWER_Z+6 };
-  const SL_DICE_POS = { x: TOWER_X0+3, y: 1, z: TOWER_Z+6 };
+  const SL_GENERATOR_POS = { x: TOWER_X0, y: 2, z: TOWER_Z+6 }; // one block above the surrounding ground (y:1) — sticks up so it actually has to be jumped onto, not just walked over
+  const SL_DICE_POS = { x: TOWER_X0+3, y: 2, z: TOWER_Z+6 };
   // Block position (not the token's floating position — see
   // squareToWorldPos below for that) for square N: row = which stack of
   // 10 it falls in (0 = bottom), alternating direction per row exactly
@@ -5199,7 +5199,7 @@
   // token's floating stand-off position.
   function buildLadderConnector(fromN, toN) {
     const pa = squareToBlockPos(fromN), pb = squareToBlockPos(toN);
-    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+0.62), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+0.62);
+    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+1.05), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+1.05);
     const dir = new THREE.Vector3().subVectors(end, start);
     const length = Math.max(0.5, dir.length());
     dir.normalize();
@@ -5230,7 +5230,7 @@
     // close to a straight line between the two squares instead of
     // ballooning out — that's what was reading as "messy".
     const pa = squareToBlockPos(fromN), pb = squareToBlockPos(toN);
-    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+0.62), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+0.62);
+    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+1.05), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+1.05);
     const dir = new THREE.Vector3().subVectors(end, start);
     const length = Math.max(0.5, dir.length());
     const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize();
@@ -7175,6 +7175,11 @@
       if (t !== 0) continue; // Grass only
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
+      // Excludes the football pitch's own grass — flowers scattered
+      // across the playing surface looked wrong on a marked-out pitch.
+      // Matches buildFootballPitch's own footprint (x:-2..30, z:36..76)
+      // with a small margin either side.
+      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue;
@@ -7611,13 +7616,17 @@
         const p = slPlayers.find(pl => pl.uid === payload.uid);
         if (!p) return;
         playDiceRoll();
-        p.square = payload.square;
-        p.tokenGroup.position.copy(squareToWorldPos(payload.square));
-        playTokenMove();
-        slTurnIndex = payload.turnIndex;
-        slGameWon = payload.won;
-        if (payload.won) showChatLogLine('🏆', p.name + ' rolled ' + payload.roll + ' and reached square ' + payload.square + ' — WINS!');
-        else showChatLogLine('🎲', p.name + ' rolled ' + payload.roll + ' → square ' + payload.square + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
+        const rawLanding = Math.min(100, (payload.startSquare||0) + payload.roll);
+        animateSlTokenSteps(p, payload.startSquare||0, rawLanding, () => {
+          p.square = payload.square; // authoritative final square from the roller, already includes any ladder/snake
+          p.tokenGroup.position.copy(squareToWorldPos(payload.square));
+          if (payload.square !== rawLanding) playTokenMove(); // extra sound for the ladder/snake warp, matching what the roller heard
+          slTurnIndex = payload.turnIndex;
+          slGameWon = payload.won;
+          const viaText = payload.square !== rawLanding ? (payload.square > rawLanding ? ' — climbed a ladder!' : ' — slid down a snake!') : '';
+          if (payload.won) showChatLogLine('🏆', p.name + ' rolled a ' + payload.roll + ' and reached square ' + payload.square + viaText + ' — WINS!');
+          else showChatLogLine('🎲', p.name + ' rolled a ' + payload.roll + ', now on square ' + payload.square + viaText + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
+        });
       });
       channel.on('presence', { event: 'sync' }, () => {
         try {
@@ -7960,9 +7969,28 @@
       try { mpChannel.send({ type: 'broadcast', event: 'slJoin', payload: { uid: p.uid, name: p.name, colorIdx: p.colorIdx } }); } catch(e) {}
     }
   }
-  function broadcastSlRoll(p, roll) {
+  // Moves a token one square at a time toward a target, playing a sound
+  // on each hop, rather than teleporting straight there — calls
+  // onComplete once it actually arrives.
+  function animateSlTokenSteps(p, fromSquare, toSquare, onComplete) {
+    const dir = toSquare >= fromSquare ? 1 : -1;
+    let current = fromSquare;
+    function nextStep() {
+      if (current === toSquare) { if (onComplete) onComplete(); return; }
+      current += dir;
+      p.square = current;
+      p.tokenGroup.position.copy(squareToWorldPos(current));
+      playTokenMove();
+      setTimeout(nextStep, 260);
+    }
+    nextStep();
+  }
+  // startSquare is included so a receiving client can replay the exact
+  // same square-by-square hop animation the roller saw, not just snap
+  // straight to the final result.
+  function broadcastSlRoll(p, roll, startSquare) {
     if (mpChannel && currentWorldId === mpConnectedWorldId) {
-      try { mpChannel.send({ type: 'broadcast', event: 'slRoll', payload: { uid: p.uid, roll, square: p.square, turnIndex: slTurnIndex, won: slGameWon } }); } catch(e) {}
+      try { mpChannel.send({ type: 'broadcast', event: 'slRoll', payload: { uid: p.uid, roll, startSquare, square: p.square, turnIndex: slTurnIndex, won: slGameWon } }); } catch(e) {}
     }
   }
   // The one entry point for the dice trigger block — joins the caller if
@@ -7984,21 +8012,24 @@
     }
     const roll = 1 + Math.floor(Math.random()*6);
     playDiceRoll();
-    let newSquare = Math.min(100, p.square + roll);
-    let via = '';
-    if (slLaddersMap[newSquare]) { via = ' 🪜 up a ladder to '; newSquare = slLaddersMap[newSquare]; }
-    else if (slSnakesMap[newSquare]) { via = ' 🐍 down a snake to '; newSquare = slSnakesMap[newSquare]; }
-    p.square = newSquare;
-    p.tokenGroup.position.copy(squareToWorldPos(newSquare));
-    playTokenMove();
-    if (newSquare >= 100) {
-      slGameWon = true;
-      showChatLogLine('🏆', p.name + ' rolled ' + roll + via + newSquare + ' and WINS!');
-    } else {
-      slTurnIndex = (slTurnIndex+1) % slPlayers.length;
-      showChatLogLine('🎲', p.name + ' rolled ' + roll + via + newSquare + '. ' + slPlayers[slTurnIndex].name + "'s turn.");
-    }
-    broadcastSlRoll(p, roll);
+    const startSquare = p.square;
+    const rawLanding = Math.min(100, startSquare + roll);
+    animateSlTokenSteps(p, startSquare, rawLanding, () => {
+      let finalSquare = rawLanding, viaText = '';
+      if (slLaddersMap[rawLanding]) { viaText = ' — climbed a ladder!'; finalSquare = slLaddersMap[rawLanding]; }
+      else if (slSnakesMap[rawLanding]) { viaText = ' — slid down a snake!'; finalSquare = slSnakesMap[rawLanding]; }
+      p.square = finalSquare;
+      p.tokenGroup.position.copy(squareToWorldPos(finalSquare));
+      if (viaText) playTokenMove();
+      if (finalSquare >= 100) {
+        slGameWon = true;
+        showChatLogLine('🏆', p.name + ' rolled a ' + roll + ' and reached square ' + finalSquare + viaText + ' — WINS!');
+      } else {
+        slTurnIndex = (slTurnIndex+1) % slPlayers.length;
+        showChatLogLine('🎲', p.name + ' rolled a ' + roll + ', now on square ' + finalSquare + viaText + '. ' + slPlayers[slTurnIndex].name + "'s turn.");
+      }
+      broadcastSlRoll(p, roll, startSquare);
+    });
   }
   let lastSlTriggerCheck = 0, slWasAirborne = false;
   // The actual bug behind "rolled 276": player.vel.y > 1 stays true for

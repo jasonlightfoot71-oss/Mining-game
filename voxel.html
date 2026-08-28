@@ -4,6 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <title>Mining World</title>
+<!-- Makes "Add to Home Screen" behave like a real installed app rather
+     than just a bookmark to a browser tab: a proper icon instead of a
+     screenshot thumbnail, launching without Safari/Chrome's own address
+     bar and browser chrome, and a sensible name/color. Icon and manifest
+     are both inlined as data URIs rather than separate files, since this
+     game ships as a single self-contained HTML file. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj4KICA8cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgZmlsbD0iIzZmYjZlYSIvPgogIDxyZWN0IHg9IjAiIHk9IjM0MCIgd2lkdGg9IjUxMiIgaGVpZ2h0PSIxNzIiIGZpbGw9IiM1YzllM2YiLz4KICA8cmVjdCB4PSIwIiB5PSIzODAiIHdpZHRoPSI1MTIiIGhlaWdodD0iMTMyIiBmaWxsPSIjOGE1YTNhIi8+CiAgPGc+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwxMjAgMzY2LDE4MiAzNjYsMzA2IDI1NiwzNjggMTQ2LDMwNiAxNDYsMTgyIiBmaWxsPSIjZTBiMDRhIiBzdHJva2U9IiM4YTVhMWEiIHN0cm9rZS13aWR0aD0iNiIvPgogICAgPHBvbHlnb24gcG9pbnRzPSIyNTYsMTIwIDM2NiwxODIgMjU2LDI0NCAxNDYsMTgyIiBmaWxsPSIjZjJjNDYwIi8+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwyNDQgMzY2LDE4MiAzNjYsMzA2IDI1NiwzNjgiIGZpbGw9IiNjOTkyMmYiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDI0NCAxNDYsMTgyIDE0NiwzMDYgMjU2LDM2OCIgZmlsbD0iI2UwYjA0YSIvPgogIDwvZz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyNTYsMjQ0KSI+CiAgICA8cmVjdCB4PSItODQiIHk9Ii02IiB3aWR0aD0iMTY4IiBoZWlnaHQ9IjEyIiBmaWxsPSIjM2EzYTNhIiB0cmFuc2Zvcm09InJvdGF0ZSgzNSkiLz4KICAgIDxjaXJjbGUgcj0iMTAiIGZpbGw9IiM1YTRhMmEiIHRyYW5zZm9ybT0icm90YXRlKDM1KSB0cmFuc2xhdGUoLTg0LDApIi8+CiAgPC9nPgo8L3N2Zz4K">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj4KICA8cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgZmlsbD0iIzZmYjZlYSIvPgogIDxyZWN0IHg9IjAiIHk9IjM0MCIgd2lkdGg9IjUxMiIgaGVpZ2h0PSIxNzIiIGZpbGw9IiM1YzllM2YiLz4KICA8cmVjdCB4PSIwIiB5PSIzODAiIHdpZHRoPSI1MTIiIGhlaWdodD0iMTMyIiBmaWxsPSIjOGE1YTNhIi8+CiAgPGc+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwxMjAgMzY2LDE4MiAzNjYsMzA2IDI1NiwzNjggMTQ2LDMwNiAxNDYsMTgyIiBmaWxsPSIjZTBiMDRhIiBzdHJva2U9IiM4YTVhMWEiIHN0cm9rZS13aWR0aD0iNiIvPgogICAgPHBvbHlnb24gcG9pbnRzPSIyNTYsMTIwIDM2NiwxODIgMjU2LDI0NCAxNDYsMTgyIiBmaWxsPSIjZjJjNDYwIi8+CiAgICA8cG9seWdvbiBwb2ludHM9IjI1NiwyNDQgMzY2LDE4MiAzNjYsMzA2IDI1NiwzNjgiIGZpbGw9IiNjOTkyMmYiLz4KICAgIDxwb2x5Z29uIHBvaW50cz0iMjU2LDI0NCAxNDYsMTgyIDE0NiwzMDYgMjU2LDM2OCIgZmlsbD0iI2UwYjA0YSIvPgogIDwvZz4KICA8ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyNTYsMjQ0KSI+CiAgICA8cmVjdCB4PSItODQiIHk9Ii02IiB3aWR0aD0iMTY4IiBoZWlnaHQ9IjEyIiBmaWxsPSIjM2EzYTNhIiB0cmFuc2Zvcm09InJvdGF0ZSgzNSkiLz4KICAgIDxjaXJjbGUgcj0iMTAiIGZpbGw9IiM1YTRhMmEiIHRyYW5zZm9ybT0icm90YXRlKDM1KSB0cmFuc2xhdGUoLTg0LDApIi8+CiAgPC9nPgo8L3N2Zz4K">
+<link rel="manifest" href="data:application/manifest+json;base64,eyJuYW1lIjogIk1pbmluZyBXb3JsZCIsICJzaG9ydF9uYW1lIjogIk1pbmluZyBXb3JsZCIsICJzdGFydF91cmwiOiAiaHR0cHM6Ly9qYXNvbmxpZ2h0Zm9vdDcxLW9zcy5naXRodWIuaW8vTWluaW5nLWdhbWUvdm94ZWwuaHRtbCIsICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLCAib3JpZW50YXRpb24iOiAibGFuZHNjYXBlIiwgImJhY2tncm91bmRfY29sb3IiOiAiIzZmYjZlYSIsICJ0aGVtZV9jb2xvciI6ICIjNmZiNmVhIiwgImljb25zIjogW3sic3JjIjogImRhdGE6aW1hZ2Uvc3ZnK3htbDtiYXNlNjQsUEhOMlp5QjRiV3h1Y3owaWFIUjBjRG92TDNkM2R5NTNNeTV2Y21jdk1qQXdNQzl6ZG1jaUlIWnBaWGRDYjNnOUlqQWdNQ0ExTVRJZ05URXlJajRLSUNBOGNtVmpkQ0IzYVdSMGFEMGlOVEV5SWlCb1pXbG5hSFE5SWpVeE1pSWdabWxzYkQwaUl6Wm1ZalpsWVNJdlBnb2dJRHh5WldOMElIZzlJakFpSUhrOUlqTTBNQ0lnZDJsa2RHZzlJalV4TWlJZ2FHVnBaMmgwUFNJeE56SWlJR1pwYkd3OUlpTTFZemxsTTJZaUx6NEtJQ0E4Y21WamRDQjRQU0l3SWlCNVBTSXpPREFpSUhkcFpIUm9QU0kxTVRJaUlHaGxhV2RvZEQwaU1UTXlJaUJtYVd4c1BTSWpPR0UxWVROaElpOCtDaUFnUEdjK0NpQWdJQ0E4Y0c5c2VXZHZiaUJ3YjJsdWRITTlJakkxTml3eE1qQWdNelkyTERFNE1pQXpOallzTXpBMklESTFOaXd6TmpnZ01UUTJMRE13TmlBeE5EWXNNVGd5SWlCbWFXeHNQU0lqWlRCaU1EUmhJaUJ6ZEhKdmEyVTlJaU00WVRWaE1XRWlJSE4wY205clpTMTNhV1IwYUQwaU5pSXZQZ29nSUNBZ1BIQnZiSGxuYjI0Z2NHOXBiblJ6UFNJeU5UWXNNVEl3SURNMk5pd3hPRElnTWpVMkxESTBOQ0F4TkRZc01UZ3lJaUJtYVd4c1BTSWpaakpqTkRZd0lpOCtDaUFnSUNBOGNHOXNlV2R2YmlCd2IybHVkSE05SWpJMU5pd3lORFFnTXpZMkxERTRNaUF6TmpZc016QTJJREkxTml3ek5qZ2lJR1pwYkd3OUlpTmpPVGt5TW1ZaUx6NEtJQ0FnSUR4d2IyeDVaMjl1SUhCdmFXNTBjejBpTWpVMkxESTBOQ0F4TkRZc01UZ3lJREUwTml3ek1EWWdNalUyTERNMk9DSWdabWxzYkQwaUkyVXdZakEwWVNJdlBnb2dJRHd2Wno0S0lDQThaeUIwY21GdWMyWnZjbTA5SW5SeVlXNXpiR0YwWlNneU5UWXNNalEwS1NJK0NpQWdJQ0E4Y21WamRDQjRQU0l0T0RRaUlIazlJaTAySWlCM2FXUjBhRDBpTVRZNElpQm9aV2xuYUhROUlqRXlJaUJtYVd4c1BTSWpNMkV6WVROaElpQjBjbUZ1YzJadmNtMDlJbkp2ZEdGMFpTZ3pOU2tpTHo0S0lDQWdJRHhqYVhKamJHVWdjajBpTVRBaUlHWnBiR3c5SWlNMVlUUmhNbUVpSUhSeVlXNXpabTl5YlQwaWNtOTBZWFJsS0RNMUtTQjBjbUZ1YzJ4aGRHVW9MVGcwTERBcElpOCtDaUFnUEM5blBnbzhMM04yWno0SyIsICJzaXplcyI6ICI1MTJ4NTEyIiwgInR5cGUiOiAiaW1hZ2Uvc3ZnK3htbCIsICJwdXJwb3NlIjogImFueSJ9LCB7InNyYyI6ICJkYXRhOmltYWdlL3N2Zyt4bWw7YmFzZTY0LFBITjJaeUI0Yld4dWN6MGlhSFIwY0RvdkwzZDNkeTUzTXk1dmNtY3ZNakF3TUM5emRtY2lJSFpwWlhkQ2IzZzlJakFnTUNBMU1USWdOVEV5SWo0S0lDQThjbVZqZENCM2FXUjBhRDBpTlRFeUlpQm9aV2xuYUhROUlqVXhNaUlnWm1sc2JEMGlJelptWWpabFlTSXZQZ29nSUR4eVpXTjBJSGc5SWpBaUlIazlJak0wTUNJZ2QybGtkR2c5SWpVeE1pSWdhR1ZwWjJoMFBTSXhOeklpSUdacGJHdzlJaU0xWXpsbE0yWWlMejRLSUNBOGNtVmpkQ0I0UFNJd0lpQjVQU0l6T0RBaUlIZHBaSFJvUFNJMU1USWlJR2hsYVdkb2REMGlNVE15SWlCbWFXeHNQU0lqT0dFMVlUTmhJaTgrQ2lBZ1BHYytDaUFnSUNBOGNHOXNlV2R2YmlCd2IybHVkSE05SWpJMU5pd3hNakFnTXpZMkxERTRNaUF6TmpZc016QTJJREkxTml3ek5qZ2dNVFEyTERNd05pQXhORFlzTVRneUlpQm1hV3hzUFNJalpUQmlNRFJoSWlCemRISnZhMlU5SWlNNFlUVmhNV0VpSUhOMGNtOXJaUzEzYVdSMGFEMGlOaUl2UGdvZ0lDQWdQSEJ2YkhsbmIyNGdjRzlwYm5SelBTSXlOVFlzTVRJd0lETTJOaXd4T0RJZ01qVTJMREkwTkNBeE5EWXNNVGd5SWlCbWFXeHNQU0lqWmpKak5EWXdJaTgrQ2lBZ0lDQThjRzlzZVdkdmJpQndiMmx1ZEhNOUlqSTFOaXd5TkRRZ016WTJMREU0TWlBek5qWXNNekEySURJMU5pd3pOamdpSUdacGJHdzlJaU5qT1RreU1tWWlMejRLSUNBZ0lEeHdiMng1WjI5dUlIQnZhVzUwY3owaU1qVTJMREkwTkNBeE5EWXNNVGd5SURFME5pd3pNRFlnTWpVMkxETTJPQ0lnWm1sc2JEMGlJMlV3WWpBMFlTSXZQZ29nSUR3dlp6NEtJQ0E4WnlCMGNtRnVjMlp2Y20wOUluUnlZVzV6YkdGMFpTZ3lOVFlzTWpRMEtTSStDaUFnSUNBOGNtVmpkQ0I0UFNJdE9EUWlJSGs5SWkwMklpQjNhV1IwYUQwaU1UWTRJaUJvWldsbmFIUTlJakV5SWlCbWFXeHNQU0lqTTJFellUTmhJaUIwY21GdWMyWnZjbTA5SW5KdmRHRjBaU2d6TlNraUx6NEtJQ0FnSUR4amFYSmpiR1VnY2owaU1UQWlJR1pwYkd3OUlpTTFZVFJoTW1FaUlIUnlZVzV6Wm05eWJUMGljbTkwWVhSbEtETTFLU0IwY21GdWMyeGhkR1VvTFRnMExEQXBJaTgrQ2lBZ1BDOW5QZ284TDNOMlp6NEsiLCAic2l6ZXMiOiAiNTEyeDUxMiIsICJ0eXBlIjogImltYWdlL3N2Zyt4bWwiLCAicHVycG9zZSI6ICJtYXNrYWJsZSJ9XX0=">
+<meta name="theme-color" content="#6fb6ea">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mining World">
+<meta name="mobile-web-app-capable" content="yes">
 <style>
   html, body { margin: 0; padding: 0; overflow: hidden; background: #7ec0ee; font-family: -apple-system, sans-serif; }
   /* Stops long-pressing anything on screen (block names, labels, etc.)
@@ -114,8 +128,12 @@
     display: none;
   }
   #workStatus {
-    position: fixed; top: 114px; right: 12px; z-index: 10; color: #9effa0; font-size: 12px;
-    background: rgba(0,0,0,0.35); padding: 5px 10px; border-radius: 6px; text-align: right;
+    /* Same row as coinsDisplay now, sitting just to its left, rather than
+       stacked underneath roleTag — since it's showing the reward this
+       specific task is about to pay out, it reads more naturally right
+       next to the running total it's about to add to. */
+    position: fixed; top: 46px; right: 110px; z-index: 10; color: #9effa0; font-size: 12px;
+    background: rgba(0,0,0,0.35); padding: 6px 10px; border-radius: 6px; text-align: right;
     display: none;
   }
   #saveStatus {
@@ -194,10 +212,10 @@
     display: flex; align-items: center; justify-content: center; user-select: none;
   }
   #btnMine { left: 40px; bottom: 210px; }
-  #btnPlace { right: 40px; bottom: 210px; }
-  /* Now sits level with btnPlace (same bottom offset), just further in
-     from the edge, rather than lower down and further right — lines the
-     two up in a row instead of jump sitting off on its own. */
+  /* Moved in from right:40 to sit right next to btnJump instead of a big
+     gap away from it — build and jump are used together constantly
+     (build a step, jump up it), so keeping them adjacent makes sense. */
+  #btnPlace { right: 200px; bottom: 210px; }
   #btnJump {
     right: 136px; bottom: 210px;
     width: 54px; height: 54px; font-size: 22px;
@@ -205,11 +223,34 @@
 
   #worldSelect {
     position: fixed; inset: 0; background: rgba(15,20,25,0.94); z-index: 25;
-    color: #fff; display: none; flex-direction: column; align-items: center; justify-content: center;
-    padding: 20px; box-sizing: border-box; overflow-y: auto;
+    color: #fff; display: none; flex-direction: column;
+    padding: 16px; box-sizing: border-box; overflow-y: auto;
   }
-  #worldSelect h1 { margin: 0 0 14px; font-size: 26px; text-shadow: 2px 2px 0 #000; }
-  #worldList { width: 100%; max-width: 420px; max-height: 40vh; overflow-y: auto; margin-bottom: 16px; }
+  #worldSelect h1 { margin: 0 0 12px; font-size: 24px; text-align: center; text-shadow: 2px 2px 0 #000; flex-shrink: 0; }
+  /* Four quadrants — Mill top-left, avatar top-right, your worlds
+     bottom-left, other worlds bottom-right. Each panel scrolls its own
+     content independently (min-height:0 is what makes that actually
+     work inside a grid row instead of the row just growing to fit
+     whichever panel has the most content), so a long worlds list never
+     pushes the other three panels around. */
+  #worldQuadrants {
+    display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr;
+    gap: 12px; flex: 1; min-height: 0; max-width: 900px; width: 100%; margin: 0 auto;
+  }
+  .titleQuadrant {
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px;
+    padding: 14px; display: flex; flex-direction: column; align-items: center; text-align: center;
+    overflow-y: auto; min-height: 0;
+  }
+  .titleQuadrant h3 { margin: 0 0 8px; font-size: 15px; opacity: 0.9; flex-shrink: 0; }
+  /* Narrow/short screens (most phones in landscape) don't have room for
+     a real 2x2 grid without cramming each quadrant too small to use —
+     stacks into one scrollable column instead. */
+  @media (max-width: 700px), (max-height: 420px) {
+    #worldQuadrants { grid-template-columns: 1fr; grid-auto-rows: auto; }
+    .titleQuadrant { max-height: 46vh; }
+  }
+  #worldList { width: 100%; max-width: 420px; overflow-y: auto; margin-bottom: 16px; }
   .worldRow {
     display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07);
     border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
@@ -259,30 +300,56 @@
 <body>
 
 <div id="worldSelect">
-  <h1>🗺️ Your Worlds</h1>
-  <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin-bottom:10px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
-  <div id="worldSelectMsg">Loading your saved worlds…</div>
-  <div id="worldList"></div>
-  <div id="newWorldRow">
-    <input id="newWorldName" type="text" placeholder="New world name…" maxlength="40">
-    <button id="newWorldBtn">＋ Create</button>
-  </div>
-  <button id="visitPubBtn" style="margin-top:14px;background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🍺 Visit The Mill (community pub — clock in for a shift)</button>
-  <button id="createPubBtn" style="display:none;margin-top:8px;background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.3);color:#ccc;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">＋ Create The Mill (sets it up as one of your own worlds, editable by you only)</button>
-  <button id="browseOtherWorldsBtn" style="margin-top:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🌍 Visit someone else's world</button>
-  <button id="avatarOpenBtn" style="margin-top:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🧑 Customize your avatar</button>
-  <div id="otherWorldSelect" style="display:none;width:100%;max-width:420px;">
-    <div id="otherWorldMsg" style="opacity:0.7;font-size:13px;margin:10px 0;">Loading other worlds…</div>
-    <div id="otherWorldList"></div>
+  <h1>⛏️ Mining World</h1>
+  <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin:0 auto 10px;max-width:700px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
+  <div id="worldQuadrants">
+    <div class="titleQuadrant" id="quadMill">
+      <h3>🍺 The Mill</h3>
+      <p style="font-size:12px;opacity:0.7;margin:0 0 10px;">The shared community pub — clock in for a shift, or just visit.</p>
+      <button id="visitPubBtn" style="background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">🍺 Visit The Mill</button>
+      <button id="createPubBtn" style="display:none;margin-top:8px;background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.3);color:#ccc;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">＋ Create The Mill (sets it up as one of your own worlds, editable by you only)</button>
+    </div>
+    <div class="titleQuadrant" id="quadAvatar">
+      <h3>🧑 Your Avatar</h3>
+      <canvas id="titleAvatarCanvas" style="width:min(140px,20vh);height:min(168px,24vh);background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:10px;"></canvas>
+      <button id="avatarOpenBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">Customize your avatar</button>
+    </div>
+    <div class="titleQuadrant" id="quadWorlds">
+      <h3>🗺️ Your Worlds</h3>
+      <div id="worldSelectMsg">Loading your saved worlds…</div>
+      <div id="worldList"></div>
+      <div id="newWorldRow">
+        <input id="newWorldName" type="text" placeholder="New world name…" maxlength="40">
+        <button id="newWorldBtn">＋ Create</button>
+      </div>
+    </div>
+    <div class="titleQuadrant" id="quadOtherWorlds">
+      <h3>🌍 Other Worlds</h3>
+      <p style="font-size:12px;opacity:0.7;margin:0 0 10px;">Visit a world someone else has created.</p>
+      <button id="browseOtherWorldsBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">🌍 Visit someone else's world</button>
+      <div id="otherWorldSelect" style="display:none;width:100%;">
+        <div id="otherWorldMsg" style="opacity:0.7;font-size:13px;margin:10px 0;">Loading other worlds…</div>
+        <div id="otherWorldList"></div>
+      </div>
+    </div>
   </div>
 </div>
 
-<div id="avatarModal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(10,12,16,0.97);color:#fff;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;font-family:-apple-system,sans-serif;">
-  <h2 style="margin:0 0 10px;font-size:20px;">🧑 Customize Your Avatar</h2>
-  <canvas id="avatarPreviewCanvas" style="width:min(220px, 34vh); height:min(260px, 40vh); background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:12px;"></canvas>
-  <input id="avatarNameInput" maxlength="16" placeholder="Your name" style="width:200px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;margin-bottom:14px;">
-  <div id="avatarSwatchRows" style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:260px;"></div>
-  <button id="avatarDoneBtn" style="margin-top:18px;padding:10px 28px;font-size:15px;border:none;border-radius:6px;background:#5c9e3f;color:#fff;cursor:pointer;font-weight:600;">Done</button>
+<div id="avatarModal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(10,12,16,0.97);color:#fff;flex-direction:column;align-items:center;padding:16px;box-sizing:border-box;font-family:-apple-system,sans-serif;">
+  <h2 style="margin:0 0 8px;font-size:18px;flex-shrink:0;">🧑 Customize Your Avatar</h2>
+  <canvas id="avatarPreviewCanvas" style="width:min(180px, 26vh); height:min(210px, 30vh); background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:8px;flex-shrink:0;"></canvas>
+  <input id="avatarNameInput" maxlength="16" placeholder="Your name" style="width:200px;flex-shrink:0;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:7px;font-size:13px;text-align:center;margin-bottom:10px;">
+  <!-- The avatar/name above never scroll — only this options list does,
+       via flex:1 + min-height:0 (the min-height override is what makes a
+       flex child actually respect its container's remaining space
+       instead of growing to fit its own content and pushing everything
+       else off-screen, which is what was cutting the avatar out of view
+       before). This is what keeps the avatar always visible regardless
+       of how many option rows get added in future. -->
+  <div id="avatarSwatchScroll" style="flex:1; min-height:0; width:100%; max-width:280px; overflow-y:auto;">
+    <div id="avatarSwatchRows" style="display:flex;flex-direction:column;gap:10px;padding-bottom:8px;"></div>
+  </div>
+  <button id="avatarDoneBtn" style="margin-top:10px;flex-shrink:0;padding:9px 26px;font-size:14px;border:none;border-radius:6px;background:#5c9e3f;color:#fff;cursor:pointer;font-weight:600;">Done</button>
 </div>
 
 <div id="overlay" style="display:none;">
@@ -312,10 +379,10 @@
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
-<div id="playerRadar" style="display:none;position:fixed;top:122px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
+<div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
-<div id="taskPanel" style="display:none;position:fixed;left:12px;bottom:210px;z-index:10;max-width:220px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
+<div id="taskPanel" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:10;max-width:260px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
   <div id="taskPanelText" style="margin-bottom:6px;line-height:1.4;"></div>
   <button id="taskActionBtn" style="display:none;background:rgba(212,160,23,0.4);border:1px solid rgba(212,160,23,0.8);color:#ffe27a;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;"></button>
   <button id="appMakeLeaveBtn" style="display:none;background:rgba(190,60,50,0.45);border:1px solid rgba(220,90,80,0.85);color:#ffe0da;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;">🚪 Leave Role</button>
@@ -353,8 +420,8 @@
     </div>
   </div>
 </div>
-<button id="chatOpenBtn" style="display:none;position:fixed;top:150px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
-<div id="chatLog" style="display:none;position:fixed;left:12px;bottom:270px;z-index:12;max-width:260px;flex-direction:column;gap:2px;pointer-events:none;"></div>
+<button id="chatOpenBtn" style="display:none;position:fixed;bottom:222px;right:70px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
+<div id="chatLog" style="display:none;position:fixed;left:106px;bottom:216px;z-index:12;max-width:220px;flex-direction:column;gap:2px;pointer-events:none;"></div>
 <div id="promoOfferModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
   <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:340px;width:90%;color:#fff;font-size:13px;text-align:center;">
     <div id="promoOfferTitle" style="font-size:20px;margin-bottom:8px;">🎓 Promotion Opportunity!</div>
@@ -1639,6 +1706,16 @@
     blockEdits.set(k, type);
     if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
     dirtyChunks.add(chunkKeyOf(x, z));
+    // Broadcasts this one edit live to anyone else currently in this same
+    // world — without this, another player's changes only ever became
+    // visible after a full save/reload cycle, since nothing was pushing
+    // individual edits out in between. Every mine/place goes through
+    // this one function regardless of block type, so hooking it here
+    // covers all of them in one place rather than instrumenting each
+    // call site separately.
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'blockEdit', payload: { uid: playerUid, x, y, z, t: type, rot: rot||0 } }); } catch(e) {}
+    }
   }
   function recordWaterEdit(x, y, z, level) {
     if (!terrainStreamingActive) return;
@@ -2790,7 +2867,17 @@
       emissive: type.neon ? 0x1a4a55 : 0x000000, emissiveIntensity: type.neon ? 0.55 : 0,
     });
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(type.w*0.96, type.h*0.96), mat);
-    mesh.position.set(px, py, pz);
+    // Wider signs (2×1, 3×1) were centred on the single block they're
+    // attached to, same as a 1×1 sign — meaning a 2-wide sign extended
+    // half a block PAST the block on one side and only covered half the
+    // block on the other, instead of sitting flush against the block it
+    // was actually placed on. This shifts the sign by half its "extra"
+    // width, in its own LOCAL rightward direction (rotated to match
+    // whichever way this particular wall faces, so it's correct
+    // regardless of orientation) — for a 1-wide sign that's a shift of
+    // zero, unchanged from before.
+    const localOffset = new THREE.Vector3((type.w-1)/2, 0, 0).applyQuaternion(q);
+    mesh.position.set(px + localOffset.x, py + localOffset.y, pz + localOffset.z);
     mesh.quaternion.copy(q);
     scene.add(mesh);
     signs.set(fk, { mesh, bx, by, bz, nx, ny, nz, sizeIdx, text: text || '' });
@@ -7172,6 +7259,29 @@
         op.chatHideAt = performance.now() + 6000;
         showChatLogLine(payload.name, payload.text);
       });
+      // Applies another player's mine/place LIVE, the moment it happens —
+      // this is what was actually missing before: edits only ever became
+      // visible after a full save/reload cycle, since nothing pushed
+      // individual changes out in between periodic saves. Also folds the
+      // edit into THIS session's own blockEdits/dirtyChunks, not just the
+      // live `blocks` map — without that, if this player's own save fires
+      // before the sender's does, it could silently overwrite the
+      // sender's change right back out, since it wouldn't know about it.
+      channel.on('broadcast', { event: 'blockEdit' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return;
+        if (currentWorldId !== mpConnectedWorldId) return; // stale message from a world we've since left
+        const { x, y, z, t, rot } = payload;
+        const k = key(x, y, z);
+        if (t === -1) { blocks.delete(k); stepRotations.delete(k); }
+        else { blocks.set(k, t); if (rot) stepRotations.set(k, rot); else stepRotations.delete(k); }
+        blockEdits.set(k, t);
+        if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
+        dirtyChunks.add(chunkKeyOf(x, z));
+        const colKey = x+','+z;
+        const prevColH = columnHeight.get(colKey);
+        if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
+        handleLocalBlockChange(x, y, z); // updates the visible mesh instance immediately, exactly like a local edit would
+      });
       channel.on('presence', { event: 'sync' }, () => {
         try {
           const state = channel.presenceState();
@@ -8454,7 +8564,51 @@
     setMyAvatarColors(pendingAvatarColors);
     setMyDisplayName(document.getElementById('avatarNameInput').value);
     closeAvatarModal();
+    refreshTitleAvatarFigure(); // so the title screen's own thumbnail reflects whatever just changed immediately, not just next reload
   });
+
+  // ---- Title screen's own small avatar thumbnail ----
+  // A second, separate mini preview from the customization screen's own
+  // (deliberately not shared/reused) — this one runs continuously
+  // whenever the title screen itself is visible, the customization one
+  // only while its own modal is open, and keeping them independent means
+  // neither can accidentally interfere with the other's render loop.
+  let titleAvatarRenderer = null, titleAvatarScene = null, titleAvatarCamera = null, titleAvatarFigure = null, titleAvatarRAF = null;
+  function setupTitleAvatarPreview() {
+    const canvas = document.getElementById('titleAvatarCanvas');
+    if (!canvas) return;
+    const w = Math.max(60, canvas.clientWidth || 140), h = Math.max(80, canvas.clientHeight || 170);
+    if (!titleAvatarRenderer) {
+      titleAvatarRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      titleAvatarScene = new THREE.Scene();
+      titleAvatarScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.15));
+      const dir = new THREE.DirectionalLight(0xffffff, 0.55);
+      dir.position.set(2, 3, 2);
+      titleAvatarScene.add(dir);
+      titleAvatarCamera = new THREE.PerspectiveCamera(34, w/h, 0.1, 10);
+    }
+    titleAvatarRenderer.setSize(w, h, false);
+    titleAvatarCamera.aspect = w/h;
+    titleAvatarCamera.position.set(0, 0.95, 3.3);
+    titleAvatarCamera.lookAt(0, 0.95, 0);
+    titleAvatarCamera.updateProjectionMatrix();
+    refreshTitleAvatarFigure();
+    if (!titleAvatarRAF) titleAvatarLoop();
+  }
+  function refreshTitleAvatarFigure() {
+    if (!titleAvatarScene) return;
+    if (titleAvatarFigure) titleAvatarScene.remove(titleAvatarFigure);
+    titleAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+    titleAvatarScene.add(titleAvatarFigure);
+  }
+  function titleAvatarLoop() {
+    titleAvatarRAF = requestAnimationFrame(titleAvatarLoop);
+    if (titleAvatarFigure) titleAvatarFigure.rotation.y += 0.01;
+    if (titleAvatarRenderer) titleAvatarRenderer.render(titleAvatarScene, titleAvatarCamera);
+  }
+  function stopTitleAvatarPreview() {
+    if (titleAvatarRAF) { cancelAnimationFrame(titleAvatarRAF); titleAvatarRAF = null; }
+  }
 
   document.getElementById('promoStartBtn').addEventListener('click', () => { startQuiz(); });
   document.getElementById('promoLaterBtn').addEventListener('click', () => { closePromoOffer(); });
@@ -8544,6 +8698,7 @@
 
   async function beginPlaying() {
     document.getElementById('worldSelect').style.display = 'none'; // hidden first — otherwise it sits on top of (z-index 25) and completely hides the loading overlay below (z-index 22)
+    stopTitleAvatarPreview(); // no point rendering the title screen's own avatar thumbnail while it isn't even visible
     if (terrainStreamingActive) {
       // Shown while the wider initial area generates all at once — this
       // replaces what used to be an unexplained flicker with an honest,
@@ -8714,6 +8869,7 @@
 
   if (playerUid) {
     document.getElementById('worldSelect').style.display = 'flex';
+    setupTitleAvatarPreview();
     if (isStandalone) document.getElementById('standaloneNotice').style.display = 'block';
     renderWorldList();
     fetchPlayerStats().then(s => { coins = s.coins; hoursWorked = s.hours; rank = s.rank; promoThreshold = s.promoThreshold; updateCoinsDisplay(); updateRoleTag(); });

@@ -1619,7 +1619,7 @@
   // what stranded the building without a way to reach the surrounding
   // land on foot. Protecting only the exact footprint lets terrain
   // generate right up to the building's own walls.
-  const PUB_BOUNDS = { x0: -4, x1: 32, z0: -4, z1: 80 }; // z1 extended from 38 to cover the football pitch built beyond the garden — see buildFootballPitch()
+  const PUB_BOUNDS = { x0: -28, x1: 32, z0: -4, z1: 80 }; // x0/z1 extended beyond the original -4/38 to cover the football pitch (and its stadium stands, which reach x:-5 — the original x0:-4 didn't quite cover them) plus the snakes & ladders tower further west again
   function isPubColumn(x, z) {
     return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
   }
@@ -5056,6 +5056,7 @@
     clearBlocksRange(12,16,1,1,34,34); // gate through the garden's back fence — otherwise there'd be no way to actually walk out to the pitch beyond it
 
     buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
+    buildSnakesLaddersTower(STONE, PLANKS, WHITE_CONC, WOOD_LOG);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5108,6 +5109,61 @@
       for (let z = z0-2; z <= z1+2; z++) {
         blocks.set(key(xLeft,y,z), CONCRETE);
         blocks.set(key(xRight,y,z), CONCRETE);
+      }
+    }
+  }
+  // ---- Snakes & Ladders tower ----
+  // A literal vertical tower rather than a flat board: 10 floors, one
+  // per row of the classic 100-square board, each floor's 10 squares
+  // laid out along a single path line and connected to the next floor
+  // by a ladder fixture at whichever end that row continues from —
+  // exactly like a real board, where row 1 (1-10) ends at the same end
+  // row 2 (11-20, running the opposite way) begins.
+  const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46, TOWER_FLOOR_HEIGHT = 4;
+  // Square N's world position — floor = which row of 10 it falls in,
+  // direction alternates per floor (odd floors run low-X to high-X,
+  // even floors the other way), matching the classic board's boustro-
+  // phedon numbering.
+  function squareToWorldPos(n) {
+    n = Math.max(1, Math.min(100, Math.round(n)));
+    const floor = Math.ceil(n / 10);
+    const posInFloor = n - (floor-1)*10; // 1..10
+    const slabY = 1 + (floor-1)*TOWER_FLOOR_HEIGHT;
+    const leftToRight = (floor % 2 === 1);
+    const x = leftToRight ? (TOWER_X0 + (posInFloor-1)) : (TOWER_X1 - (posInFloor-1));
+    return new THREE.Vector3(x+0.5, slabY+1.15, TOWER_Z+0.5);
+  }
+  function buildSnakesLaddersTower(STONE, PLANKS, WHITE_CONC, WOOD_LOG) {
+    const x0 = TOWER_X0-2, x1 = TOWER_X1+2, z0 = TOWER_Z-2, z1 = TOWER_Z+7;
+    const topSlabY = 1 + 9*TOWER_FLOOR_HEIGHT;
+    // Two full-height ladder walls, one at each end of the path line —
+    // built the whole tower's height rather than only where each
+    // specific floor transition needs one, since that's simpler and the
+    // player only ever climbs whichever side is the live connection for
+    // their current row anyway.
+    for (let y = 1; y <= topSlabY+3; y++) {
+      blocks.set(key(TOWER_X0, y, TOWER_Z-1), PLANKS);
+      blocks.set(key(TOWER_X1, y, TOWER_Z-1), PLANKS);
+    }
+    for (let y = 1; y < topSlabY+3; y++) {
+      addLadder(TOWER_X0, y, TOWER_Z-1, 0,0,1);
+      addLadder(TOWER_X1, y, TOWER_Z-1, 0,0,1);
+    }
+    for (let floor = 1; floor <= 10; floor++) {
+      const slabY = 1 + (floor-1)*TOWER_FLOOR_HEIGHT;
+      const leftToRight = (floor % 2 === 1);
+      fillBlocks(x0, x1, slabY, slabY, z0, z1, STONE);
+      // Low guard rail around the open perimeter (not a full wall — this
+      // is meant to feel like an open-air multi-storey structure, not a
+      // sealed box on every floor)
+      for (let x = x0; x <= x1; x++) { blocks.set(key(x,slabY+1,z0), WHITE_CONC); blocks.set(key(x,slabY+1,z1), WHITE_CONC); }
+      for (let z = z0; z <= z1; z++) { blocks.set(key(x0,slabY+1,z), WHITE_CONC); blocks.set(key(x1,slabY+1,z), WHITE_CONC); }
+      // The 10 numbered squares for this row, chequered so each
+      // individual square reads clearly against its neighbours
+      for (let i = 0; i < 10; i++) {
+        const n = (floor-1)*10 + i + 1;
+        const sx = leftToRight ? (TOWER_X0+i) : (TOWER_X1-i);
+        blocks.set(key(sx, slabY, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS);
       }
     }
   }
@@ -6222,6 +6278,45 @@
     g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();
+  }
+  // Synthesized crowd cheer — same noise-buffer approach as the footstep
+  // above (there's no actual audio sample to play, everything in this
+  // game is generated on the fly), just much longer and bandpass-
+  // filtered into more of a roar/murmur, with a couple of rising
+  // sawtooth "whoop" tones layered on top so it doesn't just read as a
+  // burst of static.
+  function playCrowdCheer() {
+    if (!audioCtx) return;
+    const dur = 1.3;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random()*2-1;
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 900;
+    filter.Q.value = 0.7;
+    const g = audioCtx.createGain();
+    const now = audioCtx.currentTime;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.exponentialRampToValueAtTime(0.35, now+0.15);
+    g.gain.exponentialRampToValueAtTime(0.001, now+dur);
+    noise.connect(filter).connect(g).connect(audioCtx.destination);
+    noise.start();
+    [1, 1.5].forEach((mult, i) => {
+      const o = audioCtx.createOscillator();
+      const og = audioCtx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(300*mult, now);
+      o.frequency.exponentialRampToValueAtTime(500*mult, now+0.4+i*0.15);
+      og.gain.setValueAtTime(0.0001, now);
+      og.gain.exponentialRampToValueAtTime(0.06, now+0.2);
+      og.gain.exponentialRampToValueAtTime(0.001, now+0.9);
+      o.connect(og).connect(audioCtx.destination);
+      o.start(now+i*0.05); o.stop(now+1.0);
+    });
   }
   function playJump() {
     if (!audioCtx) return;
@@ -7549,6 +7644,7 @@
     footballBall.vel.set(0,0,0);
     footballBall.mesh.position.copy(FOOTBALL_CENTER);
     broadcastFootballState(true);
+    playCrowdCheer();
   }
   function broadcastFootballState(force) {
     const now = performance.now();
@@ -7564,8 +7660,35 @@
       } catch(e) {}
     }
   }
+  // Straight-line distance from the pitch's own boundary — 0 while
+  // still on or over the pitch, growing the further away someone wanders.
+  function footballDistanceFromPitch(x, z) {
+    const dx = Math.max(FOOTBALL_PITCH_BOUNDS.x0 - x, 0, x - FOOTBALL_PITCH_BOUNDS.x1);
+    const dz = Math.max(FOOTBALL_PITCH_BOUNDS.z0 - z, 0, z - FOOTBALL_PITCH_BOUNDS.z1);
+    return Math.sqrt(dx*dx + dz*dz);
+  }
+  let lastFootballDistanceCheck = 0;
+  function checkFootballDistanceReset() {
+    if (!footballBall) return;
+    if (footballScoreP1 === 0 && footballScoreP2 === 0) return; // nothing to reset
+    const now = performance.now();
+    if (now - lastFootballDistanceCheck < 1000) return; // once a second is plenty — this doesn't need per-frame precision
+    lastFootballDistanceCheck = now;
+    let anyFar = footballDistanceFromPitch(player.pos.x, player.pos.z) >= 10;
+    if (!anyFar) {
+      otherPlayers.forEach(op => {
+        if (footballDistanceFromPitch(op.group.position.x, op.group.position.z) >= 10) anyFar = true;
+      });
+    }
+    if (anyFar) {
+      footballScoreP1 = 0; footballScoreP2 = 0;
+      updateFootballScoreHud();
+      broadcastFootballState(true);
+    }
+  }
   function updateFootballBall(dt) {
     if (!footballBall || currentWorldId !== PUB_WORLD_ID) return;
+    checkFootballDistanceReset();
     const b = footballBall;
     b.vel.multiplyScalar(Math.max(0, 1 - dt*1.1)); // rolling friction
     b.pos.x += b.vel.x*dt;

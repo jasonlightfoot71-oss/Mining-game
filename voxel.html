@@ -3747,17 +3747,84 @@
   // player's broadcast choice), so it looks the same every time rather
   // than being randomised like the pub's decorative customers still are
   // when this is omitted.
+  // Held items — small props reusing the same flat-shaded box/cone
+  // language as the rest of the game's models. `none` means no held-item
+  // group is even created, keeping the common case (nobody chose one)
+  // completely free.
+  function buildPhoneProp() {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.09,0.17,0.015), new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 60 }));
+    g.add(body);
+    const screen = new THREE.Mesh(new THREE.BoxGeometry(0.075,0.14,0.006), new THREE.MeshPhongMaterial({ color: 0x3a6a9a, emissive: 0x0d1f2e, shininess: 80 }));
+    screen.position.z = 0.011;
+    g.add(screen);
+    return g;
+  }
+  function buildTorchProp() {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.025,0.32,6), new THREE.MeshPhongMaterial({ color: 0x4a3320, shininess: 0 })));
+    const flameOuter = new THREE.Mesh(new THREE.ConeGeometry(0.05,0.13,7), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85 }));
+    flameOuter.position.y = 0.22;
+    g.add(flameOuter);
+    const flameInner = new THREE.Mesh(new THREE.ConeGeometry(0.026,0.08,7), new THREE.MeshBasicMaterial({ color: 0xffe066 }));
+    flameInner.position.y = 0.24;
+    g.add(flameInner);
+    return g;
+  }
+  const HELD_ITEM_KEYS = ['none', 'phone', 'drink', 'torch'];
+  const HELD_ITEM_LABELS = { none: 'None', phone: '📱 Phone', drink: '🍺 Drink', torch: '🔥 Torch' };
+  const HELD_ITEM_BUILDERS = { phone: buildPhoneProp, drink: () => buildPintGlass(0.55), torch: buildTorchProp };
+  // Hats — replace the plain hair block entirely when one is chosen
+  // (wearing a hat over visible hair would need its own extra geometry
+  // to look right, not worth it for a low-poly figure like this), using
+  // the same headY the hair itself is anchored to so they always line up
+  // regardless of the figure's seated/standing height.
+  function buildHatProp(hatType, headY) {
+    if (hatType === 'hardhat') {
+      const g = new THREE.Group();
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(0.26,10,6,0,Math.PI*2,0,Math.PI/2), new THREE.MeshPhongMaterial({ color: 0xf2c14e, shininess: 35 }));
+      dome.position.y = headY+0.14;
+      g.add(dome);
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.28,0.28,0.03,12), new THREE.MeshPhongMaterial({ color: 0xf2c14e, shininess: 35 }));
+      brim.position.y = headY+0.05;
+      g.add(brim);
+      return g;
+    }
+    if (hatType === 'cap') {
+      const g = new THREE.Group();
+      const top = new THREE.Mesh(new THREE.BoxGeometry(0.44,0.16,0.44), new THREE.MeshPhongMaterial({ color: 0x3a5a9a, shininess: 10 }));
+      top.position.y = headY+0.24;
+      g.add(top);
+      const brim = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.03,0.16), new THREE.MeshPhongMaterial({ color: 0x2a4a7a, shininess: 10 }));
+      brim.position.set(0, headY+0.16, 0.28);
+      g.add(brim);
+      return g;
+    }
+    if (hatType === 'beanie') {
+      const g = new THREE.Group();
+      const top = new THREE.Mesh(new THREE.BoxGeometry(0.44,0.22,0.44), new THREE.MeshPhongMaterial({ color: 0x8a3a3a, shininess: 0 }));
+      top.position.y = headY+0.21;
+      g.add(top);
+      return g;
+    }
+    return null;
+  }
+  const HAT_KEYS = ['none', 'hardhat', 'cap', 'beanie'];
+  const HAT_LABELS = { none: 'None', hardhat: '⛑️ Hard Hat', cap: '🧢 Cap', beanie: '🎩 Beanie' };
   function buildCustomerFigure(seated, colors) {
     // Minecraft-proportioned: blocky head/torso/limbs, flat colours, no
     // curves anywhere — reads instantly as "customer" rather than a
     // realistic figure. Randomised skin/hair/shirt/pants so a crowd of
     // them doesn't look cloned (unless a specific `colors` choice was
-    // given instead — see above).
+    // given instead — see above). `colors.hat`/`colors.heldItem`, when
+    // given, add the extras below on top of the base figure.
     const skinTones = AVATAR_SKIN_TONES, hairTones = AVATAR_HAIR_TONES, shirtTones = AVATAR_SHIRT_TONES, pantsTones = AVATAR_PANTS_TONES;
     const skin = colors ? skinTones[colors.skinIdx % skinTones.length] : skinTones[Math.floor(Math.random()*skinTones.length)];
     const hair = colors ? hairTones[colors.hairIdx % hairTones.length] : hairTones[Math.floor(Math.random()*hairTones.length)];
     const shirt = colors ? shirtTones[colors.shirtIdx % shirtTones.length] : shirtTones[Math.floor(Math.random()*shirtTones.length)];
     const pants = colors ? pantsTones[colors.pantsIdx % pantsTones.length] : pantsTones[Math.floor(Math.random()*pantsTones.length)];
+    const hatType = colors && colors.hat ? colors.hat : 'none';
+    const heldItem = colors && colors.heldItem ? colors.heldItem : 'none';
     const group = new THREE.Group();
     const skinMat = new THREE.MeshPhongMaterial({ color: skin, shininess: 0, flatShading: true });
     const hairMat = new THREE.MeshPhongMaterial({ color: hair, shininess: 0, flatShading: true });
@@ -3778,11 +3845,13 @@
     const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.58, 0.22), shirtMat);
     torso.position.y = torsoY;
     group.add(torso);
+    let rightArm = null;
     [-0.28, 0.28].forEach(x => {
       const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.58, 0.19), shirtMat);
       arm.position.set(x, torsoY, 0);
       arm.name = 'arm';
       group.add(arm);
+      if (x > 0) rightArm = arm;
     });
     const headY = legHeight + 0.79;
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), skinMat);
@@ -3799,9 +3868,25 @@
     const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), faceMat);
     mouth.position.set(0, headY-0.09, 0.215);
     group.add(mouth);
-    const hairCap = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.44), hairMat);
-    hairCap.position.y = headY+0.24;
-    group.add(hairCap);
+    const hatGroup = hatType !== 'none' ? buildHatProp(hatType, headY) : null;
+    if (hatGroup) {
+      group.add(hatGroup);
+    } else {
+      const hairCap = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.44), hairMat);
+      hairCap.position.y = headY+0.24;
+      group.add(hairCap);
+    }
+    // Held item — a child of the right ARM mesh specifically, not the
+    // group as a whole, so it swings naturally with the same walk-cycle
+    // animation the arm itself already gets (see updateMultiplayer),
+    // positioned in the arm's own local space near where a hand would be
+    // (the arm is 0.58 tall, centred on itself, so -0.29 is its bottom).
+    if (heldItem !== 'none' && HELD_ITEM_BUILDERS[heldItem] && rightArm) {
+      const item = HELD_ITEM_BUILDERS[heldItem]();
+      item.position.set(0.02, -0.32, 0.08);
+      item.rotation.set(0.3, 0, 0);
+      rightArm.add(item);
+    }
     return group;
   }
   function placeCustomersAtTable(tx, ty, tz, area) {
@@ -6895,9 +6980,13 @@
     if (myAvatarColors) return myAvatarColors;
     try {
       const stored = JSON.parse(localStorage.getItem('voxelAvatarColors') || 'null');
-      if (stored && typeof stored.skinIdx === 'number') { myAvatarColors = stored; return myAvatarColors; }
+      if (stored && typeof stored.skinIdx === 'number') {
+        if (!stored.hat) stored.hat = 'none'; // fills in defaults for anyone who saved a choice before hats/held items existed
+        if (!stored.heldItem) stored.heldItem = 'none';
+        myAvatarColors = stored; return myAvatarColors;
+      }
     } catch(e) {}
-    myAvatarColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 0, pantsIdx: 0 };
+    myAvatarColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 0, pantsIdx: 0, hat: 'none', heldItem: 'none' };
     return myAvatarColors;
   }
   function setMyAvatarColors(colors) {
@@ -8242,6 +8331,31 @@
           buildAvatarSwatchRows(); // rebuilt so the selection highlight moves to the new choice
         });
         row.appendChild(sw);
+      });
+      wrap.appendChild(row);
+      container.appendChild(wrap);
+    });
+    // Hat and held item are label-based choices, not colours, so they
+    // get a row of small text pills instead of colour swatches.
+    [['Hat', HAT_KEYS, HAT_LABELS, 'hat'], ['Holding', HELD_ITEM_KEYS, HELD_ITEM_LABELS, 'heldItem']].forEach(([label, keys, labels, prop]) => {
+      const wrap = document.createElement('div');
+      const labelEl = document.createElement('div');
+      labelEl.textContent = label;
+      labelEl.style.cssText = 'font-size:12px;opacity:0.75;margin-bottom:4px;';
+      wrap.appendChild(labelEl);
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+      keys.forEach(k => {
+        const pill = document.createElement('div');
+        const selected = pendingAvatarColors[prop] === k;
+        pill.textContent = labels[k];
+        pill.style.cssText = `padding:6px 10px;border-radius:14px;font-size:12px;cursor:pointer;background:${selected ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.08)'};border:1px solid ${selected ? '#fff' : 'rgba(255,255,255,0.25)'};`;
+        pill.addEventListener('click', () => {
+          pendingAvatarColors[prop] = k;
+          refreshAvatarPreviewFigure();
+          buildAvatarSwatchRows();
+        });
+        row.appendChild(pill);
       });
       wrap.appendChild(row);
       container.appendChild(wrap);

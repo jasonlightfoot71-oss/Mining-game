@@ -5056,7 +5056,7 @@
     clearBlocksRange(12,16,1,1,34,34); // gate through the garden's back fence — otherwise there'd be no way to actually walk out to the pitch beyond it
 
     buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
-    buildSnakesLaddersTower(STONE, PLANKS, WHITE_CONC, WOOD_LOG);
+    buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5113,58 +5113,56 @@
     }
   }
   // ---- Snakes & Ladders tower ----
-  // A literal vertical tower rather than a flat board: 10 floors, one
-  // per row of the classic 100-square board, each floor's 10 squares
-  // laid out along a single path line and connected to the next floor
-  // by a ladder fixture at whichever end that row continues from —
-  // exactly like a real board, where row 1 (1-10) ends at the same end
-  // row 2 (11-20, running the opposite way) begins.
-  const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46, TOWER_FLOOR_HEIGHT = 4;
-  // Square N's world position — floor = which row of 10 it falls in,
-  // direction alternates per floor (odd floors run low-X to high-X,
-  // even floors the other way), matching the classic board's boustro-
-  // phedon numbering.
-  function squareToWorldPos(n) {
+  // Exactly as literally described: 10 blocks, then another 10 stacked
+  // directly on top of those, repeated until 100 — a flat standing wall
+  // of 100 individually numbered blocks (10 wide, 10 tall), not floors
+  // you walk across. Play itself doesn't require physically climbing it
+  // — the generator and dice trigger blocks sit on the ground nearby,
+  // and each player's token moves along the tower automatically as
+  // dice are rolled, the same way a real board-game piece does.
+  const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46;
+  // Block position (not the token's floating position — see
+  // squareToWorldPos below for that) for square N: row = which stack of
+  // 10 it falls in (0 = bottom), alternating direction per row exactly
+  // like the classic board (row 0 low-X to high-X, row 1 the opposite,
+  // and so on), so 1-10 runs one way along the bottom and 11-20
+  // continues back the other way directly above it.
+  function squareToBlockPos(n) {
     n = Math.max(1, Math.min(100, Math.round(n)));
-    const floor = Math.ceil(n / 10);
-    const posInFloor = n - (floor-1)*10; // 1..10
-    const slabY = 1 + (floor-1)*TOWER_FLOOR_HEIGHT;
-    const leftToRight = (floor % 2 === 1);
-    const x = leftToRight ? (TOWER_X0 + (posInFloor-1)) : (TOWER_X1 - (posInFloor-1));
-    return new THREE.Vector3(x+0.5, slabY+1.15, TOWER_Z+0.5);
+    const row = Math.ceil(n/10) - 1; // 0..9
+    const posInRow = n - row*10 - 1; // 0..9
+    const leftToRight = (row % 2 === 0);
+    const x = leftToRight ? (TOWER_X0 + posInRow) : (TOWER_X1 - posInRow);
+    return { x, y: 1+row };
   }
-  function buildSnakesLaddersTower(STONE, PLANKS, WHITE_CONC, WOOD_LOG) {
-    const x0 = TOWER_X0-2, x1 = TOWER_X1+2, z0 = TOWER_Z-2, z1 = TOWER_Z+7;
-    const topSlabY = 1 + 9*TOWER_FLOOR_HEIGHT;
-    // Two full-height ladder walls, one at each end of the path line —
-    // built the whole tower's height rather than only where each
-    // specific floor transition needs one, since that's simpler and the
-    // player only ever climbs whichever side is the live connection for
-    // their current row anyway.
-    for (let y = 1; y <= topSlabY+3; y++) {
-      blocks.set(key(TOWER_X0, y, TOWER_Z-1), PLANKS);
-      blocks.set(key(TOWER_X1, y, TOWER_Z-1), PLANKS);
+  // A token's actual floating position — just in front of its square's
+  // face, not inside the solid block itself.
+  function squareToWorldPos(n) {
+    const p = squareToBlockPos(n);
+    return new THREE.Vector3(p.x+0.5, p.y+0.5, TOWER_Z+1.7);
+  }
+  function buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS) {
+    // Solid backing wall one block behind the numbers, so it reads as an
+    // actual tower rather than 100 numbers floating in mid-air.
+    fillBlocks(TOWER_X0, TOWER_X1, 1, 10, TOWER_Z-1, TOWER_Z-1, STONE);
+    for (let n = 1; n <= 100; n++) {
+      const p = squareToBlockPos(n);
+      blocks.set(key(p.x, p.y, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS); // chequered so individual squares read clearly against their neighbours
     }
-    for (let y = 1; y < topSlabY+3; y++) {
-      addLadder(TOWER_X0, y, TOWER_Z-1, 0,0,1);
-      addLadder(TOWER_X1, y, TOWER_Z-1, 0,0,1);
-    }
-    for (let floor = 1; floor <= 10; floor++) {
-      const slabY = 1 + (floor-1)*TOWER_FLOOR_HEIGHT;
-      const leftToRight = (floor % 2 === 1);
-      fillBlocks(x0, x1, slabY, slabY, z0, z1, STONE);
-      // Low guard rail around the open perimeter (not a full wall — this
-      // is meant to feel like an open-air multi-storey structure, not a
-      // sealed box on every floor)
-      for (let x = x0; x <= x1; x++) { blocks.set(key(x,slabY+1,z0), WHITE_CONC); blocks.set(key(x,slabY+1,z1), WHITE_CONC); }
-      for (let z = z0; z <= z1; z++) { blocks.set(key(x0,slabY+1,z), WHITE_CONC); blocks.set(key(x1,slabY+1,z), WHITE_CONC); }
-      // The 10 numbered squares for this row, chequered so each
-      // individual square reads clearly against its neighbours
-      for (let i = 0; i < 10; i++) {
-        const n = (floor-1)*10 + i + 1;
-        const sx = leftToRight ? (TOWER_X0+i) : (TOWER_X1-i);
-        blocks.set(key(sx, slabY, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS);
-      }
+  }
+  // Builds a simple diagonal line of blocks connecting two squares,
+  // standing slightly proud of the number wall (Z+2, not directly on
+  // it) — this is a straightforward, honest connector rather than a
+  // literal ladder or snake SHAPE, which would need much more elaborate
+  // modelling to do for two arbitrary squares anywhere on the grid.
+  function buildTowerConnector(fromN, toN, blockType) {
+    const a = squareToBlockPos(fromN), b = squareToBlockPos(toN);
+    const steps = Math.max(Math.abs(a.x-b.x), Math.abs(a.y-b.y), 1);
+    for (let i = 0; i <= steps; i++) {
+      const t = i/steps;
+      const x = Math.round(a.x + (b.x-a.x)*t);
+      const y = Math.round(a.y + (b.y-a.y)*t);
+      blocks.set(key(x, y, TOWER_Z+2), blockType);
     }
   }
   // The Mill lives at a fixed, well-known world id in the same

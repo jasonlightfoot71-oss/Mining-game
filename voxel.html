@@ -77,6 +77,16 @@
     #overlay h1 { font-size: 20px; margin-bottom: 4px; }
     #overlay p { font-size: 11px; line-height: 1.3; margin: 2px 0; }
     #startBtn { margin-top: 8px; padding: 8px 22px; font-size: 14px; }
+    /* Same reasoning as #overlay above — the avatar screen grew a fair
+       bit once hats/held items/hair/pattern rows were added, and needed
+       the same short-screen treatment or it wouldn't fit either. */
+    #avatarModal { padding: 8px; }
+    #avatarModal h2 { font-size: 15px; margin-bottom: 4px; }
+    #avatarPreviewCanvas { width: min(140px, 22vh) !important; height: min(168px, 26vh) !important; margin-bottom: 6px !important; }
+    #avatarNameInput { margin-bottom: 6px !important; padding: 5px !important; font-size: 12px !important; }
+    #avatarSwatchRows { gap: 5px !important; }
+    #avatarSwatchRows > div > div:first-child { font-size: 10px !important; margin-bottom: 2px !important; }
+    #avatarDoneBtn { margin-top: 8px !important; padding: 6px 20px !important; font-size: 13px !important; }
   }
 
   #hint {
@@ -269,7 +279,7 @@
 
 <div id="avatarModal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(10,12,16,0.97);color:#fff;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;font-family:-apple-system,sans-serif;">
   <h2 style="margin:0 0 10px;font-size:20px;">🧑 Customize Your Avatar</h2>
-  <canvas id="avatarPreviewCanvas" width="200" height="240" style="background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:12px;"></canvas>
+  <canvas id="avatarPreviewCanvas" style="width:min(220px, 34vh); height:min(260px, 40vh); background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:12px;"></canvas>
   <input id="avatarNameInput" maxlength="16" placeholder="Your name" style="width:200px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;margin-bottom:14px;">
   <div id="avatarSwatchRows" style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:260px;"></div>
   <button id="avatarDoneBtn" style="margin-top:18px;padding:10px 28px;font-size:15px;border:none;border-radius:6px;background:#5c9e3f;color:#fff;cursor:pointer;font-weight:600;">Done</button>
@@ -3811,6 +3821,37 @@
   }
   const HAT_KEYS = ['none', 'hardhat', 'cap', 'beanie'];
   const HAT_LABELS = { none: 'None', hardhat: '⛑️ Hard Hat', cap: '🧢 Cap', beanie: '🎩 Beanie' };
+  // T-shirt patterns — a small procedural canvas texture (same technique
+  // the game's own block textures already use), baked with the actual
+  // chosen shirt colour directly into it rather than relying on the
+  // material's own colour tint, so it doesn't double up/darken when both
+  // are applied together.
+  function buildShirtTexture(baseColorHex, pattern) {
+    const size = 16;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = hexToCss(baseColorHex);
+    ctx.fillRect(0,0,size,size);
+    if (pattern === 'stripes') {
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      for (let y=0;y<size;y+=4) ctx.fillRect(0,y,size,2);
+    } else if (pattern === 'dots') {
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      for (let y=2;y<size;y+=5) for (let x=2;x<size;x+=5) { ctx.beginPath(); ctx.arc(x,y,1.3,0,Math.PI*2); ctx.fill(); }
+    } else if (pattern === 'check') {
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      for (let y=0;y<size;y+=4) for (let x=(y/4)%2===0?0:4;x<size;x+=8) ctx.fillRect(x,y,4,4);
+    }
+    const tex = new THREE.CanvasTexture(c);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    return tex;
+  }
+  const SHIRT_PATTERN_KEYS = ['plain', 'stripes', 'dots', 'check'];
+  const SHIRT_PATTERN_LABELS = { plain: 'Plain', stripes: 'Stripes', dots: 'Dots', check: 'Check' };
+  const HAIR_LENGTH_KEYS = ['short', 'long', 'bald'];
+  const HAIR_LENGTH_LABELS = { short: 'Short', long: 'Long', bald: 'Bald' };
   function buildCustomerFigure(seated, colors) {
     // Minecraft-proportioned: blocky head/torso/limbs, flat colours, no
     // curves anywhere — reads instantly as "customer" rather than a
@@ -3825,10 +3866,17 @@
     const pants = colors ? pantsTones[colors.pantsIdx % pantsTones.length] : pantsTones[Math.floor(Math.random()*pantsTones.length)];
     const hatType = colors && colors.hat ? colors.hat : 'none';
     const heldItem = colors && colors.heldItem ? colors.heldItem : 'none';
+    const hairLength = colors && colors.hairLength ? colors.hairLength : 'short';
+    const shirtPattern = colors && colors.shirtPattern ? colors.shirtPattern : 'plain';
     const group = new THREE.Group();
     const skinMat = new THREE.MeshPhongMaterial({ color: skin, shininess: 0, flatShading: true });
     const hairMat = new THREE.MeshPhongMaterial({ color: hair, shininess: 0, flatShading: true });
-    const shirtMat = new THREE.MeshPhongMaterial({ color: shirt, shininess: 0, flatShading: true });
+    // Plain stays a flat colour (cheapest, and the common case for the
+    // pub's own randomly-dressed decorative customers); any real pattern
+    // gets the baked canvas texture instead, colour included.
+    const shirtMat = shirtPattern === 'plain'
+      ? new THREE.MeshPhongMaterial({ color: shirt, shininess: 0, flatShading: true })
+      : new THREE.MeshPhongMaterial({ map: buildShirtTexture(shirt, shirtPattern), shininess: 0, flatShading: true });
     const pantsMat = new THREE.MeshPhongMaterial({ color: pants, shininess: 0, flatShading: true });
     // Legs — two separate blocks, Minecraft-style, feet at y=0. Seated
     // figures get short legs instead of scaling the whole body down, so
@@ -3870,11 +3918,22 @@
     group.add(mouth);
     const hatGroup = hatType !== 'none' ? buildHatProp(hatType, headY) : null;
     if (hatGroup) {
-      group.add(hatGroup);
-    } else {
+      group.add(hatGroup); // a hat replaces hair entirely — see buildHatProp's own comment on why
+    } else if (hairLength !== 'bald') {
       const hairCap = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.44), hairMat);
       hairCap.position.y = headY+0.24;
       group.add(hairCap);
+      if (hairLength === 'long') {
+        // Hangs down the back of the head/neck — kept out of the way of
+        // the walk-cycle's own leg/arm swing (named neither 'leg' nor
+        // 'arm', so updateWanderingCustomers/updateMultiplayer's own
+        // animation code leaves it alone) and off to -Z, the same "back
+        // of the figure" side the torch/ladder fixtures already treat as
+        // the non-facing side elsewhere in this file.
+        const back = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.34, 0.1), hairMat);
+        back.position.set(0, headY+0.02, -0.2);
+        group.add(back);
+      }
     }
     // Held item — a child of the right ARM mesh specifically, not the
     // group as a whole, so it swings naturally with the same walk-cycle
@@ -6983,10 +7042,12 @@
       if (stored && typeof stored.skinIdx === 'number') {
         if (!stored.hat) stored.hat = 'none'; // fills in defaults for anyone who saved a choice before hats/held items existed
         if (!stored.heldItem) stored.heldItem = 'none';
+        if (!stored.hairLength) stored.hairLength = 'short';
+        if (!stored.shirtPattern) stored.shirtPattern = 'plain';
         myAvatarColors = stored; return myAvatarColors;
       }
     } catch(e) {}
-    myAvatarColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 0, pantsIdx: 0, hat: 'none', heldItem: 'none' };
+    myAvatarColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 0, pantsIdx: 0, hat: 'none', heldItem: 'none', hairLength: 'short', shirtPattern: 'plain' };
     return myAvatarColors;
   }
   function setMyAvatarColors(colors) {
@@ -8288,15 +8349,28 @@
   function setupAvatarPreview() {
     if (avatarPreviewRenderer) return;
     const canvas = document.getElementById('avatarPreviewCanvas');
+    // Reads the ACTUAL rendered size (driven by the responsive CSS on
+    // the canvas itself — vh-based, plus the short-screen media query
+    // above) rather than a fixed resolution, which is what was cutting
+    // the avatar off on smaller screens: the old fixed 200x240 didn't
+    // shrink with the rest of the modal, so on a short screen the
+    // canvas element itself would be squeezed by its container while
+    // still trying to render at a taller aspect ratio than it actually
+    // had room for.
+    const w = Math.max(80, canvas.clientWidth || 200), h = Math.max(100, canvas.clientHeight || 240);
     avatarPreviewRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    avatarPreviewRenderer.setSize(200, 240);
+    avatarPreviewRenderer.setSize(w, h, false); // false = keep the CSS size as-is, only set the internal drawing resolution
     avatarPreviewScene = new THREE.Scene();
     avatarPreviewScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.15));
     const dir = new THREE.DirectionalLight(0xffffff, 0.55);
     dir.position.set(2, 3, 2);
     avatarPreviewScene.add(dir);
-    avatarPreviewCamera = new THREE.PerspectiveCamera(35, 200/240, 0.1, 10);
-    avatarPreviewCamera.position.set(0, 1.05, 2.5);
+    // Pulled back and widened slightly from the original framing, which
+    // was cropping the top of taller hats (the hard hat especially) out
+    // of frame — this comfortably fits the whole figure, hat included,
+    // with a bit of headroom to spare.
+    avatarPreviewCamera = new THREE.PerspectiveCamera(34, w/h, 0.1, 10);
+    avatarPreviewCamera.position.set(0, 0.95, 3.3);
     avatarPreviewCamera.lookAt(0, 0.95, 0);
   }
   function refreshAvatarPreviewFigure() {
@@ -8337,7 +8411,8 @@
     });
     // Hat and held item are label-based choices, not colours, so they
     // get a row of small text pills instead of colour swatches.
-    [['Hat', HAT_KEYS, HAT_LABELS, 'hat'], ['Holding', HELD_ITEM_KEYS, HELD_ITEM_LABELS, 'heldItem']].forEach(([label, keys, labels, prop]) => {
+    [['Hair', HAIR_LENGTH_KEYS, HAIR_LENGTH_LABELS, 'hairLength'], ['Shirt pattern', SHIRT_PATTERN_KEYS, SHIRT_PATTERN_LABELS, 'shirtPattern'],
+     ['Hat', HAT_KEYS, HAT_LABELS, 'hat'], ['Holding', HELD_ITEM_KEYS, HELD_ITEM_LABELS, 'heldItem']].forEach(([label, keys, labels, prop]) => {
       const wrap = document.createElement('div');
       const labelEl = document.createElement('div');
       labelEl.textContent = label;

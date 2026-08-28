@@ -5121,6 +5121,7 @@
   // and each player's token moves along the tower automatically as
   // dice are rolled, the same way a real board-game piece does.
   const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46;
+  const TOWER_BASE_Y = 2; // one above ground level, on its own visible plinth — square row 0 sitting flush with the surrounding ground read as sunk into it
   const SL_GENERATOR_POS = { x: TOWER_X0, y: 1, z: TOWER_Z+6 };
   const SL_DICE_POS = { x: TOWER_X0+3, y: 1, z: TOWER_Z+6 };
   // Block position (not the token's floating position — see
@@ -5135,7 +5136,7 @@
     const posInRow = n - row*10 - 1; // 0..9
     const leftToRight = (row % 2 === 0);
     const x = leftToRight ? (TOWER_X0 + posInRow) : (TOWER_X1 - posInRow);
-    return { x, y: 1+row };
+    return { x, y: TOWER_BASE_Y+row };
   }
   // A token's actual floating position — just in front of its square's
   // face, not inside the solid block itself. Square 0 is the "not
@@ -5162,9 +5163,11 @@
     return new THREE.Mesh(new THREE.PlaneGeometry(0.85,0.85), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
   }
   function buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC) {
-    // Solid backing wall one block behind the numbers, so it reads as an
-    // actual tower rather than 100 numbers floating in mid-air.
-    fillBlocks(TOWER_X0, TOWER_X1, 1, 10, TOWER_Z-1, TOWER_Z-1, STONE);
+    // A visible plinth at ground level, then the backing wall and
+    // numbers start one block above it — this is what actually keeps
+    // the bottom row from reading as sunk into the ground.
+    fillBlocks(TOWER_X0-1, TOWER_X1+1, 1, 1, TOWER_Z-1, TOWER_Z, STONE);
+    fillBlocks(TOWER_X0, TOWER_X1, TOWER_BASE_Y, TOWER_BASE_Y+9, TOWER_Z-1, TOWER_Z-1, STONE);
     for (let n = 1; n <= 100; n++) {
       const p = squareToBlockPos(n);
       blocks.set(key(p.x, p.y, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS); // chequered so individual squares read clearly against their neighbours
@@ -5174,7 +5177,7 @@
       pubExtraProps.push(label);
     }
     // Ground area in front for the two trigger blocks — kept well clear
-    // of the wall/backing (Z 45-46) and the connector zone (Z 48) so
+    // of the wall/backing (Z 45-46) and the connector zone (Z 46.6) so
     // nothing generated later ever has to share a cell with this.
     fillBlocks(TOWER_X0-3, TOWER_X1+3, 0, 0, TOWER_Z+3, TOWER_Z+10, STONE);
     fillBlocks(TOWER_X0-3, TOWER_X1+3, 1, 1, TOWER_Z+3, TOWER_Z+10, GRASS);
@@ -5191,19 +5194,18 @@
   // actually reading as random grass/tree blocks: block types 3 and 4
   // are literally the tree trunk and leaf textures used everywhere else
   // in the game, never meant to stand in for a ladder or snake. These
-  // are proper THREE.js meshes (two rails and evenly spaced rungs for a
-  // ladder; a chain of tapering, gently curving spheres with a
-  // distinguishable head for a snake), added as scenery rather than as
-  // placed blocks, sitting just clear of the number wall.
+  // sit right against the number wall's own face (not floating out in
+  // front of it) using each square's actual block position, not the
+  // token's floating stand-off position.
   function buildLadderConnector(fromN, toN) {
-    const a = squareToWorldPos(fromN), b = squareToWorldPos(toN);
-    const start = new THREE.Vector3(a.x, a.y, TOWER_Z+2.3), end = new THREE.Vector3(b.x, b.y, TOWER_Z+2.3);
+    const pa = squareToBlockPos(fromN), pb = squareToBlockPos(toN);
+    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+0.62), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+0.62);
     const dir = new THREE.Vector3().subVectors(end, start);
     const length = Math.max(0.5, dir.length());
     dir.normalize();
     const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize().multiplyScalar(0.16);
     const group = new THREE.Group();
-    const railMat = new THREE.MeshPhongMaterial({ color: 0x9a6a34, shininess: 15 });
+    const railMat = new THREE.MeshPhongMaterial({ color: 0xf0b429, emissive: 0x5a3d0a, shininess: 40 }); // bright gold/amber, not the murky brown from before
     [perp.clone(), perp.clone().negate()].forEach(offset => {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, length, 0.08), railMat);
       rail.position.copy(start).add(end).multiplyScalar(0.5).add(offset);
@@ -5223,19 +5225,22 @@
   function buildSnakeConnector(fromN, toN) {
     // fromN is always the higher square (the mouth, where the snake
     // "bites" — see generateSnakesAndLadders' own ordering), toN the
-    // lower one it slides down to.
-    const a = squareToWorldPos(fromN), b = squareToWorldPos(toN);
-    const start = new THREE.Vector3(a.x, a.y, TOWER_Z+2.3), end = new THREE.Vector3(b.x, b.y, TOWER_Z+2.3);
+    // lower one it slides down to. Bright red throughout now, matching
+    // the generator block's own colour, and a tighter wiggle that stays
+    // close to a straight line between the two squares instead of
+    // ballooning out — that's what was reading as "messy".
+    const pa = squareToBlockPos(fromN), pb = squareToBlockPos(toN);
+    const start = new THREE.Vector3(pa.x+0.5, pa.y+0.5, TOWER_Z+0.62), end = new THREE.Vector3(pb.x+0.5, pb.y+0.5, TOWER_Z+0.62);
     const dir = new THREE.Vector3().subVectors(end, start);
     const length = Math.max(0.5, dir.length());
     const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize();
     const group = new THREE.Group();
-    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x2e8b3d, shininess: 25 });
-    const headMat = new THREE.MeshPhongMaterial({ color: 0x1f6b2c, shininess: 25 });
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xdd1e1e, emissive: 0x3a0808, shininess: 35 });
+    const headMat = new THREE.MeshPhongMaterial({ color: 0xa81212, emissive: 0x2a0505, shininess: 35 });
     const segments = Math.max(6, Math.round(length*2.2));
     for (let i = 0; i <= segments; i++) {
       const t = i/segments;
-      const wave = Math.sin(t*Math.PI*2.5) * Math.min(0.5, length*0.12); // gentle S-curve, scaled down for short connections so it doesn't wave off the board
+      const wave = Math.sin(t*Math.PI*2.5) * Math.min(0.18, length*0.05); // much tighter than before — a slight wiggle, not a wide S-curve
       const pos = new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(perp, wave);
       const size = 0.24 * (1 - t*0.55); // tapers from a fat head to a thin tail
       const seg = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), i === 0 ? headMat : bodyMat);
@@ -7995,30 +8000,37 @@
     }
     broadcastSlRoll(p, roll);
   }
-  let lastSlTriggerCheck = 0;
-  // Two real bugs fixed here, both from the same root cause: this only
-  // ever checked "is the player standing over the block", not "did they
-  // just jump onto it" — so simply walking on and staying there kept
-  // re-firing every debounce window, which is exactly why it read as
-  // continuous dice-rolling. Now gated on player.vel.y > 1 (a genuine
-  // jump in progress, not just standing there) AND knocks the player
-  // back off the block afterwards, so there's no way to keep triggering
-  // it just by holding position — you have to jump onto it fresh again
-  // each time, matching "jump on the block" as originally asked for.
+  let lastSlTriggerCheck = 0, slWasAirborne = false;
+  // The actual bug behind "rolled 276": player.vel.y > 1 stays true for
+  // MULTIPLE CONSECUTIVE FRAMES throughout the whole rising part of a
+  // single jump, not just the first one — so even with a time-based
+  // cooldown, one jump could still fire this several times in the same
+  // ~1200ms window before the knockback had fully carried the player
+  // clear, each one rolling its own genuine 1-6 and stacking up into
+  // what looked like one huge number. Fixed at the actual root cause
+  // this time: only fires on the RISING EDGE (the exact frame velocity
+  // crosses from grounded/falling into jumping), tracked every frame
+  // regardless of position, not "is currently jumping" — that can only
+  // be true once per jump no matter how long the ascent takes. The
+  // stronger knockback and cooldown below are just extra safety margin
+  // on top of that, not the actual fix.
   function updateSlTriggers() {
-    if (currentWorldId !== PUB_WORLD_ID) return;
+    const isAirborneNow = player.vel.y > 1;
+    const justJumped = isAirborneNow && !slWasAirborne;
+    slWasAirborne = isAirborneNow;
+    if (currentWorldId !== PUB_WORLD_ID || !justJumped) return;
     const now = performance.now();
-    if (now - lastSlTriggerCheck < 1200) return;
+    if (now - lastSlTriggerCheck < 1500) return;
     const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
     const onGenerator = px === SL_GENERATOR_POS.x && pz === SL_GENERATOR_POS.z && Math.abs(player.pos.y - (SL_GENERATOR_POS.y+1)) < 0.7;
     const onDice = px === SL_DICE_POS.x && pz === SL_DICE_POS.z && Math.abs(player.pos.y - (SL_DICE_POS.y+1)) < 0.7;
-    if ((onGenerator || onDice) && player.vel.y > 1) {
+    if (onGenerator || onDice) {
       lastSlTriggerCheck = now;
       const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
       if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw)); // dead-centre landing has no natural push direction — fall back to "back the way they're facing"
       pushDir.normalize();
-      player.pos.x += pushDir.x*1.3;
-      player.pos.z += pushDir.z*1.3;
+      player.pos.x += pushDir.x*2.6;
+      player.pos.z += pushDir.z*2.6;
       playButtonPress();
       if (onGenerator) generateSnakesAndLadders();
       else tryJoinOrRollSlDice();

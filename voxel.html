@@ -7716,7 +7716,7 @@
           function finishTurn() {
             slTurnIndex = payload.turnIndex;
             slGameWon = payload.won;
-            if (payload.won) showChatLogLine('🏆', p.name + ' rolled a ' + payload.roll + ' and reached square ' + payload.square + viaText + ' — WINS!');
+            if (payload.won) { showChatLogLine('🏆', p.name + ' rolled a ' + payload.roll + ' and reached square ' + payload.square + viaText + ' — WINS!'); launchSlFirework(); }
             else showChatLogLine('🎲', p.name + ' rolled a ' + payload.roll + ', now on square ' + payload.square + viaText + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
           }
           if (hasConnector) {
@@ -8041,6 +8041,55 @@
     });
   }
   let slConnectorMeshes = []; // ladders/snakes for THIS generation — cleared and rebuilt on every fresh game, unlike the number labels/trigger labels in pubExtraProps which persist for the whole Mill visit
+  // A short firework display above the tower for whoever wins — several
+  // shells launching in quick succession, each bursting into a sphere of
+  // coloured particles that arc outward and fall with a light gravity
+  // before fading out. Built with THREE.Points rather than individual
+  // meshes per particle, since a burst is 30-40 of them and that many
+  // separate mesh objects would be needless overhead for something this
+  // short-lived.
+  function launchSlFirework() {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    playCrowdCheer();
+    const colors = [0xff3333, 0xffcc22, 0x33ff66, 0x3388ff, 0xff33cc, 0xffffff];
+    const origin = new THREE.Vector3((TOWER_X0+TOWER_X1)/2+0.5, TOWER_BASE_Y+12, TOWER_Z+2);
+    for (let shell = 0; shell < 4; shell++) {
+      setTimeout(() => {
+        if (currentWorldId !== PUB_WORLD_ID) return; // left the Mill mid-display — don't keep adding particles to a scene that's moved on
+        const color = colors[Math.floor(Math.random()*colors.length)];
+        const particleCount = 40;
+        const positions = new Float32Array(particleCount*3);
+        const velocities = [];
+        const shellOrigin = origin.clone().add(new THREE.Vector3((Math.random()-0.5)*4, (Math.random()-0.5)*1.5, (Math.random()-0.5)*4));
+        for (let i = 0; i < particleCount; i++) {
+          positions[i*3] = shellOrigin.x; positions[i*3+1] = shellOrigin.y; positions[i*3+2] = shellOrigin.z;
+          const theta = Math.random()*Math.PI*2, phi = Math.acos(2*Math.random()-1);
+          const speed = 2 + Math.random()*2.2;
+          velocities.push(new THREE.Vector3(Math.sin(phi)*Math.cos(theta)*speed, Math.sin(phi)*Math.sin(theta)*speed, Math.cos(phi)*speed));
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.PointsMaterial({ color, size: 0.28, transparent: true, opacity: 1 });
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+        const startTime = performance.now();
+        function animateParticles() {
+          const elapsed = (performance.now()-startTime)/1000;
+          if (elapsed > 1.8) { scene.remove(points); geo.dispose(); mat.dispose(); return; }
+          const pos = geo.attributes.position.array;
+          for (let i = 0; i < particleCount; i++) {
+            pos[i*3]   = shellOrigin.x + velocities[i].x*elapsed;
+            pos[i*3+1] = shellOrigin.y + velocities[i].y*elapsed - 1.2*elapsed*elapsed;
+            pos[i*3+2] = shellOrigin.z + velocities[i].z*elapsed;
+          }
+          geo.attributes.position.needsUpdate = true;
+          mat.opacity = Math.max(0, 1 - elapsed/1.8);
+          requestAnimationFrame(animateParticles);
+        }
+        animateParticles();
+      }, shell*350);
+    }
+  }
   function resetSlGame() {
     slLaddersMap = {}; slSnakesMap = {}; slGenerated = false; slNextSnakeColor = 0;
     slPlayers.forEach(p => { if (p.tokenGroup) scene.remove(p.tokenGroup); });
@@ -8065,20 +8114,30 @@
     }
     slGenerated = true;
     const used = new Set([1, 100]);
-    // Requires each newly picked square to be a real distance from every
-    // square already in use — without this, random picks could easily
-    // cluster several connectors into the same small stretch of board,
-    // which is what was reading as "congested".
-    const MIN_GAP = 6;
-    function pickSquare() {
+    // Requires each newly picked square to be some distance from every
+    // square already in use, so connectors don't cluster together.
+    // MIN_GAP is intentionally modest (2, not the much larger value
+    // tried before) — with 24 squares needed out of 98 available, a
+    // bigger gap could exhaust the random search below and fall through
+    // to an invalid pick, which is exactly how two snake heads ended up
+    // sharing a block: the old fallback just returned whatever the last
+    // failed attempt was, duplicate or not. The linear scan below is the
+    // actual fix — it guarantees no duplicate ever gets used, even in
+    // the rare case the random search can't find a perfectly-spaced one.
+    const MIN_GAP = 2;
+    function pickSquareIn(lo, hi) {
       let s, tries = 0;
       do {
-        s = 2 + Math.floor(Math.random()*98);
+        s = lo + Math.floor(Math.random()*(hi-lo+1));
         tries++;
-      } while ((used.has(s) || Array.from(used).some(u => Math.abs(u-s) < MIN_GAP)) && tries < 500);
+      } while ((used.has(s) || Array.from(used).some(u => Math.abs(u-s) < MIN_GAP)) && tries < 300);
+      if (used.has(s)) {
+        for (let cand = lo; cand <= hi; cand++) { if (!used.has(cand)) { s = cand; break; } }
+      }
       used.add(s);
       return s;
     }
+    function pickSquare() { return pickSquareIn(2, 99); }
     for (let i = 0; i < 6; i++) {
       let a, b, tries = 0;
       do { a = pickSquare(); b = pickSquare(); tries++; }
@@ -8089,8 +8148,16 @@
     }
     for (let i = 0; i < 6; i++) {
       let a, b, tries = 0;
-      do { a = pickSquare(); b = pickSquare(); tries++; }
-      while (squareToBlockPos(a).y === squareToBlockPos(b).y && tries < 50);
+      if (i === 0) {
+        // Guarantees there's always at least one way down FROM the top
+        // row, rather than that being possible (if unlikely) to never
+        // happen at all.
+        do { a = pickSquareIn(91, 99); b = pickSquare(); tries++; }
+        while (squareToBlockPos(a).y === squareToBlockPos(b).y && tries < 50);
+      } else {
+        do { a = pickSquare(); b = pickSquare(); tries++; }
+        while (squareToBlockPos(a).y === squareToBlockPos(b).y && tries < 50);
+      }
       if (a < b) { const t=a; a=b; b=t; } // a snake always slides from its higher square down to its lower one
       slSnakesMap[a] = b;
       buildSnakeConnector(a, b);
@@ -8243,6 +8310,7 @@
         if (finalSquare >= 100) {
           slGameWon = true;
           showChatLogLine('🏆', p.name + ' rolled a ' + roll + ' and reached square ' + finalSquare + viaText + ' — WINS!');
+          launchSlFirework();
         } else {
           slTurnIndex = (slTurnIndex+1) % slPlayers.length;
           showChatLogLine('🎲', p.name + ' rolled a ' + roll + ', now on square ' + finalSquare + viaText + '. ' + slPlayers[slTurnIndex].name + "'s turn.");

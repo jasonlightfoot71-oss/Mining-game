@@ -323,6 +323,18 @@
     </div>
   </div>
 </div>
+<div id="chatModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:320px;width:90%;color:#fff;font-size:13px;">
+    <div style="margin-bottom:10px;font-weight:600;">Say something</div>
+    <input id="chatInput" maxlength="120" placeholder="Type a message…" style="width:100%;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:13px;">
+    <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;">
+      <button id="chatCancelBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;">Cancel</button>
+      <button id="chatSendBtn" style="background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;">Send</button>
+    </div>
+  </div>
+</div>
+<button id="chatOpenBtn" style="display:none;position:fixed;top:150px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
+<div id="chatLog" style="display:none;position:fixed;left:12px;bottom:270px;z-index:12;max-width:260px;flex-direction:column;gap:2px;pointer-events:none;"></div>
 <div id="promoOfferModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
   <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:340px;width:90%;color:#fff;font-size:13px;text-align:center;">
     <div id="promoOfferTitle" style="font-size:20px;margin-bottom:8px;">🎓 Promotion Opportunity!</div>
@@ -386,6 +398,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (function() {
   // Surface any fatal error visibly instead of leaving a silent black
@@ -423,6 +436,14 @@
   const SB_URL = 'https://fcharlvnhkbxmciglbef.supabase.co';
   const SB_KEY = 'sb_publishable_yJZ6GA0kB8H4vsL8i2t9MA_MMj7vPcS';
   const SB_HEADERS = { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY, 'Content-Type': 'application/json' };
+  // A real client instance, used ONLY for the realtime multiplayer
+  // features below (seeing other players, chat) — everything else in
+  // this file still talks to Supabase via plain fetch() against the
+  // REST API, unchanged. Realtime specifically needs a live WebSocket
+  // connection using Supabase's own channel protocol, which isn't
+  // practical to hand-roll the way the REST calls are, hence pulling in
+  // the official client just for this one piece.
+  const sbClient = (typeof supabase !== 'undefined') ? supabase.createClient(SB_URL, SB_KEY) : null;
 
   // ================= CHUNKED WORLD STORAGE =================
   // Blocks/water used to live inline in taskmill_voxel_worlds' own `data`
@@ -855,6 +876,7 @@
     if (visitMode) { console.log('[voxel] save skipped — visiting another world (read-only)'); return; }
     if (!currentWorldId || !playerUid) { console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid); return; }
     try {
+      await mergeFixturesBeforeSave(); // pulls in any fixtures/furniture another player has added since this session loaded, so this save doesn't silently erase them — see its own comment for what this does and doesn't cover
       // Chunks saved first, deliberately — the legacy row only ever gets
       // marked chunked:true once the chunk data backing that flag has
       // actually landed. Saving them the other way round risks a world
@@ -5779,6 +5801,7 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyF') toggleFly();
+    if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
   });
   document.addEventListener('keyup', e => {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -6814,6 +6837,245 @@
     updateModeTag();
   }
 
+  // ================= MULTIPLAYER (other players + chat) =================
+  // Every other system in this file talks to Supabase via plain fetch()
+  // against its REST API — fine for save/load, but seeing OTHER players
+  // live needs an actual open connection, which is what this section (and
+  // only this section) uses the real Supabase client library for.
+  // Everyone in the SAME world (same currentWorldId) joins the same
+  // channel; nothing here touches single-player worlds differently, and
+  // if the realtime connection fails for any reason, the rest of the
+  // game carries on exactly as before — this is purely additive.
+  let mpChannel = null, mpConnectedWorldId = null, mpLastBroadcast = 0;
+  const otherPlayers = new Map(); // uid -> { group, chatSprite, targetPos, targetYaw, lastUpdate, chatHideAt, uid }
+  let myDisplayName = null;
+  function getMyDisplayName() {
+    if (myDisplayName) return myDisplayName;
+    try {
+      let stored = localStorage.getItem('voxelDisplayName');
+      if (!stored) {
+        stored = 'Miner' + Math.floor(1000 + Math.random()*9000);
+        localStorage.setItem('voxelDisplayName', stored);
+      }
+      myDisplayName = stored;
+    } catch(e) { myDisplayName = 'Miner' + Math.floor(1000 + Math.random()*9000); }
+    return myDisplayName;
+  }
+  function buildNameSprite(text) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(8,16,240,32,8); else ctx.rect(8,16,240,32);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText((text||'Player').slice(0,16), 128, 33);
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(1.1, 0.28, 1);
+    sprite.position.y = 2.35;
+    sprite.renderOrder = 998;
+    return sprite;
+  }
+  function buildChatSprite() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512; canvas.height = 160;
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(2.2, 0.7, 1);
+    sprite.position.y = 2.85;
+    sprite.visible = false;
+    sprite.renderOrder = 999;
+    sprite.userData.canvas = canvas;
+    sprite.userData.ctx = canvas.getContext('2d');
+    sprite.userData.tex = tex;
+    return sprite;
+  }
+  function setChatBubbleText(sprite, text) {
+    const ctx = sprite.userData.ctx, canvas = sprite.userData.canvas;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.font = '30px sans-serif';
+    const words = String(text).split(/\s+/);
+    const lines = [];
+    let line = '';
+    words.forEach(w => {
+      const test = line ? line+' '+w : w;
+      if (ctx.measureText(test).width > canvas.width-60 && line) { lines.push(line); line = w; } else line = test;
+    });
+    if (line) lines.push(line);
+    const shown = lines.slice(0, 3);
+    const lineH = 36;
+    const boxH = shown.length*lineH + 28;
+    const boxY = (canvas.height-boxH)/2;
+    ctx.fillStyle = 'rgba(20,20,25,0.88)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(24, boxY, canvas.width-48, boxH, 16); else ctx.rect(24,boxY,canvas.width-48,boxH);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    shown.forEach((l,i) => ctx.fillText(l, canvas.width/2, boxY+18+lineH*i+lineH/2));
+    sprite.userData.tex.needsUpdate = true;
+    sprite.visible = true;
+  }
+  function ensureOtherPlayer(uid, name) {
+    let op = otherPlayers.get(uid);
+    if (!op) {
+      const group = buildCustomerFigure(false); // reuses the same low-poly figure built for the Mill's decorative customers
+      group.add(buildNameSprite(name));
+      const chatSprite = buildChatSprite();
+      group.add(chatSprite);
+      scene.add(group);
+      op = { group, chatSprite, targetPos: new THREE.Vector3(0,0,0), targetYaw: 0, lastUpdate: performance.now(), chatHideAt: 0, uid };
+      otherPlayers.set(uid, op);
+    }
+    if (name) op.displayName = name;
+    return op;
+  }
+  function removeOtherPlayer(uid) {
+    const op = otherPlayers.get(uid);
+    if (!op) return;
+    scene.remove(op.group);
+    otherPlayers.delete(uid);
+  }
+  function clearAllOtherPlayers() {
+    for (const uid of Array.from(otherPlayers.keys())) removeOtherPlayer(uid);
+  }
+  function disconnectMultiplayer() {
+    if (mpChannel && sbClient) {
+      try { sbClient.removeChannel(mpChannel); } catch(e) {}
+    }
+    mpChannel = null;
+    mpConnectedWorldId = null;
+    clearAllOtherPlayers();
+  }
+  // Joins a channel scoped to this one world — players in DIFFERENT
+  // worlds never see each other, matching how the game already keeps
+  // worlds separate everywhere else. Presence tracks who's actually
+  // still connected (so an avatar disappears if someone closes the game
+  // outright, not just walks away), on top of the periodic position
+  // broadcasts.
+  function connectMultiplayer(worldId) {
+    disconnectMultiplayer();
+    if (!sbClient || !worldId || !playerUid) return;
+    try {
+      const channel = sbClient.channel('world:' + worldId, { config: { broadcast: { self: false }, presence: { key: playerUid } } });
+      channel.on('broadcast', { event: 'pos' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return;
+        const op = ensureOtherPlayer(payload.uid, payload.name);
+        op.targetPos.set(payload.x, payload.y, payload.z);
+        op.targetYaw = payload.yaw;
+        op.lastUpdate = performance.now();
+      });
+      channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
+        if (!payload) return;
+        if (payload.uid === playerUid) return; // already shown locally the moment it was sent — see sendChatMessage
+        const op = ensureOtherPlayer(payload.uid, payload.name);
+        setChatBubbleText(op.chatSprite, payload.text);
+        op.chatHideAt = performance.now() + 6000;
+        showChatLogLine(payload.name, payload.text);
+      });
+      channel.on('presence', { event: 'sync' }, () => {
+        try {
+          const state = channel.presenceState();
+          const present = new Set(Object.keys(state));
+          for (const uid of Array.from(otherPlayers.keys())) if (!present.has(uid)) removeOtherPlayer(uid);
+        } catch(e) {}
+      });
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') { try { channel.track({ uid: playerUid, name: getMyDisplayName() }); } catch(e) {} }
+      });
+      mpChannel = channel;
+      mpConnectedWorldId = worldId;
+    } catch (e) {
+      console.warn('[voxel] multiplayer connect failed', e);
+    }
+  }
+  function sendChatMessage(text) {
+    text = String(text||'').trim().slice(0, 120);
+    if (!text) return;
+    showChatLogLine(getMyDisplayName(), text); // shown locally straight away, independent of the broadcast — see broadcast:{self:false} above, we deliberately don't receive our own message back
+    if (mpChannel) {
+      try { mpChannel.send({ type: 'broadcast', event: 'chat', payload: { uid: playerUid, name: getMyDisplayName(), text } }); } catch(e) {}
+    }
+  }
+  function showChatLogLine(name, text) {
+    const log = document.getElementById('chatLog');
+    if (!log) return;
+    log.style.display = 'flex';
+    const line = document.createElement('div');
+    line.style.cssText = 'background:rgba(0,0,0,0.55);color:#fff;padding:4px 8px;border-radius:5px;font-size:12px;transition:opacity 1s;max-width:100%;overflow-wrap:break-word;';
+    const b = document.createElement('b'); b.textContent = name + ': ';
+    line.appendChild(b);
+    line.appendChild(document.createTextNode(text));
+    log.appendChild(line);
+    while (log.children.length > 5) log.removeChild(log.firstChild);
+    setTimeout(() => { line.style.opacity = '0'; setTimeout(() => { if (line.parentNode) line.parentNode.removeChild(line); }, 1000); }, 8000);
+  }
+  // Called every frame — broadcasts this player's own position on a
+  // throttle (a live connection doesn't need 60 updates/sec to look
+  // smooth, just smooth INTERPOLATION between whatever updates do
+  // arrive, which is what the lerp below is for), and drifts every other
+  // visible player smoothly toward their last-known position instead of
+  // snapping, which would look jerky given updates only arrive a few
+  // times a second.
+  function updateMultiplayer(dt) {
+    if (mpChannel && currentWorldId === mpConnectedWorldId) {
+      const now = performance.now();
+      if (now - mpLastBroadcast > 150) {
+        mpLastBroadcast = now;
+        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw } }); } catch(e) {}
+      }
+    }
+    const now2 = performance.now();
+    otherPlayers.forEach(op => {
+      op.group.position.lerp(op.targetPos, Math.min(1, dt*8));
+      let dyaw = op.targetYaw - op.group.rotation.y;
+      while (dyaw > Math.PI) dyaw -= Math.PI*2;
+      while (dyaw < -Math.PI) dyaw += Math.PI*2;
+      op.group.rotation.y += dyaw * Math.min(1, dt*8);
+      if (op.chatHideAt && now2 > op.chatHideAt) { op.chatSprite.visible = false; op.chatHideAt = 0; }
+      if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
+    });
+  }
+  // Best-effort merge, run right before every save — without this, two
+  // players placing/removing furniture around the same time could
+  // silently erase each other's changes, since a save otherwise just
+  // uploads "everything currently placed in THIS session" and overwrites
+  // whatever was there. This pulls in anything ANOTHER player has added
+  // since this session last loaded (by checking, for each remote item,
+  // whether this session already has something at that exact position —
+  // if not, it adds it in before saving), so additions from someone else
+  // survive your own save. Being upfront about the real limit here: this
+  // does NOT solve every conflict — if two people are editing the exact
+  // same spot at the same moment, or one person's deliberate removal of
+  // an existing item, the two saves can still race, and there's no
+  // proper multi-way merge or undo. It substantially reduces the most
+  // common and most damaging case (someone's whole addition vanishing)
+  // without pretending to be a complete solution.
+  async function mergeFixturesBeforeSave() {
+    if (!currentWorldId) return;
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(currentWorldId)}&select=data`, { headers: SB_HEADERS });
+      if (!res.ok) return;
+      const rows = await res.json();
+      const remote = rows[0] && rows[0].data;
+      if (!remote) return;
+      (remote.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => { if (!fixtures.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addFixture(bx,by,bz,nx,ny,nz); });
+      (remote.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => { if (!ladders.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addLadder(bx,by,bz,nx,ny,nz); });
+      (remote.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => { if (!wallpapers.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0); });
+      (remote.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => { if (!signs.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''); });
+      (remote.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => { if (!doors.has(key(bx,by,bz))) addDoor(bx,by,bz,rot||0,typeIdx||0); });
+      (remote.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => { if (!furniture.has(key(bx,by,bz))) addFurniture(bx,by,bz,rot||0,typeIdx||0); });
+    } catch (e) {
+      console.warn('[voxel] fixture merge failed', e);
+    }
+  }
+
   // ================= GAME LOOP =================
   const clock = new THREE.Clock();
   const GRAVITY = -18;
@@ -7099,6 +7361,7 @@
     updateChunkStreaming(); // cheap early-exit unless a chunk boundary was actually just crossed — see its own comment
     updateLightVisibility(); // throttled internally — see its own comment
     updateHudExtras(); // throttled internally — see its own comment
+    updateMultiplayer(dt); // throttled internally — see its own comment
     updateDoors(dt);
     updateWork(dt);
 
@@ -7814,6 +8077,27 @@
     if (e.key === 'Enter') document.getElementById('signTextPlaceBtn').click();
     else if (e.key === 'Escape') closeSignTextModal();
   });
+  function openChatModal() {
+    document.exitPointerLock && document.exitPointerLock(); // needed for the text field to reliably take focus/typing in some browsers, same reasoning as the sign-text modal
+    const input = document.getElementById('chatInput');
+    input.value = '';
+    document.getElementById('chatModal').style.display = 'flex';
+    input.focus();
+  }
+  function closeChatModal() {
+    document.getElementById('chatModal').style.display = 'none';
+  }
+  document.getElementById('chatOpenBtn').addEventListener('click', openChatModal);
+  document.getElementById('chatCancelBtn').addEventListener('click', closeChatModal);
+  document.getElementById('chatSendBtn').addEventListener('click', () => {
+    const text = document.getElementById('chatInput').value;
+    closeChatModal();
+    sendChatMessage(text);
+  });
+  document.getElementById('chatInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('chatSendBtn').click();
+    else if (e.key === 'Escape') closeChatModal();
+  });
   document.getElementById('promoStartBtn').addEventListener('click', () => { startQuiz(); });
   document.getElementById('promoLaterBtn').addEventListener('click', () => { closePromoOffer(); });
   document.getElementById('quizSubmitBtn').addEventListener('click', () => { submitQuiz(); });
@@ -7930,6 +8214,11 @@
       window._voxelAutosave = setInterval(saveWorld, 20000);
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWorld(); });
       window.addEventListener('pagehide', saveWorld);
+      connectMultiplayer(currentWorldId); // joins everyone else currently in this same world — safe no-op if the realtime library failed to load for any reason
+      document.getElementById('chatOpenBtn').style.display = 'flex';
+      document.getElementById('chatLog').style.display = 'flex';
+    } else {
+      disconnectMultiplayer();
     }
   }
 

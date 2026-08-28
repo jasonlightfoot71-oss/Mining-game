@@ -421,6 +421,18 @@
     </div>
   </div>
 </div>
+<div id="bsPlaceModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:300px;width:90%;color:#fff;font-size:13px;text-align:center;">
+    <div id="bsPlaceProgress" style="opacity:0.65;font-size:12px;margin-bottom:4px;">Ship 1 of 5</div>
+    <div id="bsPlaceShipTitle" style="font-weight:700;font-size:16px;margin-bottom:14px;">Carrier (5 squares)</div>
+    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:8px;">
+      <input id="bsPlaceStart" type="number" min="1" max="100" placeholder="Start #" style="width:84px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;">
+      <input id="bsPlaceEnd" type="number" min="1" max="100" placeholder="End #" style="width:84px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;">
+    </div>
+    <div id="bsPlaceError" style="color:#ff8a8a;font-size:12px;min-height:16px;margin-bottom:6px;"></div>
+    <button id="bsPlaceBtn" style="background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:5px;padding:8px 22px;font-size:13px;cursor:pointer;">Place Ship</button>
+  </div>
+</div>
 <button id="chatOpenBtn" style="display:none;position:fixed;bottom:222px;right:70px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
 <div id="chatLog" style="display:none;position:fixed;left:106px;bottom:216px;z-index:12;max-width:220px;flex-direction:column;gap:2px;pointer-events:none;"></div>
 <div id="promoOfferModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
@@ -5121,7 +5133,7 @@
   // — the generator and dice trigger blocks sit on the ground nearby,
   // and each player's token moves along the tower automatically as
   // dice are rolled, the same way a real board-game piece does.
-  const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46;
+  const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 61; // pushed 15 blocks further from the battleship arena than before, per feedback
   const TOWER_BASE_Y = 2; // one above ground level, on its own visible plinth — square row 0 sitting flush with the surrounding ground read as sunk into it
   const SL_GENERATOR_POS = { x: TOWER_X0, y: 2, z: TOWER_Z+6 }; // one block above the surrounding ground (y:1) — sticks up so it actually has to be jumped onto, not just walked over
   const SL_DICE_POS = { x: TOWER_X0+3, y: 2, z: TOWER_Z+6 };
@@ -5161,7 +5173,13 @@
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(String(n), 32, 34);
     const tex = new THREE.CanvasTexture(c);
-    return new THREE.Mesh(new THREE.PlaneGeometry(0.85,0.85), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+    // Double-sided — a plane is only visible from its front face by
+    // default, and the battleship arena needs the SAME label style
+    // readable from both sides of the divider (via a 180° flip on one
+    // side), which is exactly the kind of thing that's easy to get
+    // subtly backwards. Double-siding removes any dependence on getting
+    // that rotation exactly right.
+    return new THREE.Mesh(new THREE.PlaneGeometry(0.85,0.85), new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
   }
   function buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC) {
     // A visible plinth at ground level, then the backing wall and
@@ -5427,6 +5445,7 @@
     assignRandomRole();
     spawnFootball(); // resets to centre with 0-0 every fresh visit — persisting an in-progress match/score across sessions isn't worth the complexity for a casual kickabout
     resetSlGame(); // same reasoning — a fresh Snakes & Ladders game every visit rather than trying to persist an in-progress one
+    bsResetGame();
     terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
@@ -6707,6 +6726,18 @@
   const PLACE_COOLDOWN = 220; // ms — minimum gap between continuous placements, so a fast sweep doesn't wall you in instantly
 
   function doMine() {
+    // Battleship firing intercepts a normal mine-click when a battle is
+    // actually underway and the player is looking at their own grid —
+    // reuses the same input rather than adding a whole separate control,
+    // matching "press the grid number" as literally as this game's own
+    // input model allows.
+    if (bsGame && bsGame.started && !bsGame.won) {
+      const mySide = bsMySide();
+      if (mySide) {
+        const cell = bsGetLookedAtCell(mySide);
+        if (cell !== null) { bsFireAt(cell); return; }
+      }
+    }
     const r = voxelRaycast();
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
@@ -7787,6 +7818,39 @@
       channel.on('broadcast', { event: 'slReset' }, () => {
         resetSlGame();
       });
+      // ---- Battleship ----
+      channel.on('broadcast', { event: 'bsReset' }, () => { bsResetGame(); });
+      channel.on('broadcast', { event: 'bsJoin' }, ({ payload }) => {
+        if (!payload || !bsGame) return;
+        const s = bsGame.sides[payload.side];
+        if (s && !s.uid) { s.uid = payload.uid; s.name = payload.name; }
+      });
+      channel.on('broadcast', { event: 'bsShip' }, ({ payload }) => {
+        if (!payload || !bsGame) return;
+        const s = bsGame.sides[payload.side];
+        if (!s) return;
+        s.ships.push({ size: payload.cells.length, cells: payload.cells });
+        // Deliberately does NOT render a ship marker for the opponent's
+        // own fleet here — this is what actually keeps it hidden. The
+        // data has to exist on both clients (there's no dedicated server
+        // to hold it instead), but only ever gets drawn for the side
+        // that owns it.
+        if (payload.side === bsMySide()) payload.cells.forEach(c => bsRenderShipMarker(payload.side, c));
+      });
+      channel.on('broadcast', { event: 'bsFleetReady' }, ({ payload }) => {
+        if (!payload || !bsGame) return;
+        bsCheckBothReady();
+      });
+      channel.on('broadcast', { event: 'bsFire' }, ({ payload }) => {
+        if (!payload || !bsGame) return;
+        const shooter = bsGame.sides[payload.side];
+        if (!shooter) return;
+        shooter.shotsFired[payload.cell] = payload.isHit ? 'hit' : 'miss';
+        bsRenderShotMarker(payload.side, payload.cell, payload.isHit);
+        bsGame.turnSide = payload.turnSide;
+        bsGame.won = payload.won;
+        if (payload.won) launchSlFirework();
+      });
       // Snakes & Ladders — the generating client sends the actual random
       // layout it rolled, and everyone else applies that exact same
       // layout rather than rolling their own (which would give every
@@ -8464,6 +8528,189 @@
     }
   }
 
+  // ================= BATTLESHIP (2-player game in The Mill) =================
+  const BS_SHIP_SIZES = [5, 4, 3, 3, 2];
+  const BS_SHIP_NAMES = ['Carrier', 'Battleship', 'Cruiser', 'Submarine', 'Patrol Boat'];
+  let bsGame = null; // whole match state, null until first started this visit
+  let bsPlacing = null; // { side, shipIdx } while the placement modal sequence is active for the local player
+  let bsMarkerMeshes = []; // ship + shot markers, cleared on every reset
+  function bsResetGame() {
+    bsMarkerMeshes.forEach(m => scene.remove(m));
+    bsMarkerMeshes = [];
+    bsGame = {
+      sides: {
+        A: { uid: null, name: null, ships: [], shotsFired: {} },
+        B: { uid: null, name: null, ships: [], shotsFired: {} },
+      },
+      turnSide: 'A', started: false, won: null,
+    };
+  }
+  function bsOtherSide(side) { return side === 'A' ? 'B' : 'A'; }
+  function bsCellIsShip(side, cellNum) {
+    return bsGame.sides[side].ships.some(s => s.cells.includes(cellNum));
+  }
+  function bsRenderShipMarker(side, cellNum) {
+    const p = bsCellPos(cellNum);
+    const mat = new THREE.MeshPhongMaterial({ color: 0x3a4a5a, shininess: 15 });
+    const marker = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.82, 0.12), mat);
+    marker.position.set(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.42 : BS_DIVIDER_Z+0.42);
+    scene.add(marker); bsMarkerMeshes.push(marker);
+  }
+  function bsRenderShotMarker(side, cellNum, isHit) {
+    const p = bsCellPos(cellNum);
+    const mat = new THREE.MeshBasicMaterial({ color: isHit ? 0xff3333 : 0xe8e8e8 });
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), mat);
+    marker.position.set(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.75 : BS_DIVIDER_Z+0.75);
+    scene.add(marker); bsMarkerMeshes.push(marker);
+  }
+  // Straight-line intersection with the grid's own plane, rather than
+  // raycasting against all 100 individual number meshes — cheaper, and
+  // avoids needing every cell to be its own separately-tracked object
+  // just for hit-testing.
+  function bsGetLookedAtCell(side) {
+    const planeZ = side === 'A' ? BS_DIVIDER_Z - 0.51 : BS_DIVIDER_Z + 0.51;
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    if (Math.abs(dir.z) < 0.001) return null;
+    const t = (planeZ - camera.position.z) / dir.z;
+    if (t <= 0 || t > 6) return null; // must be in front of the camera and within realistic reach
+    const hitX = camera.position.x + dir.x*t, hitY = camera.position.y + dir.y*t;
+    const col = Math.floor(hitX - BS_X0), row = Math.floor(hitY - BS_BASE_Y);
+    if (col < 0 || col > 9 || row < 0 || row > 9) return null;
+    return row*10 + col + 1;
+  }
+  function bsMySide() {
+    if (!bsGame) return null;
+    if (bsGame.sides.A.uid === playerUid) return 'A';
+    if (bsGame.sides.B.uid === playerUid) return 'B';
+    return null;
+  }
+  // Entry point for the raised trigger block on each side.
+  function bsStartOrContinue(side) {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    if (!bsGame || bsGame.won) { bsResetGame(); broadcastBsReset(); }
+    const s = bsGame.sides[side];
+    if (!s.uid) { s.uid = playerUid; s.name = getMyDisplayName(); broadcastBsJoin(side); }
+    else if (s.uid !== playerUid) { showChatLogLine('🚢', 'Someone is already playing that side.'); return; }
+    if (s.ships.length >= BS_SHIP_SIZES.length) { showChatLogLine('🚢', "You've already placed your fleet — waiting for your opponent."); return; }
+    bsPlacing = { side, shipIdx: s.ships.length };
+    bsOpenPlacementModal();
+  }
+  function bsOpenPlacementModal() {
+    document.exitPointerLock && document.exitPointerLock();
+    document.getElementById('bsPlaceProgress').textContent = `Ship ${bsPlacing.shipIdx+1} of ${BS_SHIP_SIZES.length}`;
+    document.getElementById('bsPlaceShipTitle').textContent = `${BS_SHIP_NAMES[bsPlacing.shipIdx]} (${BS_SHIP_SIZES[bsPlacing.shipIdx]} squares)`;
+    document.getElementById('bsPlaceStart').value = '';
+    document.getElementById('bsPlaceEnd').value = '';
+    document.getElementById('bsPlaceError').textContent = '';
+    document.getElementById('bsPlaceModal').style.display = 'flex';
+    // Reuses the same camera-focus system built for the S&L tower —
+    // aimed at the middle of this player's own grid, held for as long
+    // as the modal stays open (no fixed duration, since placement takes
+    // however long it takes).
+    slFocusCameraOnToken({ position: new THREE.Vector3(BS_X0+4.5, BS_BASE_Y+4.5, bsPlacing.side === 'A' ? BS_DIVIDER_Z-1 : BS_DIVIDER_Z+1) }, 999999);
+  }
+  function bsValidateShip(start, end, size, existingCells) {
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start<1 || start>100 || end<1 || end>100) return { ok:false, error:'Enter numbers between 1 and 100.' };
+    const a = bsCellPos(start), b = bsCellPos(end);
+    let cells = [];
+    if (a.y === b.y) {
+      const lo = Math.min(a.x,b.x), hi = Math.max(a.x,b.x);
+      if (hi-lo+1 !== size) return { ok:false, error:`That's not a straight run of exactly ${size}.` };
+      for (let x=lo; x<=hi; x++) cells.push((x-BS_X0) + (a.y-BS_BASE_Y)*10 + 1);
+    } else if (a.x === b.x) {
+      const lo = Math.min(a.y,b.y), hi = Math.max(a.y,b.y);
+      if (hi-lo+1 !== size) return { ok:false, error:`That's not a straight run of exactly ${size}.` };
+      for (let y=lo; y<=hi; y++) cells.push((a.x-BS_X0) + (y-BS_BASE_Y)*10 + 1);
+    } else {
+      return { ok:false, error:'Must be a straight line — same row or same column.' };
+    }
+    if (cells.some(c => existingCells.includes(c))) return { ok:false, error:'That overlaps a ship you already placed.' };
+    return { ok:true, cells };
+  }
+  function bsConfirmPlacement() {
+    if (!bsPlacing) return;
+    const { side, shipIdx } = bsPlacing;
+    const start = parseInt(document.getElementById('bsPlaceStart').value, 10);
+    const end = parseInt(document.getElementById('bsPlaceEnd').value, 10);
+    const size = BS_SHIP_SIZES[shipIdx];
+    const s = bsGame.sides[side];
+    const existing = s.ships.flatMap(sh => sh.cells);
+    const result = bsValidateShip(start, end, size, existing);
+    if (!result.ok) { document.getElementById('bsPlaceError').textContent = result.error; return; }
+    s.ships.push({ size, cells: result.cells });
+    result.cells.forEach(c => bsRenderShipMarker(side, c));
+    broadcastBsShip(side, result.cells);
+    if (s.ships.length < BS_SHIP_SIZES.length) {
+      bsPlacing = { side, shipIdx: s.ships.length };
+      bsOpenPlacementModal();
+    } else {
+      document.getElementById('bsPlaceModal').style.display = 'none';
+      slFocusCameraOnToken(null, 0); // release the camera focus early rather than waiting out its (very long) duration
+      showChatLogLine('🚢', s.name + ' has placed their whole fleet.');
+      broadcastBsFleetReady(side);
+      bsCheckBothReady();
+      bsPlacing = null;
+    }
+  }
+  function bsCheckBothReady() {
+    if (!bsGame) return;
+    if (bsGame.sides.A.ships.length === BS_SHIP_SIZES.length && bsGame.sides.B.ships.length === BS_SHIP_SIZES.length) {
+      bsGame.started = true;
+      showChatLogLine('🚢', 'Both fleets are in position — the battle begins! ' + bsGame.sides[bsGame.turnSide].name + " fires first.");
+    }
+  }
+  function bsFireAt(targetCell) {
+    const mySide = bsMySide();
+    if (!mySide || !bsGame.started || bsGame.won) return;
+    if (bsGame.turnSide !== mySide) { showChatLogLine('🚢', "Not your turn yet."); return; }
+    const oppSide = bsOtherSide(mySide);
+    const my = bsGame.sides[mySide], opp = bsGame.sides[oppSide];
+    if (my.shotsFired[targetCell]) { showChatLogLine('🚢', "You've already fired at that square."); return; }
+    const isHit = bsCellIsShip(oppSide, targetCell);
+    my.shotsFired[targetCell] = isHit ? 'hit' : 'miss';
+    bsRenderShotMarker(mySide, targetCell, isHit);
+    playThud(isHit ? 520 : 150);
+    const oppAllSunk = opp.ships.every(s => s.cells.every(c => my.shotsFired[c] === 'hit'));
+    if (oppAllSunk) {
+      bsGame.won = mySide;
+      showChatLogLine('🏆', my.name + ' sank the entire enemy fleet and WINS!');
+      launchSlFirework();
+    } else if (!isHit) {
+      bsGame.turnSide = oppSide; // a hit earns another shot — turn only passes on a miss
+    }
+    showChatLogLine('🚢', (isHit ? '💥 Hit' : '💦 Miss') + ' at square ' + targetCell + (isHit && !oppAllSunk ? ' — go again!' : ''));
+    broadcastBsFire(mySide, targetCell, isHit, bsGame.turnSide, bsGame.won);
+  }
+  // ---- Multiplayer sync ----
+  function broadcastBsReset() { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsReset', payload:{} }); } catch(e) {} }
+  function broadcastBsJoin(side) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsJoin', payload:{ side, uid:playerUid, name:getMyDisplayName() } }); } catch(e) {} }
+  function broadcastBsShip(side, cells) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsShip', payload:{ side, cells } }); } catch(e) {} }
+  function broadcastBsFleetReady(side) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFleetReady', payload:{ side } }); } catch(e) {} }
+  function broadcastBsFire(side, cell, isHit, turnSide, won) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFire', payload:{ side, cell, isHit, turnSide, won } }); } catch(e) {} }
+  let lastBsTriggerCheck = 0;
+  // Same rising-edge-jump reasoning as the Snakes & Ladders triggers —
+  // requires an actual jump in progress, not just standing there, and
+  // knocks the player back afterwards so it can't be re-triggered by
+  // holding position.
+  function updateBsTriggers() {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    const now = performance.now();
+    if (now - lastBsTriggerCheck < 1200) return;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const onA = px === BS_TRIGGER_A.x && pz === BS_TRIGGER_A.z && Math.abs(player.pos.y - (BS_TRIGGER_A.y+1)) < 0.7;
+    const onB = px === BS_TRIGGER_B.x && pz === BS_TRIGGER_B.z && Math.abs(player.pos.y - (BS_TRIGGER_B.y+1)) < 0.7;
+    if ((onA || onB) && player.vel.y > 1) {
+      lastBsTriggerCheck = now;
+      const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
+      if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      pushDir.normalize();
+      player.pos.x += pushDir.x*1.3; player.pos.z += pushDir.z*1.3;
+      playButtonPress();
+      bsStartOrContinue(onA ? 'A' : 'B');
+    }
+  }
+
   // ================= GAME LOOP =================
   const clock = new THREE.Clock();
   const GRAVITY = -18;
@@ -8754,6 +9001,7 @@
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
+    updateBsTriggers(); // debounced internally — see its own comment
     updateDoors(dt);
     updateWork(dt);
 
@@ -9490,6 +9738,8 @@
     if (e.key === 'Enter') document.getElementById('chatSendBtn').click();
     else if (e.key === 'Escape') closeChatModal();
   });
+  document.getElementById('bsPlaceBtn').addEventListener('click', bsConfirmPlacement);
+  document.getElementById('bsPlaceEnd').addEventListener('keydown', (e) => { if (e.key === 'Enter') bsConfirmPlacement(); });
 
   // ---- Avatar customization screen ----
   // A small dedicated Three.js scene/renderer just for the live preview

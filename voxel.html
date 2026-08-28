@@ -7225,40 +7225,74 @@
   }
   function clearSnowOverlay() { snowMesh.count = 0; }
 
-  // Small flower props (stem + bloom, two instanced meshes sharing the
-  // same per-instance transforms) scattered on exposed grass tops. Which
-  // cells get one is a deterministic hash of position, not re-rolled
-  // every rebuild, so they don't visibly shuffle around as you build.
-  const flowerStemGeom = new THREE.CylinderGeometry(0.02,0.02,0.22,5);
-  const flowerStemMat = new THREE.MeshPhongMaterial({ color: 0x3f7a3f, shininess: 0 });
-  const flowerStemMesh = new THREE.InstancedMesh(flowerStemGeom, flowerStemMat, MAX_INSTANCES);
-  flowerStemMesh.count = 0;
-  scene.add(flowerStemMesh);
-  // Small yellow centre sitting where the petals meet.
-  const flowerCenterGeom = new THREE.SphereGeometry(0.045, 6, 5);
-  const flowerCenterMat = new THREE.MeshPhongMaterial({ color: 0xf5c93f, shininess: 30 });
-  const flowerCenterMesh = new THREE.InstancedMesh(flowerCenterGeom, flowerCenterMat, MAX_INSTANCES);
-  flowerCenterMesh.count = 0;
-  scene.add(flowerCenterMesh);
-  // Petals — a flattened blob repeated in a ring around the centre and
-  // tilted outward, so a flower reads as an actual bloom instead of one
-  // big ball on a stick. Colour is randomised per FLOWER (not per petal)
-  // via instance colour, so each bloom is one consistent colour but the
-  // field as a whole has variety.
+  // Five distinct flower "species" rather than one shape in different
+  // colours — each has its own petal shape/size and its own arrangement
+  // (how many petals, how many layers, how they angle), giving genuine
+  // shape variety rather than just recolouring the same bloom. Several
+  // now use TWO layered rings of petals instead of one, which is what
+  // actually reads as "bushier" — a single thin ring always looks a bit
+  // sparse regardless of how many petals are in it.
+  const FLOWER_TYPES = [
+    { // Daisy — many thin petals, one flat ring
+      petalScale: [1, 0.22, 0.32], petalSize: 0.075,
+      rings: [{ count: 9, radius: 0.10, height: 1.24, tilt: 0.12 }],
+      stemH: 0.24, centerSize: 0.045, centerY: 1.25,
+    },
+    { // Peony — bushy double layer of rounder petals
+      petalScale: [1, 0.5, 0.68], petalSize: 0.078,
+      rings: [
+        { count: 6, radius: 0.06, height: 1.31, tilt: 0.35 },
+        { count: 7, radius: 0.105, height: 1.22, tilt: 0.55 },
+      ],
+      stemH: 0.26, centerSize: 0.03, centerY: 1.33,
+    },
+    { // Tulip — upright cup, petals angled up rather than spread out
+      petalScale: [0.55, 1.35, 0.55], petalSize: 0.09,
+      rings: [{ count: 5, radius: 0.045, height: 1.30, tilt: -0.85 }],
+      stemH: 0.3, centerSize: 0, centerY: 0,
+    },
+    { // Cluster — a bunch of tiny blooms, no single big centre
+      petalScale: [1, 1, 1], petalSize: 0.038,
+      rings: [{ count: 7, radius: 0.11, height: 1.23, tilt: 0.4 }],
+      stemH: 0.22, centerSize: 0, centerY: 0,
+    },
+    { // Poppy — big bold petals around a dark bold centre
+      petalScale: [1, 0.32, 0.85], petalSize: 0.1,
+      rings: [{ count: 6, radius: 0.1, height: 1.24, tilt: 0.22 }],
+      stemH: 0.25, centerSize: 0.065, centerY: 1.26,
+    },
+  ];
   const FLOWER_COLORS = [0xf07ec9, 0xf5f0e6, 0xf2c14e, 0xd66b8a, 0xc678e0, 0xe8703a];
-  const PETALS_PER_FLOWER = 5;
-  const flowerPetalGeom = new THREE.SphereGeometry(0.062, 6, 5);
-  flowerPetalGeom.scale(1, 0.4, 0.62); // flatten into a petal-ish blob
+  // Each species gets its own dedicated stem/centre/petal instanced
+  // meshes — InstancedMesh only supports one geometry per mesh, so five
+  // genuinely different petal shapes need five separate petal meshes
+  // (same for stems/centres, since their height/size also differ per
+  // species).
+  const flowerStemMat = new THREE.MeshPhongMaterial({ color: 0x3f7a3f, shininess: 0 });
+  const flowerCenterMat = new THREE.MeshPhongMaterial({ color: 0xf5c93f, shininess: 30 });
   const flowerPetalMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 25, vertexColors: true });
-  const flowerPetalMesh = new THREE.InstancedMesh(flowerPetalGeom, flowerPetalMat, MAX_INSTANCES);
-  flowerPetalMesh.count = 0;
-  scene.add(flowerPetalMesh);
+  FLOWER_TYPES.forEach(type => {
+    const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, type.stemH, 5);
+    type.stemMesh = new THREE.InstancedMesh(stemGeom, flowerStemMat, MAX_INSTANCES);
+    type.stemMesh.count = 0;
+    scene.add(type.stemMesh);
+    const centerGeom = new THREE.SphereGeometry(Math.max(0.01, type.centerSize), 6, 5);
+    type.centerMesh = new THREE.InstancedMesh(centerGeom, flowerCenterMat, MAX_INSTANCES);
+    type.centerMesh.count = 0;
+    scene.add(type.centerMesh);
+    const petalGeom = new THREE.SphereGeometry(type.petalSize, 6, 5);
+    petalGeom.scale(type.petalScale[0], type.petalScale[1], type.petalScale[2]);
+    type.petalMesh = new THREE.InstancedMesh(petalGeom, flowerPetalMat, MAX_INSTANCES);
+    type.petalMesh.count = 0;
+    scene.add(type.petalMesh);
+  });
   function rebuildFlowerOverlay() {
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
     const col = new THREE.Color();
-    let count = 0, petalCount = 0;
+    const counts = FLOWER_TYPES.map(() => ({ stem: 0, petal: 0 }));
+    let totalPlaced = 0;
     for (const [k, t] of blocks) {
-      if (count >= MAX_INSTANCES || petalCount + PETALS_PER_FLOWER >= MAX_INSTANCES) break;
+      if (totalPlaced >= MAX_INSTANCES) break;
       if (t !== 0) continue; // Grass only
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
@@ -7272,35 +7306,50 @@
       if (!isExposedToSky(x,y,z)) continue;
       const h = Math.abs(Math.sin(x*127.1 + z*311.7) * 43758.5453) % 1;
       if (h > 0.12) continue; // ~12% of eligible grass blooms
+      // A separate, independent hash picks which of the 5 species grows
+      // here, so species doesn't correlate with bloom chance or colour.
+      const ht = Math.abs(Math.sin(x*211.3 + z*17.9) * 98765.4321) % 1;
+      const typeIdx = Math.floor(ht * FLOWER_TYPES.length);
+      const type = FLOWER_TYPES[typeIdx];
+      const c = counts[typeIdx];
+      const ringTotal = type.rings.reduce((s,r) => s+r.count, 0);
+      if (c.stem >= MAX_INSTANCES || c.petal + ringTotal >= MAX_INSTANCES) continue;
       const cx = x+0.5, cz = z+0.5;
-      dummyStem.position.set(cx, y+1.11, cz);
+      dummyStem.position.set(cx, y+1 + type.stemH/2, cz);
       dummyStem.updateMatrix();
-      flowerStemMesh.setMatrixAt(count, dummyStem.matrix);
-      dummyCenter.position.set(cx, y+1.24, cz);
-      dummyCenter.updateMatrix();
-      flowerCenterMesh.setMatrixAt(count, dummyCenter.matrix);
-      count++;
+      type.stemMesh.setMatrixAt(c.stem, dummyStem.matrix);
+      if (type.centerSize > 0) {
+        dummyCenter.position.set(cx, y+type.centerY, cz);
+        dummyCenter.updateMatrix();
+        type.centerMesh.setMatrixAt(c.stem, dummyCenter.matrix);
+      }
+      c.stem++;
+      totalPlaced++;
       // Second, independent hash picks this flower's colour so it doesn't
-      // correlate with which cells happen to bloom.
+      // correlate with which cells happen to bloom or which species grew.
       const hc = Math.abs(Math.sin(x*54.7 + z*91.3) * 12345.6789) % 1;
       col.setHex(FLOWER_COLORS[Math.floor(hc * FLOWER_COLORS.length)]);
       const baseAngle = h * Math.PI * 2; // reuses the bloom hash so petals aren't all aligned the same way
-      for (let p = 0; p < PETALS_PER_FLOWER; p++) {
-        const ang = baseAngle + (p / PETALS_PER_FLOWER) * Math.PI * 2;
-        dummyPetal.position.set(cx + Math.cos(ang)*0.075, y+1.22, cz + Math.sin(ang)*0.075);
-        dummyPetal.rotation.set(0.3, ang, 0);
-        dummyPetal.updateMatrix();
-        flowerPetalMesh.setMatrixAt(petalCount, dummyPetal.matrix);
-        flowerPetalMesh.setColorAt(petalCount, col);
-        petalCount++;
-      }
+      type.rings.forEach(ring => {
+        for (let p = 0; p < ring.count; p++) {
+          const ang = baseAngle + (p / ring.count) * Math.PI * 2;
+          dummyPetal.position.set(cx + Math.cos(ang)*ring.radius, y+ring.height, cz + Math.sin(ang)*ring.radius);
+          dummyPetal.rotation.set(ring.tilt, ang, 0);
+          dummyPetal.updateMatrix();
+          type.petalMesh.setMatrixAt(c.petal, dummyPetal.matrix);
+          type.petalMesh.setColorAt(c.petal, col);
+          c.petal++;
+        }
+      });
     }
-    flowerStemMesh.count = count; flowerStemMesh.instanceMatrix.needsUpdate = true;
-    flowerCenterMesh.count = count; flowerCenterMesh.instanceMatrix.needsUpdate = true;
-    flowerPetalMesh.count = petalCount; flowerPetalMesh.instanceMatrix.needsUpdate = true;
-    if (flowerPetalMesh.instanceColor) flowerPetalMesh.instanceColor.needsUpdate = true;
+    FLOWER_TYPES.forEach((type, i) => {
+      type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
+      type.centerMesh.count = type.centerSize > 0 ? counts[i].stem : 0; type.centerMesh.instanceMatrix.needsUpdate = true;
+      type.petalMesh.count = counts[i].petal; type.petalMesh.instanceMatrix.needsUpdate = true;
+      if (type.petalMesh.instanceColor) type.petalMesh.instanceColor.needsUpdate = true;
+    });
   }
-  function clearFlowerOverlay() { flowerStemMesh.count = 0; flowerCenterMesh.count = 0; flowerPetalMesh.count = 0; }
+  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMesh.count = 0; }); }
 
   // One shared particle system for both rain and snow — same falling-box
   // technique either way (a cloud of points that always re-centres on the

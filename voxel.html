@@ -59,6 +59,7 @@
     position: fixed; inset: 0; background: rgba(15,20,25,0.92); z-index: 20;
     color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center;
     text-align: center; padding: 20px; box-sizing: border-box;
+    overflow-y: auto; /* safety net — if content is ever taller than a short phone screen (e.g. iPhone SE in landscape), it scrolls instead of being silently cut off with no way to reach the Start button */
   }
   #overlay h1 { margin: 0 0 8px; font-size: 30px; text-shadow: 2px 2px 0 #000; }
   #overlay p { margin: 4px 0; opacity: 0.85; max-width: 500px; line-height: 1.5; font-size: 14px; }
@@ -67,6 +68,16 @@
     background: #5c9e3f; color: #fff; cursor: pointer; font-weight: 600; border-bottom: 4px solid #3f6e2b;
   }
   #startBtn:hover { background: #6bb548; }
+  /* Shrinks the title/instructions/button on short landscape screens
+     (phones like iPhone SE are only ~375px tall in landscape) — this is
+     what was actually causing "the instructions don't fit": at full
+     size, the title + 4 lines of instructions + button comfortably
+     exceeds that height. */
+  @media (max-height: 420px) {
+    #overlay h1 { font-size: 20px; margin-bottom: 4px; }
+    #overlay p { font-size: 11px; line-height: 1.3; margin: 2px 0; }
+    #startBtn { margin-top: 8px; padding: 8px 22px; font-size: 14px; }
+  }
 
   #hint {
     position: fixed; top: 12px; left: 12px; z-index: 10; color: #fff;
@@ -260,9 +271,9 @@
   <p>A close-as-possible browser tribute: textured blocks, gravity &amp; jumping, timed mining with crack effects, water, day/night lighting, and creative flight. Not the real game's engine — just a from-scratch homage.</p>
   <p class="desktop-only"><b>WASD</b> move · <b>Space</b> jump/fly up · <b>Shift</b> sprint/fly down · <b>F</b> toggle flight<br>
   <b>Hold left click</b>: mine block · <b>Right click</b>: place block · <b>1-9 / scroll</b>: pick block</p>
-  <p class="touch-only"><b>Left stick</b> move · <b>Right stick</b> look around<br>
-  <b>⛏️</b> hold to mine · <b>▦</b> tap to place · <b>⤴️</b> jump (between the sticks)<br>
-  <b>⬆️/⬇️</b> top-right: fly up/down (tapping either turns flying on; jump turns it back off)<br>
+  <p class="touch-only"><b>Left stick</b> move · drag <b>right side</b> of screen to look<br>
+  <b>⛏️</b> hold: mine · <b>🧱</b> tap: place · <b>⤴️</b> jump<br>
+  <b>Fly lever</b> (left): drag to fly up/down<br>
   Tap a hotbar slot to choose your block</p>
   <button id="startBtn">Click to Start</button>
 </div>
@@ -7155,10 +7166,22 @@
   function isInFullscreen() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement);
   }
+  // iOS Safari has never supported the Fullscreen API at all (for regular
+  // page elements — only for <video> playback, which is unrelated) — so
+  // fullscreenElement there is always null, isInFullscreen() always
+  // returns false, and the "tap to continue full screen" prompt below
+  // would loop forever with no way to ever actually satisfy it. This
+  // checks whether fullscreen is even a real possibility on this browser
+  // BEFORE any of that logic runs, so the whole mechanism just quietly
+  // skips itself on iOS instead — the existing #rotatePrompt (landscape-
+  // orientation) flow is already the correct, working fallback there.
+  function fullscreenSupported() {
+    return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+  }
   let gameplayActiveSince = 0; // set when Start is pressed — the periodic fullscreen check below waits a few seconds past this before ever showing its prompt, so it never fires during the initial fullscreen request's own normal (async) startup window
   function handleResume() {
     handleViewResize();
-    if (isTouchDevice && document.documentElement.classList.contains('gameplay-active')) {
+    if (isTouchDevice && fullscreenSupported() && document.documentElement.classList.contains('gameplay-active')) {
       // requestFullscreen() only succeeds when called directly inside a
       // genuine tap/click — browsers silently refuse it from a
       // background event like this one (resuming from another app,
@@ -7209,7 +7232,7 @@
     // grace period since gameplay started — otherwise this would also
     // fire during a perfectly normal game start, before the initial
     // fullscreen request (itself async) has even had a chance to resolve.
-    if (isTouchDevice && document.documentElement.classList.contains('gameplay-active') && !isInFullscreen()
+    if (isTouchDevice && fullscreenSupported() && document.documentElement.classList.contains('gameplay-active') && !isInFullscreen()
         && performance.now() - gameplayActiveSince > 3000
         && document.getElementById('resumeFullscreenPrompt').style.display !== 'flex') {
       document.getElementById('resumeFullscreenPrompt').style.display = 'flex';

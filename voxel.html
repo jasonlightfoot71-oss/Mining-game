@@ -7210,6 +7210,9 @@
       if (!type || type.half || (type.name||'').includes('Glass')) continue;
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
+      // Excludes the football pitch — same reasoning and same bounds as
+      // the flower overlay's own exclusion.
+      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue; // skip anything under a roof
@@ -7708,14 +7711,21 @@
         playDiceRoll();
         const rawLanding = Math.min(100, (payload.startSquare||0) + payload.roll);
         animateSlTokenSteps(p, payload.startSquare||0, rawLanding, () => {
-          p.square = payload.square; // authoritative final square from the roller, already includes any ladder/snake
-          p.tokenGroup.position.copy(squareToWorldPos(payload.square));
-          if (payload.square !== rawLanding) { if (payload.square > rawLanding) playLadderClimb(); else playSnakeSlide(); }
-          slTurnIndex = payload.turnIndex;
-          slGameWon = payload.won;
-          const viaText = payload.square !== rawLanding ? (payload.square > rawLanding ? ' — climbed a ladder!' : ' — slid down a snake!') : '';
-          if (payload.won) showChatLogLine('🏆', p.name + ' rolled a ' + payload.roll + ' and reached square ' + payload.square + viaText + ' — WINS!');
-          else showChatLogLine('🎲', p.name + ' rolled a ' + payload.roll + ', now on square ' + payload.square + viaText + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
+          const hasConnector = payload.square !== rawLanding;
+          const viaText = hasConnector ? (payload.square > rawLanding ? ' — climbed a ladder!' : ' — slid down a snake!') : '';
+          function finishTurn() {
+            slTurnIndex = payload.turnIndex;
+            slGameWon = payload.won;
+            if (payload.won) showChatLogLine('🏆', p.name + ' rolled a ' + payload.roll + ' and reached square ' + payload.square + viaText + ' — WINS!');
+            else showChatLogLine('🎲', p.name + ' rolled a ' + payload.roll + ', now on square ' + payload.square + viaText + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
+          }
+          if (hasConnector) {
+            if (payload.square > rawLanding) playLadderClimb(); else playSnakeSlide();
+            slFocusCameraOnToken(p.tokenGroup, 2300);
+            animateSlTokenSlide(p, rawLanding, payload.square, 1800, finishTurn);
+          } else {
+            finishTurn();
+          }
         });
       });
       channel.on('presence', { event: 'sync' }, () => {
@@ -8070,19 +8080,23 @@
       return s;
     }
     for (let i = 0; i < 6; i++) {
-      let a = pickSquare(), b = pickSquare();
+      let a, b, tries = 0;
+      do { a = pickSquare(); b = pickSquare(); tries++; }
+      while (squareToBlockPos(a).y === squareToBlockPos(b).y && tries < 50); // never allow a same-row (level) connector — a ladder or snake should always visibly climb or drop at least one row
       if (a > b) { const t=a; a=b; b=t; } // a ladder always climbs from its lower square to its higher one
       slLaddersMap[a] = b;
       buildLadderConnector(a, b);
     }
     for (let i = 0; i < 6; i++) {
-      let a = pickSquare(), b = pickSquare();
+      let a, b, tries = 0;
+      do { a = pickSquare(); b = pickSquare(); tries++; }
+      while (squareToBlockPos(a).y === squareToBlockPos(b).y && tries < 50);
       if (a < b) { const t=a; a=b; b=t; } // a snake always slides from its higher square down to its lower one
       slSnakesMap[a] = b;
       buildSnakeConnector(a, b);
     }
     broadcastSlGenerated();
-    showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 8 ladders, 8 snakes. Jump on the dice block to play!');
+    showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 6 ladders, 6 snakes. Jump on the dice block to play!');
   }
   function broadcastSlGenerated() {
     if (mpChannel && currentWorldId === mpConnectedWorldId) {
@@ -8136,9 +8150,23 @@
     const tokenPos = slFocusToken.position;
     const desiredPos = new THREE.Vector3(tokenPos.x, tokenPos.y + 0.6, tokenPos.z + 3.2); // pulled back along the tower's own facing direction, works regardless of which row the token's on
     camera.position.lerp(desiredPos, slCamBlend);
+    // Blending yaw/pitch as plain numbers, not quaternions — the
+    // previous version slerped the camera's quaternion toward a target
+    // built with setFromUnitVectors, which finds SOME rotation facing
+    // the token but never guarantees it's level (there are infinitely
+    // many rotations that face the same direction, differing only in
+    // roll). That's what was making the camera come back slightly off
+    // horizontal sometimes. Yaw/pitch blending can't do that — this
+    // game's camera only ever uses those two Euler axes, so there's no
+    // roll component to accidentally introduce in the first place.
     const lookDir = new THREE.Vector3().subVectors(tokenPos, camera.position).normalize();
-    const targetQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,-1), lookDir);
-    camera.quaternion.slerp(targetQuat, slCamBlend);
+    const targetYaw = Math.atan2(-lookDir.x, -lookDir.z);
+    const targetPitch = Math.asin(Math.max(-1, Math.min(1, lookDir.y)));
+    let dYaw = targetYaw - yaw;
+    while (dYaw > Math.PI) dYaw -= Math.PI*2;
+    while (dYaw < -Math.PI) dYaw += Math.PI*2;
+    camera.rotation.y = yaw + dYaw*slCamBlend;
+    camera.rotation.x = pitch + (targetPitch-pitch)*slCamBlend;
   }
   // Moves a token one square at a time toward a target, playing a sound
   // on each hop, rather than teleporting straight there — calls
@@ -8160,6 +8188,23 @@
       setTimeout(nextStep, 520); // roughly twice as slow as before, per feedback
     }
     nextStep();
+  }
+  // A smooth continuous slide rather than square-by-square hops — used
+  // specifically for the ladder/snake warp after landing, since that can
+  // span a huge stretch of the board (e.g. square 5 to square 80), where
+  // hopping one square at a time would take forever. A fixed ~1.8s glide
+  // reads as "slowed down and visible" without that problem.
+  function animateSlTokenSlide(p, fromSquare, toSquare, durationMs, onComplete) {
+    const startPos = squareToWorldPos(fromSquare).clone();
+    const endPos = squareToWorldPos(toSquare).clone();
+    const startTime = performance.now();
+    function step() {
+      const t = Math.min(1, (performance.now()-startTime)/durationMs);
+      p.tokenGroup.position.lerpVectors(startPos, endPos, t);
+      if (t < 1) requestAnimationFrame(step);
+      else { p.square = toSquare; if (onComplete) onComplete(); }
+    }
+    step();
   }
   // startSquare is included so a receiving client can replay the exact
   // same square-by-square hop animation the roller saw, not just snap
@@ -8191,20 +8236,26 @@
     const startSquare = p.square;
     const rawLanding = Math.min(100, startSquare + roll);
     animateSlTokenSteps(p, startSquare, rawLanding, () => {
-      let finalSquare = rawLanding, viaText = '', wasLadder = false;
-      if (slLaddersMap[rawLanding]) { viaText = ' — climbed a ladder!'; finalSquare = slLaddersMap[rawLanding]; wasLadder = true; }
-      else if (slSnakesMap[rawLanding]) { viaText = ' — slid down a snake!'; finalSquare = slSnakesMap[rawLanding]; }
-      p.square = finalSquare;
-      p.tokenGroup.position.copy(squareToWorldPos(finalSquare));
-      if (viaText) { if (wasLadder) playLadderClimb(); else playSnakeSlide(); }
-      if (finalSquare >= 100) {
-        slGameWon = true;
-        showChatLogLine('🏆', p.name + ' rolled a ' + roll + ' and reached square ' + finalSquare + viaText + ' — WINS!');
-      } else {
-        slTurnIndex = (slTurnIndex+1) % slPlayers.length;
-        showChatLogLine('🎲', p.name + ' rolled a ' + roll + ', now on square ' + finalSquare + viaText + '. ' + slPlayers[slTurnIndex].name + "'s turn.");
+      let finalSquare = rawLanding, viaText = '', wasLadder = false, hasConnector = false;
+      if (slLaddersMap[rawLanding]) { viaText = ' — climbed a ladder!'; finalSquare = slLaddersMap[rawLanding]; wasLadder = true; hasConnector = true; }
+      else if (slSnakesMap[rawLanding]) { viaText = ' — slid down a snake!'; finalSquare = slSnakesMap[rawLanding]; hasConnector = true; }
+      function finishTurn() {
+        if (finalSquare >= 100) {
+          slGameWon = true;
+          showChatLogLine('🏆', p.name + ' rolled a ' + roll + ' and reached square ' + finalSquare + viaText + ' — WINS!');
+        } else {
+          slTurnIndex = (slTurnIndex+1) % slPlayers.length;
+          showChatLogLine('🎲', p.name + ' rolled a ' + roll + ', now on square ' + finalSquare + viaText + '. ' + slPlayers[slTurnIndex].name + "'s turn.");
+        }
+        broadcastSlRoll(p, roll, startSquare);
       }
-      broadcastSlRoll(p, roll, startSquare);
+      if (hasConnector) {
+        if (wasLadder) playLadderClimb(); else playSnakeSlide();
+        slFocusCameraOnToken(p.tokenGroup, 2300); // extends the camera hold to cover the slide below
+        animateSlTokenSlide(p, rawLanding, finalSquare, 1800, finishTurn);
+      } else {
+        finishTurn();
+      }
     });
   }
   let lastSlTriggerCheck = 0, slWasAirborne = false;

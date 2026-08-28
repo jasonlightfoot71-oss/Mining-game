@@ -5187,21 +5187,69 @@
     diceLabel.position.set(SL_DICE_POS.x+0.5, SL_DICE_POS.y+1.6, SL_DICE_POS.z+0.5);
     scene.add(diceLabel); pubExtraProps.push(diceLabel);
   }
-  // Builds a simple diagonal line of blocks connecting two squares,
-  // standing slightly proud of the number wall (Z+2, not directly on
-  // it) — this is a straightforward, honest connector rather than a
-  // literal ladder or snake SHAPE, which would need much more elaborate
-  // modelling to do for two arbitrary squares anywhere on the grid.
-  function buildTowerConnector(fromN, toN, blockType) {
-    const a = squareToBlockPos(fromN), b = squareToBlockPos(toN);
-    const steps = Math.max(Math.abs(a.x-b.x), Math.abs(a.y-b.y), 1);
-    for (let i = 0; i <= steps; i++) {
-      const t = i/steps;
-      const x = Math.round(a.x + (b.x-a.x)*t);
-      const y = Math.round(a.y + (b.y-a.y)*t);
-      blocks.set(key(x, y, TOWER_Z+2), blockType);
-      handleLocalBlockChange(x, y, TOWER_Z+2); // incremental — avoids a full-world rebuild for what could be ~150 blocks scattered across the board
+  // Real modelled shapes rather than a line of blocks — that's what was
+  // actually reading as random grass/tree blocks: block types 3 and 4
+  // are literally the tree trunk and leaf textures used everywhere else
+  // in the game, never meant to stand in for a ladder or snake. These
+  // are proper THREE.js meshes (two rails and evenly spaced rungs for a
+  // ladder; a chain of tapering, gently curving spheres with a
+  // distinguishable head for a snake), added as scenery rather than as
+  // placed blocks, sitting just clear of the number wall.
+  function buildLadderConnector(fromN, toN) {
+    const a = squareToWorldPos(fromN), b = squareToWorldPos(toN);
+    const start = new THREE.Vector3(a.x, a.y, TOWER_Z+2.3), end = new THREE.Vector3(b.x, b.y, TOWER_Z+2.3);
+    const dir = new THREE.Vector3().subVectors(end, start);
+    const length = Math.max(0.5, dir.length());
+    dir.normalize();
+    const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize().multiplyScalar(0.16);
+    const group = new THREE.Group();
+    const railMat = new THREE.MeshPhongMaterial({ color: 0x9a6a34, shininess: 15 });
+    [perp.clone(), perp.clone().negate()].forEach(offset => {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, length, 0.08), railMat);
+      rail.position.copy(start).add(end).multiplyScalar(0.5).add(offset);
+      rail.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+      group.add(rail);
+    });
+    const rungCount = Math.max(2, Math.round(length/0.55));
+    for (let i = 0; i <= rungCount; i++) {
+      const rung = new THREE.Mesh(new THREE.BoxGeometry(perp.length()*2+0.1, 0.07, 0.07), railMat);
+      rung.position.lerpVectors(start, end, i/rungCount);
+      rung.quaternion.setFromUnitVectors(new THREE.Vector3(1,0,0), perp.clone().normalize());
+      group.add(rung);
     }
+    scene.add(group);
+    pubExtraProps.push(group);
+  }
+  function buildSnakeConnector(fromN, toN) {
+    // fromN is always the higher square (the mouth, where the snake
+    // "bites" — see generateSnakesAndLadders' own ordering), toN the
+    // lower one it slides down to.
+    const a = squareToWorldPos(fromN), b = squareToWorldPos(toN);
+    const start = new THREE.Vector3(a.x, a.y, TOWER_Z+2.3), end = new THREE.Vector3(b.x, b.y, TOWER_Z+2.3);
+    const dir = new THREE.Vector3().subVectors(end, start);
+    const length = Math.max(0.5, dir.length());
+    const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize();
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x2e8b3d, shininess: 25 });
+    const headMat = new THREE.MeshPhongMaterial({ color: 0x1f6b2c, shininess: 25 });
+    const segments = Math.max(6, Math.round(length*2.2));
+    for (let i = 0; i <= segments; i++) {
+      const t = i/segments;
+      const wave = Math.sin(t*Math.PI*2.5) * Math.min(0.5, length*0.12); // gentle S-curve, scaled down for short connections so it doesn't wave off the board
+      const pos = new THREE.Vector3().lerpVectors(start, end, t).addScaledVector(perp, wave);
+      const size = 0.24 * (1 - t*0.55); // tapers from a fat head to a thin tail
+      const seg = new THREE.Mesh(new THREE.SphereGeometry(size, 8, 6), i === 0 ? headMat : bodyMat);
+      seg.position.copy(pos);
+      group.add(seg);
+    }
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffe27a });
+    [-0.09, 0.09].forEach(ox => {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.045,6,4), eyeMat);
+      eye.position.copy(start).add(new THREE.Vector3(ox, 0.06, 0.16));
+      group.add(eye);
+    });
+    scene.add(group);
+    pubExtraProps.push(group);
   }
   // The Mill lives at a fixed, well-known world id in the same
   // taskmill_voxel_worlds table everything else uses — that's what lets
@@ -6355,6 +6403,58 @@
       o.start(now+i*0.05); o.stop(now+1.0);
     });
   }
+  // A short rising blip for landing on either Snakes & Ladders trigger
+  // block.
+  function playButtonPress() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(220, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime+0.08);
+    g.gain.setValueAtTime(0.18, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.12);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.12);
+  }
+  // A handful of short filtered noise clicks in quick succession — reads
+  // as dice clattering rather than one single sound.
+  function playDiceRoll() {
+    if (!audioCtx) return;
+    for (let i = 0; i < 5; i++) {
+      setTimeout(() => {
+        if (!audioCtx) return;
+        const dur = 0.045;
+        const bufferSize = Math.floor(audioCtx.sampleRate*dur);
+        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let j = 0; j < bufferSize; j++) data[j] = (Math.random()*2-1) * (1 - j/bufferSize);
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buffer;
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 1200;
+        const g = audioCtx.createGain();
+        g.gain.setValueAtTime(0.28, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+        noise.connect(filter).connect(g).connect(audioCtx.destination);
+        noise.start();
+      }, i*70);
+    }
+  }
+  // A short rising tone for a token actually moving to its new square.
+  function playTokenMove() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(500, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(720, audioCtx.currentTime+0.12);
+    g.gain.setValueAtTime(0.16, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.18);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.18);
+  }
   function playJump() {
     if (!audioCtx) return;
     const o = audioCtx.createOscillator();
@@ -7492,8 +7592,8 @@
         slGenerated = true;
         slLaddersMap = payload.ladders || {};
         slSnakesMap = payload.snakes || {};
-        Object.entries(slLaddersMap).forEach(([a,b]) => buildTowerConnector(+a, +b, 3));
-        Object.entries(slSnakesMap).forEach(([a,b]) => buildTowerConnector(+a, +b, 4));
+        Object.entries(slLaddersMap).forEach(([a,b]) => buildLadderConnector(+a, +b));
+        Object.entries(slSnakesMap).forEach(([a,b]) => buildSnakeConnector(+a, +b));
         showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — jump on the dice block to play!');
       });
       channel.on('broadcast', { event: 'slJoin' }, ({ payload }) => {
@@ -7505,8 +7605,10 @@
         if (!payload) return;
         const p = slPlayers.find(pl => pl.uid === payload.uid);
         if (!p) return;
+        playDiceRoll();
         p.square = payload.square;
         p.tokenGroup.position.copy(squareToWorldPos(payload.square));
+        playTokenMove();
         slTurnIndex = payload.turnIndex;
         slGameWon = payload.won;
         if (payload.won) showChatLogLine('🏆', p.name + ' rolled ' + payload.roll + ' and reached square ' + payload.square + ' — WINS!');
@@ -7822,13 +7924,13 @@
       let a = pickSquare(), b = pickSquare();
       if (a > b) { const t=a; a=b; b=t; } // a ladder always climbs from its lower square to its higher one
       slLaddersMap[a] = b;
-      buildTowerConnector(a, b, 3); // Wood Log — brown, reads as the ladder colour
+      buildLadderConnector(a, b);
     }
     for (let i = 0; i < 8; i++) {
       let a = pickSquare(), b = pickSquare();
       if (a < b) { const t=a; a=b; b=t; } // a snake always slides from its higher square down to its lower one
       slSnakesMap[a] = b;
-      buildTowerConnector(a, b, 4); // Leaves — green, reads as the snake colour
+      buildSnakeConnector(a, b);
     }
     broadcastSlGenerated();
     showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 8 ladders, 8 snakes. Jump on the dice block to play!');
@@ -7876,12 +7978,14 @@
       return;
     }
     const roll = 1 + Math.floor(Math.random()*6);
+    playDiceRoll();
     let newSquare = Math.min(100, p.square + roll);
     let via = '';
     if (slLaddersMap[newSquare]) { via = ' 🪜 up a ladder to '; newSquare = slLaddersMap[newSquare]; }
     else if (slSnakesMap[newSquare]) { via = ' 🐍 down a snake to '; newSquare = slSnakesMap[newSquare]; }
     p.square = newSquare;
     p.tokenGroup.position.copy(squareToWorldPos(newSquare));
+    playTokenMove();
     if (newSquare >= 100) {
       slGameWon = true;
       showChatLogLine('🏆', p.name + ' rolled ' + roll + via + newSquare + ' and WINS!');
@@ -7892,15 +7996,33 @@
     broadcastSlRoll(p, roll);
   }
   let lastSlTriggerCheck = 0;
+  // Two real bugs fixed here, both from the same root cause: this only
+  // ever checked "is the player standing over the block", not "did they
+  // just jump onto it" — so simply walking on and staying there kept
+  // re-firing every debounce window, which is exactly why it read as
+  // continuous dice-rolling. Now gated on player.vel.y > 1 (a genuine
+  // jump in progress, not just standing there) AND knocks the player
+  // back off the block afterwards, so there's no way to keep triggering
+  // it just by holding position — you have to jump onto it fresh again
+  // each time, matching "jump on the block" as originally asked for.
   function updateSlTriggers() {
     if (currentWorldId !== PUB_WORLD_ID) return;
     const now = performance.now();
-    if (now - lastSlTriggerCheck < 500) return; // debounced — standing there doesn't repeatedly re-fire every frame
+    if (now - lastSlTriggerCheck < 1200) return;
     const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
-    const onGenerator = px === SL_GENERATOR_POS.x && pz === SL_GENERATOR_POS.z && Math.abs(player.pos.y - (SL_GENERATOR_POS.y+1)) < 0.6;
-    const onDice = px === SL_DICE_POS.x && pz === SL_DICE_POS.z && Math.abs(player.pos.y - (SL_DICE_POS.y+1)) < 0.6;
-    if (onGenerator) { lastSlTriggerCheck = now; generateSnakesAndLadders(); }
-    else if (onDice) { lastSlTriggerCheck = now; tryJoinOrRollSlDice(); }
+    const onGenerator = px === SL_GENERATOR_POS.x && pz === SL_GENERATOR_POS.z && Math.abs(player.pos.y - (SL_GENERATOR_POS.y+1)) < 0.7;
+    const onDice = px === SL_DICE_POS.x && pz === SL_DICE_POS.z && Math.abs(player.pos.y - (SL_DICE_POS.y+1)) < 0.7;
+    if ((onGenerator || onDice) && player.vel.y > 1) {
+      lastSlTriggerCheck = now;
+      const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
+      if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw)); // dead-centre landing has no natural push direction — fall back to "back the way they're facing"
+      pushDir.normalize();
+      player.pos.x += pushDir.x*1.3;
+      player.pos.z += pushDir.z*1.3;
+      playButtonPress();
+      if (onGenerator) generateSnakesAndLadders();
+      else tryJoinOrRollSlDice();
+    }
   }
 
   // ================= GAME LOOP =================

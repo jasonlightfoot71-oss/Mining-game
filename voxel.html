@@ -5057,6 +5057,7 @@
 
     buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
     buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC);
+    buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5237,6 +5238,57 @@
     const tex = new THREE.CanvasTexture(c);
     return new THREE.Mesh(new THREE.PlaneGeometry(4, 2), new THREE.MeshBasicMaterial({ map: tex }));
   }
+
+  // ---- Battleship arena ----
+  // Two 10x10 grids back-to-back against one solid dividing wall, 10
+  // blocks toward the Mill from the Snakes & Ladders tower's own
+  // position — the wall itself is what actually hides each player's
+  // fleet from the other, the same way a real Battleship divider does,
+  // rather than anything needing to be technically hidden. Cell numbers
+  // run straightforward left-to-right, top-to-bottom (1-10 along the
+  // bottom row, 11-20 the next row up, and so on) — no need for the
+  // alternating direction the S&L tower uses, since this isn't a path
+  // to walk, just a grid to reference by number.
+  const BS_X0 = -25, BS_X1 = -16, BS_DIVIDER_Z = 36, BS_BASE_Y = 2;
+  function bsCellPos(n) {
+    n = Math.max(1, Math.min(100, Math.round(n)));
+    const row = Math.floor((n-1)/10), col = (n-1)%10;
+    return { x: BS_X0+col, y: BS_BASE_Y+row };
+  }
+  function bsCellWorldPos(n, side) {
+    const p = bsCellPos(n);
+    return new THREE.Vector3(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.55 : BS_DIVIDER_Z+0.55);
+  }
+  const BS_TRIGGER_A = { x: BS_X0-2, y: 1, z: BS_DIVIDER_Z-2 };
+  const BS_TRIGGER_B = { x: BS_X0-2, y: 1, z: BS_DIVIDER_Z+2 };
+  function buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS) {
+    fillBlocks(BS_X0-1, BS_X1+1, 1, 1, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // plinth, matching the tower's own
+    fillBlocks(BS_X0-1, BS_X1+1, BS_BASE_Y, BS_BASE_Y+9, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // the solid divider itself
+    for (let n = 1; n <= 100; n++) {
+      const p = bsCellPos(n);
+      const labelA = buildNumberLabel(n);
+      labelA.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z-0.51);
+      labelA.rotation.y = Math.PI;
+      scene.add(labelA); pubExtraProps.push(labelA);
+      const labelB = buildNumberLabel(n);
+      labelB.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z+0.51);
+      scene.add(labelB); pubExtraProps.push(labelB);
+    }
+    // Small standing pads either side, each with its own raised trigger
+    // block — one per player, on their own side, rather than one shared
+    // block either would have to walk around the divider to reach.
+    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, STONE);
+    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, GRASS);
+    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, STONE);
+    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, GRASS);
+    [BS_TRIGGER_A, BS_TRIGGER_B].forEach(pos => {
+      blocks.set(key(pos.x, pos.y, pos.z), RED_CONC);
+      const label = buildNumberLabel('🚢');
+      label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
+      scene.add(label); pubExtraProps.push(label);
+    });
+  }
+
   // Real modelled shapes rather than a line of blocks — that's what was
   // actually reading as random grass/tree blocks: block types 3 and 4
   // are literally the tree trunk and leaf textures used everywhere else

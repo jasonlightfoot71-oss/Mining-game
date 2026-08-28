@@ -5067,7 +5067,7 @@
   // to run a ball up and down on foot.
   const FOOTBALL_PITCH_BOUNDS = { x0: -1, x1: 29, z0: 37, z1: 75 };
   const FOOTBALL_GOAL_X0 = 12, FOOTBALL_GOAL_X1 = 16, FOOTBALL_PITCH_CENTER_X = 14;
-  const FOOTBALL_CENTER = new THREE.Vector3(14.5, 1.35, 56.5);
+  const FOOTBALL_CENTER = new THREE.Vector3(14.5, 2.28, 56.5); // pitch surface is a y=1 block, whose walkable top sits at world-height 2 (see player spawn just below, which stands at the same height on the same surface) — the ball's centre needs to be that plus its own radius (0.28) to actually rest ON the grass instead of partly inside it
   function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
     const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
     fillBlocks(x0, x1, 0, 0, z0, z1, STONE);

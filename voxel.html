@@ -375,6 +375,7 @@
 <div id="modeTag" style="display:none;"></div>
 <div id="coinsDisplay" style="display:none;"></div>
 <div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
+<div id="footballScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="clockDisplay" style="display:none;"></div>
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
@@ -1618,7 +1619,7 @@
   // what stranded the building without a way to reach the surrounding
   // land on foot. Protecting only the exact footprint lets terrain
   // generate right up to the building's own walls.
-  const PUB_BOUNDS = { x0: -4, x1: 32, z0: -4, z1: 38 };
+  const PUB_BOUNDS = { x0: -4, x1: 32, z0: -4, z1: 80 }; // z1 extended from 38 to cover the football pitch built beyond the garden — see buildFootballPitch()
   function isPubColumn(x, z) {
     return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
   }
@@ -5052,9 +5053,63 @@
     clearBlocksRange(1,27,1,1,22,33);
     [[3,22],[25,22],[3,33],[25,33]].forEach(([x,z]) => blocks.set(key(x,1,z), LEAVES));
     addFixture(0,1,25,1,0,0); addFixture(28,1,25,-1,0,0);
+    clearBlocksRange(12,16,1,1,34,34); // gate through the garden's back fence — otherwise there'd be no way to actually walk out to the pitch beyond it
 
+    buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
     spawnPubDecorations();
     needsRebuild = true;
+  }
+  // Pitch runs along Z, starting just beyond the garden's back fence
+  // (which sits at z=34) — goals at each end, simple stepped stands
+  // along both long sides. Deliberately a scaled-down, stylised pitch
+  // rather than a realistic-scale one (a real regulation pitch would be
+  // enormous in block terms) — this is sized for it to actually be fun
+  // to run a ball up and down on foot.
+  const FOOTBALL_PITCH_BOUNDS = { x0: -1, x1: 29, z0: 37, z1: 75 };
+  const FOOTBALL_GOAL_X0 = 12, FOOTBALL_GOAL_X1 = 16, FOOTBALL_PITCH_CENTER_X = 14;
+  const FOOTBALL_CENTER = new THREE.Vector3(14.5, 1.35, 56.5);
+  function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
+    const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
+    fillBlocks(x0, x1, 0, 0, z0, z1, STONE);
+    fillBlocks(x0, x1, 1, 1, z0, z1, GRASS);
+    // Boundary lines
+    for (let x = x0; x <= x1; x++) { blocks.set(key(x,1,z0), WHITE_CONC); blocks.set(key(x,1,z1), WHITE_CONC); }
+    for (let z = z0; z <= z1; z++) { blocks.set(key(x0,1,z), WHITE_CONC); blocks.set(key(x1,1,z), WHITE_CONC); }
+    // Halfway line + centre circle (a blocky diamond approximation — a
+    // true circle doesn't exist on a square grid at this resolution, but
+    // it reads clearly enough as one)
+    const midZ = Math.round((z0+z1)/2), cx = FOOTBALL_PITCH_CENTER_X;
+    for (let x = x0; x <= x1; x++) blocks.set(key(x,1,midZ), WHITE_CONC);
+    for (let dx = -5; dx <= 5; dx++) {
+      const dz = 5 - Math.abs(dx);
+      blocks.set(key(cx+dx,1,midZ+dz), WHITE_CONC);
+      blocks.set(key(cx+dx,1,midZ-dz), WHITE_CONC);
+    }
+    // Goal boxes — a simple outlined rectangle in front of each goal
+    [[z0, z0+5], [z1, z1-5]].forEach(([lineZ, boxZ]) => {
+      for (let x = FOOTBALL_GOAL_X0-2; x <= FOOTBALL_GOAL_X1+2; x++) blocks.set(key(x,1,boxZ), WHITE_CONC);
+      for (let z = Math.min(lineZ,boxZ); z <= Math.max(lineZ,boxZ); z++) {
+        blocks.set(key(FOOTBALL_GOAL_X0-2,1,z), WHITE_CONC);
+        blocks.set(key(FOOTBALL_GOAL_X1+2,1,z), WHITE_CONC);
+      }
+    });
+    // Goals — simple post-and-crossbar frames, inset one block from each
+    // end line so the frame itself doesn't sit flush on the boundary line
+    [z0+1, z1-1].forEach(gz => {
+      [FOOTBALL_GOAL_X0, FOOTBALL_GOAL_X1].forEach(gx => {
+        for (let y = 1; y <= 4; y++) blocks.set(key(gx,y,gz), WHITE_CONC);
+      });
+      for (let x = FOOTBALL_GOAL_X0; x <= FOOTBALL_GOAL_X1; x++) blocks.set(key(x,4,gz), WHITE_CONC);
+    });
+    // Stadium stands — simple rising tiers on both long sides, outside
+    // the pitch boundary
+    for (let tier = 0; tier < 3; tier++) {
+      const xLeft = x0-1-tier, xRight = x1+1+tier, y = 1+tier;
+      for (let z = z0-2; z <= z1+2; z++) {
+        blocks.set(key(xLeft,y,z), CONCRETE);
+        blocks.set(key(xRight,y,z), CONCRETE);
+      }
+    }
   }
   // The Mill lives at a fixed, well-known world id in the same
   // taskmill_voxel_worlds table everything else uses — that's what lets
@@ -5115,6 +5170,7 @@
     // it — no location-based restriction any more (see canEditAt).
     visitMode = false;
     assignRandomRole();
+    spawnFootball(); // resets to centre with 0-0 every fresh visit — persisting an in-progress match/score across sessions isn't worth the complexity for a casual kickabout
     terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
@@ -7282,6 +7338,19 @@
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z); // updates the visible mesh instance immediately, exactly like a local edit would
       });
+      // The football — see updateFootballBall's own comment on why this
+      // is a "snap toward the last broadcast" sync rather than anything
+      // more rigorous.
+      channel.on('broadcast', { event: 'ball' }, ({ payload }) => {
+        if (!payload || !footballBall) return;
+        footballBall.pos.set(payload.x, payload.y, payload.z);
+        footballBall.vel.set(payload.vx, payload.vy, payload.vz);
+        footballBall.mesh.position.copy(footballBall.pos);
+        if (payload.s1 !== footballScoreP1 || payload.s2 !== footballScoreP2) {
+          footballScoreP1 = payload.s1; footballScoreP2 = payload.s2;
+          updateFootballScoreHud();
+        }
+      });
       channel.on('presence', { event: 'sync' }, () => {
         try {
           const state = channel.presenceState();
@@ -7422,6 +7491,112 @@
       (remote.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => { if (!furniture.has(key(bx,by,bz))) addFurniture(bx,by,bz,rot||0,typeIdx||0); });
     } catch (e) {
       console.warn('[voxel] fixture merge failed', e);
+    }
+  }
+
+  // ================= FOOTBALL (2-player minigame in The Mill) =================
+  // The ball itself runs its own simple physics locally on every client
+  // (friction, bouncing off the pitch edges, detecting a goal), so it
+  // stays smooth to watch regardless of network timing. Kicks and goals
+  // get broadcast over the same realtime channel already used for chat/
+  // positions, and the receiving side snaps toward whatever it's told —
+  // this is a casual, good-enough sync for two people kicking a ball
+  // around together, not authoritative server-side physics, so the ball
+  // can occasionally correct/jump slightly when a broadcast arrives
+  // rather than being perfectly identical on both screens at every
+  // instant.
+  let footballBall = null; // { mesh, pos: Vector3, vel: Vector3 }
+  let footballScoreP1 = 0, footballScoreP2 = 0, lastFootballBroadcast = 0;
+  function buildFootballMesh() {
+    const size = 32;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#f0f0f0';
+    ctx.fillRect(0,0,size,size);
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(size/2, size/2, size*0.28, 0, Math.PI*2); ctx.fill();
+    [[6,6],[26,6],[6,26],[26,26]].forEach(([x,y]) => { ctx.beginPath(); ctx.arc(x,y,3,0,Math.PI*2); ctx.fill(); });
+    const tex = new THREE.CanvasTexture(c);
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), new THREE.MeshPhongMaterial({ map: tex, shininess: 10 }));
+    mesh.castShadow = false;
+    return mesh;
+  }
+  function spawnFootball() {
+    if (footballBall) return;
+    const mesh = buildFootballMesh();
+    mesh.position.copy(FOOTBALL_CENTER);
+    scene.add(mesh);
+    footballBall = { mesh, pos: FOOTBALL_CENTER.clone(), vel: new THREE.Vector3(0,0,0) };
+    footballScoreP1 = 0; footballScoreP2 = 0;
+    updateFootballScoreHud();
+    document.getElementById('footballScoreHud').style.display = 'block';
+  }
+  function despawnFootball() {
+    if (!footballBall) return;
+    scene.remove(footballBall.mesh);
+    footballBall = null;
+    document.getElementById('footballScoreHud').style.display = 'none';
+  }
+  function updateFootballScoreHud() {
+    const el = document.getElementById('footballScoreHud');
+    if (el) el.textContent = `⚽ ${footballScoreP1} - ${footballScoreP2}`;
+  }
+  function footballGoalScored(side) {
+    if (side === 'p1') footballScoreP1++; else footballScoreP2++;
+    updateFootballScoreHud();
+    footballBall.pos.copy(FOOTBALL_CENTER);
+    footballBall.vel.set(0,0,0);
+    footballBall.mesh.position.copy(FOOTBALL_CENTER);
+    broadcastFootballState(true);
+  }
+  function broadcastFootballState(force) {
+    const now = performance.now();
+    if (!force && now - lastFootballBroadcast < 150) return;
+    lastFootballBroadcast = now;
+    if (mpChannel && currentWorldId === mpConnectedWorldId && footballBall) {
+      try {
+        mpChannel.send({ type: 'broadcast', event: 'ball', payload: {
+          x: footballBall.pos.x, y: footballBall.pos.y, z: footballBall.pos.z,
+          vx: footballBall.vel.x, vy: footballBall.vel.y, vz: footballBall.vel.z,
+          s1: footballScoreP1, s2: footballScoreP2,
+        }});
+      } catch(e) {}
+    }
+  }
+  function updateFootballBall(dt) {
+    if (!footballBall || currentWorldId !== PUB_WORLD_ID) return;
+    const b = footballBall;
+    b.vel.multiplyScalar(Math.max(0, 1 - dt*1.1)); // rolling friction
+    b.pos.x += b.vel.x*dt;
+    b.pos.z += b.vel.z*dt;
+    if (b.pos.x < FOOTBALL_PITCH_BOUNDS.x0) { b.pos.x = FOOTBALL_PITCH_BOUNDS.x0; b.vel.x *= -0.5; }
+    if (b.pos.x > FOOTBALL_PITCH_BOUNDS.x1) { b.pos.x = FOOTBALL_PITCH_BOUNDS.x1; b.vel.x *= -0.5; }
+    const inGoalMouthX = b.pos.x > FOOTBALL_GOAL_X0 && b.pos.x < FOOTBALL_GOAL_X1;
+    if (b.pos.z < FOOTBALL_PITCH_BOUNDS.z0) {
+      if (inGoalMouthX) { footballGoalScored('p2'); return; }
+      b.pos.z = FOOTBALL_PITCH_BOUNDS.z0; b.vel.z *= -0.5;
+    } else if (b.pos.z > FOOTBALL_PITCH_BOUNDS.z1) {
+      if (inGoalMouthX) { footballGoalScored('p1'); return; }
+      b.pos.z = FOOTBALL_PITCH_BOUNDS.z1; b.vel.z *= -0.5;
+    }
+    b.mesh.position.copy(b.pos);
+    const speed = b.vel.length();
+    if (speed > 0.02) {
+      const axis = new THREE.Vector3(-b.vel.z, 0, b.vel.x).normalize();
+      b.mesh.rotateOnWorldAxis(axis, speed*dt*2.2);
+    }
+    // Touching the ball nudges it in whichever direction the player is
+    // currently facing — walk up to it facing where you want it to go,
+    // same basic idea as dribbling.
+    const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
+    if (dPlayer < 0.85) {
+      const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+      b.vel.x += fx*3.2*dt*6;
+      b.vel.z += fz*3.2*dt*6;
+      const maxSpeed = 9;
+      if (b.vel.length() > maxSpeed) b.vel.setLength(maxSpeed);
+      broadcastFootballState();
     }
   }
 
@@ -7711,6 +7886,7 @@
     updateLightVisibility(); // throttled internally — see its own comment
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
+    updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateDoors(dt);
     updateWork(dt);
 

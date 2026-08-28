@@ -5056,7 +5056,7 @@
     clearBlocksRange(12,16,1,1,34,34); // gate through the garden's back fence — otherwise there'd be no way to actually walk out to the pitch beyond it
 
     buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
-    buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS);
+    buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5121,6 +5121,8 @@
   // and each player's token moves along the tower automatically as
   // dice are rolled, the same way a real board-game piece does.
   const TOWER_X0 = -25, TOWER_X1 = -16, TOWER_Z = 46;
+  const SL_GENERATOR_POS = { x: TOWER_X0, y: 1, z: TOWER_Z+6 };
+  const SL_DICE_POS = { x: TOWER_X0+3, y: 1, z: TOWER_Z+6 };
   // Block position (not the token's floating position — see
   // squareToWorldPos below for that) for square N: row = which stack of
   // 10 it falls in (0 = bottom), alternating direction per row exactly
@@ -5136,19 +5138,54 @@
     return { x, y: 1+row };
   }
   // A token's actual floating position — just in front of its square's
-  // face, not inside the solid block itself.
+  // face, not inside the solid block itself. Square 0 is the "not
+  // actually on the board yet" starting position, right by the dice
+  // block rather than anywhere on the tower itself.
   function squareToWorldPos(n) {
+    if (n <= 0) return new THREE.Vector3(SL_DICE_POS.x+0.5, SL_DICE_POS.y+1.3, SL_DICE_POS.z+1.4);
     const p = squareToBlockPos(n);
     return new THREE.Vector3(p.x+0.5, p.y+0.5, TOWER_Z+1.7);
   }
-  function buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS) {
+  function buildNumberLabel(n) {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(4,4,56,56,10); else ctx.rect(4,4,56,56);
+    ctx.fill();
+    ctx.fillStyle = '#ffe27a';
+    ctx.font = 'bold ' + (n>=100?'20':'26') + 'px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(n), 32, 34);
+    const tex = new THREE.CanvasTexture(c);
+    return new THREE.Mesh(new THREE.PlaneGeometry(0.85,0.85), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+  }
+  function buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC) {
     // Solid backing wall one block behind the numbers, so it reads as an
     // actual tower rather than 100 numbers floating in mid-air.
     fillBlocks(TOWER_X0, TOWER_X1, 1, 10, TOWER_Z-1, TOWER_Z-1, STONE);
     for (let n = 1; n <= 100; n++) {
       const p = squareToBlockPos(n);
       blocks.set(key(p.x, p.y, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS); // chequered so individual squares read clearly against their neighbours
+      const label = buildNumberLabel(n);
+      label.position.set(p.x+0.5, p.y+0.5, TOWER_Z+1.01);
+      scene.add(label);
+      pubExtraProps.push(label);
     }
+    // Ground area in front for the two trigger blocks — kept well clear
+    // of the wall/backing (Z 45-46) and the connector zone (Z 48) so
+    // nothing generated later ever has to share a cell with this.
+    fillBlocks(TOWER_X0-3, TOWER_X1+3, 0, 0, TOWER_Z+3, TOWER_Z+10, STONE);
+    fillBlocks(TOWER_X0-3, TOWER_X1+3, 1, 1, TOWER_Z+3, TOWER_Z+10, GRASS);
+    blocks.set(key(SL_GENERATOR_POS.x, SL_GENERATOR_POS.y, SL_GENERATOR_POS.z), RED_CONC);
+    blocks.set(key(SL_DICE_POS.x, SL_DICE_POS.y, SL_DICE_POS.z), BLACK_CONC);
+    const genLabel = buildNumberLabel('🐍🪜');
+    genLabel.position.set(SL_GENERATOR_POS.x+0.5, SL_GENERATOR_POS.y+1.6, SL_GENERATOR_POS.z+0.5);
+    scene.add(genLabel); pubExtraProps.push(genLabel);
+    const diceLabel = buildNumberLabel('🎲');
+    diceLabel.position.set(SL_DICE_POS.x+0.5, SL_DICE_POS.y+1.6, SL_DICE_POS.z+0.5);
+    scene.add(diceLabel); pubExtraProps.push(diceLabel);
   }
   // Builds a simple diagonal line of blocks connecting two squares,
   // standing slightly proud of the number wall (Z+2, not directly on
@@ -5163,6 +5200,7 @@
       const x = Math.round(a.x + (b.x-a.x)*t);
       const y = Math.round(a.y + (b.y-a.y)*t);
       blocks.set(key(x, y, TOWER_Z+2), blockType);
+      handleLocalBlockChange(x, y, TOWER_Z+2); // incremental — avoids a full-world rebuild for what could be ~150 blocks scattered across the board
     }
   }
   // The Mill lives at a fixed, well-known world id in the same
@@ -5225,6 +5263,7 @@
     visitMode = false;
     assignRandomRole();
     spawnFootball(); // resets to centre with 0-0 every fresh visit — persisting an in-progress match/score across sessions isn't worth the complexity for a casual kickabout
+    resetSlGame(); // same reasoning — a fresh Snakes & Ladders game every visit rather than trying to persist an in-progress one
     terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
@@ -7444,6 +7483,35 @@
           updateFootballScoreHud();
         }
       });
+      // Snakes & Ladders — the generating client sends the actual random
+      // layout it rolled, and everyone else applies that exact same
+      // layout rather than rolling their own (which would give every
+      // player a different, inconsistent board).
+      channel.on('broadcast', { event: 'slGenerate' }, ({ payload }) => {
+        if (!payload || slGenerated) return;
+        slGenerated = true;
+        slLaddersMap = payload.ladders || {};
+        slSnakesMap = payload.snakes || {};
+        Object.entries(slLaddersMap).forEach(([a,b]) => buildTowerConnector(+a, +b, 3));
+        Object.entries(slSnakesMap).forEach(([a,b]) => buildTowerConnector(+a, +b, 4));
+        showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — jump on the dice block to play!');
+      });
+      channel.on('broadcast', { event: 'slJoin' }, ({ payload }) => {
+        if (!payload || slPlayers.find(p => p.uid === payload.uid)) return;
+        slJoinLocal(payload.uid, payload.name, payload.colorIdx);
+        showChatLogLine('🐍🪜', payload.name + ' joined the game!');
+      });
+      channel.on('broadcast', { event: 'slRoll' }, ({ payload }) => {
+        if (!payload) return;
+        const p = slPlayers.find(pl => pl.uid === payload.uid);
+        if (!p) return;
+        p.square = payload.square;
+        p.tokenGroup.position.copy(squareToWorldPos(payload.square));
+        slTurnIndex = payload.turnIndex;
+        slGameWon = payload.won;
+        if (payload.won) showChatLogLine('🏆', p.name + ' rolled ' + payload.roll + ' and reached square ' + payload.square + ' — WINS!');
+        else showChatLogLine('🎲', p.name + ' rolled ' + payload.roll + ' → square ' + payload.square + '. ' + (slPlayers[slTurnIndex] ? slPlayers[slTurnIndex].name : '?') + "'s turn.");
+      });
       channel.on('presence', { event: 'sync' }, () => {
         try {
           const state = channel.presenceState();
@@ -7719,6 +7787,120 @@
       if (b.vel.length() > maxSpeed) b.vel.setLength(maxSpeed);
       broadcastFootballState();
     }
+  }
+
+  // ================= SNAKES & LADDERS (2+ player minigame in The Mill) =================
+  let slLaddersMap = {}, slSnakesMap = {}, slGenerated = false;
+  let slPlayers = []; // { uid, name, colorIdx, square, tokenGroup }
+  let slTurnIndex = 0, slGameWon = false;
+  const SL_TOKEN_COLORS = [0xe64545, 0x4488ff, 0xffcc22, 0x44dd66, 0xaa55dd, 0xff8833];
+  function buildSlToken(colorHex) {
+    const mesh = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.42, 8), new THREE.MeshPhongMaterial({ color: colorHex, shininess: 30 }));
+    mesh.rotation.x = Math.PI; // point-down cone looks like a flat-bottomed playing piece rather than an ice-cream cone
+    return mesh;
+  }
+  function resetSlGame() {
+    slLaddersMap = {}; slSnakesMap = {}; slGenerated = false;
+    slPlayers.forEach(p => { if (p.tokenGroup) scene.remove(p.tokenGroup); });
+    slPlayers = []; slTurnIndex = 0; slGameWon = false;
+  }
+  // Rolls the actual random layout — one player's client does this and
+  // broadcasts the exact resulting map (see broadcastSlGenerated), so
+  // every other client applies the SAME layout rather than each
+  // generating their own independently different one.
+  function generateSnakesAndLadders() {
+    if (slGenerated || currentWorldId !== PUB_WORLD_ID) return;
+    slGenerated = true;
+    const used = new Set([1, 100]);
+    function pickSquare() {
+      let s;
+      do { s = 2 + Math.floor(Math.random()*98); } while (used.has(s));
+      used.add(s);
+      return s;
+    }
+    for (let i = 0; i < 8; i++) {
+      let a = pickSquare(), b = pickSquare();
+      if (a > b) { const t=a; a=b; b=t; } // a ladder always climbs from its lower square to its higher one
+      slLaddersMap[a] = b;
+      buildTowerConnector(a, b, 3); // Wood Log — brown, reads as the ladder colour
+    }
+    for (let i = 0; i < 8; i++) {
+      let a = pickSquare(), b = pickSquare();
+      if (a < b) { const t=a; a=b; b=t; } // a snake always slides from its higher square down to its lower one
+      slSnakesMap[a] = b;
+      buildTowerConnector(a, b, 4); // Leaves — green, reads as the snake colour
+    }
+    broadcastSlGenerated();
+    showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 8 ladders, 8 snakes. Jump on the dice block to play!');
+  }
+  function broadcastSlGenerated() {
+    if (mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'slGenerate', payload: { ladders: slLaddersMap, snakes: slSnakesMap } }); } catch(e) {}
+    }
+  }
+  function slJoinLocal(uid, name, colorIdx) {
+    let p = slPlayers.find(pl => pl.uid === uid);
+    if (p) return p;
+    p = { uid, name, colorIdx, square: 0 };
+    p.tokenGroup = buildSlToken(SL_TOKEN_COLORS[colorIdx % SL_TOKEN_COLORS.length]);
+    p.tokenGroup.position.copy(squareToWorldPos(0));
+    scene.add(p.tokenGroup);
+    slPlayers.push(p);
+    return p;
+  }
+  function broadcastSlJoin(p) {
+    if (mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'slJoin', payload: { uid: p.uid, name: p.name, colorIdx: p.colorIdx } }); } catch(e) {}
+    }
+  }
+  function broadcastSlRoll(p, roll) {
+    if (mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'slRoll', payload: { uid: p.uid, roll, square: p.square, turnIndex: slTurnIndex, won: slGameWon } }); } catch(e) {}
+    }
+  }
+  // The one entry point for the dice trigger block — joins the caller if
+  // they're not already playing, otherwise rolls for them if it's
+  // actually their turn.
+  function tryJoinOrRollSlDice() {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    if (slGameWon) { showChatLogLine('🐍🪜', 'That game finished — jump on the generator block to start a new one.'); return; }
+    let p = slPlayers.find(pl => pl.uid === playerUid);
+    if (!p) {
+      p = slJoinLocal(playerUid, getMyDisplayName(), slPlayers.length);
+      broadcastSlJoin(p);
+      showChatLogLine('🐍🪜', getMyDisplayName() + ' joined the game!');
+    }
+    const turnPlayer = slPlayers[slTurnIndex];
+    if (!turnPlayer || turnPlayer.uid !== playerUid) {
+      showChatLogLine('🐍🪜', "Not your turn yet — wait for " + (turnPlayer ? turnPlayer.name : 'the next player') + '.');
+      return;
+    }
+    const roll = 1 + Math.floor(Math.random()*6);
+    let newSquare = Math.min(100, p.square + roll);
+    let via = '';
+    if (slLaddersMap[newSquare]) { via = ' 🪜 up a ladder to '; newSquare = slLaddersMap[newSquare]; }
+    else if (slSnakesMap[newSquare]) { via = ' 🐍 down a snake to '; newSquare = slSnakesMap[newSquare]; }
+    p.square = newSquare;
+    p.tokenGroup.position.copy(squareToWorldPos(newSquare));
+    if (newSquare >= 100) {
+      slGameWon = true;
+      showChatLogLine('🏆', p.name + ' rolled ' + roll + via + newSquare + ' and WINS!');
+    } else {
+      slTurnIndex = (slTurnIndex+1) % slPlayers.length;
+      showChatLogLine('🎲', p.name + ' rolled ' + roll + via + newSquare + '. ' + slPlayers[slTurnIndex].name + "'s turn.");
+    }
+    broadcastSlRoll(p, roll);
+  }
+  let lastSlTriggerCheck = 0;
+  function updateSlTriggers() {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    const now = performance.now();
+    if (now - lastSlTriggerCheck < 500) return; // debounced — standing there doesn't repeatedly re-fire every frame
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const onGenerator = px === SL_GENERATOR_POS.x && pz === SL_GENERATOR_POS.z && Math.abs(player.pos.y - (SL_GENERATOR_POS.y+1)) < 0.6;
+    const onDice = px === SL_DICE_POS.x && pz === SL_DICE_POS.z && Math.abs(player.pos.y - (SL_DICE_POS.y+1)) < 0.6;
+    if (onGenerator) { lastSlTriggerCheck = now; generateSnakesAndLadders(); }
+    else if (onDice) { lastSlTriggerCheck = now; tryJoinOrRollSlDice(); }
   }
 
   // ================= GAME LOOP =================
@@ -8008,6 +8190,7 @@
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
+    updateSlTriggers(); // debounced internally — see its own comment
     updateDoors(dt);
     updateWork(dt);
 

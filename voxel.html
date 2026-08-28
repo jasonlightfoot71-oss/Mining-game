@@ -260,10 +260,19 @@
   <button id="visitPubBtn" style="margin-top:14px;background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🍺 Visit The Mill (community pub — clock in for a shift)</button>
   <button id="createPubBtn" style="display:none;margin-top:8px;background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.3);color:#ccc;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">＋ Create The Mill (sets it up as one of your own worlds, editable by you only)</button>
   <button id="browseOtherWorldsBtn" style="margin-top:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🌍 Visit someone else's world</button>
+  <button id="avatarOpenBtn" style="margin-top:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;">🧑 Customize your avatar</button>
   <div id="otherWorldSelect" style="display:none;width:100%;max-width:420px;">
     <div id="otherWorldMsg" style="opacity:0.7;font-size:13px;margin:10px 0;">Loading other worlds…</div>
     <div id="otherWorldList"></div>
   </div>
+</div>
+
+<div id="avatarModal" style="display:none;position:fixed;inset:0;z-index:50;background:rgba(10,12,16,0.97);color:#fff;flex-direction:column;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;overflow-y:auto;font-family:-apple-system,sans-serif;">
+  <h2 style="margin:0 0 10px;font-size:20px;">🧑 Customize Your Avatar</h2>
+  <canvas id="avatarPreviewCanvas" width="200" height="240" style="background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:12px;"></canvas>
+  <input id="avatarNameInput" maxlength="16" placeholder="Your name" style="width:200px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;margin-bottom:14px;">
+  <div id="avatarSwatchRows" style="display:flex;flex-direction:column;gap:10px;width:100%;max-width:260px;"></div>
+  <button id="avatarDoneBtn" style="margin-top:18px;padding:10px 28px;font-size:15px;border:none;border-radius:6px;background:#5c9e3f;color:#fff;cursor:pointer;font-weight:600;">Done</button>
 </div>
 
 <div id="overlay" style="display:none;">
@@ -293,6 +302,7 @@
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
+<div id="playerRadar" style="display:none;position:fixed;top:122px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
 <div id="taskPanel" style="display:none;position:fixed;left:12px;bottom:210px;z-index:10;max-width:220px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
@@ -3724,19 +3734,30 @@
     return group;
   }
   let pubTableSpots = []; // {x,z,area:'floor'|'garden'} — world positions of seats at pub tables, used to pick delivery/collection points for work tasks; repopulated whenever the Mill (re)builds, cleared in clearPubExtras
-  function buildCustomerFigure(seated) {
+  // Exposed at this scope (not just inside buildCustomerFigure) so the
+  // avatar customization screen can offer the exact same palette the
+  // figure itself is built from, keeping swatches and the actual model
+  // in sync.
+  const AVATAR_SKIN_TONES = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
+  const AVATAR_HAIR_TONES = [0x2a2018, 0x6a4a2a, 0x1a1a1a, 0x8a6a3a, 0xb0a898, 0xd4a017];
+  const AVATAR_SHIRT_TONES = [0x4a6a9a, 0x9a4a4a, 0x4a9a5a, 0xd4a017, 0x6a4a9a, 0x3a3a3a, 0xc98a5a, 0xe0e0e0];
+  const AVATAR_PANTS_TONES = [0x2a2a30, 0x3a4a6a, 0x4a3a2a, 0x1a1a1a];
+  // `colors`, when given, is {skinIdx,hairIdx,shirtIdx,pantsIdx} — used
+  // for a real player's own chosen appearance (yours, or another
+  // player's broadcast choice), so it looks the same every time rather
+  // than being randomised like the pub's decorative customers still are
+  // when this is omitted.
+  function buildCustomerFigure(seated, colors) {
     // Minecraft-proportioned: blocky head/torso/limbs, flat colours, no
     // curves anywhere — reads instantly as "customer" rather than a
     // realistic figure. Randomised skin/hair/shirt/pants so a crowd of
-    // them doesn't look cloned.
-    const skinTones = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
-    const hairTones = [0x2a2018, 0x6a4a2a, 0x1a1a1a, 0x8a6a3a, 0xb0a898, 0xd4a017];
-    const shirtTones = [0x4a6a9a, 0x9a4a4a, 0x4a9a5a, 0xd4a017, 0x6a4a9a, 0x3a3a3a, 0xc98a5a, 0xe0e0e0];
-    const pantsTones = [0x2a2a30, 0x3a4a6a, 0x4a3a2a, 0x1a1a1a];
-    const skin = skinTones[Math.floor(Math.random()*skinTones.length)];
-    const hair = hairTones[Math.floor(Math.random()*hairTones.length)];
-    const shirt = shirtTones[Math.floor(Math.random()*shirtTones.length)];
-    const pants = pantsTones[Math.floor(Math.random()*pantsTones.length)];
+    // them doesn't look cloned (unless a specific `colors` choice was
+    // given instead — see above).
+    const skinTones = AVATAR_SKIN_TONES, hairTones = AVATAR_HAIR_TONES, shirtTones = AVATAR_SHIRT_TONES, pantsTones = AVATAR_PANTS_TONES;
+    const skin = colors ? skinTones[colors.skinIdx % skinTones.length] : skinTones[Math.floor(Math.random()*skinTones.length)];
+    const hair = colors ? hairTones[colors.hairIdx % hairTones.length] : hairTones[Math.floor(Math.random()*hairTones.length)];
+    const shirt = colors ? shirtTones[colors.shirtIdx % shirtTones.length] : shirtTones[Math.floor(Math.random()*shirtTones.length)];
+    const pants = colors ? pantsTones[colors.pantsIdx % pantsTones.length] : pantsTones[Math.floor(Math.random()*pantsTones.length)];
     const group = new THREE.Group();
     const skinMat = new THREE.MeshPhongMaterial({ color: skin, shininess: 0, flatShading: true });
     const hairMat = new THREE.MeshPhongMaterial({ color: hair, shininess: 0, flatShading: true });
@@ -6861,6 +6882,28 @@
     } catch(e) { myDisplayName = 'Miner' + Math.floor(1000 + Math.random()*9000); }
     return myDisplayName;
   }
+  function setMyDisplayName(name) {
+    name = String(name||'').trim().slice(0,16) || getMyDisplayName();
+    myDisplayName = name;
+    try { localStorage.setItem('voxelDisplayName', name); } catch(e) {}
+  }
+  // Avatar appearance — persisted locally (so it's remembered next visit)
+  // and broadcast alongside position (see updateMultiplayer) so OTHER
+  // players render you with the SAME choices instead of a random look.
+  let myAvatarColors = null;
+  function getMyAvatarColors() {
+    if (myAvatarColors) return myAvatarColors;
+    try {
+      const stored = JSON.parse(localStorage.getItem('voxelAvatarColors') || 'null');
+      if (stored && typeof stored.skinIdx === 'number') { myAvatarColors = stored; return myAvatarColors; }
+    } catch(e) {}
+    myAvatarColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 0, pantsIdx: 0 };
+    return myAvatarColors;
+  }
+  function setMyAvatarColors(colors) {
+    myAvatarColors = colors;
+    try { localStorage.setItem('voxelAvatarColors', JSON.stringify(colors)); } catch(e) {}
+  }
   function buildNameSprite(text) {
     const canvas = document.createElement('canvas');
     canvas.width = 256; canvas.height = 64;
@@ -6922,15 +6965,15 @@
     sprite.userData.tex.needsUpdate = true;
     sprite.visible = true;
   }
-  function ensureOtherPlayer(uid, name) {
+  function ensureOtherPlayer(uid, name, colors) {
     let op = otherPlayers.get(uid);
     if (!op) {
-      const group = buildCustomerFigure(false); // reuses the same low-poly figure built for the Mill's decorative customers
+      const group = buildCustomerFigure(false, colors); // reuses the same low-poly figure built for the Mill's decorative customers, but with THIS player's own chosen colours rather than a random look
       group.add(buildNameSprite(name));
       const chatSprite = buildChatSprite();
       group.add(chatSprite);
       scene.add(group);
-      op = { group, chatSprite, targetPos: new THREE.Vector3(0,0,0), targetYaw: 0, lastUpdate: performance.now(), chatHideAt: 0, uid };
+      op = { group, chatSprite, targetPos: new THREE.Vector3(0,0,0), targetYaw: 0, lastUpdate: performance.now(), chatHideAt: 0, uid, lastPos: new THREE.Vector3(0,0,0) };
       otherPlayers.set(uid, op);
     }
     if (name) op.displayName = name;
@@ -6966,7 +7009,7 @@
       const channel = sbClient.channel('world:' + worldId, { config: { broadcast: { self: false }, presence: { key: playerUid } } });
       channel.on('broadcast', { event: 'pos' }, ({ payload }) => {
         if (!payload || payload.uid === playerUid) return;
-        const op = ensureOtherPlayer(payload.uid, payload.name);
+        const op = ensureOtherPlayer(payload.uid, payload.name, payload.colors);
         op.targetPos.set(payload.x, payload.y, payload.z);
         op.targetYaw = payload.yaw;
         op.lastUpdate = performance.now();
@@ -7028,19 +7071,65 @@
       const now = performance.now();
       if (now - mpLastBroadcast > 150) {
         mpLastBroadcast = now;
-        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw } }); } catch(e) {}
+        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw } }); } catch(e) {}
       }
     }
     const now2 = performance.now();
+    const walkT = now2*0.005;
     otherPlayers.forEach(op => {
       op.group.position.lerp(op.targetPos, Math.min(1, dt*8));
       let dyaw = op.targetYaw - op.group.rotation.y;
       while (dyaw > Math.PI) dyaw -= Math.PI*2;
       while (dyaw < -Math.PI) dyaw += Math.PI*2;
       op.group.rotation.y += dyaw * Math.min(1, dt*8);
+      // Walk-cycle animation — reuses the exact same leg/arm swing
+      // technique already used for the Mill's wandering customers,
+      // keyed off whether this player is still meaningfully short of
+      // their last-known target position (i.e. actually moving) rather
+      // than idle standing still waiting for the next update.
+      const stillMoving = op.group.position.distanceTo(op.targetPos) > 0.05;
+      if (stillMoving) {
+        const swing = Math.sin(walkT*4) * 0.5;
+        op.group.traverse(o => {
+          if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+          if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+        });
+      } else {
+        op.group.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+      }
       if (op.chatHideAt && now2 > op.chatHideAt) { op.chatSprite.visible = false; op.chatHideAt = 0; }
       if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
     });
+    updatePlayerRadar();
+  }
+  // Small radar-style compass showing the relative direction of every
+  // other player currently visible, alongside the Mill/spawn compass —
+  // one arrow only makes sense for one fixed point, but several players
+  // need several independent directions, hence the different treatment.
+  function updatePlayerRadar() {
+    const radar = document.getElementById('playerRadar');
+    if (!radar) return;
+    if (otherPlayers.size === 0) { radar.innerHTML = ''; return; }
+    const radiusPx = 13;
+    const existing = radar.children.length;
+    // Reuses existing dot elements where possible instead of tearing
+    // down and rebuilding every tick — cheaper, and avoids a visible
+    // flicker on the dots themselves.
+    let i = 0;
+    otherPlayers.forEach(op => {
+      let dot = radar.children[i];
+      if (!dot) {
+        dot = document.createElement('div');
+        dot.style.cssText = 'position:absolute;top:50%;left:50%;width:6px;height:6px;border-radius:50%;background:#ffd866;box-shadow:0 0 3px rgba(0,0,0,0.8);';
+        radar.appendChild(dot);
+      }
+      const dx = op.group.position.x - player.pos.x, dz = op.group.position.z - player.pos.z;
+      const yawToPlayer = Math.atan2(-dx, -dz);
+      const rel = yawToPlayer - yaw;
+      dot.style.transform = `translate(-50%,-50%) rotate(${rel}rad) translateY(-${radiusPx}px)`;
+      i++;
+    });
+    while (radar.children.length > i) radar.removeChild(radar.lastChild);
   }
   // Best-effort merge, run right before every save — without this, two
   // players placing/removing furniture around the same time could
@@ -8098,6 +8187,86 @@
     if (e.key === 'Enter') document.getElementById('chatSendBtn').click();
     else if (e.key === 'Escape') closeChatModal();
   });
+
+  // ---- Avatar customization screen ----
+  // A small dedicated Three.js scene/renderer just for the live preview
+  // here — completely separate from the main game's own scene/camera/
+  // renderer, so nothing about this screen can interfere with actual
+  // gameplay rendering.
+  let avatarPreviewRenderer = null, avatarPreviewScene = null, avatarPreviewCamera = null, avatarPreviewFigure = null, avatarPreviewRAF = null;
+  let pendingAvatarColors = null; // a working copy while the screen is open — only actually saved when Done is pressed
+  function hexToCss(hex) { return '#' + hex.toString(16).padStart(6,'0'); }
+  function setupAvatarPreview() {
+    if (avatarPreviewRenderer) return;
+    const canvas = document.getElementById('avatarPreviewCanvas');
+    avatarPreviewRenderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    avatarPreviewRenderer.setSize(200, 240);
+    avatarPreviewScene = new THREE.Scene();
+    avatarPreviewScene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.15));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.55);
+    dir.position.set(2, 3, 2);
+    avatarPreviewScene.add(dir);
+    avatarPreviewCamera = new THREE.PerspectiveCamera(35, 200/240, 0.1, 10);
+    avatarPreviewCamera.position.set(0, 1.05, 2.5);
+    avatarPreviewCamera.lookAt(0, 0.95, 0);
+  }
+  function refreshAvatarPreviewFigure() {
+    if (avatarPreviewFigure) avatarPreviewScene.remove(avatarPreviewFigure);
+    avatarPreviewFigure = buildCustomerFigure(false, pendingAvatarColors);
+    avatarPreviewScene.add(avatarPreviewFigure);
+  }
+  function avatarPreviewLoop() {
+    avatarPreviewRAF = requestAnimationFrame(avatarPreviewLoop);
+    if (avatarPreviewFigure) avatarPreviewFigure.rotation.y += 0.012; // slow turntable spin, so you can see all sides without needing to drag anything
+    avatarPreviewRenderer.render(avatarPreviewScene, avatarPreviewCamera);
+  }
+  function buildAvatarSwatchRows() {
+    const container = document.getElementById('avatarSwatchRows');
+    container.innerHTML = '';
+    [['Skin', AVATAR_SKIN_TONES, 'skinIdx'], ['Hair', AVATAR_HAIR_TONES, 'hairIdx'],
+     ['Shirt', AVATAR_SHIRT_TONES, 'shirtIdx'], ['Pants', AVATAR_PANTS_TONES, 'pantsIdx']].forEach(([label, tones, prop]) => {
+      const wrap = document.createElement('div');
+      const labelEl = document.createElement('div');
+      labelEl.textContent = label;
+      labelEl.style.cssText = 'font-size:12px;opacity:0.75;margin-bottom:4px;';
+      wrap.appendChild(labelEl);
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+      tones.forEach((hex, idx) => {
+        const sw = document.createElement('div');
+        const selected = pendingAvatarColors[prop] === idx;
+        sw.style.cssText = `width:28px;height:28px;border-radius:5px;background:${hexToCss(hex)};cursor:pointer;border:2px solid ${selected ? '#fff' : 'transparent'};box-shadow:${selected ? '0 0 6px rgba(255,255,255,0.6)' : 'none'};`;
+        sw.addEventListener('click', () => {
+          pendingAvatarColors[prop] = idx;
+          refreshAvatarPreviewFigure();
+          buildAvatarSwatchRows(); // rebuilt so the selection highlight moves to the new choice
+        });
+        row.appendChild(sw);
+      });
+      wrap.appendChild(row);
+      container.appendChild(wrap);
+    });
+  }
+  function openAvatarModal() {
+    pendingAvatarColors = Object.assign({}, getMyAvatarColors());
+    document.getElementById('avatarNameInput').value = getMyDisplayName();
+    setupAvatarPreview();
+    refreshAvatarPreviewFigure();
+    buildAvatarSwatchRows();
+    document.getElementById('avatarModal').style.display = 'flex';
+    if (!avatarPreviewRAF) avatarPreviewLoop();
+  }
+  function closeAvatarModal() {
+    document.getElementById('avatarModal').style.display = 'none';
+    if (avatarPreviewRAF) { cancelAnimationFrame(avatarPreviewRAF); avatarPreviewRAF = null; }
+  }
+  document.getElementById('avatarOpenBtn').addEventListener('click', openAvatarModal);
+  document.getElementById('avatarDoneBtn').addEventListener('click', () => {
+    setMyAvatarColors(pendingAvatarColors);
+    setMyDisplayName(document.getElementById('avatarNameInput').value);
+    closeAvatarModal();
+  });
+
   document.getElementById('promoStartBtn').addEventListener('click', () => { startQuiz(); });
   document.getElementById('promoLaterBtn').addEventListener('click', () => { closePromoOffer(); });
   document.getElementById('quizSubmitBtn').addEventListener('click', () => { submitQuiz(); });
@@ -8118,6 +8287,7 @@
     document.getElementById('coinsDisplay').style.display = 'block';
     document.getElementById('coordsDisplay').style.display = 'block';
     document.getElementById('millCompass').style.display = 'flex';
+    document.getElementById('playerRadar').style.display = 'block';
     updateCoinsDisplay();
     updateRoleTag();
     if (currentRole) {

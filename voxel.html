@@ -5189,6 +5189,53 @@
     const diceLabel = buildNumberLabel('🎲');
     diceLabel.position.set(SL_DICE_POS.x+0.5, SL_DICE_POS.y+1.6, SL_DICE_POS.z+0.5);
     scene.add(diceLabel); pubExtraProps.push(diceLabel);
+    // A proper sign on the back of the board, facing away from the play
+    // area — a simple painted ladder and snake alongside the title, not
+    // just text.
+    const backSign = buildSlBackSign();
+    backSign.position.set((TOWER_X0+TOWER_X1)/2+0.5, TOWER_BASE_Y+5, TOWER_Z-1-0.51);
+    backSign.rotation.y = Math.PI;
+    scene.add(backSign);
+    pubExtraProps.push(backSign);
+  }
+  function buildSlBackSign() {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#3a2a18';
+    ctx.fillRect(0,0,512,256);
+    ctx.strokeStyle = '#1a1208'; ctx.lineWidth = 10;
+    ctx.strokeRect(5,5,502,246);
+    ctx.fillStyle = '#ffe27a';
+    ctx.font = 'bold 44px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SNAKES & LADDERS', 256, 55);
+    // Ladder icon
+    ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 7; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(95, 90); ctx.lineTo(75, 225);
+    ctx.moveTo(160, 90); ctx.lineTo(140, 225);
+    ctx.stroke();
+    for (let i = 0; i <= 5; i++) {
+      const y = 100 + i*24, t = i/5;
+      ctx.beginPath();
+      ctx.moveTo(95 - t*20, y);
+      ctx.lineTo(160 - t*20, y);
+      ctx.stroke();
+    }
+    // Snake icon
+    ctx.strokeStyle = '#dd1e1e'; ctx.lineWidth = 16; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(360, 95);
+    ctx.bezierCurveTo(410, 125, 320, 155, 375, 185);
+    ctx.bezierCurveTo(420, 205, 355, 220, 390, 230);
+    ctx.stroke();
+    ctx.fillStyle = '#dd1e1e';
+    ctx.beginPath(); ctx.arc(360, 95, 17, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(354, 90, 3, 0, Math.PI*2); ctx.arc(366, 90, 3, 0, Math.PI*2); ctx.fill();
+    const tex = new THREE.CanvasTexture(c);
+    return new THREE.Mesh(new THREE.PlaneGeometry(4, 2), new THREE.MeshBasicMaterial({ map: tex }));
   }
   // Real modelled shapes rather than a line of blocks — that's what was
   // actually reading as random grass/tree blocks: block types 3 and 4
@@ -8008,19 +8055,27 @@
     }
     slGenerated = true;
     const used = new Set([1, 100]);
+    // Requires each newly picked square to be a real distance from every
+    // square already in use — without this, random picks could easily
+    // cluster several connectors into the same small stretch of board,
+    // which is what was reading as "congested".
+    const MIN_GAP = 6;
     function pickSquare() {
-      let s;
-      do { s = 2 + Math.floor(Math.random()*98); } while (used.has(s));
+      let s, tries = 0;
+      do {
+        s = 2 + Math.floor(Math.random()*98);
+        tries++;
+      } while ((used.has(s) || Array.from(used).some(u => Math.abs(u-s) < MIN_GAP)) && tries < 500);
       used.add(s);
       return s;
     }
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) {
       let a = pickSquare(), b = pickSquare();
       if (a > b) { const t=a; a=b; b=t; } // a ladder always climbs from its lower square to its higher one
       slLaddersMap[a] = b;
       buildLadderConnector(a, b);
     }
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) {
       let a = pickSquare(), b = pickSquare();
       if (a < b) { const t=a; a=b; b=t; } // a snake always slides from its higher square down to its lower one
       slSnakesMap[a] = b;
@@ -8094,7 +8149,7 @@
   function animateSlTokenSteps(p, fromSquare, toSquare, onComplete) {
     const dir = toSquare >= fromSquare ? 1 : -1;
     const totalSteps = Math.max(1, Math.abs(toSquare - fromSquare));
-    slFocusCameraOnToken(p.tokenGroup, totalSteps*260 + 1400);
+    slFocusCameraOnToken(p.tokenGroup, totalSteps*520 + 1400);
     let current = fromSquare;
     function nextStep() {
       if (current === toSquare) { if (onComplete) onComplete(); return; }
@@ -8102,7 +8157,7 @@
       p.square = current;
       p.tokenGroup.position.copy(squareToWorldPos(current));
       playTokenMove();
-      setTimeout(nextStep, 260);
+      setTimeout(nextStep, 520); // roughly twice as slow as before, per feedback
     }
     nextStep();
   }

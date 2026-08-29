@@ -1670,15 +1670,20 @@
   // a revisit, since the building is otherwise regenerated fresh every
   // time via generatePubWorld().
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) return true; // placing stays unrestricted everywhere in the Mill — see doMine's own protection check, which blocks MINING specifically rather than gating here (this function is shared by both mine and place, and only mining needed restricting)
+    if (currentWorldId === PUB_WORLD_ID) return true; // placing stays unrestricted everywhere in the Mill EXCEPT within the protected game areas — see doPlace()/doMine()'s own checks, which handle that directly rather than through this shared gate
     return !visitMode;
   }
   // Keeps the football pitch, the Snakes & Ladders tower, and the
-  // Battleship arena from being MINED away — checked directly inside
-  // doMine() rather than through canEditAt (which doPlace() also uses),
-  // since placing near/around these structures should still work
-  // normally; it's specifically having them destroyed that needed
-  // preventing.
+  // Battleship arena from being MINED away, and stops ordinary building
+  // from happening inside them by accident (which is exactly how a
+  // stray block ended up on the Battleship grid — pressing build there
+  // did normal placement rather than the ship-placement mechanic, since
+  // nothing was stopping it). Only the STRUCTURAL block types these
+  // three things are actually built from get protected from mining —
+  // anything else found in the area (like that stray block) can still
+  // be mined out normally, since it's clearly not part of the real
+  // structure.
+  const GAME_STRUCTURAL_BLOCK_TYPES = new Set([0, 2, 6, 10, 31, 32, 34]); // grass, stone, planks, concrete, white/red/black concrete
   function isProtectedGameArea(x, z) {
     // Football pitch, including its stands
     if (x >= -6 && x <= 34 && z >= 33 && z <= 79) return true;
@@ -1687,6 +1692,11 @@
     // Battleship arena, including its standing pads
     if (x >= BS_X0-4 && x <= BS_X1+4 && z >= BS_DIVIDER_Z-4 && z <= BS_DIVIDER_Z+5) return true;
     return false;
+  }
+  function isProtectedStructuralBlock(x, y, z) {
+    if (!isProtectedGameArea(x, z)) return false;
+    const t = blocks.get(key(x, y, z));
+    return t !== undefined && GAME_STRUCTURAL_BLOCK_TYPES.has(t);
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
   // real capacity problem: each block type's mesh has a fixed maximum of
@@ -6813,7 +6823,7 @@
     const r = voxelRaycast();
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
-    if (currentWorldId === PUB_WORLD_ID && isProtectedGameArea(r.hit.x, r.hit.z)) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — placing still works fine everywhere, see canEditAt's own comment
+    if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z)) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
@@ -6864,6 +6874,15 @@
     const r = voxelRaycast();
     if (!r || !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
+    // Ordinary building is blocked inside these three areas entirely,
+    // not just mining — this is what actually stopped a stray block
+    // from being placed there in the first place (before this, pressing
+    // build anywhere near the games just did normal placement, since
+    // nothing was gating it). The only way to place anything here is
+    // through each game's own specific interaction — the bsPlacing
+    // branch above for Battleship, or jumping on a trigger block for
+    // the others — never ordinary building.
+    if (isProtectedGameArea(r.hit.x, r.hit.z)) return;
 
     if (selectedSlot === LIGHT_SLOT) {
       if (r.isWater) return; // can't mount a light on water

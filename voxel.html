@@ -243,10 +243,11 @@
     overflow-y: auto; min-height: 0;
   }
   .titleQuadrant h3 { margin: 0 0 8px; font-size: 15px; opacity: 0.9; flex-shrink: 0; }
-  /* Narrow/short screens (most phones in landscape) don't have room for
-     a real 2x2 grid without cramming each quadrant too small to use —
-     stacks into one scrollable column instead. */
-  @media (max-width: 700px), (max-height: 420px) {
+  /* Only genuinely narrow (portrite-oriented) screens fall back to a
+     single column — a 2x2 grid is the whole point of this layout, and
+     landscape phones have plenty of width for it even though they're
+     short, so height alone was never a good reason to abandon it. */
+  @media (max-width: 480px) {
     #worldQuadrants { grid-template-columns: 1fr; grid-auto-rows: auto; }
     .titleQuadrant { max-height: 46vh; }
   }
@@ -5123,6 +5124,18 @@
   const FOOTBALL_PITCH_BOUNDS = { x0: -1, x1: 29, z0: 37, z1: 75 };
   const FOOTBALL_GOAL_X0 = 12, FOOTBALL_GOAL_X1 = 16, FOOTBALL_PITCH_CENTER_X = 14;
   const FOOTBALL_CENTER = new THREE.Vector3(14.5, 2.28, 56.5); // pitch surface is a y=1 block, whose walkable top sits at world-height 2 (see player spawn just below, which stands at the same height on the same surface) — the ball's centre needs to be that plus its own radius (0.28) to actually rest ON the grass instead of partly inside it
+  // Shared warm, no-shadow point light for illuminating each game area —
+  // same colour/no-shadow reasoning as the torch lights elsewhere (a
+  // shadow-casting point light is one of the most expensive things to
+  // render, and isn't needed here), just with a much larger reach since
+  // these are outdoor areas rather than small building interiors.
+  function addGameLight(x, y, z, distance, intensity) {
+    const light = new THREE.PointLight(0xfff2d0, intensity || 1.6, distance || 22, 0.3);
+    light.castShadow = false;
+    light.position.set(x, y, z);
+    scene.add(light);
+    pubExtraProps.push(light);
+  }
   function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
     const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
     fillGameBlocks(x0, x1, 0, 0, z0, z1, STONE);
@@ -5165,6 +5178,11 @@
         setGameBlock(xRight,y,z, CONCRETE);
       }
     }
+    // Floodlights — one pair per end, well above the stands
+    [z0+4, z1-4].forEach(fz => {
+      addGameLight(x0-3, 9, fz, 26, 1.7);
+      addGameLight(x1+3, 9, fz, 26, 1.7);
+    });
   }
   // ---- Snakes & Ladders tower ----
   // Exactly as literally described: 10 blocks, then another 10 stacked
@@ -5249,14 +5267,29 @@
     const diceLabel = buildNumberLabel('🎲');
     diceLabel.position.set(SL_DICE_POS.x+0.5, SL_DICE_POS.y+1.6, SL_DICE_POS.z+0.5);
     scene.add(diceLabel); pubExtraProps.push(diceLabel);
-    // A proper sign on the back of the board, facing away from the play
-    // area — a simple painted ladder and snake alongside the title, not
-    // just text.
-    const backSign = buildSlBackSign();
-    backSign.position.set((TOWER_X0+TOWER_X1)/2+0.5, TOWER_BASE_Y+5, TOWER_Z-1-0.51);
-    backSign.rotation.y = Math.PI;
-    scene.add(backSign);
-    pubExtraProps.push(backSign);
+    // A proper sign on top of the tower rather than the back of it — much
+    // easier to actually spot from a distance. Two panels back-to-back
+    // (each its own mesh, not one double-sided plane) so it reads
+    // correctly from either direction rather than mirrored from one of
+    // them, same reasoning as the Battleship sign.
+    const signY = TOWER_BASE_Y + 11, signX = (TOWER_X0+TOWER_X1)/2+0.5;
+    const signFront = buildSlBackSign();
+    signFront.position.set(signX, signY, TOWER_Z + 0.05);
+    scene.add(signFront); pubExtraProps.push(signFront);
+    const signBack = buildSlBackSign();
+    signBack.position.set(signX, signY, TOWER_Z - 0.05);
+    signBack.rotation.y = Math.PI;
+    scene.add(signBack); pubExtraProps.push(signBack);
+    const signPostMat = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 });
+    [-1.7, 1.7].forEach(dx => {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.22, 1.6, 0.22), signPostMat);
+      post.position.set(signX+dx, signY-1.1, TOWER_Z);
+      scene.add(post); pubExtraProps.push(post);
+    });
+    // Lights the whole board — one in front so the numbers themselves
+    // are lit, one up by the sign so it stays readable too.
+    addGameLight(signX, TOWER_BASE_Y+5, TOWER_Z+3, 20, 1.7);
+    addGameLight(signX, signY+1, TOWER_Z, 16, 1.3);
   }
   function buildSlBackSign() {
     const c = document.createElement('canvas');
@@ -5297,33 +5330,42 @@
     const tex = new THREE.CanvasTexture(c);
     return new THREE.Mesh(new THREE.PlaneGeometry(4, 2), new THREE.MeshBasicMaterial({ map: tex }));
   }
-  // A big, easy-to-spot sign mounted on top of the Snakes & Ladders
-  // tower (the tallest thing in this whole cluster) advertising the
-  // Battleship arena below — double-sided, so it reads correctly however
-  // you approach, with two simple support posts holding it up rather
-  // than floating.
+  // A big, easy-to-spot sign mounted on top of the Battleship arena's own
+  // divider wall — genuinely double-sided (two separate panels, each
+  // built from its own correctly-oriented texture) rather than relying
+  // on THREE.DoubleSide alone, which just stops the back face from being
+  // culled — it doesn't un-mirror the text for whoever's looking at that
+  // back face, so a single double-sided plane reads backwards from one
+  // side. Two simple support posts hold it up rather than floating.
   function buildBattleshipSign() {
-    const c = document.createElement('canvas');
-    c.width = 1024; c.height = 256;
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#16283a';
-    ctx.fillRect(0,0,1024,256);
-    ctx.strokeStyle = '#0a1520'; ctx.lineWidth = 16;
-    ctx.strokeRect(8,8,1008,240);
-    ctx.fillStyle = '#ffe27a';
-    ctx.font = 'bold 108px sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('⚓ BATTLESHIPS ⚓', 512, 128);
-    const tex = new THREE.CanvasTexture(c);
-    const signY = TOWER_BASE_Y + 12; // clear of the tower's own top row
-    const signX = (TOWER_X0 + TOWER_X1) / 2 + 0.5;
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
-    sign.position.set(signX, signY, TOWER_Z + 0.5);
-    scene.add(sign); pubExtraProps.push(sign);
+    function buildPanel() {
+      const c = document.createElement('canvas');
+      c.width = 1024; c.height = 256;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#16283a';
+      ctx.fillRect(0,0,1024,256);
+      ctx.strokeStyle = '#0a1520'; ctx.lineWidth = 16;
+      ctx.strokeRect(8,8,1008,240);
+      ctx.fillStyle = '#ffe27a';
+      ctx.font = 'bold 108px sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('⚓ BATTLESHIPS ⚓', 512, 128);
+      const tex = new THREE.CanvasTexture(c);
+      return new THREE.Mesh(new THREE.PlaneGeometry(9, 2.2), new THREE.MeshBasicMaterial({ map: tex }));
+    }
+    const signY = BS_BASE_Y + 12; // clear of the divider's own top
+    const signX = (BS_X0 + BS_X1) / 2 + 0.5;
+    const panelFront = buildPanel();
+    panelFront.position.set(signX, signY, BS_DIVIDER_Z + 0.55);
+    scene.add(panelFront); pubExtraProps.push(panelFront);
+    const panelBack = buildPanel();
+    panelBack.position.set(signX, signY, BS_DIVIDER_Z + 0.45);
+    panelBack.rotation.y = Math.PI;
+    scene.add(panelBack); pubExtraProps.push(panelBack);
     const postMat = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 });
     [-3.8, 3.8].forEach(dx => {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.25, 2.4, 0.25), postMat);
-      post.position.set(signX+dx, signY-1.6, TOWER_Z+0.5);
+      post.position.set(signX+dx, signY-1.6, BS_DIVIDER_Z+0.5);
       scene.add(post); pubExtraProps.push(post);
     });
   }
@@ -5381,6 +5423,11 @@
       label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
       scene.add(label); pubExtraProps.push(label);
     });
+    // One light per side, so each player's own grid is properly lit
+    // regardless of which side of the divider they're standing on.
+    const signX = (BS_X0+BS_X1)/2+0.5;
+    addGameLight(signX, BS_BASE_Y+5, BS_DIVIDER_Z-3, 18, 1.6);
+    addGameLight(signX, BS_BASE_Y+5, BS_DIVIDER_Z+4, 18, 1.6);
   }
 
   // Real modelled shapes rather than a line of blocks — that's what was

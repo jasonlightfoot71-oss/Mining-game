@@ -1676,14 +1676,28 @@
   // Keeps the football pitch, the Snakes & Ladders tower, and the
   // Battleship arena from being MINED away, and stops ordinary building
   // from happening inside them by accident (which is exactly how a
-  // stray block ended up on the Battleship grid — pressing build there
-  // did normal placement rather than the ship-placement mechanic, since
-  // nothing was stopping it). Only the STRUCTURAL block types these
-  // three things are actually built from get protected from mining —
-  // anything else found in the area (like that stray block) can still
-  // be mined out normally, since it's clearly not part of the real
-  // structure.
-  const GAME_STRUCTURAL_BLOCK_TYPES = new Set([0, 2, 6, 10, 31, 32, 34]); // grass, stone, planks, concrete, white/red/black concrete
+  // stray block ended up on the Battleship grid before this — pressing
+  // build there did normal placement rather than the ship-placement
+  // mechanic, since nothing was stopping it).
+  //
+  // Protection is tracked by EXACT coordinate, not by block type — an
+  // earlier version checked "is this a type these structures are ever
+  // built from" (stone, grass, planks, concrete), which sounds
+  // reasonable but has a real flaw: a stray block placed with one of
+  // those same common materials would be mistaken for genuine structure
+  // and become unmineable too, which is exactly what happened. Every
+  // coordinate actually written during construction gets recorded here
+  // instead, so protection only ever covers cells that are truly part
+  // of the built structure — anything else in the area, regardless of
+  // its type, was never real structure and can always be mined out.
+  const gameStructuralCells = new Set();
+  function setGameBlock(x, y, z, type) {
+    blocks.set(key(x, y, z), type);
+    gameStructuralCells.add(x+','+y+','+z);
+  }
+  function fillGameBlocks(x0, x1, y0, y1, z0, z1, type) {
+    for (let x=x0; x<=x1; x++) for (let y=y0; y<=y1; y++) for (let z=z0; z<=z1; z++) setGameBlock(x, y, z, type);
+  }
   function isProtectedGameArea(x, z) {
     // Football pitch, including its stands
     if (x >= -6 && x <= 34 && z >= 33 && z <= 79) return true;
@@ -1694,9 +1708,7 @@
     return false;
   }
   function isProtectedStructuralBlock(x, y, z) {
-    if (!isProtectedGameArea(x, z)) return false;
-    const t = blocks.get(key(x, y, z));
-    return t !== undefined && GAME_STRUCTURAL_BLOCK_TYPES.has(t);
+    return gameStructuralCells.has(x+','+y+','+z);
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
   // real capacity problem: each block type's mesh has a fixed maximum of
@@ -5106,44 +5118,44 @@
   const FOOTBALL_CENTER = new THREE.Vector3(14.5, 2.28, 56.5); // pitch surface is a y=1 block, whose walkable top sits at world-height 2 (see player spawn just below, which stands at the same height on the same surface) — the ball's centre needs to be that plus its own radius (0.28) to actually rest ON the grass instead of partly inside it
   function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
     const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
-    fillBlocks(x0, x1, 0, 0, z0, z1, STONE);
-    fillBlocks(x0, x1, 1, 1, z0, z1, GRASS);
+    fillGameBlocks(x0, x1, 0, 0, z0, z1, STONE);
+    fillGameBlocks(x0, x1, 1, 1, z0, z1, GRASS);
     // Boundary lines
-    for (let x = x0; x <= x1; x++) { blocks.set(key(x,1,z0), WHITE_CONC); blocks.set(key(x,1,z1), WHITE_CONC); }
-    for (let z = z0; z <= z1; z++) { blocks.set(key(x0,1,z), WHITE_CONC); blocks.set(key(x1,1,z), WHITE_CONC); }
+    for (let x = x0; x <= x1; x++) { setGameBlock(x,1,z0, WHITE_CONC); setGameBlock(x,1,z1, WHITE_CONC); }
+    for (let z = z0; z <= z1; z++) { setGameBlock(x0,1,z, WHITE_CONC); setGameBlock(x1,1,z, WHITE_CONC); }
     // Halfway line + centre circle (a blocky diamond approximation — a
     // true circle doesn't exist on a square grid at this resolution, but
     // it reads clearly enough as one)
     const midZ = Math.round((z0+z1)/2), cx = FOOTBALL_PITCH_CENTER_X;
-    for (let x = x0; x <= x1; x++) blocks.set(key(x,1,midZ), WHITE_CONC);
+    for (let x = x0; x <= x1; x++) setGameBlock(x,1,midZ, WHITE_CONC);
     for (let dx = -5; dx <= 5; dx++) {
       const dz = 5 - Math.abs(dx);
-      blocks.set(key(cx+dx,1,midZ+dz), WHITE_CONC);
-      blocks.set(key(cx+dx,1,midZ-dz), WHITE_CONC);
+      setGameBlock(cx+dx,1,midZ+dz, WHITE_CONC);
+      setGameBlock(cx+dx,1,midZ-dz, WHITE_CONC);
     }
     // Goal boxes — a simple outlined rectangle in front of each goal
     [[z0, z0+5], [z1, z1-5]].forEach(([lineZ, boxZ]) => {
-      for (let x = FOOTBALL_GOAL_X0-2; x <= FOOTBALL_GOAL_X1+2; x++) blocks.set(key(x,1,boxZ), WHITE_CONC);
+      for (let x = FOOTBALL_GOAL_X0-2; x <= FOOTBALL_GOAL_X1+2; x++) setGameBlock(x,1,boxZ, WHITE_CONC);
       for (let z = Math.min(lineZ,boxZ); z <= Math.max(lineZ,boxZ); z++) {
-        blocks.set(key(FOOTBALL_GOAL_X0-2,1,z), WHITE_CONC);
-        blocks.set(key(FOOTBALL_GOAL_X1+2,1,z), WHITE_CONC);
+        setGameBlock(FOOTBALL_GOAL_X0-2,1,z, WHITE_CONC);
+        setGameBlock(FOOTBALL_GOAL_X1+2,1,z, WHITE_CONC);
       }
     });
     // Goals — simple post-and-crossbar frames, inset one block from each
     // end line so the frame itself doesn't sit flush on the boundary line
     [z0+1, z1-1].forEach(gz => {
       [FOOTBALL_GOAL_X0, FOOTBALL_GOAL_X1].forEach(gx => {
-        for (let y = 1; y <= 4; y++) blocks.set(key(gx,y,gz), WHITE_CONC);
+        for (let y = 1; y <= 4; y++) setGameBlock(gx,y,gz, WHITE_CONC);
       });
-      for (let x = FOOTBALL_GOAL_X0; x <= FOOTBALL_GOAL_X1; x++) blocks.set(key(x,4,gz), WHITE_CONC);
+      for (let x = FOOTBALL_GOAL_X0; x <= FOOTBALL_GOAL_X1; x++) setGameBlock(x,4,gz, WHITE_CONC);
     });
     // Stadium stands — simple rising tiers on both long sides, outside
     // the pitch boundary
     for (let tier = 0; tier < 3; tier++) {
       const xLeft = x0-1-tier, xRight = x1+1+tier, y = 1+tier;
       for (let z = z0-2; z <= z1+2; z++) {
-        blocks.set(key(xLeft,y,z), CONCRETE);
-        blocks.set(key(xRight,y,z), CONCRETE);
+        setGameBlock(xLeft,y,z, CONCRETE);
+        setGameBlock(xRight,y,z, CONCRETE);
       }
     }
   }
@@ -5207,11 +5219,11 @@
     // A visible plinth at ground level, then the backing wall and
     // numbers start one block above it — this is what actually keeps
     // the bottom row from reading as sunk into the ground.
-    fillBlocks(TOWER_X0-1, TOWER_X1+1, 1, 1, TOWER_Z-1, TOWER_Z, STONE);
-    fillBlocks(TOWER_X0, TOWER_X1, TOWER_BASE_Y, TOWER_BASE_Y+9, TOWER_Z-1, TOWER_Z-1, STONE);
+    fillGameBlocks(TOWER_X0-1, TOWER_X1+1, 1, 1, TOWER_Z-1, TOWER_Z, STONE);
+    fillGameBlocks(TOWER_X0, TOWER_X1, TOWER_BASE_Y, TOWER_BASE_Y+9, TOWER_Z-1, TOWER_Z-1, STONE);
     for (let n = 1; n <= 100; n++) {
       const p = squareToBlockPos(n);
-      blocks.set(key(p.x, p.y, TOWER_Z), (n % 2 === 0) ? WHITE_CONC : PLANKS); // chequered so individual squares read clearly against their neighbours
+      setGameBlock(p.x, p.y, TOWER_Z, (n % 2 === 0) ? WHITE_CONC : PLANKS); // chequered so individual squares read clearly against their neighbours
       const label = buildNumberLabel(n);
       label.position.set(p.x+0.5, p.y+0.5, TOWER_Z+1.01);
       scene.add(label);
@@ -5220,10 +5232,10 @@
     // Ground area in front for the two trigger blocks — kept well clear
     // of the wall/backing (Z 45-46) and the connector zone (Z 46.6) so
     // nothing generated later ever has to share a cell with this.
-    fillBlocks(TOWER_X0-3, TOWER_X1+3, 0, 0, TOWER_Z+3, TOWER_Z+10, STONE);
-    fillBlocks(TOWER_X0-3, TOWER_X1+3, 1, 1, TOWER_Z+3, TOWER_Z+10, GRASS);
-    blocks.set(key(SL_GENERATOR_POS.x, SL_GENERATOR_POS.y, SL_GENERATOR_POS.z), RED_CONC);
-    blocks.set(key(SL_DICE_POS.x, SL_DICE_POS.y, SL_DICE_POS.z), BLACK_CONC);
+    fillGameBlocks(TOWER_X0-3, TOWER_X1+3, 0, 0, TOWER_Z+3, TOWER_Z+10, STONE);
+    fillGameBlocks(TOWER_X0-3, TOWER_X1+3, 1, 1, TOWER_Z+3, TOWER_Z+10, GRASS);
+    setGameBlock(SL_GENERATOR_POS.x, SL_GENERATOR_POS.y, SL_GENERATOR_POS.z, RED_CONC);
+    setGameBlock(SL_DICE_POS.x, SL_DICE_POS.y, SL_DICE_POS.z, BLACK_CONC);
     const genLabel = buildNumberLabel('🐍🪜');
     genLabel.position.set(SL_GENERATOR_POS.x+0.5, SL_GENERATOR_POS.y+1.6, SL_GENERATOR_POS.z+0.5);
     scene.add(genLabel); pubExtraProps.push(genLabel);
@@ -5302,8 +5314,8 @@
   const BS_TRIGGER_A = { x: BS_X0-2, y: 2, z: BS_DIVIDER_Z-2 }; // raised one block above the ground pad — has to be jumped onto, matching the Snakes & Ladders triggers
   const BS_TRIGGER_B = { x: BS_X0-2, y: 2, z: BS_DIVIDER_Z+2 };
   function buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS) {
-    fillBlocks(BS_X0-1, BS_X1+1, 1, 1, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // plinth, matching the tower's own
-    fillBlocks(BS_X0-1, BS_X1+1, BS_BASE_Y, BS_BASE_Y+9, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // the solid divider itself
+    fillGameBlocks(BS_X0-1, BS_X1+1, 1, 1, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // plinth, matching the tower's own
+    fillGameBlocks(BS_X0-1, BS_X1+1, BS_BASE_Y, BS_BASE_Y+9, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // the solid divider itself
     for (let n = 1; n <= 100; n++) {
       const p = bsCellPos(n);
       const labelA = buildNumberLabel(n);
@@ -5322,12 +5334,12 @@
     // Small standing pads either side, each with its own raised trigger
     // block — one per player, on their own side, rather than one shared
     // block either would have to walk around the divider to reach.
-    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, STONE);
-    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, GRASS);
-    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, STONE);
-    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, GRASS);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, STONE);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, GRASS);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, STONE);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, GRASS);
     [BS_TRIGGER_A, BS_TRIGGER_B].forEach(pos => {
-      blocks.set(key(pos.x, pos.y, pos.z), RED_CONC);
+      setGameBlock(pos.x, pos.y, pos.z, RED_CONC);
       const label = buildNumberLabel('🚢');
       label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
       scene.add(label); pubExtraProps.push(label);
@@ -8911,19 +8923,26 @@
   function broadcastBsShip(side, cells) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsShip', payload:{ side, cells } }); } catch(e) {} }
   function broadcastBsFleetReady(side) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFleetReady', payload:{ side } }); } catch(e) {} }
   function broadcastBsFire(side, cell, isHit, turnSide, won) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFire', payload:{ side, cell, isHit, turnSide, won } }); } catch(e) {} }
-  let lastBsTriggerCheck = 0;
-  // Same rising-edge-jump reasoning as the Snakes & Ladders triggers —
-  // requires an actual jump in progress, not just standing there, and
-  // knocks the player back afterwards so it can't be re-triggered by
-  // holding position.
+  let lastBsTriggerCheck = 0, bsWasAirborne = false;
+  // Actually implementing the rising-edge check this time — the comment
+  // here claimed it already worked the same way as the Snakes & Ladders
+  // trigger, but the code never actually did; it was just checking
+  // "is velocity currently upward", which stays true for every frame of
+  // a jump's whole rise, not just the moment it starts. Combined with
+  // the "isFreshGame" state that can flip while this fires more than
+  // once, that's a very plausible reason a jump could appear to do
+  // nothing — multiple rapid calls stepping on each other's state.
   function updateBsTriggers() {
-    if (currentWorldId !== PUB_WORLD_ID) return;
+    const isAirborneNow = player.vel.y > 1;
+    const justJumped = isAirborneNow && !bsWasAirborne;
+    bsWasAirborne = isAirborneNow;
+    if (currentWorldId !== PUB_WORLD_ID || !justJumped) return;
     const now = performance.now();
     if (now - lastBsTriggerCheck < 1200) return;
     const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
     const onA = px === BS_TRIGGER_A.x && pz === BS_TRIGGER_A.z && Math.abs(player.pos.y - (BS_TRIGGER_A.y+1)) < 0.7;
     const onB = px === BS_TRIGGER_B.x && pz === BS_TRIGGER_B.z && Math.abs(player.pos.y - (BS_TRIGGER_B.y+1)) < 0.7;
-    if ((onA || onB) && player.vel.y > 1) {
+    if (onA || onB) {
       lastBsTriggerCheck = now;
       const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
       if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw));

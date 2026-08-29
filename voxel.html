@@ -176,7 +176,7 @@
 
   .joystick {
     position: fixed; width: 104px; height: 104px; border-radius: 50%;
-    background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35);
+    background: rgba(212,160,23,0.18); border: 2px solid rgba(212,160,23,0.55);
     bottom: 90px; z-index: 15; touch-action: none;
   }
   .joystick-move { left: 18px; }
@@ -184,7 +184,7 @@
      drag zone (#lookZone), see setupFreeLookZone in the script below. */
   .joyKnob {
     position: absolute; width: 42px; height: 42px; border-radius: 50%;
-    background: rgba(255,255,255,0.55); top: 50%; left: 50%;
+    background: rgba(255,214,102,0.85); top: 50%; left: 50%;
     transform: translate(-50%,-50%); pointer-events: none;
   }
   /* Fly lever — sits where the fly joystick used to (same left offset,
@@ -197,12 +197,12 @@
   }
   .lever-track {
     position: absolute; width: 12px; height: 100%; left: 50%; top: 50%;
-    transform: translate(-50%,-50%); background: rgba(255,255,255,0.12);
-    border: 2px solid rgba(255,255,255,0.35); border-radius: 7px;
+    transform: translate(-50%,-50%); background: rgba(212,160,23,0.18);
+    border: 2px solid rgba(212,160,23,0.55); border-radius: 7px;
   }
   .lever-handle {
     position: absolute; width: 40px; height: 34px; border-radius: 9px;
-    background: rgba(255,255,255,0.55); left: 50%; top: 50%;
+    background: rgba(255,214,102,0.85); left: 50%; top: 50%;
     transform: translate(-50%,-50%); pointer-events: none;
   }
   .touchBtn {
@@ -412,6 +412,15 @@
   </div>
 </div>
 <div id="chatModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+<div id="bsModeModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:280px;width:90%;color:#fff;font-size:13px;text-align:center;">
+    <div style="font-weight:700;font-size:16px;margin-bottom:14px;">New Battleship Game</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button id="bsMode2P" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">👥 2 Player</button>
+      <button id="bsModeAI" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">🤖 vs Computer</button>
+    </div>
+  </div>
+</div>
   <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:320px;width:90%;color:#fff;font-size:13px;">
     <div style="margin-bottom:10px;font-weight:600;">Say something</div>
     <input id="chatInput" maxlength="120" placeholder="Type a message…" style="width:100%;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:13px;">
@@ -1661,17 +1670,15 @@
   // a revisit, since the building is otherwise regenerated fresh every
   // time via generatePubWorld().
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) return !isProtectedGameArea(x, z);
+    if (currentWorldId === PUB_WORLD_ID) return true; // placing stays unrestricted everywhere in the Mill — see doMine's own protection check, which blocks MINING specifically rather than gating here (this function is shared by both mine and place, and only mining needed restricting)
     return !visitMode;
   }
   // Keeps the football pitch, the Snakes & Ladders tower, and the
-  // Battleship arena all off-limits to normal mining/placing — without
-  // this, canEditAt returned true everywhere in the Mill (it's fully
-  // editable by design), which meant pressing mine on any of these
-  // structures just mined it like a normal block, same as anywhere else.
-  // These are functional game pieces, not buildable terrain, so they
-  // need to be protected the same way The Mill's own building already
-  // implicitly is via its footprint.
+  // Battleship arena from being MINED away — checked directly inside
+  // doMine() rather than through canEditAt (which doPlace() also uses),
+  // since placing near/around these structures should still work
+  // normally; it's specifically having them destroyed that needed
+  // preventing.
   function isProtectedGameArea(x, z) {
     // Football pitch, including its stands
     if (x >= -6 && x <= 34 && z >= 33 && z <= 79) return true;
@@ -6625,6 +6632,61 @@
     o.connect(g).connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime+0.55);
   }
+  // A short solid clunk for confirming a ship's placement.
+  function playShipPlaced() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(140, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(90, audioCtx.currentTime+0.12);
+    g.gain.setValueAtTime(0.22, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.16);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.16);
+  }
+  // A punchy explosion-ish burst for a confirmed hit — filtered noise
+  // plus a low thumping tone underneath, same noise-buffer approach used
+  // elsewhere in this game since there's no actual audio sample to play.
+  function playBsHit() {
+    if (!audioCtx) return;
+    const dur = 0.35;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass'; filter.frequency.value = 900;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.4, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    noise.connect(filter).connect(g).connect(audioCtx.destination);
+    noise.start();
+    const o = audioCtx.createOscillator();
+    const og = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(120, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(45, audioCtx.currentTime+0.3);
+    og.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    og.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.32);
+    o.connect(og).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.32);
+  }
+  // A light splash/plop for a miss.
+  function playBsMiss() {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(500, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(180, audioCtx.currentTime+0.22);
+    g.gain.setValueAtTime(0.18, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.25);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.25);
+  }
   function playJump() {
     if (!audioCtx) return;
     const o = audioCtx.createOscillator();
@@ -6751,6 +6813,7 @@
     const r = voxelRaycast();
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
+    if (currentWorldId === PUB_WORLD_ID && isProtectedGameArea(r.hit.x, r.hit.z)) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — placing still works fine everywhere, see canEditAt's own comment
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
@@ -7865,6 +7928,7 @@
         if (!shooter) return;
         shooter.shotsFired[payload.cell] = payload.isHit ? 'hit' : 'miss';
         bsRenderShotMarker(payload.side, payload.cell, payload.isHit);
+        if (payload.isHit) playBsHit(); else playBsMiss();
         bsGame.turnSide = payload.turnSide;
         bsGame.won = payload.won;
         if (payload.won) launchSlFirework();
@@ -8555,6 +8619,7 @@
   function bsResetGame() {
     bsMarkerMeshes.forEach(m => scene.remove(m));
     bsMarkerMeshes = [];
+    bsAIHuntQueue = [];
     bsGame = {
       sides: {
         A: { uid: null, name: null, ships: [], shotsFired: {} },
@@ -8566,6 +8631,12 @@
   function bsOtherSide(side) { return side === 'A' ? 'B' : 'A'; }
   function bsCellIsShip(side, cellNum) {
     return bsGame.sides[side].ships.some(s => s.cells.includes(cellNum));
+  }
+  function bsAISide() {
+    if (!bsGame) return null;
+    if (bsGame.sides.A.uid === 'AI') return 'A';
+    if (bsGame.sides.B.uid === 'AI') return 'B';
+    return null;
   }
   // The divider is a full block thick (Z to Z+1) — anything meant to sit
   // in front of side B's face needs BS_DIVIDER_Z+1 as its base, not
@@ -8611,16 +8682,116 @@
     if (bsGame.sides.B.uid === playerUid) return 'B';
     return null;
   }
-  // Entry point for the raised trigger block on each side.
+  // Entry point for the raised trigger block on each side. Starting a
+  // BRAND NEW game (nothing active, or the last one finished) asks
+  // 2-player vs computer first; continuing/joining an existing game
+  // skips straight to placement, same as before.
+  let bsPendingStartSide = null;
   function bsStartOrContinue(side) {
     if (currentWorldId !== PUB_WORLD_ID) return;
-    if (!bsGame || bsGame.won) { bsResetGame(); broadcastBsReset(); }
+    if (!bsGame || bsGame.won) {
+      bsPendingStartSide = side;
+      document.getElementById('bsModeModal').style.display = 'flex';
+      return;
+    }
+    bsJoinAndPlace(side);
+  }
+  function bsJoinAndPlace(side) {
     const s = bsGame.sides[side];
     if (!s.uid) { s.uid = playerUid; s.name = getMyDisplayName(); broadcastBsJoin(side); }
     else if (s.uid !== playerUid) { showChatLogLine('🚢', 'Someone is already playing that side.'); return; }
     if (s.ships.length >= BS_SHIP_SIZES.length) { showChatLogLine('🚢', "You've already placed your fleet — waiting for your opponent."); return; }
     bsPlacing = { side, shipIdx: s.ships.length, startCell: null };
     showChatLogLine('🚢', 'Place your ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
+  }
+  // Places a full fleet randomly, respecting the exact same straight-
+  // line/bounds/no-overlap rules a real player's placement has to follow
+  // — used for the computer opponent's own fleet, and broadcast the same
+  // way a real placement is, so anyone else watching sees a consistent
+  // board too.
+  function bsAutoPlaceFleet(side) {
+    const s = bsGame.sides[side];
+    BS_SHIP_SIZES.forEach(size => {
+      let tries = 0;
+      while (tries < 400) {
+        tries++;
+        const horizontal = Math.random() < 0.5;
+        const row = BS_BASE_Y + Math.floor(Math.random()*10);
+        const col = BS_X0 + Math.floor(Math.random()*10);
+        let coords = [];
+        if (horizontal) {
+          if (col + size - 1 > BS_X1) continue;
+          for (let i=0;i<size;i++) coords.push({ x: col+i, y: row });
+        } else {
+          if (row + size - 1 > BS_BASE_Y+9) continue;
+          for (let i=0;i<size;i++) coords.push({ x: col, y: row+i });
+        }
+        const cellNums = coords.map(c => (c.x-BS_X0) + (c.y-BS_BASE_Y)*10 + 1);
+        const existing = s.ships.flatMap(sh => sh.cells);
+        if (cellNums.some(c => existing.includes(c))) continue;
+        s.ships.push({ size, cells: cellNums });
+        broadcastBsShip(side, cellNums);
+        return;
+      }
+    });
+  }
+  // Picks the AI's next target — hunts around a hit before going back to
+  // random, rather than firing completely randomly the whole game, which
+  // read as unconvincingly dumb even for a casual opponent.
+  let bsAIHuntQueue = [];
+  function bsAIPickTarget(aiSide) {
+    const ai = bsGame.sides[aiSide];
+    while (bsAIHuntQueue.length) {
+      const cell = bsAIHuntQueue.shift();
+      if (!ai.shotsFired[cell]) return cell;
+    }
+    let tries = 0;
+    while (tries < 500) {
+      tries++;
+      const cell = 1 + Math.floor(Math.random()*100);
+      if (!ai.shotsFired[cell]) return cell;
+    }
+    return null;
+  }
+  function bsAIFire() {
+    const aiSide = bsAISide();
+    if (!aiSide || !bsGame || bsGame.turnSide !== aiSide || !bsGame.started || bsGame.won) return;
+    const humanSide = bsOtherSide(aiSide);
+    const cell = bsAIPickTarget(aiSide);
+    if (cell === null) return;
+    const ai = bsGame.sides[aiSide], human = bsGame.sides[humanSide];
+    const isHit = bsCellIsShip(humanSide, cell);
+    ai.shotsFired[cell] = isHit ? 'hit' : 'miss';
+    bsRenderShotMarker(aiSide, cell, isHit);
+    if (isHit) playBsHit(); else playBsMiss();
+    if (isHit) {
+      const p = bsCellPos(cell);
+      [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy]) => {
+        const nx = p.x+dx, ny = p.y+dy;
+        if (nx>=BS_X0 && nx<=BS_X1 && ny>=BS_BASE_Y && ny<=BS_BASE_Y+9) {
+          const ncell = (nx-BS_X0) + (ny-BS_BASE_Y)*10 + 1;
+          if (!ai.shotsFired[ncell]) bsAIHuntQueue.push(ncell);
+        }
+      });
+    }
+    const humanAllSunk = human.ships.every(sh => sh.cells.every(c => ai.shotsFired[c] === 'hit'));
+    if (humanAllSunk) {
+      bsGame.won = aiSide;
+      showChatLogLine('🏆', '🤖 The computer sank your entire fleet and wins!');
+    } else if (!isHit) {
+      bsGame.turnSide = humanSide;
+    }
+    showChatLogLine('🚢', (isHit ? '💥 Computer hits' : '💦 Computer misses') + ' at square ' + cell + (isHit && !bsGame.won ? ' — fires again!' : ''));
+    broadcastBsFire(aiSide, cell, isHit, bsGame.turnSide, bsGame.won);
+    if (isHit && !bsGame.won) setTimeout(bsAIFire, 1200); // a hit earns another shot for the computer too, same rule as a human player
+  }
+  // Called after the battle starts and after every human shot — the
+  // computer's own turn is just this function scheduling itself with a
+  // short "thinking" delay, not something driven from the main loop.
+  function bsMaybeScheduleAITurn() {
+    if (!bsGame || !bsGame.started || bsGame.won) return;
+    const aiSide = bsAISide();
+    if (aiSide && bsGame.turnSide === aiSide) setTimeout(bsAIFire, 1200);
   }
   // Physical, in-world placement — no menus. First build-press on a
   // square sets where the ship starts; the second sets its direction
@@ -8665,6 +8836,7 @@
     }
     s.ships.push({ size, cells: cellNums });
     cellNums.forEach(c => bsRenderShipMarker(bsPlacing.side, c));
+    playShipPlaced();
     broadcastBsShip(bsPlacing.side, cellNums);
     showChatLogLine('🚢', BS_SHIP_NAMES[bsPlacing.shipIdx] + ' placed at ' + cellNums.join(', ') + '.');
     if (s.ships.length < BS_SHIP_SIZES.length) {
@@ -8682,6 +8854,7 @@
     if (bsGame.sides.A.ships.length === BS_SHIP_SIZES.length && bsGame.sides.B.ships.length === BS_SHIP_SIZES.length) {
       bsGame.started = true;
       showChatLogLine('🚢', 'Both fleets are in position — the battle begins! ' + bsGame.sides[bsGame.turnSide].name + " fires first.");
+      bsMaybeScheduleAITurn(); // covers the case where the computer is side A and so goes first
     }
   }
   function bsFireAt(targetCell) {
@@ -8694,7 +8867,7 @@
     const isHit = bsCellIsShip(oppSide, targetCell);
     my.shotsFired[targetCell] = isHit ? 'hit' : 'miss';
     bsRenderShotMarker(mySide, targetCell, isHit);
-    playThud(isHit ? 520 : 150);
+    if (isHit) playBsHit(); else playBsMiss();
     const oppAllSunk = opp.ships.every(s => s.cells.every(c => my.shotsFired[c] === 'hit'));
     if (oppAllSunk) {
       bsGame.won = mySide;
@@ -8705,10 +8878,11 @@
     }
     showChatLogLine('🚢', (isHit ? '💥 Hit' : '💦 Miss') + ' at square ' + targetCell + (isHit && !oppAllSunk ? ' — go again!' : ''));
     broadcastBsFire(mySide, targetCell, isHit, bsGame.turnSide, bsGame.won);
+    bsMaybeScheduleAITurn();
   }
   // ---- Multiplayer sync ----
   function broadcastBsReset() { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsReset', payload:{} }); } catch(e) {} }
-  function broadcastBsJoin(side) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsJoin', payload:{ side, uid:playerUid, name:getMyDisplayName() } }); } catch(e) {} }
+  function broadcastBsJoin(side) { const s = bsGame.sides[side]; if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsJoin', payload:{ side, uid:s.uid, name:s.name } }); } catch(e) {} }
   function broadcastBsShip(side, cells) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsShip', payload:{ side, cells } }); } catch(e) {} }
   function broadcastBsFleetReady(side) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFleetReady', payload:{ side } }); } catch(e) {} }
   function broadcastBsFire(side, cell, isHit, turnSide, won) { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'bsFire', payload:{ side, cell, isHit, turnSide, won } }); } catch(e) {} }
@@ -9761,6 +9935,21 @@
   document.getElementById('chatInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('chatSendBtn').click();
     else if (e.key === 'Escape') closeChatModal();
+  });
+  document.getElementById('bsMode2P').addEventListener('click', () => {
+    document.getElementById('bsModeModal').style.display = 'none';
+    bsResetGame(); broadcastBsReset();
+    bsJoinAndPlace(bsPendingStartSide);
+  });
+  document.getElementById('bsModeAI').addEventListener('click', () => {
+    document.getElementById('bsModeModal').style.display = 'none';
+    bsResetGame(); broadcastBsReset();
+    const aiSide = bsOtherSide(bsPendingStartSide);
+    bsGame.sides[aiSide].uid = 'AI';
+    bsGame.sides[aiSide].name = '🤖 Computer';
+    broadcastBsJoin(aiSide); // so anyone else in the Mill watching also knows this side is computer-controlled, not just an empty slot
+    bsAutoPlaceFleet(aiSide);
+    bsJoinAndPlace(bsPendingStartSide);
   });
 
   // ---- Avatar customization screen ----

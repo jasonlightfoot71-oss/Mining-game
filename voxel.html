@@ -1661,8 +1661,25 @@
   // a revisit, since the building is otherwise regenerated fresh every
   // time via generatePubWorld().
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) return true;
+    if (currentWorldId === PUB_WORLD_ID) return !isProtectedGameArea(x, z);
     return !visitMode;
+  }
+  // Keeps the football pitch, the Snakes & Ladders tower, and the
+  // Battleship arena all off-limits to normal mining/placing — without
+  // this, canEditAt returned true everywhere in the Mill (it's fully
+  // editable by design), which meant pressing mine on any of these
+  // structures just mined it like a normal block, same as anywhere else.
+  // These are functional game pieces, not buildable terrain, so they
+  // need to be protected the same way The Mill's own building already
+  // implicitly is via its footprint.
+  function isProtectedGameArea(x, z) {
+    // Football pitch, including its stands
+    if (x >= -6 && x <= 34 && z >= 33 && z <= 79) return true;
+    // Snakes & Ladders tower, including its connector zone and ground patch
+    if (x >= TOWER_X0-3 && x <= TOWER_X1+3 && z >= TOWER_Z-3 && z <= TOWER_Z+11) return true;
+    // Battleship arena, including its standing pads
+    if (x >= BS_X0-4 && x <= BS_X1+4 && z >= BS_DIVIDER_Z-4 && z <= BS_DIVIDER_Z+5) return true;
+    return false;
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
   // real capacity problem: each block type's mesh has a fixed maximum of

@@ -1691,6 +1691,12 @@
   // of the built structure — anything else in the area, regardless of
   // its type, was never real structure and can always be mined out.
   const gameStructuralCells = new Set();
+  // Temporary, explicit override for the protection above — off by
+  // default, toggled with the G key (see the keydown handler), for
+  // exactly the "let me tidy up the ground around these" case. Not
+  // saved/persisted anywhere, so it's always back off the next time the
+  // Mill loads regardless of whether anyone remembered to turn it off.
+  let landscapeModeEnabled = false;
   function setGameBlock(x, y, z, type) {
     blocks.set(key(x, y, z), type);
     gameStructuralCells.add(x+','+y+','+z);
@@ -5104,6 +5110,7 @@
     buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE);
     buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC);
     buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
+    buildBattleshipSign();
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5289,6 +5296,36 @@
     ctx.beginPath(); ctx.arc(354, 90, 3, 0, Math.PI*2); ctx.arc(366, 90, 3, 0, Math.PI*2); ctx.fill();
     const tex = new THREE.CanvasTexture(c);
     return new THREE.Mesh(new THREE.PlaneGeometry(4, 2), new THREE.MeshBasicMaterial({ map: tex }));
+  }
+  // A big, easy-to-spot sign mounted on top of the Snakes & Ladders
+  // tower (the tallest thing in this whole cluster) advertising the
+  // Battleship arena below — double-sided, so it reads correctly however
+  // you approach, with two simple support posts holding it up rather
+  // than floating.
+  function buildBattleshipSign() {
+    const c = document.createElement('canvas');
+    c.width = 1024; c.height = 256;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#16283a';
+    ctx.fillRect(0,0,1024,256);
+    ctx.strokeStyle = '#0a1520'; ctx.lineWidth = 16;
+    ctx.strokeRect(8,8,1008,240);
+    ctx.fillStyle = '#ffe27a';
+    ctx.font = 'bold 108px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('⚓ BATTLESHIPS ⚓', 512, 128);
+    const tex = new THREE.CanvasTexture(c);
+    const signY = TOWER_BASE_Y + 12; // clear of the tower's own top row
+    const signX = (TOWER_X0 + TOWER_X1) / 2 + 0.5;
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+    sign.position.set(signX, signY, TOWER_Z + 0.5);
+    scene.add(sign); pubExtraProps.push(sign);
+    const postMat = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 });
+    [-3.8, 3.8].forEach(dx => {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.25, 2.4, 0.25), postMat);
+      post.position.set(signX+dx, signY-1.6, TOWER_Z+0.5);
+      scene.add(post); pubExtraProps.push(post);
+    });
   }
 
   // ---- Battleship arena ----
@@ -6424,6 +6461,10 @@
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
+    if (e.code === 'KeyG' && currentWorldId === PUB_WORLD_ID) {
+      landscapeModeEnabled = !landscapeModeEnabled;
+      showChatLogLine('🛠️', landscapeModeEnabled ? 'Landscaping mode ON — you can build and mine near the games now. Press G again when you\'re done.' : 'Landscaping mode OFF — the games are protected again.');
+    }
   });
   document.addEventListener('keyup', e => {
     const tag = document.activeElement && document.activeElement.tagName;
@@ -6846,7 +6887,7 @@
     const r = voxelRaycast();
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
-    if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z)) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment
+    if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
@@ -6904,8 +6945,12 @@
     // nothing was gating it). The only way to place anything here is
     // through each game's own specific interaction — the bsPlacing
     // branch above for Battleship, or jumping on a trigger block for
-    // the others — never ordinary building.
-    if (isProtectedGameArea(r.hit.x, r.hit.z)) return;
+    // the others — never ordinary building. landscapeModeEnabled is a
+    // deliberate, temporary escape hatch for exactly that tidying-up
+    // work — off by default, toggled with G, and worth turning back off
+    // once you're done since it also re-allows mining the real structure
+    // itself, not just the ground around it.
+    if (isProtectedGameArea(r.hit.x, r.hit.z) && !landscapeModeEnabled) return;
 
     if (selectedSlot === LIGHT_SLOT) {
       if (r.isWater) return; // can't mount a light on water
@@ -7971,7 +8016,7 @@
         if (!shooter) return;
         shooter.shotsFired[payload.cell] = payload.isHit ? 'hit' : 'miss';
         bsRenderShotMarker(payload.side, payload.cell, payload.isHit);
-        if (payload.isHit) { playBsHit(); bsCheckAndIgniteSunkShip(bsOtherSide(payload.side), payload.cell); } else playBsMiss();
+        if (payload.isHit) playBsHit(); else playBsMiss();
         bsGame.turnSide = payload.turnSide;
         bsGame.won = payload.won;
         if (payload.won) launchSlFirework();
@@ -8737,7 +8782,7 @@
     const model = bsBuildAndPlaceShipModel(side, ship);
     scene.add(model);
     bsMarkerMeshes.push(model);
-    ship.model = model; // kept so it can be hidden after placement, then shown again (on fire) if sunk — see bsHideOwnFleet/bsCheckAndIgniteSunkShip
+    ship.model = model; // kept only so it stays consistent internally — never re-shown once hidden, sunk or not, see bsHideOwnFleet
   }
   // Once a fleet is fully placed there's no need to keep looking at it —
   // the layout doesn't change, and hiding it makes the "your ship
@@ -8762,22 +8807,6 @@
     }
     shipModel.add(fireGroup);
     shipModel.userData.fireGroup = fireGroup;
-  }
-  // Checks whether the ship at hitCell (belonging to victimSide, which
-  // must be MY OWN side for this to do anything) is now fully sunk —
-  // brings it back into view (it was hidden after placement, see
-  // bsHideOwnFleet) and sets it on fire, so losing a ship is something
-  // you actually see happen rather than a silent status change.
-  function bsCheckAndIgniteSunkShip(victimSide, hitCell) {
-    if (!bsGame || bsMySide() !== victimSide) return;
-    const victim = bsGame.sides[victimSide];
-    const attacker = bsGame.sides[bsOtherSide(victimSide)];
-    const ship = victim.ships.find(s => s.cells.includes(hitCell));
-    if (!ship || ship.onFire) return;
-    if (ship.cells.every(c => attacker.shotsFired[c] === 'hit')) {
-      ship.onFire = true;
-      if (ship.model) { scene.add(ship.model); igniteShipModel(ship.model); }
-    }
   }
   // The other side of the same moment — from the ATTACKER's point of
   // view, sinking an enemy ship reveals it, on fire, on the attacker's
@@ -8929,7 +8958,7 @@
     const isHit = bsCellIsShip(humanSide, cell);
     ai.shotsFired[cell] = isHit ? 'hit' : 'miss';
     bsRenderShotMarker(aiSide, cell, isHit);
-    if (isHit) { playBsHit(); bsCheckAndIgniteSunkShip(humanSide, cell); } else playBsMiss();
+    if (isHit) playBsHit(); else playBsMiss();
     if (isHit) {
       const p = bsCellPos(cell);
       [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy]) => {

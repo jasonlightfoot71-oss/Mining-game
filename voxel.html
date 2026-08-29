@@ -421,18 +421,6 @@
     </div>
   </div>
 </div>
-<div id="bsPlaceModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
-  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:300px;width:90%;color:#fff;font-size:13px;text-align:center;">
-    <div id="bsPlaceProgress" style="opacity:0.65;font-size:12px;margin-bottom:4px;">Ship 1 of 5</div>
-    <div id="bsPlaceShipTitle" style="font-weight:700;font-size:16px;margin-bottom:14px;">Carrier (5 squares)</div>
-    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:8px;">
-      <input id="bsPlaceStart" type="number" min="1" max="100" placeholder="Start #" style="width:84px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;">
-      <input id="bsPlaceEnd" type="number" min="1" max="100" placeholder="End #" style="width:84px;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:14px;text-align:center;">
-    </div>
-    <div id="bsPlaceError" style="color:#ff8a8a;font-size:12px;min-height:16px;margin-bottom:6px;"></div>
-    <button id="bsPlaceBtn" style="background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:5px;padding:8px 22px;font-size:13px;cursor:pointer;">Place Ship</button>
-  </div>
-</div>
 <button id="chatOpenBtn" style="display:none;position:fixed;bottom:222px;right:70px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
 <div id="chatLog" style="display:none;position:fixed;left:106px;bottom:216px;z-index:12;max-width:220px;flex-direction:column;gap:2px;pointer-events:none;"></div>
 <div id="promoOfferModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
@@ -5275,21 +5263,26 @@
   }
   function bsCellWorldPos(n, side) {
     const p = bsCellPos(n);
-    return new THREE.Vector3(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.55 : BS_DIVIDER_Z+0.55);
+    return new THREE.Vector3(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.55 : BS_DIVIDER_Z+1.55);
   }
-  const BS_TRIGGER_A = { x: BS_X0-2, y: 1, z: BS_DIVIDER_Z-2 };
-  const BS_TRIGGER_B = { x: BS_X0-2, y: 1, z: BS_DIVIDER_Z+2 };
+  const BS_TRIGGER_A = { x: BS_X0-2, y: 2, z: BS_DIVIDER_Z-2 }; // raised one block above the ground pad — has to be jumped onto, matching the Snakes & Ladders triggers
+  const BS_TRIGGER_B = { x: BS_X0-2, y: 2, z: BS_DIVIDER_Z+2 };
   function buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS) {
     fillBlocks(BS_X0-1, BS_X1+1, 1, 1, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // plinth, matching the tower's own
     fillBlocks(BS_X0-1, BS_X1+1, BS_BASE_Y, BS_BASE_Y+9, BS_DIVIDER_Z, BS_DIVIDER_Z, STONE); // the solid divider itself
     for (let n = 1; n <= 100; n++) {
       const p = bsCellPos(n);
       const labelA = buildNumberLabel(n);
-      labelA.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z-0.51);
+      labelA.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z-0.01); // flush against the near face, matching the tower's own near-flush number spacing
       labelA.rotation.y = Math.PI;
       scene.add(labelA); pubExtraProps.push(labelA);
       const labelB = buildNumberLabel(n);
-      labelB.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z+0.51);
+      // The divider is a full block thick (z: BS_DIVIDER_Z to +1), so its
+      // FAR face is at +1, not at the divider's own base Z — the old
+      // +0.51 offset landed squarely INSIDE that solid block, which is
+      // exactly why this side was invisible: it was buried in the wall,
+      // not merely facing the wrong way.
+      labelB.position.set(p.x+0.5, p.y+0.5, BS_DIVIDER_Z+1.01);
       scene.add(labelB); pubExtraProps.push(labelB);
     }
     // Small standing pads either side, each with its own raised trigger
@@ -5297,8 +5290,8 @@
     // block either would have to walk around the divider to reach.
     fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, STONE);
     fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, GRASS);
-    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, STONE);
-    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, GRASS);
+    fillBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, STONE);
+    fillBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, GRASS);
     [BS_TRIGGER_A, BS_TRIGGER_B].forEach(pos => {
       blocks.set(key(pos.x, pos.y, pos.z), RED_CONC);
       const label = buildNumberLabel('🚢');
@@ -6780,6 +6773,14 @@
   }
 
   function doPlace() {
+    // Battleship ship placement intercepts a normal place-click while
+    // actively placing a ship — look at your starting square and press
+    // build, then look in the direction you want the ship to extend and
+    // press build again.
+    if (bsPlacing) {
+      const cell = bsGetLookedAtCell(bsPlacing.side);
+      if (cell !== null) { bsHandlePlacementClick(cell); return; }
+    }
     const r = voxelRaycast();
     if (!r || !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
@@ -8549,18 +8550,26 @@
   function bsCellIsShip(side, cellNum) {
     return bsGame.sides[side].ships.some(s => s.cells.includes(cellNum));
   }
+  // The divider is a full block thick (Z to Z+1) — anything meant to sit
+  // in front of side B's face needs BS_DIVIDER_Z+1 as its base, not
+  // BS_DIVIDER_Z itself, or it ends up embedded inside the solid wall.
+  // This is what was actually wrong with the numbers, the markers, and
+  // the firing/placement raycasting all along, so it's centralised here
+  // now rather than duplicated (and easy to get inconsistently right or
+  // wrong) in every place that needs a Z position on either face.
+  function bsFaceZ(side, offset) { return side === 'A' ? BS_DIVIDER_Z - offset : BS_DIVIDER_Z + 1 + offset; }
   function bsRenderShipMarker(side, cellNum) {
     const p = bsCellPos(cellNum);
     const mat = new THREE.MeshPhongMaterial({ color: 0x3a4a5a, shininess: 15 });
     const marker = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.82, 0.12), mat);
-    marker.position.set(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.42 : BS_DIVIDER_Z+0.42);
+    marker.position.set(p.x+0.5, p.y+0.5, bsFaceZ(side, 0.43));
     scene.add(marker); bsMarkerMeshes.push(marker);
   }
   function bsRenderShotMarker(side, cellNum, isHit) {
     const p = bsCellPos(cellNum);
     const mat = new THREE.MeshBasicMaterial({ color: isHit ? 0xff3333 : 0xe8e8e8 });
     const marker = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), mat);
-    marker.position.set(p.x+0.5, p.y+0.5, side === 'A' ? BS_DIVIDER_Z-0.75 : BS_DIVIDER_Z+0.75);
+    marker.position.set(p.x+0.5, p.y+0.5, bsFaceZ(side, 0.8));
     scene.add(marker); bsMarkerMeshes.push(marker);
   }
   // Straight-line intersection with the grid's own plane, rather than
@@ -8568,7 +8577,7 @@
   // avoids needing every cell to be its own separately-tracked object
   // just for hit-testing.
   function bsGetLookedAtCell(side) {
-    const planeZ = side === 'A' ? BS_DIVIDER_Z - 0.51 : BS_DIVIDER_Z + 0.51;
+    const planeZ = bsFaceZ(side, 0.01);
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     if (Math.abs(dir.z) < 0.001) return null;
@@ -8593,62 +8602,60 @@
     if (!s.uid) { s.uid = playerUid; s.name = getMyDisplayName(); broadcastBsJoin(side); }
     else if (s.uid !== playerUid) { showChatLogLine('🚢', 'Someone is already playing that side.'); return; }
     if (s.ships.length >= BS_SHIP_SIZES.length) { showChatLogLine('🚢', "You've already placed your fleet — waiting for your opponent."); return; }
-    bsPlacing = { side, shipIdx: s.ships.length };
-    bsOpenPlacementModal();
+    bsPlacing = { side, shipIdx: s.ships.length, startCell: null };
+    showChatLogLine('🚢', 'Place your ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
   }
-  function bsOpenPlacementModal() {
-    document.exitPointerLock && document.exitPointerLock();
-    document.getElementById('bsPlaceProgress').textContent = `Ship ${bsPlacing.shipIdx+1} of ${BS_SHIP_SIZES.length}`;
-    document.getElementById('bsPlaceShipTitle').textContent = `${BS_SHIP_NAMES[bsPlacing.shipIdx]} (${BS_SHIP_SIZES[bsPlacing.shipIdx]} squares)`;
-    document.getElementById('bsPlaceStart').value = '';
-    document.getElementById('bsPlaceEnd').value = '';
-    document.getElementById('bsPlaceError').textContent = '';
-    document.getElementById('bsPlaceModal').style.display = 'flex';
-    // Reuses the same camera-focus system built for the S&L tower —
-    // aimed at the middle of this player's own grid, held for as long
-    // as the modal stays open (no fixed duration, since placement takes
-    // however long it takes).
-    slFocusCameraOnToken({ position: new THREE.Vector3(BS_X0+4.5, BS_BASE_Y+4.5, bsPlacing.side === 'A' ? BS_DIVIDER_Z-1 : BS_DIVIDER_Z+1) }, 999999);
-  }
-  function bsValidateShip(start, end, size, existingCells) {
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start<1 || start>100 || end<1 || end>100) return { ok:false, error:'Enter numbers between 1 and 100.' };
-    const a = bsCellPos(start), b = bsCellPos(end);
-    let cells = [];
-    if (a.y === b.y) {
-      const lo = Math.min(a.x,b.x), hi = Math.max(a.x,b.x);
-      if (hi-lo+1 !== size) return { ok:false, error:`That's not a straight run of exactly ${size}.` };
-      for (let x=lo; x<=hi; x++) cells.push((x-BS_X0) + (a.y-BS_BASE_Y)*10 + 1);
-    } else if (a.x === b.x) {
-      const lo = Math.min(a.y,b.y), hi = Math.max(a.y,b.y);
-      if (hi-lo+1 !== size) return { ok:false, error:`That's not a straight run of exactly ${size}.` };
-      for (let y=lo; y<=hi; y++) cells.push((a.x-BS_X0) + (y-BS_BASE_Y)*10 + 1);
-    } else {
-      return { ok:false, error:'Must be a straight line — same row or same column.' };
-    }
-    if (cells.some(c => existingCells.includes(c))) return { ok:false, error:'That overlaps a ship you already placed.' };
-    return { ok:true, cells };
-  }
-  function bsConfirmPlacement() {
+  // Physical, in-world placement — no menus. First build-press on a
+  // square sets where the ship starts; the second sets its direction
+  // (whichever of up/down/left/right the second square is relative to
+  // the first) and the ship extends that way for its own fixed length
+  // automatically — the second press doesn't need to land exactly on the
+  // ship's actual last square, just anywhere further along the same row
+  // or column in the right direction.
+  function bsHandlePlacementClick(cell) {
     if (!bsPlacing) return;
-    const { side, shipIdx } = bsPlacing;
-    const start = parseInt(document.getElementById('bsPlaceStart').value, 10);
-    const end = parseInt(document.getElementById('bsPlaceEnd').value, 10);
-    const size = BS_SHIP_SIZES[shipIdx];
-    const s = bsGame.sides[side];
-    const existing = s.ships.flatMap(sh => sh.cells);
-    const result = bsValidateShip(start, end, size, existing);
-    if (!result.ok) { document.getElementById('bsPlaceError').textContent = result.error; return; }
-    s.ships.push({ size, cells: result.cells });
-    result.cells.forEach(c => bsRenderShipMarker(side, c));
-    broadcastBsShip(side, result.cells);
-    if (s.ships.length < BS_SHIP_SIZES.length) {
-      bsPlacing = { side, shipIdx: s.ships.length };
-      bsOpenPlacementModal();
+    if (bsPlacing.startCell === null) {
+      bsPlacing.startCell = cell;
+      showChatLogLine('🚢', 'Start square set to ' + cell + ' — now look in the direction you want it to extend and press build again.');
+      return;
+    }
+    const size = BS_SHIP_SIZES[bsPlacing.shipIdx];
+    const a = bsCellPos(bsPlacing.startCell), b = bsCellPos(cell);
+    let cellCoords = null;
+    if (a.y === b.y && b.x !== a.x) {
+      const dir = b.x > a.x ? 1 : -1;
+      cellCoords = []; for (let i=0;i<size;i++) cellCoords.push({ x:a.x+dir*i, y:a.y });
+    } else if (a.x === b.x && b.y !== a.y) {
+      const dir = b.y > a.y ? 1 : -1;
+      cellCoords = []; for (let i=0;i<size;i++) cellCoords.push({ x:a.x, y:a.y+dir*i });
     } else {
-      document.getElementById('bsPlaceModal').style.display = 'none';
-      slFocusCameraOnToken(null, 0); // release the camera focus early rather than waiting out its (very long) duration
+      showChatLogLine('🚢', 'That has to be directly up, down, left, or right of your starting square — try the starting square again.');
+      bsPlacing.startCell = null;
+      return;
+    }
+    if (cellCoords.some(c => c.x < BS_X0 || c.x > BS_X1 || c.y < BS_BASE_Y || c.y > BS_BASE_Y+9)) {
+      showChatLogLine('🚢', 'That runs off the edge of the board — try the starting square again.');
+      bsPlacing.startCell = null;
+      return;
+    }
+    const cellNums = cellCoords.map(c => (c.x-BS_X0) + (c.y-BS_BASE_Y)*10 + 1);
+    const s = bsGame.sides[bsPlacing.side];
+    const existing = s.ships.flatMap(sh => sh.cells);
+    if (cellNums.some(c => existing.includes(c))) {
+      showChatLogLine('🚢', 'That overlaps a ship you already placed — try the starting square again.');
+      bsPlacing.startCell = null;
+      return;
+    }
+    s.ships.push({ size, cells: cellNums });
+    cellNums.forEach(c => bsRenderShipMarker(bsPlacing.side, c));
+    broadcastBsShip(bsPlacing.side, cellNums);
+    showChatLogLine('🚢', BS_SHIP_NAMES[bsPlacing.shipIdx] + ' placed at ' + cellNums.join(', ') + '.');
+    if (s.ships.length < BS_SHIP_SIZES.length) {
+      bsPlacing = { side: bsPlacing.side, shipIdx: s.ships.length, startCell: null };
+      showChatLogLine('🚢', 'Next: ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
+    } else {
       showChatLogLine('🚢', s.name + ' has placed their whole fleet.');
-      broadcastBsFleetReady(side);
+      broadcastBsFleetReady(bsPlacing.side);
       bsCheckBothReady();
       bsPlacing = null;
     }
@@ -9738,8 +9745,6 @@
     if (e.key === 'Enter') document.getElementById('chatSendBtn').click();
     else if (e.key === 'Escape') closeChatModal();
   });
-  document.getElementById('bsPlaceBtn').addEventListener('click', bsConfirmPlacement);
-  document.getElementById('bsPlaceEnd').addEventListener('keydown', (e) => { if (e.key === 'Enter') bsConfirmPlacement(); });
 
   // ---- Avatar customization screen ----
   // A small dedicated Three.js scene/renderer just for the live preview

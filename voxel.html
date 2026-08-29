@@ -6829,7 +6829,18 @@
       const mySide = bsMySide();
       if (mySide) {
         const cell = bsGetLookedAtCell(mySide);
-        if (cell !== null) { bsFireAt(cell); return; }
+        if (cell !== null) {
+          bsFireAt(cell);
+          // Normal mining sets `mining` to a timed state, which is what
+          // stops the "keep mining while held" logic further down from
+          // re-triggering every single frame the button stays down —
+          // firing never sets that, so without this, one held click was
+          // repeatedly re-firing (or re-hitting the same rejected shot)
+          // for as long as the button was physically down, which is
+          // exactly what "not your turn yet, over and over" was.
+          mineHeld = false;
+          return;
+        }
       }
     }
     const r = voxelRaycast();
@@ -7941,13 +7952,14 @@
         if (!payload || !bsGame) return;
         const s = bsGame.sides[payload.side];
         if (!s) return;
-        s.ships.push({ size: payload.cells.length, cells: payload.cells });
-        // Deliberately does NOT render a ship marker for the opponent's
+        const ship = { size: payload.cells.length, cells: payload.cells };
+        s.ships.push(ship);
+        // Deliberately does NOT render a ship model for the opponent's
         // own fleet here — this is what actually keeps it hidden. The
         // data has to exist on both clients (there's no dedicated server
         // to hold it instead), but only ever gets drawn for the side
         // that owns it.
-        if (payload.side === bsMySide()) payload.cells.forEach(c => bsRenderShipMarker(payload.side, c));
+        if (payload.side === bsMySide()) bsRenderShipModel(payload.side, ship);
       });
       channel.on('broadcast', { event: 'bsFleetReady' }, ({ payload }) => {
         if (!payload || !bsGame) return;
@@ -7959,7 +7971,7 @@
         if (!shooter) return;
         shooter.shotsFired[payload.cell] = payload.isHit ? 'hit' : 'miss';
         bsRenderShotMarker(payload.side, payload.cell, payload.isHit);
-        if (payload.isHit) playBsHit(); else playBsMiss();
+        if (payload.isHit) { playBsHit(); bsCheckAndIgniteSunkShip(bsOtherSide(payload.side), payload.cell); } else playBsMiss();
         bsGame.turnSide = payload.turnSide;
         bsGame.won = payload.won;
         if (payload.won) launchSlFirework();
@@ -8677,12 +8689,92 @@
   // now rather than duplicated (and easy to get inconsistently right or
   // wrong) in every place that needs a Z position on either face.
   function bsFaceZ(side, offset) { return side === 'A' ? BS_DIVIDER_Z - offset : BS_DIVIDER_Z + 1 + offset; }
-  function bsRenderShipMarker(side, cellNum) {
-    const p = bsCellPos(cellNum);
-    const mat = new THREE.MeshPhongMaterial({ color: 0x3a4a5a, shininess: 15 });
-    const marker = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.82, 0.12), mat);
-    marker.position.set(p.x+0.5, p.y+0.5, bsFaceZ(side, 0.43));
-    scene.add(marker); bsMarkerMeshes.push(marker);
+  // A real ship silhouette instead of a plain box — built flat, since it
+  // has to sit against the vertical grid wall like a relief rather than
+  // floating as a normal 3D model on a table the way an actual ship
+  // would. Hull + a tapered bow wedge at one end + a small bridge, with
+  // a funnel added for the two longest ships for a bit of variety.
+  function buildShipModel(length, horizontal) {
+    const group = new THREE.Group();
+    const hullMat = new THREE.MeshPhongMaterial({ color: 0x3a4a5a, shininess: 20 });
+    const hullLen = length - 0.2;
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(hullLen, 0.46, 0.16), hullMat);
+    group.add(hull);
+    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.5, 4), hullMat);
+    bow.scale.set(0.55, 1, 1); // flattens the cone's circular base into a wedge, so it reads as a pointed bow rather than a party hat
+    bow.rotation.z = -Math.PI/2;
+    bow.position.set(hullLen/2 + 0.15, 0, 0);
+    group.add(bow);
+    const bridgeMat = new THREE.MeshPhongMaterial({ color: 0xd8d8d8, shininess: 10 });
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(Math.min(0.7, hullLen*0.32), 0.34, 0.1), bridgeMat);
+    bridge.position.set(-hullLen*0.12, 0.34, 0.05);
+    group.add(bridge);
+    if (length >= 4) {
+      const funnel = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.28, 8), new THREE.MeshPhongMaterial({ color: 0x8a2a2a }));
+      funnel.rotation.x = Math.PI/2; // lies the cylinder flat against the wall too, matching everything else here
+      funnel.position.set(-hullLen*0.12, 0.6, 0.05);
+      group.add(funnel);
+    }
+    if (!horizontal) group.rotation.z = Math.PI/2;
+    group.userData.length = length;
+    return group;
+  }
+  function bsRenderShipModel(side, ship) {
+    const a = bsCellPos(ship.cells[0]), b = bsCellPos(ship.cells[ship.cells.length-1]);
+    const horizontal = a.y === b.y;
+    const centerX = (a.x+b.x)/2 + 0.5, centerY = (a.y+b.y)/2 + 0.5;
+    const model = buildShipModel(ship.size, horizontal);
+    model.position.set(centerX, centerY, bsFaceZ(side, 0.43));
+    if (side === 'A') model.rotation.y = Math.PI;
+    scene.add(model);
+    bsMarkerMeshes.push(model);
+    ship.model = model; // kept so a sunk ship can be set alight later — see igniteShipModel
+  }
+  // Sets a fully-sunk ship's own model on fire — several small flickering
+  // cones scattered along its length, animated in updateShipFires below.
+  function igniteShipModel(shipModel) {
+    if (shipModel.userData.fireGroup) return; // already burning
+    const fireGroup = new THREE.Group();
+    const len = shipModel.userData.length || 2;
+    for (let i = 0; i < 4; i++) {
+      const flameMat = new THREE.MeshBasicMaterial({ color: i%2===0 ? 0xff6a1a : 0xffcc33, transparent: true, opacity: 0.9 });
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.09+Math.random()*0.04, 0.28+Math.random()*0.14, 6), flameMat);
+      flame.position.set((Math.random()-0.5)*len*0.7, 0.28+Math.random()*0.12, 0.14);
+      fireGroup.add(flame);
+    }
+    shipModel.add(fireGroup);
+    shipModel.userData.fireGroup = fireGroup;
+  }
+  // Checks whether the ship at hitCell (belonging to victimSide) is now
+  // fully sunk, and sets it on fire if so — only ever does anything on
+  // the client that actually owns/renders that side's ships, since
+  // nobody else has a model to ignite in the first place.
+  function bsCheckAndIgniteSunkShip(victimSide, hitCell) {
+    if (!bsGame || bsMySide() !== victimSide) return;
+    const victim = bsGame.sides[victimSide];
+    const attacker = bsGame.sides[bsOtherSide(victimSide)];
+    const ship = victim.ships.find(s => s.cells.includes(hitCell));
+    if (!ship || ship.onFire) return;
+    if (ship.cells.every(c => attacker.shotsFired[c] === 'hit')) {
+      ship.onFire = true;
+      if (ship.model) igniteShipModel(ship.model);
+    }
+  }
+  // Light flicker animation for any currently-burning ships — cheap, only
+  // touches ships actually on fire rather than iterating everything each
+  // frame for no reason.
+  function updateShipFires() {
+    if (!bsGame || currentWorldId !== PUB_WORLD_ID) return;
+    const t = performance.now()*0.01;
+    ['A','B'].forEach(side => {
+      bsGame.sides[side].ships.forEach(ship => {
+        if (ship.onFire && ship.model && ship.model.userData.fireGroup) {
+          ship.model.userData.fireGroup.children.forEach((flame, i) => {
+            flame.scale.y = 1 + Math.sin(t + i)*0.18;
+          });
+        }
+      });
+    });
   }
   function bsRenderShotMarker(side, cellNum, isHit) {
     const p = bsCellPos(cellNum);
@@ -8800,7 +8892,7 @@
     const isHit = bsCellIsShip(humanSide, cell);
     ai.shotsFired[cell] = isHit ? 'hit' : 'miss';
     bsRenderShotMarker(aiSide, cell, isHit);
-    if (isHit) playBsHit(); else playBsMiss();
+    if (isHit) { playBsHit(); bsCheckAndIgniteSunkShip(humanSide, cell); } else playBsMiss();
     if (isHit) {
       const p = bsCellPos(cell);
       [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dy]) => {
@@ -8871,8 +8963,9 @@
       bsPlacing.startCell = null;
       return;
     }
-    s.ships.push({ size, cells: cellNums });
-    cellNums.forEach(c => bsRenderShipMarker(bsPlacing.side, c));
+    const newShip = { size, cells: cellNums };
+    s.ships.push(newShip);
+    bsRenderShipModel(bsPlacing.side, newShip);
     playShipPlaced();
     broadcastBsShip(bsPlacing.side, cellNums);
     showChatLogLine('🚢', BS_SHIP_NAMES[bsPlacing.shipIdx] + ' placed at ' + cellNums.join(', ') + '.');
@@ -9244,6 +9337,7 @@
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment
+    updateShipFires();
     updateDoors(dt);
     updateWork(dt);
 

@@ -377,6 +377,7 @@
 <div id="coinsDisplay" style="display:none;"></div>
 <div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
 <div id="footballScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
+<div id="tennisScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="clockDisplay" style="display:none;"></div>
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
@@ -418,6 +419,15 @@
     <div style="display:flex;flex-direction:column;gap:10px;">
       <button id="bsMode2P" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">👥 2 Player</button>
       <button id="bsModeAI" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">🤖 vs Computer</button>
+    </div>
+  </div>
+</div>
+<div id="tennisModeModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:280px;width:90%;color:#fff;font-size:13px;text-align:center;">
+    <div style="font-weight:700;font-size:16px;margin-bottom:14px;">New Tennis Match</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button id="tennisMode2P" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">👥 2 Player</button>
+      <button id="tennisModeAI" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">🤖 vs Computer</button>
     </div>
   </div>
 </div>
@@ -1629,7 +1639,7 @@
   // what stranded the building without a way to reach the surrounding
   // land on foot. Protecting only the exact footprint lets terrain
   // generate right up to the building's own walls.
-  const PUB_BOUNDS = { x0: -28, x1: 32, z0: -4, z1: 80 }; // x0/z1 extended beyond the original -4/38 to cover the football pitch (and its stadium stands, which reach x:-5 — the original x0:-4 didn't quite cover them) plus the snakes & ladders tower further west again
+  const PUB_BOUNDS = { x0: -58, x1: 32, z0: -4, z1: 80 }; // x0/z1 extended beyond the original -4/38 to cover the football pitch (and its stadium stands, which reach x:-5) plus the snakes & ladders tower and battleship arena further west, and now the tennis court further west again still
   function isPubColumn(x, z) {
     return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
   }
@@ -1712,6 +1722,8 @@
     if (x >= TOWER_X0-3 && x <= TOWER_X1+3 && z >= TOWER_Z-3 && z <= TOWER_Z+11) return true;
     // Battleship arena, including its standing pads
     if (x >= BS_X0-4 && x <= BS_X1+4 && z >= BS_DIVIDER_Z-4 && z <= BS_DIVIDER_Z+5) return true;
+    // Tennis court, including its surrounds
+    if (x >= TENNIS_X0-3 && x <= TENNIS_X1+3 && z >= TENNIS_Z0-3 && z <= TENNIS_Z1+3) return true;
     return false;
   }
   function isProtectedStructuralBlock(x, y, z) {
@@ -5112,6 +5124,7 @@
     buildSnakesLaddersTower(STONE, WHITE_CONC, PLANKS, GRASS, RED_CONC, BLACK_CONC);
     buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
     buildBattleshipSign();
+    buildTennisCourt(WHITE_CONC, CONCRETE, STONE);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5404,6 +5417,54 @@
     });
   }
 
+  // ---- Tennis court ----
+  // Positioned well past the Snakes & Ladders tower and Battleship arena
+  // (both of which already occupy the ground immediately left of the
+  // pitch) rather than overlapping either — still reads as "the next
+  // court over" since it lines up with the same Z-range as the pitch
+  // itself, just further along.
+  const TENNIS_X0 = -55, TENNIS_X1 = -33, TENNIS_Z0 = 36, TENNIS_Z1 = 76;
+  const TENNIS_NET_Z = Math.round((TENNIS_Z0+TENNIS_Z1)/2); // 56 — lines up with the football pitch's own halfway line
+  const TENNIS_NET_TOP_Y = 3.15; // net stands ~1.1 blocks tall off a 2.05 base — a ball has to clear this or it's blocked, same as a real net
+  const TENNIS_CENTER = new THREE.Vector3((TENNIS_X0+TENNIS_X1)/2+0.5, 2.2, TENNIS_NET_Z);
+  const TENNIS_TRIGGER_NEAR = { x: TENNIS_X0-2, y: 2, z: TENNIS_Z0+2 };
+  const TENNIS_TRIGGER_FAR = { x: TENNIS_X0-2, y: 2, z: TENNIS_Z1-2 };
+  function buildTennisCourt(WHITE_CONC, CONCRETE, STONE) {
+    fillGameBlocks(TENNIS_X0, TENNIS_X1, 0, 0, TENNIS_Z0, TENNIS_Z1, STONE);
+    fillGameBlocks(TENNIS_X0, TENNIS_X1, 1, 1, TENNIS_Z0, TENNIS_Z1, CONCRETE); // a hard court surface, deliberately different from the pitch's grass so the two read as distinct games at a glance
+    for (let x = TENNIS_X0; x <= TENNIS_X1; x++) { setGameBlock(x,1,TENNIS_Z0, WHITE_CONC); setGameBlock(x,1,TENNIS_Z1, WHITE_CONC); }
+    for (let z = TENNIS_Z0; z <= TENNIS_Z1; z++) { setGameBlock(TENNIS_X0,1,z, WHITE_CONC); setGameBlock(TENNIS_X1,1,z, WHITE_CONC); }
+    // Simplified service boxes — a line partway between each baseline and
+    // the net, plus a centre line joining them, rather than a fully
+    // regulation set of doubles alleys/service courts.
+    const serviceOffset = Math.round((TENNIS_Z1-TENNIS_Z0)*0.28);
+    [TENNIS_Z0+serviceOffset, TENNIS_Z1-serviceOffset].forEach(sz => {
+      for (let x = TENNIS_X0+3; x <= TENNIS_X1-3; x++) setGameBlock(x,1,sz, WHITE_CONC);
+    });
+    const midX = Math.round((TENNIS_X0+TENNIS_X1)/2);
+    for (let z = TENNIS_Z0+serviceOffset; z <= TENNIS_Z1-serviceOffset; z++) setGameBlock(midX,1,z, WHITE_CONC);
+    // Net — a thin translucent plane between two posts, not solid blocks,
+    // so it actually reads as a net rather than a wall
+    const postMat = new THREE.MeshPhongMaterial({ color: 0x2a2a30, shininess: 10 });
+    [TENNIS_X0-0.5, TENNIS_X1+0.5].forEach(px => {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,1.6,8), postMat);
+      post.position.set(px, 2.8, TENNIS_NET_Z+0.5);
+      scene.add(post); pubExtraProps.push(post);
+    });
+    const netMat = new THREE.MeshBasicMaterial({ color: 0xf0f0f0, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+    const net = new THREE.Mesh(new THREE.PlaneGeometry((TENNIS_X1-TENNIS_X0)+2, 1.1), netMat);
+    net.position.set((TENNIS_X0+TENNIS_X1)/2+0.5, 2.55, TENNIS_NET_Z+0.5);
+    scene.add(net); pubExtraProps.push(net);
+    // One raised trigger block per baseline, same jump-to-activate
+    // pattern as the other two games' own start blocks.
+    [TENNIS_TRIGGER_NEAR, TENNIS_TRIGGER_FAR].forEach(pos => {
+      setGameBlock(pos.x, pos.y, pos.z, WHITE_CONC);
+      const label = buildNumberLabel('🎾');
+      label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
+      scene.add(label); pubExtraProps.push(label);
+    });
+  }
+
   // Real modelled shapes rather than a line of blocks — that's what was
   // actually reading as random grass/tree blocks: block types 3 and 4
   // are literally the tree trunk and leaf textures used everywhere else
@@ -5543,6 +5604,8 @@
     spawnFootball(); // resets to centre with 0-0 every fresh visit — persisting an in-progress match/score across sessions isn't worth the complexity for a casual kickabout
     resetSlGame(); // same reasoning — a fresh Snakes & Ladders game every visit rather than trying to persist an in-progress one
     bsResetGame();
+    spawnTennisBall();
+    tennisResetGame();
     terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
@@ -6956,6 +7019,13 @@
       const cell = bsGetLookedAtCell(bsPlacing.side);
       if (cell !== null) { bsHandlePlacementClick(cell); return; }
     }
+    // Standing right next to the football kicks it (in whichever
+    // direction you're currently facing) instead of doing normal
+    // placement — tryKickFootball itself checks distance/whether it's
+    // already airborne and returns false if this isn't a valid kick, so
+    // normal placement still works everywhere else as usual.
+    if (tryKickFootball()) return;
+    if (tryHitTennisBall()) return;
     const r = voxelRaycast();
     if (!r || !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
@@ -8001,6 +8071,25 @@
           updateFootballScoreHud();
         }
       });
+      channel.on('broadcast', { event: 'tennisBall' }, ({ payload }) => {
+        if (!payload || !tennisBall) return;
+        tennisBall.pos.set(payload.x, payload.y, payload.z);
+        tennisBall.vel.set(payload.vx, payload.vy, payload.vz);
+        tennisBall.mesh.position.copy(tennisBall.pos);
+      });
+      channel.on('broadcast', { event: 'tennisReset' }, () => { tennisResetGame(); });
+      channel.on('broadcast', { event: 'tennisJoin' }, ({ payload }) => {
+        if (!payload || !tennisGame) return;
+        const s = tennisGame.sides[payload.side];
+        if (s && !s.uid) { s.uid = payload.uid; s.name = payload.name; tennisCheckBothReady(); }
+      });
+      channel.on('broadcast', { event: 'tennisScore' }, ({ payload }) => {
+        if (!payload || !tennisGame) return;
+        tennisGame.score = payload.score;
+        tennisGame.won = payload.won;
+        updateTennisScoreHud();
+        if (payload.won) launchSlFirework();
+      });
       // Someone is starting a fresh game after the previous one ended —
       // clear our own old board/tokens so we're ready for the new
       // layout that follows right after this.
@@ -8336,9 +8425,19 @@
     const hudEl = document.getElementById('footballScoreHud');
     if (hudEl) hudEl.style.display = footballDistanceFromPitch(player.pos.x, player.pos.z) < 10 ? 'block' : 'none';
     const b = footballBall;
-    b.vel.multiplyScalar(Math.max(0, 1 - dt*1.1)); // rolling friction
+    b.vel.multiplyScalar(Math.max(0, 1 - dt*1.1)); // rolling friction (horizontal only — see gravity below)
     b.pos.x += b.vel.x*dt;
     b.pos.z += b.vel.z*dt;
+    // Gravity — only actually matters once a kick sends the ball
+    // airborne; it sits inert at 0 the rest of the time, same as real
+    // rolling-friction physics only doing anything while there's
+    // velocity to slow down.
+    b.vel.y += FOOTBALL_GRAVITY*dt;
+    b.pos.y += b.vel.y*dt;
+    if (b.pos.y < FOOTBALL_CENTER.y) {
+      b.pos.y = FOOTBALL_CENTER.y;
+      b.vel.y = Math.abs(b.vel.y) > 0.6 ? -b.vel.y*0.35 : 0; // a couple of shrinking bounces, then settles rather than micro-bouncing forever
+    }
     if (b.pos.x < FOOTBALL_PITCH_BOUNDS.x0) { b.pos.x = FOOTBALL_PITCH_BOUNDS.x0; b.vel.x *= -0.5; }
     if (b.pos.x > FOOTBALL_PITCH_BOUNDS.x1) { b.pos.x = FOOTBALL_PITCH_BOUNDS.x1; b.vel.x *= -0.5; }
     const inGoalMouthX = b.pos.x > FOOTBALL_GOAL_X0 && b.pos.x < FOOTBALL_GOAL_X1;
@@ -8357,15 +8456,270 @@
     }
     // Touching the ball nudges it in whichever direction the player is
     // currently facing — walk up to it facing where you want it to go,
-    // same basic idea as dribbling.
+    // same basic idea as dribbling. Only while it's still on the ground
+    // — an airborne ball shouldn't also be getting shoved sideways by
+    // just standing near it.
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
-    if (dPlayer < 0.85) {
+    if (dPlayer < 0.85 && b.pos.y <= FOOTBALL_CENTER.y+0.01) {
       const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
       b.vel.x += fx*3.2*dt*6;
       b.vel.z += fz*3.2*dt*6;
       const maxSpeed = 9;
       if (b.vel.length() > maxSpeed) b.vel.setLength(maxSpeed);
       broadcastFootballState();
+    }
+  }
+  // A proper kick, as opposed to the constant ground-nudge above — sends
+  // the ball up as well as forward, roughly reaching just above the
+  // crossbar (goal frame tops out at y=4-5) at the peak of its arc.
+  // Horizontal power stays fairly modest on purpose: the pitch itself
+  // isn't very long, so a full-strength kick would clear it almost
+  // instantly and stop feeling like a football pitch at all.
+  const FOOTBALL_GRAVITY = -17;
+  function tryKickFootball() {
+    if (!footballBall || currentWorldId !== PUB_WORLD_ID) return false;
+    const b = footballBall;
+    const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
+    if (dPlayer > 1.1 || b.pos.y > FOOTBALL_CENTER.y+0.01) return false; // too far away, or already in the air
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    b.vel.y = 9.6; // v0 for gravity -17: peak rise = v0²/(2*17) ≈ 2.7 blocks above the resting height of 2.28, landing the peak just above the crossbar at y≈5
+    b.vel.x = fx*4.2;
+    b.vel.z = fz*4.2;
+    playThud(300);
+    broadcastFootballState();
+    return true;
+  }
+
+  // ================= TENNIS (structure + ball physics — this pass) =================
+  // NOTE: this covers the court, a properly physical ball (gravity, net
+  // collision, bouncing), and the "face a direction and hit it" mechanic
+  // itself. It does NOT yet include the 2-player-vs-computer mode select,
+  // scoring, serve rules, or an AI opponent — those are a similarly-sized
+  // follow-up to this, the same way Battleship's placement/firing/AI
+  // layer came after its own structure in an earlier pass.
+  let tennisBall = null; // { mesh, pos, vel }
+  const TENNIS_GRAVITY = -14; // a bit gentler than football's — tennis balls hang in the air longer relative to their travel speed
+  function buildTennisBallMesh() {
+    const mat = new THREE.MeshPhongMaterial({ color: 0xd4e157, shininess: 30 });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), mat);
+    mesh.castShadow = false;
+    return mesh;
+  }
+  function spawnTennisBall() {
+    if (tennisBall) return;
+    const mesh = buildTennisBallMesh();
+    mesh.position.copy(TENNIS_CENTER);
+    scene.add(mesh);
+    tennisBall = { mesh, pos: TENNIS_CENTER.clone(), vel: new THREE.Vector3(0,0,0) };
+  }
+  function despawnTennisBall() {
+    if (!tennisBall) return;
+    scene.remove(tennisBall.mesh);
+    tennisBall = null;
+  }
+  let lastTennisBroadcast = 0;
+  function broadcastTennisState(force) {
+    const now = performance.now();
+    if (!force && now - lastTennisBroadcast < 150) return;
+    lastTennisBroadcast = now;
+    if (mpChannel && currentWorldId === mpConnectedWorldId && tennisBall) {
+      try {
+        mpChannel.send({ type: 'broadcast', event: 'tennisBall', payload: {
+          x: tennisBall.pos.x, y: tennisBall.pos.y, z: tennisBall.pos.z,
+          vx: tennisBall.vel.x, vy: tennisBall.vel.y, vz: tennisBall.vel.z,
+        }});
+      } catch(e) {}
+    }
+  }
+  function tennisDistanceFromCourt(x, z) {
+    const dx = Math.max(TENNIS_X0 - x, 0, x - TENNIS_X1);
+    const dz = Math.max(TENNIS_Z0 - z, 0, z - TENNIS_Z1);
+    return Math.sqrt(dx*dx + dz*dz);
+  }
+  function updateTennisBall(dt) {
+    if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return;
+    const hudEl = document.getElementById('tennisScoreHud');
+    if (hudEl) hudEl.style.display = tennisDistanceFromCourt(player.pos.x, player.pos.z) < 10 ? 'block' : 'none';
+    const b = tennisBall;
+    b.vel.y += TENNIS_GRAVITY*dt;
+    const prevZ = b.pos.z;
+    b.pos.x += b.vel.x*dt;
+    b.pos.y += b.vel.y*dt;
+    b.pos.z += b.vel.z*dt;
+    // The net only blocks the ball while crossing it below net height —
+    // clearing it just means passing straight through, same as a real
+    // net poses no obstacle to a ball hit high enough.
+    if ((prevZ - TENNIS_NET_Z) * (b.pos.z - TENNIS_NET_Z) < 0 && b.pos.y < TENNIS_NET_TOP_Y) {
+      b.pos.z = TENNIS_NET_Z + (prevZ < TENNIS_NET_Z ? -0.3 : 0.3);
+      b.vel.z *= -0.25;
+      b.vel.x *= 0.6;
+      playThud(200);
+    }
+    if (b.pos.y < TENNIS_CENTER.y) {
+      b.pos.y = TENNIS_CENTER.y;
+      b.vel.y = Math.abs(b.vel.y) > 0.5 ? -b.vel.y*0.55 : 0; // bouncier than football's ball — a tennis ball keeps a lot more of its energy off a hard court
+      b.vel.x *= 0.85; b.vel.z *= 0.85; // still loses a little horizontal speed each bounce
+      tennisCheckBounce(b.pos.z < TENNIS_NET_Z ? 'near' : 'far');
+    }
+    b.vel.x *= Math.max(0, 1 - dt*0.15); // very light air resistance — mostly gravity and bounces do the work here, not rolling friction like the football
+    b.vel.z *= Math.max(0, 1 - dt*0.15);
+    if (b.pos.x < TENNIS_X0) { b.pos.x = TENNIS_X0; b.vel.x *= -0.6; }
+    if (b.pos.x > TENNIS_X1) { b.pos.x = TENNIS_X1; b.vel.x *= -0.6; }
+    if (b.pos.z < TENNIS_Z0) { b.pos.z = TENNIS_Z0; b.vel.z *= -0.6; }
+    if (b.pos.z > TENNIS_Z1) { b.pos.z = TENNIS_Z1; b.vel.z *= -0.6; }
+    b.mesh.position.copy(b.pos);
+    const speed = b.vel.length();
+    if (speed > 0.02) {
+      const axis = new THREE.Vector3(-b.vel.z, 0, b.vel.x).normalize();
+      b.mesh.rotateOnWorldAxis(axis, speed*dt*3);
+    }
+    if (tennisDistanceFromCourt(player.pos.x, player.pos.z) > 14 && b.vel.lengthSq() < 0.01) {
+      // Ball's dead and nobody's anywhere near it — quietly reset to
+      // centre rather than leaving it stranded in a corner forever.
+      b.pos.copy(TENNIS_CENTER); b.vel.set(0,0,0); b.mesh.position.copy(b.pos);
+    }
+  }
+  // Facing direction determines where the ball goes, with just enough
+  // upward pop to clear the net from a reasonable distance — this is
+  // deliberately simple (no timing/power meter), matching "whichever way
+  // facing and hit the build button hits the ball in that direction" as
+  // literally as possible.
+  function tryHitTennisBall() {
+    if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return false;
+    const b = tennisBall;
+    const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
+    if (dPlayer > 1.3) return false;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    b.vel.x = fx*10;
+    b.vel.z = fz*10;
+    b.vel.y = 5.5;
+    playThud(450);
+    if (tennisGame) { tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; } // a successful hit clears any pending fault — see tennisCheckBounce
+    broadcastTennisState(true);
+    return true;
+  }
+
+  // ---- Tennis: 2-player-vs-computer game logic ----
+  // Scoring is simplified from real tennis (no love/15/30/40/deuce, no
+  // separate serve rules) down to one thing: whichever side the ball
+  // bounces on twice in a row without being hit back loses the point.
+  // That one rule alone captures "failed to return it" without needing
+  // a full ruleset on top of it.
+  let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount }
+  let tennisPendingStartSide = null;
+  function tennisResetGame() {
+    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0 };
+    updateTennisScoreHud();
+  }
+  function tennisOtherSide(side) { return side === 'near' ? 'far' : 'near'; }
+  function tennisMySide() {
+    if (!tennisGame) return null;
+    if (tennisGame.sides.near.uid === playerUid) return 'near';
+    if (tennisGame.sides.far.uid === playerUid) return 'far';
+    return null;
+  }
+  function tennisAISide() {
+    if (!tennisGame) return null;
+    if (tennisGame.sides.near.uid === 'AI') return 'near';
+    if (tennisGame.sides.far.uid === 'AI') return 'far';
+    return null;
+  }
+  function updateTennisScoreHud() {
+    const el = document.getElementById('tennisScoreHud');
+    if (el) el.textContent = tennisGame ? `🎾 ${tennisGame.score.near} - ${tennisGame.score.far}` : '';
+  }
+  function broadcastTennisJoin(side) { const s = tennisGame.sides[side]; if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'tennisJoin', payload:{ side, uid:s.uid, name:s.name } }); } catch(e) {} }
+  function broadcastTennisReset() { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'tennisReset', payload:{} }); } catch(e) {} }
+  function broadcastTennisScore() { if (mpChannel && currentWorldId === mpConnectedWorldId && tennisGame) try { mpChannel.send({ type:'broadcast', event:'tennisScore', payload:{ score: tennisGame.score, won: tennisGame.won } }); } catch(e) {} }
+  function tennisStartOrContinue(side) {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    const isFreshGame = !tennisGame.sides.near.uid && !tennisGame.sides.far.uid;
+    if (isFreshGame || tennisGame.won) {
+      tennisPendingStartSide = side;
+      document.getElementById('tennisModeModal').style.display = 'flex';
+      return;
+    }
+    tennisJoin(side);
+  }
+  function tennisJoin(side) {
+    const s = tennisGame.sides[side];
+    if (!s.uid) { s.uid = playerUid; s.name = getMyDisplayName(); broadcastTennisJoin(side); }
+    else if (s.uid !== playerUid) { showChatLogLine('🎾', 'Someone is already playing that side.'); return; }
+    showChatLogLine('🎾', "You're playing " + side + " side. Hit the ball toward the net to serve!");
+    tennisCheckBothReady();
+  }
+  function tennisCheckBothReady() {
+    if (!tennisGame) return;
+    if (tennisGame.sides.near.uid && tennisGame.sides.far.uid) {
+      tennisGame.started = true;
+      showChatLogLine('🎾', 'Match on — first to 11 points wins!');
+    }
+  }
+  function tennisAwardPoint(winSide) {
+    tennisGame.score[winSide]++;
+    updateTennisScoreHud();
+    if (tennisGame.score[winSide] >= 11) {
+      tennisGame.won = winSide;
+      showChatLogLine('🏆', (tennisGame.sides[winSide].name || 'Winner') + ' wins the match!');
+      launchSlFirework();
+    }
+    if (tennisBall) { tennisBall.pos.copy(TENNIS_CENTER); tennisBall.vel.set(0,0,0); tennisBall.mesh.position.copy(tennisBall.pos); }
+    tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
+    broadcastTennisScore();
+    broadcastTennisState(true);
+  }
+  // Bounces on the AI's own side are answered immediately rather than
+  // the AI needing to physically move to the ball and time a swing —
+  // same practical simplification as Battleship's computer opponent,
+  // which plays by data/logic rather than a moving, animated body.
+  function tennisAIReturn() {
+    if (!tennisBall) return;
+    const b = tennisBall, aiSide = tennisAISide();
+    const towardZ = aiSide === 'far' ? -1 : 1;
+    b.vel.z = towardZ * (8 + Math.random()*3);
+    b.vel.x = (Math.random()-0.5)*6;
+    b.vel.y = 5 + Math.random()*1.5;
+    tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
+    playThud(450);
+    broadcastTennisState(true);
+  }
+  // Called whenever the ball touches the ground on a given side ('near'
+  // or 'far') — only actually acts on a side this client is responsible
+  // for (its own side, or the computer's, since nobody else is watching
+  // that one), which is what keeps two human clients from each
+  // independently double-awarding the same point.
+  function tennisCheckBounce(side) {
+    if (!tennisGame || !tennisGame.started || tennisGame.won) return;
+    const mySide = tennisMySide(), aiSide = tennisAISide();
+    if (side !== mySide && side !== aiSide) return;
+    if (tennisGame.lastBounceSide === side) {
+      tennisGame.bounceCount++;
+      if (tennisGame.bounceCount >= 2) { tennisAwardPoint(tennisOtherSide(side)); return; }
+    } else {
+      tennisGame.lastBounceSide = side;
+      tennisGame.bounceCount = 1;
+    }
+    if (side === aiSide && tennisGame.bounceCount === 1) tennisAIReturn();
+  }
+  let lastTennisTriggerCheck = 0, tennisWasAirborne = false;
+  function updateTennisTriggers() {
+    const isAirborneNow = player.vel.y > 1;
+    const justJumped = isAirborneNow && !tennisWasAirborne;
+    tennisWasAirborne = isAirborneNow;
+    if (currentWorldId !== PUB_WORLD_ID || !justJumped) return;
+    const now = performance.now();
+    if (now - lastTennisTriggerCheck < 1200) return;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const onNear = px === TENNIS_TRIGGER_NEAR.x && pz === TENNIS_TRIGGER_NEAR.z && Math.abs(player.pos.y - (TENNIS_TRIGGER_NEAR.y+1)) < 0.7;
+    const onFar = px === TENNIS_TRIGGER_FAR.x && pz === TENNIS_TRIGGER_FAR.z && Math.abs(player.pos.y - (TENNIS_TRIGGER_FAR.y+1)) < 0.7;
+    if (onNear || onFar) {
+      lastTennisTriggerCheck = now;
+      const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
+      if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      pushDir.normalize();
+      player.pos.x += pushDir.x*1.3; player.pos.z += pushDir.z*1.3;
+      playButtonPress();
+      tennisStartOrContinue(onNear ? 'near' : 'far');
     }
   }
 
@@ -9422,10 +9776,12 @@
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
+    updateTennisBall(dt);
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment
     updateShipFires();
+    updateTennisTriggers();
     updateDoors(dt);
     updateWork(dt);
 
@@ -10176,6 +10532,20 @@
     broadcastBsJoin(aiSide); // so anyone else in the Mill watching also knows this side is computer-controlled, not just an empty slot
     bsAutoPlaceFleet(aiSide);
     bsJoinAndPlace(bsPendingStartSide);
+  });
+  document.getElementById('tennisMode2P').addEventListener('click', () => {
+    document.getElementById('tennisModeModal').style.display = 'none';
+    tennisResetGame(); broadcastTennisReset();
+    tennisJoin(tennisPendingStartSide);
+  });
+  document.getElementById('tennisModeAI').addEventListener('click', () => {
+    document.getElementById('tennisModeModal').style.display = 'none';
+    tennisResetGame(); broadcastTennisReset();
+    const aiSide = tennisOtherSide(tennisPendingStartSide);
+    tennisGame.sides[aiSide].uid = 'AI';
+    tennisGame.sides[aiSide].name = '🤖 Computer';
+    broadcastTennisJoin(aiSide);
+    tennisJoin(tennisPendingStartSide);
   });
 
   // ---- Avatar customization screen ----

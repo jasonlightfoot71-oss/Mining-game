@@ -8719,16 +8719,34 @@
     group.userData.length = length;
     return group;
   }
-  function bsRenderShipModel(side, ship) {
+  // Builds and positions a ship model on a given side's face — shared by
+  // both "this is my own ship" (during placement) and "this is the enemy
+  // ship I just sank, revealed on my own grid" (see
+  // bsRevealSunkEnemyShip), since the actual positioning math is
+  // identical either way.
+  function bsBuildAndPlaceShipModel(side, ship) {
     const a = bsCellPos(ship.cells[0]), b = bsCellPos(ship.cells[ship.cells.length-1]);
     const horizontal = a.y === b.y;
     const centerX = (a.x+b.x)/2 + 0.5, centerY = (a.y+b.y)/2 + 0.5;
     const model = buildShipModel(ship.size, horizontal);
     model.position.set(centerX, centerY, bsFaceZ(side, 0.43));
     if (side === 'A') model.rotation.y = Math.PI;
+    return model;
+  }
+  function bsRenderShipModel(side, ship) {
+    const model = bsBuildAndPlaceShipModel(side, ship);
     scene.add(model);
     bsMarkerMeshes.push(model);
-    ship.model = model; // kept so a sunk ship can be set alight later — see igniteShipModel
+    ship.model = model; // kept so it can be hidden after placement, then shown again (on fire) if sunk — see bsHideOwnFleet/bsCheckAndIgniteSunkShip
+  }
+  // Once a fleet is fully placed there's no need to keep looking at it —
+  // the layout doesn't change, and hiding it makes the "your ship
+  // reappears, on fire, the moment it's sunk" reveal actually mean
+  // something instead of it having been sitting there in full view the
+  // whole game. The models themselves aren't destroyed, just removed
+  // from the scene, so they can be added straight back for that reveal.
+  function bsHideOwnFleet(side) {
+    bsGame.sides[side].ships.forEach(ship => { if (ship.model) scene.remove(ship.model); });
   }
   // Sets a fully-sunk ship's own model on fire — several small flickering
   // cones scattered along its length, animated in updateShipFires below.
@@ -8745,10 +8763,11 @@
     shipModel.add(fireGroup);
     shipModel.userData.fireGroup = fireGroup;
   }
-  // Checks whether the ship at hitCell (belonging to victimSide) is now
-  // fully sunk, and sets it on fire if so — only ever does anything on
-  // the client that actually owns/renders that side's ships, since
-  // nobody else has a model to ignite in the first place.
+  // Checks whether the ship at hitCell (belonging to victimSide, which
+  // must be MY OWN side for this to do anything) is now fully sunk —
+  // brings it back into view (it was hidden after placement, see
+  // bsHideOwnFleet) and sets it on fire, so losing a ship is something
+  // you actually see happen rather than a silent status change.
   function bsCheckAndIgniteSunkShip(victimSide, hitCell) {
     if (!bsGame || bsMySide() !== victimSide) return;
     const victim = bsGame.sides[victimSide];
@@ -8757,7 +8776,25 @@
     if (!ship || ship.onFire) return;
     if (ship.cells.every(c => attacker.shotsFired[c] === 'hit')) {
       ship.onFire = true;
-      if (ship.model) igniteShipModel(ship.model);
+      if (ship.model) { scene.add(ship.model); igniteShipModel(ship.model); }
+    }
+  }
+  // The other side of the same moment — from the ATTACKER's point of
+  // view, sinking an enemy ship reveals it, on fire, on the attacker's
+  // OWN grid (which is what they're actually looking at and firing
+  // from) rather than anywhere on the opponent's physical side of the
+  // divider, which they can't see anyway.
+  function bsRevealSunkEnemyShip(mySide, victimSide, hitCell) {
+    const attacker = bsGame.sides[mySide];
+    const victim = bsGame.sides[victimSide];
+    const ship = victim.ships.find(s => s.cells.includes(hitCell));
+    if (!ship || ship.revealedTo) return;
+    if (ship.cells.every(c => attacker.shotsFired[c] === 'hit')) {
+      ship.revealedTo = mySide;
+      const model = bsBuildAndPlaceShipModel(mySide, ship);
+      scene.add(model);
+      bsMarkerMeshes.push(model);
+      igniteShipModel(model);
     }
   }
   // Light flicker animation for any currently-burning ships — cheap, only
@@ -8974,6 +9011,7 @@
       showChatLogLine('🚢', 'Next: ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
     } else {
       showChatLogLine('🚢', s.name + ' has placed their whole fleet.');
+      bsHideOwnFleet(bsPlacing.side); // no need to keep looking at your own ships once they're placed — see its own comment
       broadcastBsFleetReady(bsPlacing.side);
       bsCheckBothReady();
       bsPlacing = null;
@@ -8997,7 +9035,7 @@
     const isHit = bsCellIsShip(oppSide, targetCell);
     my.shotsFired[targetCell] = isHit ? 'hit' : 'miss';
     bsRenderShotMarker(mySide, targetCell, isHit);
-    if (isHit) playBsHit(); else playBsMiss();
+    if (isHit) { playBsHit(); bsRevealSunkEnemyShip(mySide, oppSide, targetCell); } else playBsMiss();
     const oppAllSunk = opp.ships.every(s => s.cells.every(c => my.shotsFired[c] === 'hit'));
     if (oppAllSunk) {
       bsGame.won = mySide;

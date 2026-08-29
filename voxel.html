@@ -8689,7 +8689,13 @@
   let bsPendingStartSide = null;
   function bsStartOrContinue(side) {
     if (currentWorldId !== PUB_WORLD_ID) return;
-    if (!bsGame || bsGame.won) {
+    // bsGame is never actually null once you're in the Mill — it's set
+    // up as an empty "nobody's joined yet" state the moment you arrive
+    // (see visitPub), specifically so there's always something valid to
+    // check. "Fresh" means neither side has a player at all yet, not
+    // that the object itself doesn't exist.
+    const isFreshGame = !bsGame.sides.A.uid && !bsGame.sides.B.uid;
+    if (isFreshGame || bsGame.won) {
       bsPendingStartSide = side;
       document.getElementById('bsModeModal').style.display = 'flex';
       return;

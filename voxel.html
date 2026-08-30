@@ -377,7 +377,7 @@
 <div id="coinsDisplay" style="display:none;"></div>
 <div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
 <div id="footballScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
-<div id="tennisScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
+<div id="tennisScoreHud" style="display:none;position:fixed;top:100px;left:16px;z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="tennisChargeBarWrap" style="display:none;position:fixed;bottom:110px;left:50%;transform:translateX(-50%);z-index:10;width:140px;height:12px;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.4);border-radius:6px;overflow:hidden;">
   <div id="tennisChargeBarFill" style="width:0%;height:100%;background:linear-gradient(90deg,#ffd54a,#ff5a3c);"></div>
 </div>
@@ -8701,8 +8701,22 @@
     b.vel.z *= Math.max(0, 1 - dt*0.15);
     if (b.pos.x < TENNIS_X0) { b.pos.x = TENNIS_X0; b.vel.x *= -0.6; }
     if (b.pos.x > TENNIS_X1) { b.pos.x = TENNIS_X1; b.vel.x *= -0.6; }
-    if (b.pos.z < TENNIS_Z0) { b.pos.z = TENNIS_Z0; b.vel.z *= -0.6; }
-    if (b.pos.z > TENNIS_Z1) { b.pos.z = TENNIS_Z1; b.vel.z *= -0.6; }
+    // The back line (not the side walls, which still just bounce it back
+    // in) is now a genuine out — same fault logic as clipping the net,
+    // whoever hit it last loses the point, rather than bouncing it back
+    // into play like a wall. This is deliberately the ONLY other way a
+    // point ends now, alongside the net: bouncing any number of times,
+    // or even rolling to a dead stop, no longer costs anyone the point
+    // by itself (see tennisCheckBounce, which no longer counts bounces
+    // at all) — only actually going out the back or into the net does.
+    if (b.pos.z < TENNIS_Z0 || b.pos.z > TENNIS_Z1) {
+      b.pos.z = Math.max(TENNIS_Z0, Math.min(TENNIS_Z1, b.pos.z));
+      b.vel.x = 0; b.vel.z = 0; b.vel.y = 0; // stops dead right on the line rather than sailing on past it
+      if (tennisGame && tennisGame.started && !tennisGame.won && tennisGame.ballInPlay && tennisGame.lastHitterSide) {
+        const faultSide = tennisGame.lastHitterSide;
+        if (faultSide === tennisMySide() || faultSide === tennisAISide()) tennisAwardPoint(tennisOtherSide(faultSide));
+      }
+    }
     b.mesh.position.copy(b.pos);
     const speed = b.vel.length();
     if (speed > 0.02) {
@@ -8768,7 +8782,7 @@
     playTennisHit(p);
     tennisLocalSwingUntil = performance.now() + 350; // animates the local avatar's own swing — see tennisArmSwingRotation
     if (tennisGame) {
-      tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
+      tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault and puts the ball live, which is what actually arms the net/back-line fault checks and the computer's own returns
       tennisGame.lastHitterSide = side; // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
     }
     broadcastTennisState(true);
@@ -9077,38 +9091,36 @@
     // instant phantom "bounce" every physics tick (gravity nudging it
     // fractionally below TENNIS_CENTER.y and snapping it back, over and
     // over) — which fired the computer's return immediately, before
-    // either player had moved an inch, or in the other match-up silently
-    // handed the computer the whole game in a couple of frames. Bounces
-    // only count once the ball has actually been served/hit for real.
+    // either player had moved an inch. Bounces only count once the ball
+    // has actually been served/hit for real.
     if (!tennisGame.ballInPlay) return;
-    const mySide = tennisMySide(), aiSide = tennisAISide();
-    if (side !== mySide && side !== aiSide) return;
+    // Only the computer's own side needs anything done here now — a
+    // human just walks up and hits the ball whenever they're ready, no
+    // code-driven reaction needed. Bouncing no longer costs anyone the
+    // point by itself (any number of bounces, or the ball rolling to a
+    // dead stop, are all fine — see updateTennisBall's own back-line
+    // check, which along with the net are now the only two ways a point
+    // actually ends), so this is purely "does the computer take a swing
+    // at this particular bounce", not a scoring decision.
+    const aiSide = tennisAISide();
+    if (side !== aiSide) return;
     // A hard backstop against the computer swinging twice in immediate
     // succession — a fraction of a second really can't be a genuine
     // second bounce on its own side after it just hit the ball (the
     // shortest real return-and-land cycle takes the better part of a
     // second), so treat anything inside this window as the same physical
     // bounce settling rather than a fresh one.
-    if (side === aiSide && performance.now() - tennisAiLastHitAt < 400) return;
-    if (tennisGame.lastBounceSide === side) {
-      tennisGame.bounceCount++;
-      if (tennisGame.bounceCount >= 2) { tennisAwardPoint(tennisOtherSide(side)); return; }
-    } else {
-      tennisGame.lastBounceSide = side;
-      tennisGame.bounceCount = 1;
-    }
-    if (side === aiSide && tennisGame.bounceCount === 1) {
-      // The computer only actually returns the ball if its own on-court
-      // figure (see updateAiAvatarFigure, which chases the ball's
-      // PREDICTED landing spot) is actually close enough to it when it
-      // bounces — a shot hit wide or fast enough to outrun that chase is
-      // a miss, same as it would be for a human standing in the wrong
-      // spot, rather than being returned from wherever it happens to be
-      // standing.
-      const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 2.2;
-      if (withinReach) tennisAIReturn();
-      else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(side)); }
-    }
+    if (performance.now() - tennisAiLastHitAt < 400) return;
+    // The computer only actually returns the ball if its own on-court
+    // figure (see updateAiAvatarFigure, which chases the ball's
+    // PREDICTED landing spot) is actually close enough to it when it
+    // bounces — a shot hit wide or fast enough to outrun that chase just
+    // means it doesn't connect on THIS particular bounce. The ball keeps
+    // going and it gets another look at the next one (or the one after
+    // that), same forgiving treatment a human player gets, right up
+    // until it actually goes out or into the net.
+    const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 2.2;
+    if (withinReach) tennisAIReturn();
   }
   let lastTennisTriggerCheck = 0, tennisWasAirborne = false;
   function updateTennisTriggers() {

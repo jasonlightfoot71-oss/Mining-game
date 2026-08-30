@@ -8769,18 +8769,21 @@
     const flen = Math.hypot(fx, fz) || 1;
     fx /= flen; fz /= flen;
     const p = Math.max(0, Math.min(1, power || 0));
-    // Power now drives a genuinely harder, FLATTER shot at the top end —
-    // more horizontal speed and LESS arc height as you charge more,
-    // rather than the previous approach where more power mostly just
-    // sent it higher (which made a full-power hit float up as a lob
-    // instead of feeling like a hard, low drive — exactly the opposite
-    // of how the computer's own returns already looked). Full charge
-    // still comfortably clears the net from anywhere on the court —
-    // it's just fast and low doing it now, not high and slow.
-    const speed = 10 + p*14; // 10 (soft tap) up to 24 (full-power drive)
+    // Power now drives a genuinely harder, FLATTER shot — more speed AND
+    // LESS arc height as you charge more. The previous version still had
+    // vel.y going UP with power (7 to 9) despite the comment saying
+    // otherwise, which is exactly backwards — that's what kept making a
+    // full-power hit float up into a lob instead of feeling like a hard,
+    // low drive, and incidentally also gave the computer a nice long
+    // hang-time to run down anywhere on the court regardless of how its
+    // own speed was tuned. A charged shot now has noticeably LESS air
+    // time than a soft tap, not more — it still clears the net from
+    // anywhere on the court at full charge, it's just doing it fast and
+    // low rather than slow and high.
+    const speed = 10 + p*20; // 10 (soft tap) up to 30 (full-power drive) — a much bigger swing in pace than before
     b.vel.x = fx*speed;
     b.vel.z = fz*speed;
-    b.vel.y = 7 + p*2; // 7 (a bit of loft to help a weak shot still clear) down toward 9 — modest either way, not the tall arc a full-power shot used to get
+    b.vel.y = 10 - p*1.5; // 10 (soft tap, needs the extra loft to have any chance of reaching the net at all) down to 8.5 at full charge — flatter AND meaningfully shorter hang-time than a soft tap, not just a smaller version of the same arc
     playTennisHit(p);
     tennisLocalSwingUntil = performance.now() + 350; // animates the local avatar's own swing — see tennisArmSwingRotation
     if (tennisGame) {

@@ -1655,7 +1655,7 @@
   // what stranded the building without a way to reach the surrounding
   // land on foot. Protecting only the exact footprint lets terrain
   // generate right up to the building's own walls.
-  const PUB_BOUNDS = { x0: -58, x1: 32, z0: -54, z1: 80 }; // z0 extended further south (from -4) to fit the new 9-hole crazy golf course, the same way x0/z1 were each extended before it for the other minigames
+  const PUB_BOUNDS = { x0: -90, x1: 32, z0: -4, z1: 80 }; // x0 extended further west (from -58) to fit the new 9-hole crazy golf course, sitting the next lane over from the tennis court — same reasoning each previous extension used
   function isPubColumn(x, z) {
     return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
   }
@@ -5456,19 +5456,21 @@
   // court over" since it lines up with the same Z-range as the pitch
   // itself, just further along.
   // ---- Crazy golf course (9 holes) ----
-  // South of the main pad, in its own extended strip of PUB_BOUNDS (see
-  // its own comment) — laid out as a 3x3 grid of straight fairways
-  // rather than 9 in a single long row, purely to keep the overall
-  // footprint compact. Each hole is a simple bordered rectangle (same
-  // "fill a box, wall the edges" approach as the tennis court) with 0-3
-  // raised stone bumpers to putt around — not true doglegs (which would
-  // need L-shaped bounds and much more collision complexity), but enough
-  // variety hole-to-hole to read as a proper crazy-golf course rather
-  // than 9 identical straight lanes.
+  // The next lane west of the tennis court, lined up along the same
+  // Z-span (see GOLF_AREA_Z_NEAR) so it reads as "one more court over"
+  // the same way the tennis court itself sits next to the football
+  // pitch — laid out as a 3x3 grid of straight fairways rather than 9 in
+  // a single long row, purely to keep the overall footprint compact.
+  // Each hole is a simple bordered rectangle (same "fill a box, wall the
+  // edges" approach as the tennis court) with 0-3 raised stone bumpers
+  // to putt around — not true doglegs (which would need L-shaped bounds
+  // and much more collision complexity), but enough variety hole-to-hole
+  // to read as a proper crazy-golf course rather than 9 identical
+  // straight lanes.
   const GOLF_COLS = 3, GOLF_ROWS = 3;
-  const GOLF_LANE_W = 6, GOLF_LANE_L = 12, GOLF_GAP = 3;
-  const GOLF_AREA_X0 = 2; // west edge of the whole 3x3 grid
-  const GOLF_AREA_Z_NEAR = -6; // tee-end edge of row 0, right against the existing pad's own south boundary (z=-4) with a block of clearance
+  const GOLF_LANE_W = 6, GOLF_LANE_L = 12, GOLF_GAP = 2;
+  const GOLF_AREA_X0 = -82; // sits the next lane west of the tennis court (TENNIS_X0 is -55, defined just below), with a gap between them
+  const GOLF_AREA_Z_NEAR = 76; // matches TENNIS_Z1 — lines the course up along the same Z-span as the tennis court and football pitch, rather than off on its own
   function computeGolfHoles() {
     const parByHole = [2, 3, 3, 3, 4, 3, 4, 3, 4];
     const cupOffsetByHole = [0, 2, -2, 0, 1, -1, 2, -2, 0]; // how far the cup sits off-centre, in blocks — forces an angled putt rather than a dead-straight one
@@ -5515,10 +5517,12 @@
   function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC) {
     // A generous connecting apron under and around the whole grid — same
     // reasoning as every other minigame's own self-contained ground
-    // fill: the area south of the pad isn't procedurally generated at
-    // all (see isPubColumn), so without this the course would just be a
-    // void with floating lane fragments in it.
-    const apronX0 = GOLF_AREA_X0-3, apronX1 = GOLF_AREA_X1+3;
+    // fill: this area isn't procedurally generated at all (see
+    // isPubColumn), so without this the course would just be a void
+    // with floating lane fragments in it. Stretches east right up to
+    // the tennis court's own western edge (TENNIS_X0-1) so there's
+    // continuous ground between the two rather than a gap.
+    const apronX0 = GOLF_AREA_X0-3, apronX1 = -56; // TENNIS_X0 (-55) minus 1
     const apronZ1 = GOLF_AREA_Z_NEAR+2, apronZ0 = GOLF_AREA_Z_FAR-3;
     fillGameBlocks(apronX0, apronX1, 0, 0, apronZ0, apronZ1, STONE);
     fillGameBlocks(apronX0, apronX1, 1, 1, apronZ0, apronZ1, GRASS);

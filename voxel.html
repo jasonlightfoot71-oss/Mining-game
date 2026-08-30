@@ -8731,8 +8731,15 @@
     const speedMul = 1 + p*0.6; // up to 60% harder at full charge
     b.vel.x = fx*10*speedMul;
     b.vel.z = fz*10*speedMul;
-    b.vel.y = 5.5 + p*1.5; // a harder swing also arcs a bit higher, not just faster
+    // Height (not speed) is what actually determines how far this
+    // travels — distance is roughly horizontal-speed × hang-time, and
+    // hang-time is 2×vel.y/gravity. Doubled from before (was capped at
+    // 5.5-7) so a full-charge shot travels roughly twice as far — enough
+    // to actually clear the net from the back of the court — without the
+    // ball moving through the air any faster than it did.
+    b.vel.y = 11 + p*3;
     playTennisHit(p);
+    tennisLocalSwingUntil = performance.now() + 350; // animates the local avatar's own swing — see tennisArmSwingRotation
     if (tennisGame) {
       tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
       tennisGame.lastHitterSide = side; // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
@@ -8881,6 +8888,95 @@
   // shot doesn't just bounce back off nobody — tennisAiSwingUntil below
   // is what actually times that figure's brief swing animation to this.
   let tennisAiSwingUntil = 0;
+  // Set whenever the local player's own hit actually connects (see
+  // tryHitTennisBall) — read by updateTennisCameraFocus to animate their
+  // avatar's own swing the same way tennisAiSwingUntil animates the
+  // computer's.
+  let tennisLocalSwingUntil = 0;
+  // ---- Tennis: racket prop + shared swing animation ----
+  // A small low-poly racket — cylinder handle, a short neck, and a torus
+  // "head" with a translucent string-bed disc — built once per figure and
+  // parented to its right arm, same pattern buildCustomerFigure's own
+  // held-item system already uses (see HELD_ITEM_BUILDERS), just applied
+  // directly here rather than through that system since it's specific to
+  // standing on the tennis court, not a general appearance choice.
+  function buildTennisRacketProp() {
+    const g = new THREE.Group();
+    const handleMat = new THREE.MeshPhongMaterial({ color: 0x3a2a1a, shininess: 10 });
+    const frameMat = new THREE.MeshPhongMaterial({ color: 0x222222, shininess: 40 });
+    const stringMat = new THREE.MeshBasicMaterial({ color: 0xf0ead8, transparent: true, opacity: 0.55, side: THREE.DoubleSide });
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.022, 0.2, 6), handleMat);
+    handle.position.y = 0.1;
+    g.add(handle);
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.1, 0.028), frameMat);
+    neck.position.y = 0.25;
+    g.add(neck);
+    const headRing = new THREE.Mesh(new THREE.TorusGeometry(0.1, 0.016, 5, 10), frameMat);
+    headRing.position.y = 0.39;
+    g.add(headRing);
+    const strings = new THREE.Mesh(new THREE.CircleGeometry(0.09, 10), stringMat);
+    strings.position.y = 0.39;
+    g.add(strings);
+    g.rotation.x = Math.PI*0.42; // laid roughly forward/down out of the hand rather than pointing straight up
+    return g;
+  }
+  // Finds the figure's right-arm mesh (the same 'arm' + position.x>0
+  // convention buildCustomerFigure's own held-item handling uses) and
+  // parents a racket to it, so the racket inherits whatever rotation the
+  // swing animation below applies to that arm. Idempotent via
+  // userData.hasRacket, since both avatars get rebuilt/re-ensured at
+  // various points (colour changes, world re-entry) and shouldn't end up
+  // with two rackets stacked on the same hand.
+  function attachTennisRacket(avatar) {
+    if (!avatar || avatar.userData.hasRacket) return;
+    let rightArm = null;
+    avatar.traverse(o => { if (o.name === 'arm' && o.position.x > 0) rightArm = o; });
+    if (!rightArm) return;
+    const racket = buildTennisRacketProp();
+    racket.position.set(0.02, -0.3, 0.06);
+    racket.name = 'tennisRacket';
+    rightArm.add(racket);
+    avatar.userData.hasRacket = true;
+  }
+  // Shared by both the local player's and the computer's avatar — a quick
+  // forward swing arc (wound back, through contact, into a follow-
+  // through) rather than the old instant two-state snap, using a sine
+  // curve for a free ease-in/ease-out without a separate easing function.
+  // Returns the racket ARM's own rotation.x; the idle value (-0.15) holds
+  // the racket up and ready rather than hanging straight down.
+  function tennisArmSwingRotation(swingUntil, durationMs) {
+    const remaining = swingUntil - performance.now();
+    if (remaining <= 0) return -0.15;
+    const t = Math.min(1, Math.max(0, 1 - remaining/durationMs));
+    return -0.15 - Math.sin(t*Math.PI) * 1.7;
+  }
+  // Predicts where the ball will actually be the next time it's back down
+  // at court height, by solving the ballistic arc's own equation for time
+  // (0.5·g·t² + vy·t + (y-court height) = 0) rather than just reading its
+  // live position — a fast or wide shot's CURRENT x always lags behind
+  // where it's actually headed. Feeding this into the computer's own
+  // chase target (see updateAiAvatarFigure) lets it start moving toward
+  // the real landing spot immediately, instead of continuously trying to
+  // catch up to a moving point it's always a step behind.
+  function tennisPredictLandingX(b) {
+    const g = TENNIS_GRAVITY, a = 0.5*g, bq = b.vel.y, c = b.pos.y - TENNIS_CENTER.y;
+    const disc = bq*bq - 4*a*c;
+    let t = 0.3;
+    if (disc >= 0) {
+      const sq = Math.sqrt(disc);
+      const candidates = [(-bq+sq)/(2*a), (-bq-sq)/(2*a)].filter(v => v > 0.02);
+      if (candidates.length) t = Math.min(...candidates);
+    }
+    // Accounts for updateTennisBall's own light air drag on vel.x
+    // (b.vel.x *= 1-dt*0.15 each frame, ~exponential decay at rate 0.15)
+    // rather than assuming constant velocity — over a second-plus of
+    // flight that drag knocks a meaningful chunk off a naive v×t
+    // estimate, which was making the predicted landing spot consistently
+    // overshoot the real one.
+    const k = 0.15;
+    const xDisp = k > 0.0001 ? (b.vel.x/k) * (1 - Math.exp(-k*t)) : b.vel.x*t;
+    return b.pos.x + xDisp;
+  }
   function tennisAIReturn() {
     if (!tennisBall) return;
     const b = tennisBall, aiSide = tennisAISide();
@@ -8944,7 +9040,7 @@
       // chase is a miss, same as it would be for a human standing in the
       // wrong spot, rather than being returned from wherever it happens
       // to be standing.
-      const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 1.8;
+      const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 2.2;
       if (withinReach) tennisAIReturn();
       else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(side)); }
     }
@@ -8989,6 +9085,7 @@
       localAvatarFigure.visible = false;
       scene.add(localAvatarFigure);
     }
+    attachTennisRacket(localAvatarFigure);
     return localAvatarFigure;
   }
   // Rebuilds it with whatever colours were just chosen in the avatar
@@ -9000,6 +9097,7 @@
     scene.remove(localAvatarFigure);
     localAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
     localAvatarFigure.visible = wasVisible;
+    attachTennisRacket(localAvatarFigure);
     scene.add(localAvatarFigure);
   }
   let tennisCamBlend = 0, tennisCamWasActive = false;
@@ -9056,14 +9154,28 @@
     // camera happens to be pointed.
     avatar.rotation.y = mySide === 'far' ? Math.PI : 0;
     const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
-    if (moving) {
+    const swinging = performance.now() < tennisLocalSwingUntil;
+    if (moving && !swinging) {
       const swing = Math.sin(performance.now()*0.02) * 0.5;
       avatar.traverse(o => {
         if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
         if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
       });
-    } else {
+    } else if (!swinging) {
       avatar.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+    } else {
+      avatar.traverse(o => { if (o.name === 'leg') o.rotation.x = 0; }); // feet planted for the swing, even mid-stride
+    }
+    // Racket-arm swing, timed to tryHitTennisBall's own tennisLocalSwingUntil
+    // — overrides just the right arm's rotation on top of whatever the
+    // walk-cycle above set, using the same shared arc the computer's own
+    // avatar uses (see tennisArmSwingRotation).
+    if (swinging) {
+      const armRot = tennisArmSwingRotation(tennisLocalSwingUntil, 350);
+      avatar.traverse(o => {
+        if (o.name !== 'arm') return;
+        o.rotation.x = o.position.x > 0 ? armRot : -0.1;
+      });
     }
     // The first-person held-item view is a child of the camera itself —
     // left alone it would just float in front of this pulled-back shot.
@@ -9086,15 +9198,20 @@
     // Pulled back and up behind the player along the reverse of the
     // locked facing direction (not live mouse yaw), so the pulled-back
     // shot stays steady on the opponent instead of swinging around with
-    // the mouse mid-rally.
+    // the mouse mid-rally. Higher and further back than before, with a
+    // shallower downward pitch, specifically so the far baseline is
+    // actually visible when serving from the back of the court — the
+    // court's a full 40 blocks deep, and the previous lower/closer/more-
+    // downward-angled view mostly showed the ground in front of the
+    // player rather than the opponent's side.
     const backX = Math.sin(targetYaw), backZ = Math.cos(targetYaw);
     const desired = new THREE.Vector3(
-      player.pos.x + backX*4.5,
-      player.pos.y + player.height*0.92 + 2.6,
-      player.pos.z + backZ*4.5
+      player.pos.x + backX*7,
+      player.pos.y + player.height*0.92 + 4.6,
+      player.pos.z + backZ*7
     );
     camera.position.lerp(desired, tennisCamBlend);
-    const targetPitch = -0.34; // angled down enough to keep both the avatar and the far baseline in frame
+    const targetPitch = -0.2; // shallower than before — looks further down the court instead of at the ground close by
     camera.rotation.x = pitch + (targetPitch - pitch) * tennisCamBlend;
   }
 
@@ -9112,6 +9229,7 @@
       aiAvatarFigure.visible = false;
       scene.add(aiAvatarFigure);
     }
+    attachTennisRacket(aiAvatarFigure);
     return aiAvatarFigure;
   }
   function updateAiAvatarFigure(dt) {
@@ -9124,15 +9242,26 @@
     const avatar = ensureAiAvatarFigure();
     avatar.visible = true;
     const baseZ = aiSide === 'far' ? TENNIS_Z1-2 : TENNIS_Z0+2;
-    // Loosely tracks the ball's X position (clamped to the court's own
-    // width) rather than real pathing — just enough to look like it's
-    // actually positioning for the shot instead of standing dead still.
-    const targetX = tennisBall ? Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, tennisBall.pos.x)) : TENNIS_CENTER.x;
+    // Chases the ball's PREDICTED landing X (see tennisPredictLandingX)
+    // rather than its live position — tracking the live position always
+    // lags a moving ball by an amount proportional to how fast it's
+    // travelling, which was exactly why the figure so often looked
+    // nowhere near the ball right as it "hit" it. Predicting the landing
+    // spot means it starts heading to the right place the instant a shot
+    // is hit toward it, not once the ball's already most of the way
+    // there.
+    const targetX = tennisBall ? Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, tennisPredictLandingX(tennisBall))) : TENNIS_CENTER.x;
     if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, baseZ); aiAvatarWasVisible = true; }
-    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*4); avatar.position.y = 2; avatar.position.z = baseZ; }
+    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*5); avatar.position.y = 2; avatar.position.z = baseZ; }
     avatar.rotation.y = aiSide === 'far' ? Math.PI : 0; // facing the net either way — see the same yaw/forward convention updateTennisCameraFocus relies on
-    const swinging = performance.now() < tennisAiSwingUntil; // set by tennisAIReturn, so the swing lands roughly when the ball actually leaves
-    avatar.traverse(o => { if (o.name === 'arm') o.rotation.x = swinging ? -1.6 : -0.15; });
+    // Shared swing arc with the player's own avatar (see
+    // tennisArmSwingRotation) — only the racket arm swings, the other
+    // stays relaxed rather than mirroring it.
+    const armRot = tennisArmSwingRotation(tennisAiSwingUntil, 350);
+    avatar.traverse(o => {
+      if (o.name !== 'arm') return;
+      o.rotation.x = o.position.x > 0 ? armRot : -0.1;
+    });
   }
 
   // ================= SNAKES & LADDERS (2+ player minigame in The Mill) =================

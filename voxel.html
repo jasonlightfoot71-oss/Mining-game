@@ -8627,6 +8627,14 @@
   function updateTennisBall(dt) {
     updateAiAvatarFigure(dt); // independent of ball/world-id early-return below — hides itself correctly either way
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return;
+    // A pending computer serve (scheduled by tennisAwardPoint whenever
+    // the computer's the one who lost the previous point) fires here
+    // once its delay is up — otherwise the ball would just sit forever
+    // at the computer's baseline with nobody ever hitting it in.
+    if (tennisAiServeAt && performance.now() >= tennisAiServeAt) {
+      tennisAiServeAt = 0;
+      tennisAiServe();
+    }
     const hudEl = document.getElementById('tennisScoreHud');
     if (hudEl) hudEl.style.display = tennisDistanceFromCourt(player.pos.x, player.pos.z) < 10 ? 'block' : 'none';
     const b = tennisBall;
@@ -8807,6 +8815,7 @@
   let tennisPendingStartSide = null;
   function tennisResetGame() {
     tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false, lastHitterSide:null };
+    tennisAiServeAt = 0; // a fresh match — any serve scheduled from the previous one is no longer relevant
     updateTennisScoreHud();
   }
   function tennisOtherSide(side) { return side === 'near' ? 'far' : 'near'; }
@@ -8867,8 +8876,8 @@
     // entrance trigger sits) rather than dead-centre by the net — gives
     // them room to actually walk up and serve it in, instead of it
     // sitting right on top of the net.
+    const serverSide = tennisOtherSide(winSide);
     if (tennisBall) {
-      const serverSide = tennisOtherSide(winSide);
       const serveZ = serverSide === 'near' ? TENNIS_TRIGGER_NEAR.z : TENNIS_TRIGGER_FAR.z;
       tennisBall.pos.set(TENNIS_CENTER.x, TENNIS_CENTER.y, serveZ);
       tennisBall.vel.set(0,0,0);
@@ -8877,6 +8886,13 @@
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.ballInPlay = false; // sitting dead-centre again until someone actually serves it — see tennisCheckBounce's own guard
     tennisGame.lastHitterSide = null;
+    // If the computer's the one serving next, nobody's ever actually
+    // going to walk up and hit it in — a human still has to for their
+    // own serves, but the computer needs to serve itself. Scheduled a
+    // beat out rather than firing instantly, so the ball visibly sits at
+    // its baseline for a moment first instead of snapping into motion
+    // the same frame the point ends.
+    tennisAiServeAt = (!tennisGame.won && serverSide === tennisAISide()) ? performance.now() + 1300 : 0;
     broadcastTennisScore();
     broadcastTennisState(true);
   }
@@ -8888,6 +8904,17 @@
   // shot doesn't just bounce back off nobody — tennisAiSwingUntil below
   // is what actually times that figure's brief swing animation to this.
   let tennisAiSwingUntil = 0;
+  // performance.now() timestamp the computer should serve at next, or 0
+  // for no pending serve — set by tennisAwardPoint when the computer's
+  // the one who lost the point, checked each frame in updateTennisBall.
+  let tennisAiServeAt = 0;
+  // Timestamp of the computer's own last hit (return or serve) — a
+  // simple cooldown backstop in tennisCheckBounce so a shot that somehow
+  // still lands back on the computer's own side a fraction of a second
+  // after it just swung (physics edge cases, not the normal case now
+  // that tennisAIReturn's speed is distance-aware) can't immediately
+  // trigger another swing before the first one's even had time to travel.
+  let tennisAiLastHitAt = 0;
   // Set whenever the local player's own hit actually connects (see
   // tryHitTennisBall) — read by updateTennisCameraFocus to animate their
   // avatar's own swing the same way tennisAiSwingUntil animates the
@@ -8981,31 +9008,43 @@
     if (!tennisBall) return;
     const b = tennisBall, aiSide = tennisAISide();
     const towardZ = aiSide === 'far' ? -1 : 1;
-    // Speed is now derived from how far the ball actually has to travel
-    // to clear the net from wherever it currently sits, rather than a
-    // fixed range. A shot that bounced deep in the computer's own court
-    // (near its own baseline, ~20 blocks from the net) needs a lot more
-    // pace to actually cross over in one arc than one that bounced right
-    // on top of the net — the old fixed 8-11 speed only had enough
-    // hang-time to cover 7-10 blocks before landing again, so a deep
-    // return regularly fell back down well short of the net, on the
-    // computer's OWN side, which immediately counted as a fresh bounce
-    // there and fired another return before the first one had ever
-    // actually come over — reading as the computer hitting it twice in a
-    // row, and also as its avatar being nowhere near the ball, since it
-    // hadn't had time to chase over to the new landing spot yet.
-    const vy = 6.5 + Math.random()*2; // a bit more height than before — buys enough hang-time that a deep return doesn't need an unreasonably fast horizontal speed to still clear the net in one arc
+    // Speed is derived from how far the ball actually has to travel to
+    // clear the net from wherever it currently sits, rather than a fixed
+    // range. A shot that bounced deep in the computer's own court (near
+    // its own baseline, ~20 blocks from the net) needs a lot more pace
+    // to actually cross over in one arc than one that bounced right on
+    // top of the net. The +9 margin/12 floor below (padded up again —
+    // the smaller margin still occasionally fell short once the actual
+    // in-flight air drag was accounted for) is deliberately generous:
+    // landing short here doesn't just look wrong, it silently retriggers
+    // ANOTHER return the instant it lands back on the computer's own
+    // side, which is what read as it hitting the ball twice in a row.
+    const vy = 7.5 + Math.random()*1.5;
     const hangTime = (2*vy) / Math.abs(TENNIS_GRAVITY);
     const distToNet = Math.abs(TENNIS_NET_Z - b.pos.z);
-    const neededSpeed = (distToNet + 4) / hangTime; // +4 so it clears with real room to spare, not just barely reaching the line
-    b.vel.z = towardZ * Math.max(9, neededSpeed);
+    const neededSpeed = (distToNet + 9) / hangTime;
+    b.vel.z = towardZ * Math.max(12, neededSpeed);
     b.vel.x = (Math.random()-0.5)*5;
     b.vel.y = vy;
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.lastHitterSide = aiSide; // so a return that sails into the net (see updateTennisBall) faults the computer, not whoever it was returning against
     tennisAiSwingUntil = performance.now() + 350;
+    tennisAiLastHitAt = performance.now();
     playTennisHit(0.5);
     broadcastTennisState(true);
+  }
+  // Serves the ball in from a dead stop at the computer's own baseline —
+  // called by updateTennisBall once tennisAiServeAt comes due (see
+  // tennisAwardPoint, which schedules it whenever the computer's the one
+  // who lost the previous point and so has to serve the restart). Reuses
+  // tennisAIReturn's own physics unchanged: it doesn't care whether the
+  // ball was already moving or sitting still, only where it currently is
+  // relative to the net, which a fresh serve from the baseline already
+  // gives it correctly.
+  function tennisAiServe() {
+    if (!tennisBall || !tennisGame || tennisGame.won) return;
+    tennisGame.ballInPlay = true;
+    tennisAIReturn();
   }
   // Called whenever the ball touches the ground on a given side ('near'
   // or 'far') — only actually acts on a side this client is responsible
@@ -9025,6 +9064,13 @@
     if (!tennisGame.ballInPlay) return;
     const mySide = tennisMySide(), aiSide = tennisAISide();
     if (side !== mySide && side !== aiSide) return;
+    // A hard backstop against the computer swinging twice in immediate
+    // succession — a fraction of a second really can't be a genuine
+    // second bounce on its own side after it just hit the ball (the
+    // shortest real return-and-land cycle takes the better part of a
+    // second), so treat anything inside this window as the same physical
+    // bounce settling rather than a fresh one.
+    if (side === aiSide && performance.now() - tennisAiLastHitAt < 400) return;
     if (tennisGame.lastBounceSide === side) {
       tennisGame.bounceCount++;
       if (tennisGame.bounceCount >= 2) { tennisAwardPoint(tennisOtherSide(side)); return; }
@@ -9034,12 +9080,12 @@
     }
     if (side === aiSide && tennisGame.bounceCount === 1) {
       // The computer only actually returns the ball if its own on-court
-      // figure (see updateAiAvatarFigure, which chases the ball's X
-      // position but at a finite speed) is actually close enough to it
-      // when it bounces — a shot hit wide or fast enough to outrun that
-      // chase is a miss, same as it would be for a human standing in the
-      // wrong spot, rather than being returned from wherever it happens
-      // to be standing.
+      // figure (see updateAiAvatarFigure, which chases the ball's
+      // PREDICTED landing spot) is actually close enough to it when it
+      // bounces — a shot hit wide or fast enough to outrun that chase is
+      // a miss, same as it would be for a human standing in the wrong
+      // spot, rather than being returned from wherever it happens to be
+      // standing.
       const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 2.2;
       if (withinReach) tennisAIReturn();
       else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(side)); }
@@ -9135,6 +9181,8 @@
       if (tennisCamWasActive) {
         tennisCamWasActive = false;
         if (localAvatarFigure) localAvatarFigure.visible = false;
+        const crosshairEl = document.getElementById('crosshair');
+        if (crosshairEl) crosshairEl.style.display = 'block'; // see the crosshair hide further below — restored once the pulled-back view actually ends
         // Restore whatever the first-person held view should actually be
         // showing — exactly setWorkHeldVisual's own two branches, since
         // that's the only thing that otherwise decides it.
@@ -9144,6 +9192,13 @@
       return;
     }
     tennisCamWasActive = true;
+    // The first-person crosshair sits dead-centre of the screen, right
+    // where the ball usually needs to be seen most (lining up a shot,
+    // watching it arc toward you) — pointless in this pulled-back
+    // third-person view anyway, since there's no longer anything being
+    // aimed at under it.
+    const crosshairEl = document.getElementById('crosshair');
+    if (crosshairEl) crosshairEl.style.display = 'none';
     const avatar = ensureLocalAvatarFigure();
     avatar.visible = !!mySide;
     avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
@@ -9198,20 +9253,18 @@
     // Pulled back and up behind the player along the reverse of the
     // locked facing direction (not live mouse yaw), so the pulled-back
     // shot stays steady on the opponent instead of swinging around with
-    // the mouse mid-rally. Higher and further back than before, with a
-    // shallower downward pitch, specifically so the far baseline is
-    // actually visible when serving from the back of the court — the
-    // court's a full 40 blocks deep, and the previous lower/closer/more-
-    // downward-angled view mostly showed the ground in front of the
-    // player rather than the opponent's side.
+    // the mouse mid-rally. Raised again — still wasn't high enough to
+    // comfortably see the far baseline from the back of the court — and
+    // pulled back further to match, keeping the same shallow pitch so it
+    // looks down the length of the court rather than at the ground.
     const backX = Math.sin(targetYaw), backZ = Math.cos(targetYaw);
     const desired = new THREE.Vector3(
-      player.pos.x + backX*7,
-      player.pos.y + player.height*0.92 + 4.6,
-      player.pos.z + backZ*7
+      player.pos.x + backX*8.5,
+      player.pos.y + player.height*0.92 + 6.8,
+      player.pos.z + backZ*8.5
     );
     camera.position.lerp(desired, tennisCamBlend);
-    const targetPitch = -0.2; // shallower than before — looks further down the court instead of at the ground close by
+    const targetPitch = -0.14; // shallower again, to match the higher/further-back position above
     camera.rotation.x = pitch + (targetPitch - pitch) * tennisCamBlend;
   }
 

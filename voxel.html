@@ -5454,7 +5454,7 @@
       post.position.set(px, 2.8, TENNIS_NET_Z+0.5);
       scene.add(post); pubExtraProps.push(post);
     });
-    const netMat = new THREE.MeshBasicMaterial({ color: 0xf0f0f0, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+    const netMat = new THREE.MeshBasicMaterial({ color: 0x1c8a3a, transparent: true, opacity: 0.55, side: THREE.DoubleSide }); // green rather than off-white — a near-white net barely showed up against the court's own white lines/grey surface
     const net = new THREE.Mesh(new THREE.PlaneGeometry((TENNIS_X1-TENNIS_X0)+2, 1.1), netMat);
     net.position.set((TENNIS_X0+TENNIS_X1)/2+0.5, 2.55, TENNIS_NET_Z+0.5);
     scene.add(net); pubExtraProps.push(net);
@@ -9018,7 +9018,7 @@
   // chase target (see updateAiAvatarFigure) lets it start moving toward
   // the real landing spot immediately, instead of continuously trying to
   // catch up to a moving point it's always a step behind.
-  function tennisPredictLandingX(b) {
+  function tennisPredictLanding(b) {
     const g = TENNIS_GRAVITY, a = 0.5*g, bq = b.vel.y, c = b.pos.y - TENNIS_CENTER.y;
     const disc = bq*bq - 4*a*c;
     let t = 0.3;
@@ -9027,15 +9027,15 @@
       const candidates = [(-bq+sq)/(2*a), (-bq-sq)/(2*a)].filter(v => v > 0.02);
       if (candidates.length) t = Math.min(...candidates);
     }
-    // Accounts for updateTennisBall's own light air drag on vel.x
-    // (b.vel.x *= 1-dt*0.15 each frame, ~exponential decay at rate 0.15)
+    // Accounts for updateTennisBall's own light air drag on vel.x/vel.z
+    // (each *= 1-dt*0.15 per frame, ~exponential decay at rate 0.15)
     // rather than assuming constant velocity — over a second-plus of
     // flight that drag knocks a meaningful chunk off a naive v×t
     // estimate, which was making the predicted landing spot consistently
     // overshoot the real one.
     const k = 0.15;
-    const xDisp = k > 0.0001 ? (b.vel.x/k) * (1 - Math.exp(-k*t)) : b.vel.x*t;
-    return b.pos.x + xDisp;
+    const disp = v0 => k > 0.0001 ? (v0/k) * (1 - Math.exp(-k*t)) : v0*t;
+    return { x: b.pos.x + disp(b.vel.x), z: b.pos.z + disp(b.vel.z) };
   }
   function tennisAIReturn() {
     if (!tennisBall) return;
@@ -9119,7 +9119,11 @@
     // going and it gets another look at the next one (or the one after
     // that), same forgiving treatment a human player gets, right up
     // until it actually goes out or into the net.
-    const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 2.2;
+    // Now checks both x AND z (real 2D distance) — now that the figure
+    // actually moves forward/back to meet short balls or retreat for
+    // deep ones (see updateAiAvatarFigure), a same-side-only x check
+    // would let it "reach" shots it's nowhere near depth-wise.
+    const withinReach = aiAvatarFigure && Math.hypot(aiAvatarFigure.position.x - tennisBall.pos.x, aiAvatarFigure.position.z - tennisBall.pos.z) <= 2.6;
     if (withinReach) tennisAIReturn();
   }
   let lastTennisTriggerCheck = 0, tennisWasAirborne = false;
@@ -9324,18 +9328,29 @@
     }
     const avatar = ensureAiAvatarFigure();
     avatar.visible = true;
-    const baseZ = aiSide === 'far' ? TENNIS_Z1-2 : TENNIS_Z0+2;
-    // Chases the ball's PREDICTED landing X (see tennisPredictLandingX)
-    // rather than its live position — tracking the live position always
-    // lags a moving ball by an amount proportional to how fast it's
-    // travelling, which was exactly why the figure so often looked
-    // nowhere near the ball right as it "hit" it. Predicting the landing
-    // spot means it starts heading to the right place the instant a shot
-    // is hit toward it, not once the ball's already most of the way
-    // there.
-    const targetX = tennisBall ? Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, tennisPredictLandingX(tennisBall))) : TENNIS_CENTER.x;
-    if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, baseZ); aiAvatarWasVisible = true; }
-    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*5); avatar.position.y = 2; avatar.position.z = baseZ; }
+    const restX = TENNIS_CENTER.x, restZ = aiSide === 'far' ? TENNIS_Z1-2 : TENNIS_Z0+2;
+    // Chases the ball's PREDICTED landing spot in BOTH x and z (see
+    // tennisPredictLanding) rather than only ever sliding side to side
+    // along a fixed depth — previously it tracked x correctly but always
+    // stood at the same fixed baseline distance regardless of how close
+    // or far the actual shot was landing, which read as never actually
+    // moving up to meet a short ball or back for a deep one. Clamped to
+    // its own half of the court (short of the net, short of the back
+    // wall) so it can't wander through either.
+    let targetX = restX, targetZ = restZ;
+    if (tennisBall) {
+      const land = tennisPredictLanding(tennisBall);
+      targetX = Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, land.x));
+      targetZ = aiSide === 'far'
+        ? Math.max(TENNIS_NET_Z+2, Math.min(TENNIS_Z1-1, land.z))
+        : Math.max(TENNIS_Z0+1, Math.min(TENNIS_NET_Z-2, land.z));
+    }
+    if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, targetZ); aiAvatarWasVisible = true; }
+    else {
+      avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*5);
+      avatar.position.z += (targetZ - avatar.position.z) * Math.min(1, dt*5);
+      avatar.position.y = 2;
+    }
     avatar.rotation.y = aiSide === 'far' ? Math.PI : 0; // facing the net either way — see the same yaw/forward convention updateTennisCameraFocus relies on
     // Shared swing arc with the player's own avatar (see
     // tennisArmSwingRotation) — only the racket arm swings, the other

@@ -8750,7 +8750,7 @@
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return false;
     const b = tennisBall;
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
-    if (dPlayer > 2.2) return false; // widened from the original 1.3 — too easy to be a hair off (especially now serves start back at the baseline rather than right by the net) and have a charged release do nothing; matches the reach the computer's own avatar already gets
+    if (dPlayer > 2.9) return false; // widened again — was still too easy to be a hair off and have a charged release do nothing
     const side = tennisMySide();
     // The court runs along Z, net at TENNIS_NET_Z — a near-side player
     // always has to send the ball toward +z (across to the far side) and
@@ -9131,7 +9131,7 @@
     // comments) is actually close enough to it at this one decisive
     // moment. Checks both x AND z (real 2D distance), since the figure
     // moves forward/back to meet short balls or retreat for deep ones.
-    const withinReach = aiAvatarFigure && Math.hypot(aiAvatarFigure.position.x - tennisBall.pos.x, aiAvatarFigure.position.z - tennisBall.pos.z) <= 2.2; // matches the player's own hit-connect range
+    const withinReach = aiAvatarFigure && Math.hypot(aiAvatarFigure.position.x - tennisBall.pos.x, aiAvatarFigure.position.z - tennisBall.pos.z) <= 2.4; // a touch more forgiving than before, to offset the speed reduction below
     if (withinReach) tennisAIReturn();
     else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(aiSide)); }
   }
@@ -9368,7 +9368,7 @@
       // centrally and it gets there fine.
       const dx = targetX - avatar.position.x, dz = targetZ - avatar.position.z;
       const dist = Math.hypot(dx, dz);
-      const maxStep = 5.5 * dt; // a fast human sprint pace, not a teleport
+      const maxStep = 6.8 * dt; // quicker than before (was 5.5) — still well short of covering the whole court on a hard shot, but no longer a pushover on more moderate ones
       if (dist <= maxStep || dist < 0.0001) { avatar.position.x = targetX; avatar.position.z = targetZ; }
       else { avatar.position.x += dx/dist*maxStep; avatar.position.z += dz/dist*maxStep; }
       avatar.position.y = 2;

@@ -434,6 +434,15 @@
     </div>
   </div>
 </div>
+<div id="footballModeModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:280px;width:90%;color:#fff;font-size:13px;text-align:center;">
+    <div style="font-weight:700;font-size:16px;margin-bottom:14px;">New Football Match</div>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button id="footballMode2P" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">👥 2 Player</button>
+      <button id="footballModeAI" style="background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:12px;font-size:14px;cursor:pointer;">🤖 vs Computer</button>
+    </div>
+  </div>
+</div>
 <div id="chatModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
   <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:320px;width:90%;color:#fff;font-size:13px;">
     <div style="margin-bottom:10px;font-weight:600;">Say something</div>
@@ -5140,6 +5149,13 @@
   const FOOTBALL_PITCH_BOUNDS = { x0: -1, x1: 29, z0: 37, z1: 75 };
   const FOOTBALL_GOAL_X0 = 12, FOOTBALL_GOAL_X1 = 16, FOOTBALL_PITCH_CENTER_X = 14;
   const FOOTBALL_CENTER = new THREE.Vector3(14.5, 2.28, 56.5); // pitch surface is a y=1 block, whose walkable top sits at world-height 2 (see player spawn just below, which stands at the same height on the same surface) — the ball's centre needs to be that plus its own radius (0.28) to actually rest ON the grass instead of partly inside it
+  // Jump-to-activate trigger blocks just behind each goal — same pattern
+  // as tennis's own baseline triggers, opening the 2-player/vs-computer
+  // mode modal rather than requiring a "join" for ordinary casual play
+  // (which still works exactly as before, with nobody having chosen a
+  // mode at all).
+  const FOOTBALL_TRIGGER_P1 = { x: FOOTBALL_PITCH_CENTER_X, y: 2, z: FOOTBALL_PITCH_BOUNDS.z0-3 };
+  const FOOTBALL_TRIGGER_P2 = { x: FOOTBALL_PITCH_CENTER_X, y: 2, z: FOOTBALL_PITCH_BOUNDS.z1+3 };
   function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
     const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
     fillGameBlocks(x0, x1, 0, 0, z0, z1, STONE);
@@ -5182,6 +5198,14 @@
         setGameBlock(xRight,y,z, CONCRETE);
       }
     }
+    // One raised trigger block behind each goal, same jump-to-activate
+    // pattern as the other minigames' own start blocks.
+    [FOOTBALL_TRIGGER_P1, FOOTBALL_TRIGGER_P2].forEach(pos => {
+      setGameBlock(pos.x, pos.y, pos.z, WHITE_CONC);
+      const label = buildNumberLabel('⚽');
+      label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
+      scene.add(label); pubExtraProps.push(label);
+    });
   }
   // ---- Snakes & Ladders tower ----
   // Exactly as literally described: 10 blocks, then another 10 stacked
@@ -5605,6 +5629,7 @@
     visitMode = false;
     assignRandomRole();
     spawnFootball(); // resets to centre with 0-0 every fresh visit — persisting an in-progress match/score across sessions isn't worth the complexity for a casual kickabout
+    footballResetGame();
     resetSlGame(); // same reasoning — a fresh Snakes & Ladders game every visit rather than trying to persist an in-progress one
     bsResetGame();
     spawnTennisBall();
@@ -8176,6 +8201,12 @@
         const s = tennisGame.sides[payload.side];
         if (s && !s.uid) { s.uid = payload.uid; s.name = payload.name; tennisCheckBothReady(); }
       });
+      channel.on('broadcast', { event: 'footballReset' }, () => { footballResetGame(); });
+      channel.on('broadcast', { event: 'footballJoin' }, ({ payload }) => {
+        if (!payload || !footballGame) return;
+        const s = footballGame.sides[payload.side];
+        if (s && !s.uid) { s.uid = payload.uid; s.name = payload.name; }
+      });
       channel.on('broadcast', { event: 'tennisScore' }, ({ payload }) => {
         if (!payload || !tennisGame) return;
         tennisGame.score = payload.score;
@@ -8566,8 +8597,241 @@
     b.vel.x = fx*6.5; // more horizontal pace than before (was 4.2) to make up for the flatter arc, so it still covers ground at a similar pace
     b.vel.z = fz*6.5;
     playThud(300);
+    footballLocalKickUntil = performance.now() + 300; // animates the local avatar's own kick — see footballLegKickRotation
     broadcastFootballState();
     return true;
+  }
+
+  // ---- Football: 2-player-vs-computer mode select ----
+  // Ordinary casual play (anyone walking up and kicking the ball around,
+  // no "joining" required) still works exactly as it always has — this
+  // only layers an optional third-person view plus a computer opponent
+  // on top, the same jump-a-trigger flow tennis and the other minigames
+  // use. Score itself stays the existing global footballScoreP1/P2 (see
+  // above), just gated on the same mode-select the other games have now.
+  let footballGame = null; // { sides: {p1:{uid,name}, p2:{uid,name}} } — p1 defends the near (z0) goal, p2 the far (z1) one, matching footballGoalScored's own convention
+  let footballPendingStartSide = null;
+  function footballResetGame() {
+    footballGame = { sides: { p1: { uid:null, name:null }, p2: { uid:null, name:null } } };
+    footballScoreP1 = 0; footballScoreP2 = 0;
+    updateFootballScoreHud();
+  }
+  function footballOtherSide(side) { return side === 'p1' ? 'p2' : 'p1'; }
+  function footballMySide() {
+    if (!footballGame) return null;
+    if (footballGame.sides.p1.uid === playerUid) return 'p1';
+    if (footballGame.sides.p2.uid === playerUid) return 'p2';
+    return null;
+  }
+  function footballAISide() {
+    if (!footballGame) return null;
+    if (footballGame.sides.p1.uid === 'AI') return 'p1';
+    if (footballGame.sides.p2.uid === 'AI') return 'p2';
+    return null;
+  }
+  function broadcastFootballJoin(side) { const s = footballGame.sides[side]; if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'footballJoin', payload:{ side, uid:s.uid, name:s.name } }); } catch(e) {} }
+  function broadcastFootballReset() { if (mpChannel && currentWorldId === mpConnectedWorldId) try { mpChannel.send({ type:'broadcast', event:'footballReset', payload:{} }); } catch(e) {} }
+  function footballStartOrContinue(side) {
+    if (currentWorldId !== PUB_WORLD_ID) return;
+    const isFreshGame = !footballGame || (!footballGame.sides.p1.uid && !footballGame.sides.p2.uid);
+    if (isFreshGame) {
+      footballPendingStartSide = side;
+      document.getElementById('footballModeModal').style.display = 'flex';
+      return;
+    }
+    footballJoin(side);
+  }
+  function footballJoin(side) {
+    if (!footballGame) footballResetGame();
+    const s = footballGame.sides[side];
+    if (!s.uid) { s.uid = playerUid; s.name = getMyDisplayName(); broadcastFootballJoin(side); }
+    else if (s.uid !== playerUid) { showChatLogLine('⚽', 'Someone is already playing that side.'); return; }
+    showChatLogLine('⚽', "You're on the pitch — kick off!");
+  }
+  let lastFootballTriggerCheck = 0, footballWasAirborne = false;
+  function updateFootballTriggers() {
+    const isAirborneNow = player.vel.y > 1;
+    const justJumped = isAirborneNow && !footballWasAirborne;
+    footballWasAirborne = isAirborneNow;
+    if (currentWorldId !== PUB_WORLD_ID || !justJumped) return;
+    const now = performance.now();
+    if (now - lastFootballTriggerCheck < 1200) return;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const onP1 = px === FOOTBALL_TRIGGER_P1.x && pz === FOOTBALL_TRIGGER_P1.z && Math.abs(player.pos.y - (FOOTBALL_TRIGGER_P1.y+1)) < 0.7;
+    const onP2 = px === FOOTBALL_TRIGGER_P2.x && pz === FOOTBALL_TRIGGER_P2.z && Math.abs(player.pos.y - (FOOTBALL_TRIGGER_P2.y+1)) < 0.7;
+    if (onP1 || onP2) {
+      lastFootballTriggerCheck = now;
+      const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
+      if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      pushDir.normalize();
+      player.pos.x += pushDir.x*1.3; player.pos.z += pushDir.z*1.3;
+      playButtonPress();
+      footballStartOrContinue(onP1 ? 'p1' : 'p2');
+    }
+  }
+
+  // ---- Football: pulled-back third-person camera + visible avatar ----
+  // A more modest pull-back than tennis's own aerial view — football is
+  // free-roam in every direction (dribbling, chasing, defending) rather
+  // than a fixed-facing rally, so this stays camera-yaw-steered like an
+  // ordinary third-person game instead of locking onto a fixed
+  // direction the way tennis's own view does.
+  let footballAvatarFigure = null, footballCamBlend = 0, footballCamWasActive = false, footballLocalKickUntil = 0;
+  function ensureFootballAvatarFigure() {
+    if (!footballAvatarFigure) {
+      footballAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+      footballAvatarFigure.visible = false;
+      scene.add(footballAvatarFigure);
+    }
+    return footballAvatarFigure;
+  }
+  function refreshFootballAvatarFigure() {
+    if (!footballAvatarFigure) return;
+    const wasVisible = footballAvatarFigure.visible;
+    scene.remove(footballAvatarFigure);
+    footballAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+    footballAvatarFigure.visible = wasVisible;
+    scene.add(footballAvatarFigure);
+  }
+  // A quick forward leg-kick arc, shared by both the local player's and
+  // the computer's avatar — same sine-ease approach as tennis's own
+  // tennisArmSwingRotation.
+  function footballLegKickRotation(swingUntil, durationMs) {
+    const remaining = swingUntil - performance.now();
+    if (remaining <= 0) return 0;
+    const t = Math.min(1, Math.max(0, 1 - remaining/durationMs));
+    return -Math.sin(t*Math.PI) * 1.3;
+  }
+  function updateFootballCameraFocus(dt) {
+    const nearPitch = currentWorldId === PUB_WORLD_ID && footballDistanceFromPitch(player.pos.x, player.pos.z) < 12;
+    const mySide = footballMySide();
+    const active = nearPitch && !!mySide;
+    const targetBlend = active ? 1 : 0;
+    footballCamBlend += (targetBlend - footballCamBlend) * Math.min(1, dt*2.2);
+    if (footballCamBlend < 0.004) {
+      footballCamBlend = 0;
+      if (footballCamWasActive) {
+        footballCamWasActive = false;
+        if (footballAvatarFigure) footballAvatarFigure.visible = false;
+        const crosshairEl = document.getElementById('crosshair');
+        if (crosshairEl && !tennisCamWasActive) crosshairEl.style.display = 'block';
+        if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
+        else { workHeldRoot.visible = false; selectSlot(selectedSlot); }
+      }
+      return;
+    }
+    footballCamWasActive = true;
+    const crosshairEl = document.getElementById('crosshair');
+    if (crosshairEl) crosshairEl.style.display = 'none';
+    const avatar = ensureFootballAvatarFigure();
+    avatar.visible = true;
+    avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
+    avatar.rotation.y = yaw + Math.PI; // faces the same way the (still mouse-steered) camera looks — see the derivation in tennis's own equivalent comment for why it's yaw+π rather than yaw
+    const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
+    const kicking = performance.now() < footballLocalKickUntil;
+    if (moving && !kicking) {
+      const swing = Math.sin(performance.now()*0.02) * 0.5;
+      avatar.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    } else if (!kicking) {
+      avatar.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+    }
+    if (kicking) {
+      const legRot = footballLegKickRotation(footballLocalKickUntil, 300);
+      avatar.traverse(o => { if (o.name === 'leg') o.rotation.x = o.position.x > 0 ? legRot : 0; });
+    }
+    heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
+    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    const desired = new THREE.Vector3(
+      player.pos.x + backX*4,
+      player.pos.y + player.height*0.92 + 2.4,
+      player.pos.z + backZ*4
+    );
+    camera.position.lerp(desired, footballCamBlend);
+    const targetPitch = -0.12; // a light downward tilt, nowhere near tennis's steep aerial angle
+    camera.rotation.x = pitch + (targetPitch - pitch) * footballCamBlend;
+  }
+
+  // ---- Football: computer opponent ----
+  let footballAiAvatarFigure = null, footballAiAvatarWasVisible = false, footballAiSwingUntil = 0, footballAiLastKickAt = 0;
+  function ensureFootballAiAvatarFigure() {
+    if (!footballAiAvatarFigure) {
+      footballAiAvatarFigure = buildCustomerFigure(false, { skinIdx: 1, hairIdx: 4, shirtIdx: 7, pantsIdx: 0, hairLength: 'bald' });
+      footballAiAvatarFigure.add(buildNameSprite('🤖 Computer'));
+      footballAiAvatarFigure.visible = false;
+      scene.add(footballAiAvatarFigure);
+    }
+    return footballAiAvatarFigure;
+  }
+  // Aims roughly at the human's goal with a bit of scatter (so it isn't
+  // pin-point robotic), using the same flattened, driven kick physics as
+  // the player's own (see tryKickFootball).
+  function footballAIKick() {
+    if (!footballBall || !footballGame) return;
+    const aiSide = footballAISide();
+    if (!aiSide) return;
+    const b = footballBall;
+    const targetGoalZ = aiSide === 'p1' ? FOOTBALL_PITCH_BOUNDS.z1 : FOOTBALL_PITCH_BOUNDS.z0;
+    const targetX = FOOTBALL_PITCH_CENTER_X + (Math.random()-0.5)*7;
+    const dx = targetX - b.pos.x, dz = targetGoalZ - b.pos.z;
+    const dlen = Math.hypot(dx, dz) || 1;
+    b.vel.x = (dx/dlen)*6.5;
+    b.vel.z = (dz/dlen)*6.5;
+    b.vel.y = 5;
+    footballAiSwingUntil = performance.now() + 300;
+    footballAiLastKickAt = performance.now();
+    playThud(300);
+    broadcastFootballState(true);
+  }
+  function updateFootballAiAvatarFigure(dt) {
+    const aiSide = footballAISide();
+    if (!aiSide || currentWorldId !== PUB_WORLD_ID) {
+      if (footballAiAvatarFigure) footballAiAvatarFigure.visible = false;
+      footballAiAvatarWasVisible = false;
+      return;
+    }
+    const avatar = ensureFootballAiAvatarFigure();
+    avatar.visible = true;
+    const restZ = aiSide === 'p1' ? FOOTBALL_PITCH_BOUNDS.z0+6 : FOOTBALL_PITCH_BOUNDS.z1-6;
+    // Simple ground-based pursuit — chases wherever the ball currently
+    // is (clamped to the pitch), not a predicted landing spot the way
+    // tennis's own AI does, since football's ball spends most of its
+    // time rolling on the ground rather than following a clean ballistic
+    // arc.
+    let targetX = FOOTBALL_PITCH_CENTER_X, targetZ = restZ;
+    if (footballBall) {
+      targetX = Math.max(FOOTBALL_PITCH_BOUNDS.x0+1, Math.min(FOOTBALL_PITCH_BOUNDS.x1-1, footballBall.pos.x));
+      targetZ = Math.max(FOOTBALL_PITCH_BOUNDS.z0+1, Math.min(FOOTBALL_PITCH_BOUNDS.z1-1, footballBall.pos.z));
+    }
+    let dx = 0, dz = 1;
+    if (!footballAiAvatarWasVisible) { avatar.position.set(targetX, 2, targetZ); footballAiAvatarWasVisible = true; }
+    else {
+      dx = targetX - avatar.position.x; dz = targetZ - avatar.position.z;
+      const dist = Math.hypot(dx, dz);
+      const maxStep = 4.8 * dt; // a fast jog, not a sprint — this is a lone defender/attacker combined into one, not an eleven-a-side team, so it shouldn't feel superhumanly quick either
+      if (dist > 0.02) {
+        if (dist <= maxStep) { avatar.position.x = targetX; avatar.position.z = targetZ; }
+        else { avatar.position.x += dx/dist*maxStep; avatar.position.z += dz/dist*maxStep; }
+        avatar.rotation.y = Math.atan2(dx, dz); // faces the direction it's actually moving — see tennis's own facing-convention comments for the underlying atan2(dx,dz) derivation
+      }
+      avatar.position.y = 2;
+    }
+    const kicking = performance.now() < footballAiSwingUntil;
+    if (kicking) {
+      const legRot = footballLegKickRotation(footballAiSwingUntil, 300);
+      avatar.traverse(o => { if (o.name === 'leg') o.rotation.x = o.position.x > 0 ? legRot : 0; });
+    } else if (Math.hypot(dx,dz) > 0.05) {
+      const swing = Math.sin(performance.now()*0.02) * 0.5;
+      avatar.traverse(o => { if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1); });
+    } else {
+      avatar.traverse(o => { if (o.name === 'leg') o.rotation.x = 0; });
+    }
+    if (footballBall) {
+      const dPlayer = Math.hypot(avatar.position.x-footballBall.pos.x, avatar.position.z-footballBall.pos.z);
+      if (dPlayer < 1.1 && footballBall.pos.y <= FOOTBALL_CENTER.y+0.01 && performance.now()-footballAiLastKickAt > 900) footballAIKick();
+    }
   }
 
   // ================= TENNIS (structure + ball physics — this pass) =================
@@ -10329,6 +10593,7 @@
       camera.rotation.x = pitch;
       updateSlCameraFocus(dt); // blends the camera toward a moving Snakes & Ladders token when relevant, then back — no-ops instantly everywhere else
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
+      updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -10442,6 +10707,7 @@
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
+    updateFootballAiAvatarFigure(dt); // no-ops immediately unless a computer opponent is actually in play
     updateTennisBall(dt);
     updateTennisCharge(); // no-ops instantly unless the build button's currently held down charging a tennis hit
     updateSlTriggers(); // debounced internally — see its own comment
@@ -10449,6 +10715,7 @@
     updateBsTriggers(); // debounced internally — see its own comment
     updateShipFires();
     updateTennisTriggers();
+    updateFootballTriggers();
     updateDoors(dt);
     updateWork(dt);
 
@@ -11214,6 +11481,20 @@
     broadcastTennisJoin(aiSide);
     tennisJoin(tennisPendingStartSide);
   });
+  document.getElementById('footballMode2P').addEventListener('click', () => {
+    document.getElementById('footballModeModal').style.display = 'none';
+    footballResetGame(); broadcastFootballReset();
+    footballJoin(footballPendingStartSide);
+  });
+  document.getElementById('footballModeAI').addEventListener('click', () => {
+    document.getElementById('footballModeModal').style.display = 'none';
+    footballResetGame(); broadcastFootballReset();
+    const aiSide = footballOtherSide(footballPendingStartSide);
+    footballGame.sides[aiSide].uid = 'AI';
+    footballGame.sides[aiSide].name = '🤖 Computer';
+    broadcastFootballJoin(aiSide);
+    footballJoin(footballPendingStartSide);
+  });
 
   // ---- Avatar customization screen ----
   // A small dedicated Three.js scene/renderer just for the live preview
@@ -11333,6 +11614,7 @@
     closeAvatarModal();
     refreshTitleAvatarFigure(); // so the title screen's own thumbnail reflects whatever just changed immediately, not just next reload
     refreshLocalAvatarFigure(); // ditto for the on-court figure shown near the tennis court
+    refreshFootballAvatarFigure(); // ditto again for the on-pitch figure shown near the football pitch
   });
 
   // ---- Title screen's own small avatar thumbnail ----

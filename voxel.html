@@ -378,6 +378,9 @@
 <div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
 <div id="footballScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="tennisScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
+<div id="tennisChargeBarWrap" style="display:none;position:fixed;bottom:110px;left:50%;transform:translateX(-50%);z-index:10;width:140px;height:12px;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.4);border-radius:6px;overflow:hidden;">
+  <div id="tennisChargeBarFill" style="width:0%;height:100%;background:linear-gradient(90deg,#ffd54a,#ff5a3c);"></div>
+</div>
 <div id="clockDisplay" style="display:none;"></div>
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
@@ -7172,11 +7175,18 @@
     if (document.pointerLockElement !== renderer.domElement) return;
     ensureAudio();
     if (e.button === 0) { mineHeld = true; doMine(); }
-    else if (e.button === 2) { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
+    else if (e.button === 2) {
+      // Holding build right next to the tennis ball charges a harder hit
+      // instead of doing normal placement — see tennisChargeEligible/
+      // tennisStartCharge. Everywhere else build still works exactly as
+      // it always did.
+      if (tennisChargeEligible()) tennisStartCharge();
+      else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
+    }
   });
   document.addEventListener('mouseup', e => {
     if (e.button === 0) { mineHeld = false; mining = null; }
-    else if (e.button === 2) placingHeld = false;
+    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); } // a no-op unless a charge was actually in progress
   });
 
   // ================= TOUCH CONTROLS =================
@@ -7310,9 +7320,13 @@
     btnMine.addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); mineHeld = true; doMine(); });
     btnMine.addEventListener('touchend', e => { e.preventDefault(); mineHeld = false; mining = null; });
     btnMine.addEventListener('touchcancel', e => { mineHeld = false; mining = null; });
-    btnPlace.addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); });
-    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; });
-    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; });
+    btnPlace.addEventListener('touchstart', e => {
+      e.preventDefault(); ensureAudio();
+      if (tennisChargeEligible()) tennisStartCharge();
+      else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
+    });
+    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); });
+    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
       if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
@@ -8081,6 +8095,7 @@
         tennisBall.vel.set(payload.vx, payload.vy, payload.vz);
         tennisBall.mesh.position.copy(tennisBall.pos);
         if (tennisGame && typeof payload.ballInPlay === 'boolean') tennisGame.ballInPlay = payload.ballInPlay;
+        if (tennisGame && payload.lastHitterSide !== undefined) tennisGame.lastHitterSide = payload.lastHitterSide;
       });
       channel.on('broadcast', { event: 'tennisReset' }, () => { tennisResetGame(); });
       channel.on('broadcast', { event: 'tennisJoin' }, ({ payload }) => {
@@ -8539,6 +8554,10 @@
           // ballInPlay:true locally, and everyone else's bounce/scoring
           // would silently stop working.
           ballInPlay: tennisGame ? tennisGame.ballInPlay : false,
+          // Same reasoning — every client needs to agree on who hit it
+          // last so the net-fault check in updateTennisBall doesn't only
+          // work for whoever's machine actually swung.
+          lastHitterSide: tennisGame ? tennisGame.lastHitterSide : null,
         }});
       } catch(e) {}
     }
@@ -8549,6 +8568,7 @@
     return Math.sqrt(dx*dx + dz*dz);
   }
   function updateTennisBall(dt) {
+    updateAiAvatarFigure(dt); // independent of ball/world-id early-return below — hides itself correctly either way
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return;
     const hudEl = document.getElementById('tennisScoreHud');
     if (hudEl) hudEl.style.display = tennisDistanceFromCourt(player.pos.x, player.pos.z) < 10 ? 'block' : 'none';
@@ -8566,6 +8586,15 @@
       b.vel.z *= -0.25;
       b.vel.x *= 0.6;
       playThud(200);
+      // Into the net is a fault, same as failing to return it — whoever
+      // hit it last loses the point. Gated the same way tennisCheckBounce
+      // gates its own scoring (only the client responsible for the side
+      // that's about to lose reacts), so this doesn't double-award across
+      // multiple connected clients.
+      if (tennisGame && tennisGame.started && !tennisGame.won && tennisGame.lastHitterSide) {
+        const faultSide = tennisGame.lastHitterSide;
+        if (faultSide === tennisMySide() || faultSide === tennisAISide()) tennisAwardPoint(tennisOtherSide(faultSide));
+      }
     }
     if (b.pos.y < TENNIS_CENTER.y) {
       b.pos.y = TENNIS_CENTER.y;
@@ -8592,23 +8621,71 @@
     }
   }
   // Facing direction determines where the ball goes, with just enough
-  // upward pop to clear the net from a reasonable distance — this is
-  // deliberately simple (no timing/power meter), matching "whichever way
-  // facing and hit the build button hits the ball in that direction" as
-  // literally as possible.
-  function tryHitTennisBall() {
+  // upward pop to clear the net from a reasonable distance. `power`
+  // (0..1, from how long the build button was charged — see
+  // tennisChargeEligible/the mousedown/mouseup handlers) scales the swing
+  // on top of that baseline: a bare tap (power omitted/0) still hits like
+  // the original simple version always did, holding it just hits harder.
+  function tryHitTennisBall(power) {
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return false;
     const b = tennisBall;
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
     if (dPlayer > 1.3) return false;
+    const p = Math.max(0, Math.min(1, power || 0));
+    const speedMul = 1 + p*0.6; // up to 60% harder at full charge
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
-    b.vel.x = fx*10;
-    b.vel.z = fz*10;
-    b.vel.y = 5.5;
+    b.vel.x = fx*10*speedMul;
+    b.vel.z = fz*10*speedMul;
+    b.vel.y = 5.5 + p*1.5; // a harder swing also arcs a bit higher, not just faster
     playThud(450);
-    if (tennisGame) { tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; } // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
+    if (tennisGame) {
+      tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
+      tennisGame.lastHitterSide = tennisMySide(); // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
+    }
     broadcastTennisState(true);
     return true;
+  }
+  // ---- Tennis: hold-to-charge power bar ----
+  // Whether the build button is currently "on the ball" rather than doing
+  // normal placement — same distance check tryHitTennisBall itself uses,
+  // shared here so the mousedown/touch handlers know whether to start a
+  // charge instead of placing a block.
+  function tennisChargeEligible() {
+    return !!tennisBall && currentWorldId === PUB_WORLD_ID && Math.hypot(player.pos.x-tennisBall.pos.x, player.pos.z-tennisBall.pos.z) <= 1.3;
+  }
+  let tennisCharging = false, tennisChargeStart = 0;
+  const TENNIS_CHARGE_MAX_MS = 900; // full bar in under a second — long enough to feel deliberate, short enough not to just be a delay
+  function tennisStartCharge() {
+    tennisCharging = true;
+    tennisChargeStart = performance.now();
+    const wrap = document.getElementById('tennisChargeBarWrap');
+    if (wrap) wrap.style.display = 'block';
+    const fill = document.getElementById('tennisChargeBarFill');
+    if (fill) fill.style.width = '0%';
+  }
+  // Releases whatever charge has built up (0 if barely held at all — a
+  // quick tap still swings, just at tryHitTennisBall's own baseline
+  // power) and always hides the bar again, whether or not the swing
+  // actually connects.
+  function tennisReleaseCharge() {
+    if (!tennisCharging) return false;
+    const elapsed = performance.now() - tennisChargeStart;
+    tennisCharging = false;
+    const wrap = document.getElementById('tennisChargeBarWrap');
+    if (wrap) wrap.style.display = 'none';
+    return tryHitTennisBall(Math.max(0, Math.min(1, elapsed / TENNIS_CHARGE_MAX_MS)));
+  }
+  function updateTennisCharge() {
+    if (!tennisCharging) return;
+    if (!tennisChargeEligible()) { // walked away mid-charge — cancel quietly rather than firing a swing at nothing
+      tennisCharging = false;
+      const wrap = document.getElementById('tennisChargeBarWrap');
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    const frac = Math.max(0, Math.min(1, (performance.now() - tennisChargeStart) / TENNIS_CHARGE_MAX_MS));
+    const fill = document.getElementById('tennisChargeBarFill');
+    if (fill) fill.style.width = (frac*100) + '%';
   }
 
   // ---- Tennis: 2-player-vs-computer game logic ----
@@ -8617,10 +8694,10 @@
   // bounces on twice in a row without being hit back loses the point.
   // That one rule alone captures "failed to return it" without needing
   // a full ruleset on top of it.
-  let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount, ballInPlay }
+  let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount, ballInPlay, lastHitterSide }
   let tennisPendingStartSide = null;
   function tennisResetGame() {
-    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false };
+    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false, lastHitterSide:null };
     updateTennisScoreHud();
   }
   function tennisOtherSide(side) { return side === 'near' ? 'far' : 'near'; }
@@ -8678,13 +8755,18 @@
     if (tennisBall) { tennisBall.pos.copy(TENNIS_CENTER); tennisBall.vel.set(0,0,0); tennisBall.mesh.position.copy(tennisBall.pos); }
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.ballInPlay = false; // sitting dead-centre again until someone actually serves it — see tennisCheckBounce's own guard
+    tennisGame.lastHitterSide = null;
     broadcastTennisScore();
     broadcastTennisState(true);
   }
-  // Bounces on the AI's own side are answered immediately rather than
-  // the AI needing to physically move to the ball and time a swing —
-  // same practical simplification as Battleship's computer opponent,
-  // which plays by data/logic rather than a moving, animated body.
+  // Bounces on the AI's own side are answered immediately rather than the
+  // AI needing to actually track and time a swing — it plays by
+  // data/logic, same practical simplification as Battleship's computer
+  // opponent. It does now have a standing, visible body on its side of
+  // the court (see ensureAiAvatarFigure/updateAiAvatarFigure below) so a
+  // shot doesn't just bounce back off nobody — tennisAiSwingUntil below
+  // is what actually times that figure's brief swing animation to this.
+  let tennisAiSwingUntil = 0;
   function tennisAIReturn() {
     if (!tennisBall) return;
     const b = tennisBall, aiSide = tennisAISide();
@@ -8693,6 +8775,8 @@
     b.vel.x = (Math.random()-0.5)*6;
     b.vel.y = 5 + Math.random()*1.5;
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
+    tennisGame.lastHitterSide = aiSide; // so a return that sails into the net (see updateTennisBall) faults the computer, not whoever it was returning against
+    tennisAiSwingUntil = performance.now() + 350;
     playThud(450);
     broadcastTennisState(true);
   }
@@ -8803,7 +8887,11 @@
     }
     tennisCamWasActive = true;
     const avatar = ensureLocalAvatarFigure();
-    avatar.visible = true;
+    // Only actually shown once a match is under way — walking up while
+    // nobody's playing pulls the camera back (so the court's still easy
+    // to see) but doesn't summon a body standing there with no game
+    // going on.
+    avatar.visible = !!(tennisGame && tennisGame.started);
     avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
     avatar.rotation.y = yaw;
     const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
@@ -8834,6 +8922,43 @@
     camera.position.lerp(desired, tennisCamBlend);
     const targetPitch = -0.34; // angled down enough to keep both the avatar and the far baseline in frame
     camera.rotation.x = pitch + (targetPitch - pitch) * tennisCamBlend;
+  }
+
+  // ---- Tennis: the computer's own visible opponent ----
+  // Without this, "vs Computer" returned every shot from an empty court —
+  // nobody standing on the far side of the net actually hitting it back.
+  // A fixed grey/silver look (rather than another randomly-dressed
+  // customer) plus a floating name label is what actually reads as "the
+  // computer" rather than just another player.
+  let aiAvatarFigure = null, aiAvatarWasVisible = false;
+  function ensureAiAvatarFigure() {
+    if (!aiAvatarFigure) {
+      aiAvatarFigure = buildCustomerFigure(false, { skinIdx: 1, hairIdx: 4, shirtIdx: 7, pantsIdx: 0, hairLength: 'bald' });
+      aiAvatarFigure.add(buildNameSprite('🤖 Computer'));
+      aiAvatarFigure.visible = false;
+      scene.add(aiAvatarFigure);
+    }
+    return aiAvatarFigure;
+  }
+  function updateAiAvatarFigure(dt) {
+    const aiSide = tennisAISide();
+    if (!aiSide || currentWorldId !== PUB_WORLD_ID) {
+      if (aiAvatarFigure) aiAvatarFigure.visible = false;
+      aiAvatarWasVisible = false;
+      return;
+    }
+    const avatar = ensureAiAvatarFigure();
+    avatar.visible = true;
+    const baseZ = aiSide === 'far' ? TENNIS_Z1-2 : TENNIS_Z0+2;
+    // Loosely tracks the ball's X position (clamped to the court's own
+    // width) rather than real pathing — just enough to look like it's
+    // actually positioning for the shot instead of standing dead still.
+    const targetX = tennisBall ? Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, tennisBall.pos.x)) : TENNIS_CENTER.x;
+    if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, baseZ); aiAvatarWasVisible = true; }
+    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*3); avatar.position.y = 2; avatar.position.z = baseZ; }
+    avatar.rotation.y = aiSide === 'far' ? Math.PI : 0; // facing the net either way — see the same yaw/forward convention updateTennisCameraFocus relies on
+    const swinging = performance.now() < tennisAiSwingUntil; // set by tennisAIReturn, so the swing lands roughly when the ball actually leaves
+    avatar.traverse(o => { if (o.name === 'arm') o.rotation.x = swinging ? -1.6 : -0.15; });
   }
 
   // ================= SNAKES & LADDERS (2+ player minigame in The Mill) =================
@@ -9891,6 +10016,7 @@
     updateMultiplayer(dt); // throttled internally — see its own comment
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateTennisBall(dt);
+    updateTennisCharge(); // no-ops instantly unless the build button's currently held down charging a tennis hit
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment

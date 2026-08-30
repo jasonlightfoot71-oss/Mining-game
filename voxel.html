@@ -7555,6 +7555,10 @@
       // Excludes the football pitch — same reasoning and same bounds as
       // the flower overlay's own exclusion.
       if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
+      // Excludes the tennis court too — a hard court dusted with snow
+      // looked exactly as wrong as the pitch did. Matches buildTennisCourt's
+      // own footprint (x:-55..-33, z:36..76) with the same small margin.
+      if (x >= -56 && x <= -32 && z >= 35 && z <= 77) continue;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue; // skip anything under a roof
@@ -8076,6 +8080,7 @@
         tennisBall.pos.set(payload.x, payload.y, payload.z);
         tennisBall.vel.set(payload.vx, payload.vy, payload.vz);
         tennisBall.mesh.position.copy(tennisBall.pos);
+        if (tennisGame && typeof payload.ballInPlay === 'boolean') tennisGame.ballInPlay = payload.ballInPlay;
       });
       channel.on('broadcast', { event: 'tennisReset' }, () => { tennisResetGame(); });
       channel.on('broadcast', { event: 'tennisJoin' }, ({ payload }) => {
@@ -8527,6 +8532,13 @@
         mpChannel.send({ type: 'broadcast', event: 'tennisBall', payload: {
           x: tennisBall.pos.x, y: tennisBall.pos.y, z: tennisBall.pos.z,
           vx: tennisBall.vel.x, vy: tennisBall.vel.y, vz: tennisBall.vel.z,
+          // Carried alongside position/velocity so every client's own
+          // tennisCheckBounce guard (see its ballInPlay comment) agrees
+          // on whether the ball's actually live — without this, only
+          // whichever client threw the most recent hit would ever see
+          // ballInPlay:true locally, and everyone else's bounce/scoring
+          // would silently stop working.
+          ballInPlay: tennisGame ? tennisGame.ballInPlay : false,
         }});
       } catch(e) {}
     }
@@ -8594,7 +8606,7 @@
     b.vel.z = fz*10;
     b.vel.y = 5.5;
     playThud(450);
-    if (tennisGame) { tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; } // a successful hit clears any pending fault — see tennisCheckBounce
+    if (tennisGame) { tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; } // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
     broadcastTennisState(true);
     return true;
   }
@@ -8605,10 +8617,10 @@
   // bounces on twice in a row without being hit back loses the point.
   // That one rule alone captures "failed to return it" without needing
   // a full ruleset on top of it.
-  let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount }
+  let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount, ballInPlay }
   let tennisPendingStartSide = null;
   function tennisResetGame() {
-    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0 };
+    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false };
     updateTennisScoreHud();
   }
   function tennisOtherSide(side) { return side === 'near' ? 'far' : 'near'; }
@@ -8665,6 +8677,7 @@
     }
     if (tennisBall) { tennisBall.pos.copy(TENNIS_CENTER); tennisBall.vel.set(0,0,0); tennisBall.mesh.position.copy(tennisBall.pos); }
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
+    tennisGame.ballInPlay = false; // sitting dead-centre again until someone actually serves it — see tennisCheckBounce's own guard
     broadcastTennisScore();
     broadcastTennisState(true);
   }
@@ -8690,6 +8703,15 @@
   // independently double-awarding the same point.
   function tennisCheckBounce(side) {
     if (!tennisGame || !tennisGame.started || tennisGame.won) return;
+    // Without this, the ball resting dead-centre right on the halfway
+    // line at the exact moment a fresh match starts registered as an
+    // instant phantom "bounce" every physics tick (gravity nudging it
+    // fractionally below TENNIS_CENTER.y and snapping it back, over and
+    // over) — which fired the computer's return immediately, before
+    // either player had moved an inch, or in the other match-up silently
+    // handed the computer the whole game in a couple of frames. Bounces
+    // only count once the ball has actually been served/hit for real.
+    if (!tennisGame.ballInPlay) return;
     const mySide = tennisMySide(), aiSide = tennisAISide();
     if (side !== mySide && side !== aiSide) return;
     if (tennisGame.lastBounceSide === side) {
@@ -8721,6 +8743,97 @@
       playButtonPress();
       tennisStartOrContinue(onNear ? 'near' : 'far');
     }
+  }
+
+  // ---- Tennis: pulled-back third-person camera + visible avatar ----
+  // The default camera sits right at the player's own eye level (see the
+  // main loop's camera.position.set), which on a court this size meant
+  // never seeing the far baseline, the ball's full flight, or your own
+  // avatar at all. Blends the same way updateSlCameraFocus already does
+  // (eased in/out, not a hard cut) into a view pulled back and up behind
+  // the player — still steered by ordinary mouse-look (yaw), just from
+  // further away — and reuses buildCustomerFigure to actually show that
+  // player's own body while this view is active.
+  let localAvatarFigure = null;
+  function ensureLocalAvatarFigure() {
+    if (!localAvatarFigure) {
+      localAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+      localAvatarFigure.visible = false;
+      scene.add(localAvatarFigure);
+    }
+    return localAvatarFigure;
+  }
+  // Rebuilds it with whatever colours were just chosen in the avatar
+  // customization screen — called alongside refreshTitleAvatarFigure()
+  // wherever that already runs, so the on-court figure never goes stale.
+  function refreshLocalAvatarFigure() {
+    if (!localAvatarFigure) return; // not built yet — ensureLocalAvatarFigure() will pick up the current colours whenever it first is
+    const wasVisible = localAvatarFigure.visible;
+    scene.remove(localAvatarFigure);
+    localAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+    localAvatarFigure.visible = wasVisible;
+    scene.add(localAvatarFigure);
+  }
+  let tennisCamBlend = 0, tennisCamWasActive = false;
+  function updateTennisCameraFocus(dt) {
+    // A box rather than tennisDistanceFromCourt's own round radius — the
+    // Snakes & Ladders tower and Battleship arena sit only 8 blocks east
+    // of the court's own east wall, so a wide round catchment centred on
+    // the court would also pull the camera back while playing those.
+    // Generous to the west (where both entrance triggers are, 2 blocks
+    // outside the baseline) so the view eases in on the walk up; tight
+    // everywhere else.
+    const active = currentWorldId === PUB_WORLD_ID &&
+      player.pos.x >= TENNIS_X0-6 && player.pos.x <= TENNIS_X1+3 &&
+      player.pos.z >= TENNIS_Z0-3 && player.pos.z <= TENNIS_Z1+3;
+    const targetBlend = active ? 1 : 0;
+    tennisCamBlend += (targetBlend - tennisCamBlend) * Math.min(1, dt*2.2);
+    if (tennisCamBlend < 0.004) {
+      tennisCamBlend = 0;
+      if (tennisCamWasActive) {
+        tennisCamWasActive = false;
+        if (localAvatarFigure) localAvatarFigure.visible = false;
+        // Restore whatever the first-person held view should actually be
+        // showing — exactly setWorkHeldVisual's own two branches, since
+        // that's the only thing that otherwise decides it.
+        if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
+        else { workHeldRoot.visible = false; selectSlot(selectedSlot); }
+      }
+      return;
+    }
+    tennisCamWasActive = true;
+    const avatar = ensureLocalAvatarFigure();
+    avatar.visible = true;
+    avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
+    avatar.rotation.y = yaw;
+    const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
+    if (moving) {
+      const swing = Math.sin(performance.now()*0.02) * 0.5;
+      avatar.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    } else {
+      avatar.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+    }
+    // The first-person held-item view is a child of the camera itself —
+    // left alone it would just float in front of this pulled-back shot.
+    // Same reasoning updateAppMakeRole's own pulled-back camera already
+    // uses (see stopAppMakeAutomation).
+    heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
+    // Pulled back and up behind the player along the reverse of their
+    // own facing direction (matches tryHitTennisBall's forward vector,
+    // negated), so mouse-look still steers this shot exactly like the
+    // normal first-person camera, just from further away.
+    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    const desired = new THREE.Vector3(
+      player.pos.x + backX*4.5,
+      player.pos.y + player.height*0.92 + 2.6,
+      player.pos.z + backZ*4.5
+    );
+    camera.position.lerp(desired, tennisCamBlend);
+    const targetPitch = -0.34; // angled down enough to keep both the avatar and the far baseline in frame
+    camera.rotation.x = pitch + (targetPitch - pitch) * tennisCamBlend;
   }
 
   // ================= SNAKES & LADDERS (2+ player minigame in The Mill) =================
@@ -9663,6 +9776,7 @@
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
       updateSlCameraFocus(dt); // blends the camera toward a moving Snakes & Ladders token when relevant, then back — no-ops instantly everywhere else
+      updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -10665,6 +10779,7 @@
     setMyDisplayName(document.getElementById('avatarNameInput').value);
     closeAvatarModal();
     refreshTitleAvatarFigure(); // so the title screen's own thumbnail reflects whatever just changed immediately, not just next reload
+    refreshLocalAvatarFigure(); // ditto for the on-court figure shown near the tennis court
   });
 
   // ---- Title screen's own small avatar thumbnail ----

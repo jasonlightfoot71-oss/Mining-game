@@ -8593,13 +8593,10 @@
   let tennisBall = null; // { mesh, pos, vel }
   const TENNIS_GRAVITY = -14; // a bit gentler than football's — tennis balls hang in the air longer relative to their travel speed
   function buildTennisBallMesh() {
-    // Bright, highly-saturated neon yellow-green with a touch of
-    // emissive glow — the previous muted colour (0xd4e157) blended into
-    // the court's own grey/white surface far too easily, especially
-    // from a distance with the new aerial camera. Closer to a real
-    // tennis ball's fluorescent optic-yellow, so it reads clearly
-    // against either the grey playing surface or the white lines.
-    const mat = new THREE.MeshPhongMaterial({ color: 0xccff00, emissive: 0x445500, shininess: 20 });
+    // Bright red with a touch of emissive glow — stands out clearly
+    // against the court's own grey/white surface (previously tried a
+    // neon yellow-green, but red reads even better against both).
+    const mat = new THREE.MeshPhongMaterial({ color: 0xe62020, emissive: 0x550000, shininess: 20 });
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), mat); // noticeably bigger than before (was 0.14) so it's actually trackable at speed/distance
     mesh.castShadow = false;
     return mesh;

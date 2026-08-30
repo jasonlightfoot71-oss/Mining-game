@@ -5690,6 +5690,14 @@
     let best = null, bestDist = WORK_DISTANCE;
     furniture.forEach(f => {
       if (!matchFn(f)) return;
+      // Vertical distance now counts too, not just horizontal — flying
+      // straight over a bar counter used to register as "at the bar"
+      // regardless of how high up you actually were, since this only
+      // ever compared x/z. A generous-but-finite y allowance (twice
+      // WORK_DISTANCE) still lets working stay forgiving about standing
+      // on a slightly uneven floor near the counter, just not about
+      // being 20 blocks above it.
+      if (Math.abs(player.pos.y - f.by) > WORK_DISTANCE*2) return;
       const cx = f.bx+0.5, cz = f.bz+0.5;
       const dx = player.pos.x - cx, dz = player.pos.z - cz;
       const dist = Math.sqrt(dx*dx + dz*dz);
@@ -5699,13 +5707,18 @@
   }
   function isInZone(zone) {
     const p = player.pos;
+    // Every horizontal-footprint zone below also caps how high up counts
+    // as "in" it (matching isAnywhereInPub's own p.y<8 roof allowance) —
+    // without it, flying straight over the Mill at any height still
+    // landed inside these x/z rectangles and registered as on duty in
+    // whatever zone happened to be underneath.
     switch (zone) {
       case 'bar':        return !!nearestBarCounter();
-      case 'floor':       return p.x>=1 && p.x<=27 && p.z>=8  && p.z<=14 && p.y > -1; // main hall — bar strip, dancefloor, tables
-      case 'kitchen':      return p.x>=1 && p.x<=7  && p.z>=16 && p.z<=19;
-      case 'beergarden':   return p.x>=0 && p.x<=28 && p.z>=21 && p.z<=34;
-      case 'cellar':        return p.x>=0 && p.x<=9  && p.z>=7  && p.z<=14 && p.y<=-1; // below-ground room under the bar
-      case 'office':          return p.x>=9 && p.x<=14 && p.z>=16 && p.z<=19;
+      case 'floor':       return p.x>=1 && p.x<=27 && p.z>=8  && p.z<=14 && p.y > -1 && p.y < 8; // main hall — bar strip, dancefloor, tables
+      case 'kitchen':      return p.x>=1 && p.x<=7  && p.z>=16 && p.z<=19 && p.y > -1 && p.y < 8;
+      case 'beergarden':   return p.x>=0 && p.x<=28 && p.z>=21 && p.z<=34 && p.y > -1 && p.y < 8;
+      case 'cellar':        return p.x>=0 && p.x<=9  && p.z>=7  && p.z<=14 && p.y<=-1; // below-ground room under the bar — already height-bounded on its own low side
+      case 'office':          return p.x>=9 && p.x<=14 && p.z>=16 && p.z<=19 && p.y > -1 && p.y < 8;
       default: return false;
     }
   }
@@ -5727,9 +5740,12 @@
   function updateWork(dt) {
     const workStatusEl = document.getElementById('workStatus');
     // Pub Manager earns anywhere in the pub (roughly the whole building
-    // footprint including the beer garden and cellar), no specific zone.
+    // footprint including the beer garden and cellar), no specific zone —
+    // but still bounded vertically by isAnywhereInPub's own roof-height
+    // cutoff, or flying straight up and over the whole building counted
+    // as being on duty everywhere underneath it at once.
     const onDuty = rankIndex() >= 6 && currentRole === null && (currentWorldId === PUB_WORLD_ID)
-      ? true
+      ? isAnywhereInPub()
       : currentRole ? isOnDutyForRole(currentRole) : !!nearestBarCounter();
     if (!onDuty) {
       if (working) { working = false; workTimer = 0; }
@@ -8717,7 +8733,7 @@
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return false;
     const b = tennisBall;
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
-    if (dPlayer > 1.3) return false;
+    if (dPlayer > 2.2) return false; // widened from the original 1.3 — too easy to be a hair off (especially now serves start back at the baseline rather than right by the net) and have a charged release do nothing; matches the reach the computer's own avatar already gets
     const side = tennisMySide();
     // The court runs along Z, net at TENNIS_NET_Z — a near-side player
     // always has to send the ball toward +z (across to the far side) and
@@ -8762,7 +8778,7 @@
   // charge instead of placing a block.
   // Charging no longer requires standing right next to the ball — you can
   // hold the swing anywhere on/near the court and release whenever the
-  // ball's actually in reach (tryHitTennisBall's own 1.3-distance check
+  // ball's actually in reach (tryHitTennisBall's own 2.2-distance check
   // handles that at release time; if it's out of reach the swing just
   // whiffs quietly). This only requires actually being in the match
   // (tennisMySide()) and near the court, so it doesn't hijack normal
@@ -9250,21 +9266,20 @@
     while (dYaw < -Math.PI) dYaw += Math.PI*2;
     camera.rotation.y = yaw + dYaw*tennisCamBlend;
     tennisMoveYaw = camera.rotation.y; // see its own declaration above — keeps WASD/joystick movement matching this locked view
-    // Pulled back and up behind the player along the reverse of the
-    // locked facing direction (not live mouse yaw), so the pulled-back
-    // shot stays steady on the opponent instead of swinging around with
-    // the mouse mid-rally. Raised again — still wasn't high enough to
-    // comfortably see the far baseline from the back of the court — and
-    // pulled back further to match, keeping the same shallow pitch so it
-    // looks down the length of the court rather than at the ground.
+    // A genuinely aerial view now — high above the court and angled
+    // steeply down, like a broadcast blimp/drone shot, rather than just
+    // a raised eye-level shot looking down the court's length. Height
+    // does almost all the work here; the back-offset is kept fairly
+    // small since being this high already reveals the whole 40-block
+    // court without needing much horizontal pull-back too.
     const backX = Math.sin(targetYaw), backZ = Math.cos(targetYaw);
     const desired = new THREE.Vector3(
-      player.pos.x + backX*8.5,
-      player.pos.y + player.height*0.92 + 6.8,
-      player.pos.z + backZ*8.5
+      player.pos.x + backX*6,
+      player.pos.y + player.height*0.92 + 18,
+      player.pos.z + backZ*6
     );
     camera.position.lerp(desired, tennisCamBlend);
-    const targetPitch = -0.14; // shallower again, to match the higher/further-back position above
+    const targetPitch = -1.0; // steep — looking down at the court, not along it
     camera.rotation.x = pitch + (targetPitch - pitch) * tennisCamBlend;
   }
 

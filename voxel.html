@@ -8658,7 +8658,16 @@
       b.pos.y = TENNIS_CENTER.y;
       b.vel.y = impactSpeed > 0.5 ? -b.vel.y*0.55 : 0; // bouncier than football's ball — a tennis ball keeps a lot more of its energy off a hard court
       b.vel.x *= 0.85; b.vel.z *= 0.85; // still loses a little horizontal speed each bounce
-      if (impactSpeed > 0.5) playTennisBounce(); // skip the sound for the near-zero-velocity settling case, or a resting ball would click on every frame
+      // Only while a rally's actually live — same guard tennisCheckBounce
+      // itself uses just below. Without it, the ball sitting parked
+      // between points still gets nudged half a unit below centre by a
+      // single frame of gravity and snapped back up every single frame
+      // (the same phantom-bounce jitter described where ballInPlay is
+      // checked below), which made this play a rapid, constant
+      // clicking/scratching sound the entire time nobody was mid-match —
+      // anywhere in the world, since this update loop isn't gated by the
+      // player's own position, only by which world they're in.
+      if (impactSpeed > 0.5 && tennisGame && tennisGame.ballInPlay) playTennisBounce();
       tennisCheckBounce(b.pos.z < TENNIS_NET_Z ? 'near' : 'far');
     }
     b.vel.x *= Math.max(0, 1 - dt*0.15); // very light air resistance — mostly gravity and bounces do the work here, not rolling friction like the football
@@ -8846,7 +8855,18 @@
       showChatLogLine('🏆', (tennisGame.sides[winSide].name || 'Winner') + ' wins the match!');
       launchSlFirework();
     }
-    if (tennisBall) { tennisBall.pos.copy(TENNIS_CENTER); tennisBall.vel.set(0,0,0); tennisBall.mesh.position.copy(tennisBall.pos); }
+    // The side that lost the point serves the restart, so the ball
+    // starts at their own baseline (2 blocks in, same spot their own
+    // entrance trigger sits) rather than dead-centre by the net — gives
+    // them room to actually walk up and serve it in, instead of it
+    // sitting right on top of the net.
+    if (tennisBall) {
+      const serverSide = tennisOtherSide(winSide);
+      const serveZ = serverSide === 'near' ? TENNIS_TRIGGER_NEAR.z : TENNIS_TRIGGER_FAR.z;
+      tennisBall.pos.set(TENNIS_CENTER.x, TENNIS_CENTER.y, serveZ);
+      tennisBall.vel.set(0,0,0);
+      tennisBall.mesh.position.copy(tennisBall.pos);
+    }
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.ballInPlay = false; // sitting dead-centre again until someone actually serves it — see tennisCheckBounce's own guard
     tennisGame.lastHitterSide = null;
@@ -8865,9 +8885,26 @@
     if (!tennisBall) return;
     const b = tennisBall, aiSide = tennisAISide();
     const towardZ = aiSide === 'far' ? -1 : 1;
-    b.vel.z = towardZ * (8 + Math.random()*3);
-    b.vel.x = (Math.random()-0.5)*6;
-    b.vel.y = 5 + Math.random()*1.5;
+    // Speed is now derived from how far the ball actually has to travel
+    // to clear the net from wherever it currently sits, rather than a
+    // fixed range. A shot that bounced deep in the computer's own court
+    // (near its own baseline, ~20 blocks from the net) needs a lot more
+    // pace to actually cross over in one arc than one that bounced right
+    // on top of the net — the old fixed 8-11 speed only had enough
+    // hang-time to cover 7-10 blocks before landing again, so a deep
+    // return regularly fell back down well short of the net, on the
+    // computer's OWN side, which immediately counted as a fresh bounce
+    // there and fired another return before the first one had ever
+    // actually come over — reading as the computer hitting it twice in a
+    // row, and also as its avatar being nowhere near the ball, since it
+    // hadn't had time to chase over to the new landing spot yet.
+    const vy = 6.5 + Math.random()*2; // a bit more height than before — buys enough hang-time that a deep return doesn't need an unreasonably fast horizontal speed to still clear the net in one arc
+    const hangTime = (2*vy) / Math.abs(TENNIS_GRAVITY);
+    const distToNet = Math.abs(TENNIS_NET_Z - b.pos.z);
+    const neededSpeed = (distToNet + 4) / hangTime; // +4 so it clears with real room to spare, not just barely reaching the line
+    b.vel.z = towardZ * Math.max(9, neededSpeed);
+    b.vel.x = (Math.random()-0.5)*5;
+    b.vel.y = vy;
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.lastHitterSide = aiSide; // so a return that sails into the net (see updateTennisBall) faults the computer, not whoever it was returning against
     tennisAiSwingUntil = performance.now() + 350;

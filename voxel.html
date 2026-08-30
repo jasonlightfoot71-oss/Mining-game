@@ -9096,14 +9096,23 @@
     if (!tennisGame.ballInPlay) return;
     // Only the computer's own side needs anything done here now — a
     // human just walks up and hits the ball whenever they're ready, no
-    // code-driven reaction needed. Bouncing no longer costs anyone the
-    // point by itself (any number of bounces, or the ball rolling to a
-    // dead stop, are all fine — see updateTennisBall's own back-line
-    // check, which along with the net are now the only two ways a point
-    // actually ends), so this is purely "does the computer take a swing
-    // at this particular bounce", not a scoring decision.
+    // code-driven reaction needed. Bouncing itself still never costs a
+    // human the point (see updateTennisBall's own back-line check, which
+    // along with the net are the only two ways a point ends for them).
     const aiSide = tennisAISide();
     if (side !== aiSide) return;
+    // The computer gets exactly ONE real look at the ball per crossing —
+    // the first time it bounces on its own side after being hit toward
+    // it — not another attempt on every bounce after that. tryHitTennisBall
+    // and tennisAIReturn both clear lastBounceSide back to null the
+    // instant either side actually hits the ball, so this re-arms fresh
+    // for each new crossing. Without this cap, since nothing else costs
+    // the computer the point either (same forgiving bounce rule as the
+    // human side), it would just keep re-trying on every subsequent
+    // bounce until it eventually happened to be close enough — which is
+    // exactly why it was never actually missing a shot.
+    if (tennisGame.lastBounceSide === aiSide) return;
+    tennisGame.lastBounceSide = aiSide;
     // A hard backstop against the computer swinging twice in immediate
     // succession — a fraction of a second really can't be a genuine
     // second bounce on its own side after it just hit the ball (the
@@ -9113,18 +9122,13 @@
     if (performance.now() - tennisAiLastHitAt < 400) return;
     // The computer only actually returns the ball if its own on-court
     // figure (see updateAiAvatarFigure, which chases the ball's
-    // PREDICTED landing spot) is actually close enough to it when it
-    // bounces — a shot hit wide or fast enough to outrun that chase just
-    // means it doesn't connect on THIS particular bounce. The ball keeps
-    // going and it gets another look at the next one (or the one after
-    // that), same forgiving treatment a human player gets, right up
-    // until it actually goes out or into the net.
-    // Now checks both x AND z (real 2D distance) — now that the figure
-    // actually moves forward/back to meet short balls or retreat for
-    // deep ones (see updateAiAvatarFigure), a same-side-only x check
-    // would let it "reach" shots it's nowhere near depth-wise.
+    // PREDICTED landing spot, now at a more human pace — see its own
+    // comments) is actually close enough to it at this one decisive
+    // moment. Checks both x AND z (real 2D distance), since the figure
+    // moves forward/back to meet short balls or retreat for deep ones.
     const withinReach = aiAvatarFigure && Math.hypot(aiAvatarFigure.position.x - tennisBall.pos.x, aiAvatarFigure.position.z - tennisBall.pos.z) <= 2.6;
     if (withinReach) tennisAIReturn();
+    else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(aiSide)); }
   }
   let lastTennisTriggerCheck = 0, tennisWasAirborne = false;
   function updateTennisTriggers() {
@@ -9347,8 +9351,15 @@
     }
     if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, targetZ); aiAvatarWasVisible = true; }
     else {
-      avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*5);
-      avatar.position.z += (targetZ - avatar.position.z) * Math.min(1, dt*5);
+      // A believable chase pace rather than an instant snap to the
+      // target — at dt*5 it converged on almost any prediction well
+      // before the ball even landed, covering the entire court so
+      // reliably that it essentially never missed a shot. Slower now, so
+      // a shot aimed at a corner or deep angle it doesn't have time to
+      // reach in one crossing (see tennisCheckBounce's own one-shot
+      // decisive check) is a genuine way to win a point outright.
+      avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*1.3);
+      avatar.position.z += (targetZ - avatar.position.z) * Math.min(1, dt*1.3);
       avatar.position.y = 2;
     }
     avatar.rotation.y = aiSide === 'far' ? Math.PI : 0; // facing the net either way — see the same yaw/forward convention updateTennisCameraFocus relies on

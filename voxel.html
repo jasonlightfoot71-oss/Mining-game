@@ -378,8 +378,12 @@
 <div id="coordsDisplay" style="display:none;position:fixed;top:12px;left:12px;z-index:10;color:#fff;font-size:12px;font-weight:600;letter-spacing:0.5px;background:rgba(0,0,0,0.35);padding:5px 10px;border-radius:6px;"></div>
 <div id="footballScoreHud" style="display:none;position:fixed;top:100px;left:50%;transform:translateX(-50%);z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="tennisScoreHud" style="display:none;position:fixed;top:100px;left:16px;z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
+<div id="golfScoreHud" style="display:none;position:fixed;top:140px;left:16px;z-index:10;color:#fff;font-size:15px;font-weight:700;background:rgba(0,0,0,0.45);padding:6px 14px;border-radius:8px;"></div>
 <div id="tennisChargeBarWrap" style="display:none;position:fixed;bottom:110px;left:50%;transform:translateX(-50%);z-index:10;width:140px;height:12px;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.4);border-radius:6px;overflow:hidden;">
   <div id="tennisChargeBarFill" style="width:0%;height:100%;background:linear-gradient(90deg,#ffd54a,#ff5a3c);"></div>
+</div>
+<div id="golfChargeBarWrap" style="display:none;position:fixed;bottom:110px;left:50%;transform:translateX(-50%);z-index:10;width:140px;height:12px;background:rgba(0,0,0,0.45);border:1px solid rgba(255,255,255,0.4);border-radius:6px;overflow:hidden;">
+  <div id="golfChargeBarFill" style="width:0%;height:100%;background:linear-gradient(90deg,#8affa0,#2ecc71);"></div>
 </div>
 <div id="clockDisplay" style="display:none;"></div>
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
@@ -1651,7 +1655,7 @@
   // what stranded the building without a way to reach the surrounding
   // land on foot. Protecting only the exact footprint lets terrain
   // generate right up to the building's own walls.
-  const PUB_BOUNDS = { x0: -58, x1: 32, z0: -4, z1: 80 }; // x0/z1 extended beyond the original -4/38 to cover the football pitch (and its stadium stands, which reach x:-5) plus the snakes & ladders tower and battleship arena further west, and now the tennis court further west again still
+  const PUB_BOUNDS = { x0: -58, x1: 32, z0: -54, z1: 80 }; // z0 extended further south (from -4) to fit the new 9-hole crazy golf course, the same way x0/z1 were each extended before it for the other minigames
   function isPubColumn(x, z) {
     return currentWorldId === PUB_WORLD_ID && x >= PUB_BOUNDS.x0 && x <= PUB_BOUNDS.x1 && z >= PUB_BOUNDS.z0 && z <= PUB_BOUNDS.z1;
   }
@@ -5137,6 +5141,7 @@
     buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
     buildBattleshipSign();
     buildTennisCourt(WHITE_CONC, CONCRETE, STONE);
+    buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC);
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5450,6 +5455,98 @@
   // pitch) rather than overlapping either — still reads as "the next
   // court over" since it lines up with the same Z-range as the pitch
   // itself, just further along.
+  // ---- Crazy golf course (9 holes) ----
+  // South of the main pad, in its own extended strip of PUB_BOUNDS (see
+  // its own comment) — laid out as a 3x3 grid of straight fairways
+  // rather than 9 in a single long row, purely to keep the overall
+  // footprint compact. Each hole is a simple bordered rectangle (same
+  // "fill a box, wall the edges" approach as the tennis court) with 0-3
+  // raised stone bumpers to putt around — not true doglegs (which would
+  // need L-shaped bounds and much more collision complexity), but enough
+  // variety hole-to-hole to read as a proper crazy-golf course rather
+  // than 9 identical straight lanes.
+  const GOLF_COLS = 3, GOLF_ROWS = 3;
+  const GOLF_LANE_W = 6, GOLF_LANE_L = 12, GOLF_GAP = 3;
+  const GOLF_AREA_X0 = 2; // west edge of the whole 3x3 grid
+  const GOLF_AREA_Z_NEAR = -6; // tee-end edge of row 0, right against the existing pad's own south boundary (z=-4) with a block of clearance
+  function computeGolfHoles() {
+    const parByHole = [2, 3, 3, 3, 4, 3, 4, 3, 4];
+    const cupOffsetByHole = [0, 2, -2, 0, 1, -1, 2, -2, 0]; // how far the cup sits off-centre, in blocks — forces an angled putt rather than a dead-straight one
+    // Each obstacle is {dx: offset from the lane's own centre line, dl:
+    // distance in from the tee end} — hand-placed per hole for a rough
+    // difficulty curve (hole 1 wide open, later holes needing an actual
+    // line around 2-3 bumpers).
+    const obstacleOffsetsByHole = [
+      [],
+      [{dx:0, dl:6}],
+      [{dx:-1, dl:4},{dx:1, dl:8}],
+      [{dx:0, dl:4},{dx:0, dl:8}],
+      [{dx:-1, dl:4},{dx:1, dl:6},{dx:-1, dl:9}],
+      [{dx:0, dl:6}],
+      [{dx:-2, dl:4},{dx:2, dl:4},{dx:0, dl:9}],
+      [{dx:0, dl:4},{dx:-1, dl:7},{dx:1, dl:7}],
+      [{dx:-1, dl:4},{dx:1, dl:4},{dx:0, dl:8}],
+    ];
+    const holes = [];
+    for (let r = 0; r < GOLF_ROWS; r++) {
+      for (let c = 0; c < GOLF_COLS; c++) {
+        const i = r*GOLF_COLS + c;
+        const x0 = GOLF_AREA_X0 + c*(GOLF_LANE_W+GOLF_GAP);
+        const x1 = x0 + GOLF_LANE_W - 1;
+        const zNear = GOLF_AREA_Z_NEAR - r*(GOLF_LANE_L+GOLF_GAP); // tee end (higher/closer-to-pad z)
+        const zFar = zNear - GOLF_LANE_L + 1; // cup end (lower z, deeper into the course)
+        const cx = Math.round((x0+x1)/2);
+        holes.push({
+          index: i,
+          bounds: { x0, x1, z0: zFar, z1: zNear }, // z0 = low(cup) edge, z1 = high(tee) edge — same ordering convention tennis's own bounds use
+          tee: { x: cx, y: 2, z: zNear-1 },
+          cup: { x: Math.max(x0+1, Math.min(x1-1, cx+cupOffsetByHole[i])), z: zFar+1 },
+          par: parByHole[i],
+          obstacles: obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl })),
+        });
+      }
+    }
+    return holes;
+  }
+  const GOLF_HOLES = computeGolfHoles();
+  const GOLF_AREA_X1 = GOLF_AREA_X0 + GOLF_COLS*(GOLF_LANE_W+GOLF_GAP) - GOLF_GAP - 1;
+  const GOLF_AREA_Z_FAR = GOLF_AREA_Z_NEAR - GOLF_ROWS*(GOLF_LANE_L+GOLF_GAP) + GOLF_GAP + 1;
+  const GOLF_BALL_Y = 2.14;
+  function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC) {
+    // A generous connecting apron under and around the whole grid — same
+    // reasoning as every other minigame's own self-contained ground
+    // fill: the area south of the pad isn't procedurally generated at
+    // all (see isPubColumn), so without this the course would just be a
+    // void with floating lane fragments in it.
+    const apronX0 = GOLF_AREA_X0-3, apronX1 = GOLF_AREA_X1+3;
+    const apronZ1 = GOLF_AREA_Z_NEAR+2, apronZ0 = GOLF_AREA_Z_FAR-3;
+    fillGameBlocks(apronX0, apronX1, 0, 0, apronZ0, apronZ1, STONE);
+    fillGameBlocks(apronX0, apronX1, 1, 1, apronZ0, apronZ1, GRASS);
+    GOLF_HOLES.forEach(hole => {
+      const { x0, x1, z0, z1 } = hole.bounds;
+      for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) setGameBlock(x,1,z, GRASS);
+      // Low border along both long sides and across the far end (behind
+      // the cup) — the near/tee end stays open so it reads as an
+      // entrance rather than a sealed box.
+      for (let z = z0; z <= z1; z++) { setGameBlock(x0-1,1,z, WHITE_CONC); setGameBlock(x1+1,1,z, WHITE_CONC); }
+      for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,1,z0-1, WHITE_CONC);
+      hole.obstacles.forEach(o => { setGameBlock(o.x,1,o.z, STONE); setGameBlock(o.x,2,o.z, STONE); });
+      setGameBlock(hole.tee.x, 1, hole.tee.z, RED_CONC);
+      const teeLabel = buildNumberLabel(String(hole.index+1));
+      teeLabel.position.set(hole.tee.x+0.5, 2.6, hole.tee.z+0.5);
+      scene.add(teeLabel); pubExtraProps.push(teeLabel);
+      setGameBlock(hole.cup.x, 1, hole.cup.z, BLACK_CONC);
+      const poleMat = new THREE.MeshPhongMaterial({ color: 0x8a8a8a, shininess: 30 });
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,1.6,6), poleMat);
+      pole.position.set(hole.cup.x+0.5, 2.8, hole.cup.z+0.5);
+      scene.add(pole); pubExtraProps.push(pole);
+      const flagMat = new THREE.MeshBasicMaterial({ color: 0xdd2222, side: THREE.DoubleSide });
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.4,0.28), flagMat);
+      flag.position.set(hole.cup.x+0.5+0.2, 3.4, hole.cup.z+0.5);
+      flag.rotation.y = Math.PI/2;
+      scene.add(flag); pubExtraProps.push(flag);
+    });
+  }
   const TENNIS_X0 = -55, TENNIS_X1 = -33, TENNIS_Z0 = 36, TENNIS_Z1 = 76;
   const TENNIS_NET_Z = Math.round((TENNIS_Z0+TENNIS_Z1)/2); // 56 — lines up with the football pitch's own halfway line
   const TENNIS_NET_TOP_Y = 3.15; // net stands ~1.1 blocks tall off a 2.05 base — a ball has to clear this or it's blocked, same as a real net
@@ -5634,6 +5731,7 @@
     bsResetGame();
     spawnTennisBall();
     tennisResetGame();
+    golfResetGame();
     terrainStreamingActive = true; // only now — see the comment above
     await beginPlaying();
   }
@@ -7276,15 +7374,16 @@
     else if (e.button === 2) {
       // Holding build right next to the tennis ball charges a harder hit
       // instead of doing normal placement — see tennisChargeEligible/
-      // tennisStartCharge. Everywhere else build still works exactly as
-      // it always did.
+      // tennisStartCharge. Same idea for a golf putt. Everywhere else
+      // build still works exactly as it always did.
       if (tennisChargeEligible()) tennisStartCharge();
+      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     }
   });
   document.addEventListener('mouseup', e => {
     if (e.button === 0) { mineHeld = false; mining = null; }
-    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); } // a no-op unless a charge was actually in progress
+    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); } // both are no-ops unless a charge was actually in progress
   });
 
   // ================= TOUCH CONTROLS =================
@@ -7421,10 +7520,11 @@
     btnPlace.addEventListener('touchstart', e => {
       e.preventDefault(); ensureAudio();
       if (tennisChargeEligible()) tennisStartCharge();
+      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     });
-    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); });
-    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); });
+    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); });
+    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
       if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
@@ -9640,6 +9740,195 @@
     });
   }
 
+  // ================= CRAZY GOLF (9-hole minigame in The Mill) =================
+  // Solo-scored, casual — no "join a side" or computer opponent the way
+  // tennis and football have (there's nothing to compete against here,
+  // just your own scorecard), and deliberately kept first-person/no
+  // third-person camera for this first pass, unlike those two. The ball
+  // itself is local-only (not broadcast over multiplayer) — each
+  // player's own round is theirs alone; other players nearby won't see
+  // your ball moving, which keeps this pass a reasonable size rather
+  // than also building out shared-ball sync/contention for a
+  // fundamentally single-player scoring game.
+  let golfBall = null; // { mesh, pos: Vector3, vel: Vector3 }
+  let golfCurrentHole = null; // index into GOLF_HOLES, or null when no round is in progress
+  let golfStrokesThisHole = 0;
+  let golfScores = new Array(GOLF_HOLES.length).fill(null);
+  function golfResetGame() {
+    golfScores = new Array(GOLF_HOLES.length).fill(null);
+    golfCurrentHole = null;
+    golfStrokesThisHole = 0;
+    if (golfBall) golfBall.mesh.visible = false;
+    updateGolfScoreHud();
+  }
+  function buildGolfBallMesh() {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60 }));
+    mesh.castShadow = false;
+    return mesh;
+  }
+  function spawnGolfBallAtHole(i) {
+    const hole = GOLF_HOLES[i];
+    if (!hole) return;
+    if (!golfBall) {
+      const mesh = buildGolfBallMesh();
+      scene.add(mesh);
+      golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
+    }
+    golfBall.mesh.visible = true;
+    golfBall.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
+    golfBall.vel.set(0,0,0);
+    golfBall.mesh.position.copy(golfBall.pos);
+    golfCurrentHole = i;
+    golfStrokesThisHole = 0;
+    updateGolfScoreHud();
+    showChatLogLine('⛳', `Hole ${i+1} of ${GOLF_HOLES.length} — par ${hole.par}. Putt it in!`);
+  }
+  function golfDistanceFromCourse(x, z) {
+    const dx = Math.max(GOLF_AREA_X0-1 - x, 0, x - (GOLF_AREA_X1+1));
+    const dz = Math.max(GOLF_AREA_Z_FAR-1 - z, 0, z - (GOLF_AREA_Z_NEAR+1));
+    return Math.sqrt(dx*dx + dz*dz);
+  }
+  function updateGolfScoreHud() {
+    const el = document.getElementById('golfScoreHud');
+    if (!el) return;
+    if (golfCurrentHole === null || currentWorldId !== PUB_WORLD_ID || golfDistanceFromCourse(player.pos.x, player.pos.z) >= 14) {
+      el.style.display = 'none';
+      return;
+    }
+    const hole = GOLF_HOLES[golfCurrentHole];
+    el.style.display = 'block';
+    el.textContent = `⛳ Hole ${golfCurrentHole+1}/${GOLF_HOLES.length} · Par ${hole.par} · Stroke ${golfStrokesThisHole}`;
+  }
+  function golfHoleComplete() {
+    const hole = GOLF_HOLES[golfCurrentHole];
+    golfScores[golfCurrentHole] = golfStrokesThisHole;
+    const rel = golfStrokesThisHole - hole.par;
+    const rel_str = rel === 0 ? 'par' : (rel > 0 ? `+${rel}` : `${rel}`);
+    showChatLogLine('⛳', `Hole ${golfCurrentHole+1} in ${golfStrokesThisHole} (${rel_str})!`);
+    playTennisScore(); // reuse the little success chime — reads fine outside tennis too
+    golfBall.vel.set(0,0,0);
+    golfBall.mesh.visible = false;
+    const allPlayed = golfScores.every(s => s !== null);
+    if (allPlayed) {
+      const total = golfScores.reduce((a,b) => a+b, 0);
+      const totalPar = GOLF_HOLES.reduce((a,h) => a+h.par, 0);
+      const totalRel = total - totalPar;
+      showChatLogLine('⛳', `Course complete! ${total} strokes, par ${totalPar} (${totalRel===0?'level':(totalRel>0?'+':'')+totalRel}).`);
+    }
+    golfCurrentHole = null;
+    updateGolfScoreHud();
+  }
+  function updateGolfBall(dt) {
+    updateGolfScoreHud(); // cheap distance/state check each frame — handles hiding the HUD if the player just walks away mid-round, not only on a stroke
+    if (!golfBall || !golfBall.mesh.visible || currentWorldId !== PUB_WORLD_ID || golfCurrentHole === null) return;
+    const hole = GOLF_HOLES[golfCurrentHole];
+    const b = golfBall;
+    b.vel.multiplyScalar(Math.max(0, 1 - dt*1.6)); // noticeably more friction than the football — a putt should settle within a couple of seconds, not roll indefinitely
+    b.pos.x += b.vel.x*dt;
+    b.pos.z += b.vel.z*dt;
+    const { x0, x1, z0, z1 } = hole.bounds;
+    if (b.pos.x < x0-0.7) { b.pos.x = x0-0.7; b.vel.x *= -0.55; }
+    if (b.pos.x > x1+1.7) { b.pos.x = x1+1.7; b.vel.x *= -0.55; }
+    if (b.pos.z < z0-0.7) { b.pos.z = z0-0.7; b.vel.z *= -0.55; }
+    if (b.pos.z > z1+1.7) { b.pos.z = z1+1.7; b.vel.z *= -0.55; }
+    // Obstacle bumpers — treated as simple circles at each obstacle
+    // block's centre, not full block-edge collision, which is plenty
+    // convincing for a rolling ball this small and keeps the collision
+    // math simple.
+    hole.obstacles.forEach(o => {
+      const ocx = o.x+0.5, ocz = o.z+0.5;
+      const dx = b.pos.x-ocx, dz = b.pos.z-ocz;
+      const dist = Math.hypot(dx, dz);
+      const minDist = 0.64; // obstacle radius (~0.5) + ball radius (~0.14)
+      if (dist < minDist && dist > 0.0001) {
+        const nx = dx/dist, nz = dz/dist;
+        b.pos.x = ocx + nx*minDist; b.pos.z = ocz + nz*minDist;
+        const vDotN = b.vel.x*nx + b.vel.z*nz;
+        if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
+      }
+    });
+    b.mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
+    const speed = Math.hypot(b.vel.x, b.vel.z);
+    if (speed > 0.02) {
+      const axis = new THREE.Vector3(-b.vel.z, 0, b.vel.x).normalize();
+      b.mesh.rotateOnWorldAxis(axis, speed*dt*2.4);
+    }
+    // Captured once close enough to the cup AND slow enough — a fast
+    // putt should be able to rattle straight past/over the hole instead
+    // of being magnetically sucked in from any speed.
+    const cdx = b.pos.x-(hole.cup.x+0.5), cdz = b.pos.z-(hole.cup.z+0.5);
+    if (Math.hypot(cdx,cdz) < 0.38 && speed < 3.2) golfHoleComplete();
+  }
+  function golfChargeEligible() {
+    return !!golfBall && golfBall.mesh.visible && currentWorldId === PUB_WORLD_ID && Math.hypot(player.pos.x-golfBall.pos.x, player.pos.z-golfBall.pos.z) < 6;
+  }
+  let golfCharging = false, golfChargeStart = 0;
+  const GOLF_CHARGE_MAX_MS = 900;
+  function golfStartCharge() {
+    golfCharging = true;
+    golfChargeStart = performance.now();
+    const wrap = document.getElementById('golfChargeBarWrap');
+    if (wrap) wrap.style.display = 'block';
+    const fill = document.getElementById('golfChargeBarFill');
+    if (fill) fill.style.width = '0%';
+  }
+  function golfReleaseCharge() {
+    if (!golfCharging) return false;
+    const elapsed = performance.now() - golfChargeStart;
+    golfCharging = false;
+    const wrap = document.getElementById('golfChargeBarWrap');
+    if (wrap) wrap.style.display = 'none';
+    return tryPuttGolf(Math.max(0, Math.min(1, elapsed / GOLF_CHARGE_MAX_MS)));
+  }
+  function updateGolfCharge() {
+    if (!golfCharging) return;
+    if (!golfChargeEligible()) {
+      golfCharging = false;
+      const wrap = document.getElementById('golfChargeBarWrap');
+      if (wrap) wrap.style.display = 'none';
+      return;
+    }
+    const frac = Math.max(0, Math.min(1, (performance.now() - golfChargeStart) / GOLF_CHARGE_MAX_MS));
+    const fill = document.getElementById('golfChargeBarFill');
+    if (fill) fill.style.width = (frac*100) + '%';
+  }
+  // Aims wherever the player's currently facing, same as a real putt —
+  // walk around the ball to line up the shot, then charge and release.
+  function tryPuttGolf(power) {
+    if (!golfBall || !golfBall.mesh.visible || currentWorldId !== PUB_WORLD_ID) return false;
+    const b = golfBall;
+    const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
+    if (dPlayer > 1.3) return false;
+    const p = Math.max(0, Math.min(1, power || 0));
+    const speed = 2 + p*11; // a gentle tap up to a proper firm putt
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    b.vel.x = fx*speed; b.vel.z = fz*speed;
+    golfStrokesThisHole++;
+    updateGolfScoreHud();
+    playThud(250);
+    return true;
+  }
+  let lastGolfTriggerCheck = 0, golfWasAirborne = false;
+  function updateGolfTriggers() {
+    const isAirborneNow = player.vel.y > 1;
+    const justJumped = isAirborneNow && !golfWasAirborne;
+    golfWasAirborne = isAirborneNow;
+    if (currentWorldId !== PUB_WORLD_ID || !justJumped) return;
+    const now = performance.now();
+    if (now - lastGolfTriggerCheck < 1200) return;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const hole = GOLF_HOLES.find(h => px === h.tee.x && pz === h.tee.z && Math.abs(player.pos.y - (h.tee.y+1)) < 0.7);
+    if (hole) {
+      lastGolfTriggerCheck = now;
+      const pushDir = new THREE.Vector3(player.pos.x-(px+0.5), 0, player.pos.z-(pz+0.5));
+      if (pushDir.lengthSq() < 0.0001) pushDir.set(-Math.sin(yaw), 0, -Math.cos(yaw));
+      pushDir.normalize();
+      player.pos.x += pushDir.x*1.1; player.pos.z += pushDir.z*1.1;
+      playButtonPress();
+      spawnGolfBallAtHole(hole.index);
+    }
+  }
+
   // ================= SNAKES & LADDERS (2+ player minigame in The Mill) =================
   let slLaddersMap = {}, slSnakesMap = {}, slGenerated = false;
   let slPlayers = []; // { uid, name, colorIdx, square, tokenGroup }
@@ -10710,12 +10999,15 @@
     updateFootballAiAvatarFigure(dt); // no-ops immediately unless a computer opponent is actually in play
     updateTennisBall(dt);
     updateTennisCharge(); // no-ops instantly unless the build button's currently held down charging a tennis hit
+    updateGolfBall(dt);
+    updateGolfCharge(); // no-ops instantly unless the build button's currently held down charging a putt
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment
     updateShipFires();
     updateTennisTriggers();
     updateFootballTriggers();
+    updateGolfTriggers();
     updateDoors(dt);
     updateWork(dt);
 

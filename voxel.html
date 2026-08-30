@@ -8547,27 +8547,14 @@
       const axis = new THREE.Vector3(-b.vel.z, 0, b.vel.x).normalize();
       b.mesh.rotateOnWorldAxis(axis, speed*dt*2.2);
     }
-    // Touching the ball nudges it in whichever direction the player is
-    // currently facing — walk up to it facing where you want it to go,
-    // same basic idea as dribbling. Only while it's still on the ground
-    // — an airborne ball shouldn't also be getting shoved sideways by
-    // just standing near it.
-    const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
-    if (dPlayer < 0.85 && b.pos.y <= FOOTBALL_CENTER.y+0.01) {
-      const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
-      b.vel.x += fx*3.2*dt*6;
-      b.vel.z += fz*3.2*dt*6;
-      const maxSpeed = 9;
-      if (b.vel.length() > maxSpeed) b.vel.setLength(maxSpeed);
-      broadcastFootballState();
-    }
   }
-  // A proper kick, as opposed to the constant ground-nudge above — sends
-  // the ball up as well as forward, roughly reaching just above the
-  // crossbar (goal frame tops out at y=4-5) at the peak of its arc.
-  // Horizontal power stays fairly modest on purpose: the pitch itself
-  // isn't very long, so a full-strength kick would clear it almost
-  // instantly and stop feeling like a football pitch at all.
+  // A proper kick, as opposed to the ground-nudge this used to have from
+  // merely standing near the ball (removed — only an actual kick moves
+  // it now, not just walking up to it). Kept fairly flat/driven rather
+  // than a lob: horizontal power stays fairly modest on purpose since
+  // the pitch itself isn't very long, and a full-strength kick would
+  // clear it almost instantly and stop feeling like a football pitch at
+  // all.
   const FOOTBALL_GRAVITY = -17;
   function tryKickFootball() {
     if (!footballBall || currentWorldId !== PUB_WORLD_ID) return false;
@@ -8575,9 +8562,9 @@
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
     if (dPlayer > 1.1 || b.pos.y > FOOTBALL_CENTER.y+0.01) return false; // too far away, or already in the air
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
-    b.vel.y = 9.6; // v0 for gravity -17: peak rise = v0²/(2*17) ≈ 2.7 blocks above the resting height of 2.28, landing the peak just above the crossbar at y≈5
-    b.vel.x = fx*4.2;
-    b.vel.z = fz*4.2;
+    b.vel.y = 5; // much flatter than before (was 9.6) — a driven low kick rather than a lob; still enough lift to clear a defender's feet
+    b.vel.x = fx*6.5; // more horizontal pace than before (was 4.2) to make up for the flatter arc, so it still covers ground at a similar pace
+    b.vel.z = fz*6.5;
     playThud(300);
     broadcastFootballState();
     return true;
@@ -8695,6 +8682,7 @@
       // anywhere in the world, since this update loop isn't gated by the
       // player's own position, only by which world they're in.
       if (impactSpeed > 0.5 && tennisGame && tennisGame.ballInPlay) playTennisBounce();
+      if (tennisGame) tennisGame.hasBouncedSinceHit = true; // see the back-line check below — a shot that's already touched down validly is a WIN for the hitter if it's never returned, not a fault
       tennisCheckBounce(b.pos.z < TENNIS_NET_Z ? 'near' : 'far');
     }
     b.vel.x *= Math.max(0, 1 - dt*0.15); // very light air resistance — mostly gravity and bounces do the work here, not rolling friction like the football
@@ -8702,19 +8690,22 @@
     if (b.pos.x < TENNIS_X0) { b.pos.x = TENNIS_X0; b.vel.x *= -0.6; }
     if (b.pos.x > TENNIS_X1) { b.pos.x = TENNIS_X1; b.vel.x *= -0.6; }
     // The back line (not the side walls, which still just bounce it back
-    // in) is now a genuine out — same fault logic as clipping the net,
-    // whoever hit it last loses the point, rather than bouncing it back
-    // into play like a wall. This is deliberately the ONLY other way a
-    // point ends now, alongside the net: bouncing any number of times,
-    // or even rolling to a dead stop, no longer costs anyone the point
-    // by itself (see tennisCheckBounce, which no longer counts bounces
-    // at all) — only actually going out the back or into the net does.
+    // in) ends the point either way now — but WHO wins depends on
+    // whether the ball had already bounced validly since it was hit
+    // (tennisGame.hasBouncedSinceHit, set above). If it had, the hitter
+    // sent a good shot in and the other side simply never got to it in
+    // time — a WIN for the hitter, same as a real unreturned winner. If
+    // it hadn't (the ball sailed straight out on the fly, never having
+    // touched down at all), that's a genuine long/wide fault, same as
+    // clipping the net — the hitter loses the point.
     if (b.pos.z < TENNIS_Z0 || b.pos.z > TENNIS_Z1) {
       b.pos.z = Math.max(TENNIS_Z0, Math.min(TENNIS_Z1, b.pos.z));
       b.vel.x = 0; b.vel.z = 0; b.vel.y = 0; // stops dead right on the line rather than sailing on past it
       if (tennisGame && tennisGame.started && !tennisGame.won && tennisGame.ballInPlay && tennisGame.lastHitterSide) {
-        const faultSide = tennisGame.lastHitterSide;
-        if (faultSide === tennisMySide() || faultSide === tennisAISide()) tennisAwardPoint(tennisOtherSide(faultSide));
+        const hitterSide = tennisGame.lastHitterSide;
+        if (hitterSide === tennisMySide() || hitterSide === tennisAISide()) {
+          tennisAwardPoint(tennisGame.hasBouncedSinceHit ? hitterSide : tennisOtherSide(hitterSide));
+        }
       }
     }
     b.mesh.position.copy(b.pos);
@@ -8787,7 +8778,7 @@
     playTennisHit(p);
     tennisLocalSwingUntil = performance.now() + 350; // animates the local avatar's own swing — see tennisArmSwingRotation
     if (tennisGame) {
-      tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault and puts the ball live, which is what actually arms the net/back-line fault checks and the computer's own returns
+      tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; tennisGame.hasBouncedSinceHit = false; // a successful hit clears any pending fault and puts the ball live, which is what actually arms the net/back-line fault checks and the computer's own returns
       tennisGame.lastHitterSide = side; // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
     }
     broadcastTennisState(true);
@@ -8852,7 +8843,7 @@
   let tennisGame = null; // { sides: {near:{uid,name}, far:{uid,name}}, score:{near,far}, started, won, lastBounceSide, bounceCount, ballInPlay, lastHitterSide }
   let tennisPendingStartSide = null;
   function tennisResetGame() {
-    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false, lastHitterSide:null };
+    tennisGame = { sides: { near: { uid:null, name:null }, far: { uid:null, name:null } }, score: { near:0, far:0 }, started:false, won:null, lastBounceSide:null, bounceCount:0, ballInPlay:false, lastHitterSide:null, hasBouncedSinceHit:false };
     tennisAiServeAt = 0; // a fresh match — any serve scheduled from the previous one is no longer relevant
     updateTennisScoreHud();
   }
@@ -8924,6 +8915,7 @@
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.ballInPlay = false; // sitting dead-centre again until someone actually serves it — see tennisCheckBounce's own guard
     tennisGame.lastHitterSide = null;
+    tennisGame.hasBouncedSinceHit = false;
     // If the computer's the one serving next, nobody's ever actually
     // going to walk up and hit it in — a human still has to for their
     // own serves, but the computer needs to serve itself. Scheduled a
@@ -9064,7 +9056,7 @@
     b.vel.z = towardZ * Math.max(12, neededSpeed);
     b.vel.x = (Math.random()-0.5)*5;
     b.vel.y = vy;
-    tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
+    tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.hasBouncedSinceHit = false;
     tennisGame.lastHitterSide = aiSide; // so a return that sails into the net (see updateTennisBall) faults the computer, not whoever it was returning against
     tennisAiSwingUntil = performance.now() + 350;
     tennisAiLastHitAt = performance.now();

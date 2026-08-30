@@ -5141,7 +5141,7 @@
     buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
     buildBattleshipSign();
     buildTennisCourt(WHITE_CONC, CONCRETE, STONE);
-    buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC);
+    buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, 5, 33); // 5=Sand, 33=Blue Concrete — both existing block types, not new ones
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5489,6 +5489,22 @@
       [{dx:0, dl:4},{dx:-1, dl:7},{dx:1, dl:7}],
       [{dx:-1, dl:4},{dx:1, dl:4},{dx:0, dl:8}],
     ];
+    // Sand slows the ball to a near-stop rather than blocking it outright
+    // (see updateGolfBall's own heavy extra friction); water costs a
+    // penalty stroke and resets to the tee, same as a real water hazard.
+    // {dxFrom/dxTo: x-span relative to the lane's own centre, dlFrom/dlTo:
+    // z-span, both measured in from the tee end}.
+    const hazardOffsetsByHole = [
+      [],
+      [],
+      [{type:'sand', dxFrom:-2, dxTo:2, dlFrom:9, dlTo:10}], // guards the green
+      [],
+      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5}], // a strip right across the fairway — clear it in the air or go round
+      [],
+      [{type:'sand', dxFrom:-3, dxTo:-1, dlFrom:8, dlTo:9}],
+      [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5}],
+      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7}], // one last water crossing right before the final green
+    ];
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5505,6 +5521,11 @@
           cup: { x: Math.max(x0+1, Math.min(x1-1, cx+cupOffsetByHole[i])), z: zFar+1 },
           par: parByHole[i],
           obstacles: obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl })),
+          hazards: hazardOffsetsByHole[i].map(hz => ({
+            type: hz.type,
+            x0: Math.max(x0, cx+hz.dxFrom), x1: Math.min(x1, cx+hz.dxTo),
+            z0: zNear-hz.dlTo, z1: zNear-hz.dlFrom,
+          })),
         });
       }
     }
@@ -5514,7 +5535,7 @@
   const GOLF_AREA_X1 = GOLF_AREA_X0 + GOLF_COLS*(GOLF_LANE_W+GOLF_GAP) - GOLF_GAP - 1;
   const GOLF_AREA_Z_FAR = GOLF_AREA_Z_NEAR - GOLF_ROWS*(GOLF_LANE_L+GOLF_GAP) + GOLF_GAP + 1;
   const GOLF_BALL_Y = 2.14;
-  function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC) {
+  function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, SAND, BLUE_CONC) {
     // A generous connecting apron under and around the whole grid — same
     // reasoning as every other minigame's own self-contained ground
     // fill: this area isn't procedurally generated at all (see
@@ -5535,6 +5556,10 @@
       for (let z = z0; z <= z1; z++) { setGameBlock(x0-1,1,z, WHITE_CONC); setGameBlock(x1+1,1,z, WHITE_CONC); }
       for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,1,z0-1, WHITE_CONC);
       hole.obstacles.forEach(o => { setGameBlock(o.x,1,o.z, STONE); setGameBlock(o.x,2,o.z, STONE); });
+      hole.hazards.forEach(hz => {
+        const type = hz.type === 'sand' ? SAND : BLUE_CONC;
+        for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(x,1,z, type);
+      });
       setGameBlock(hole.tee.x, 1, hole.tee.z, RED_CONC);
       const teeLabel = buildNumberLabel(String(hole.index+1));
       teeLabel.position.set(hole.tee.x+0.5, 2.6, hole.tee.z+0.5);
@@ -7378,16 +7403,18 @@
     else if (e.button === 2) {
       // Holding build right next to the tennis ball charges a harder hit
       // instead of doing normal placement — see tennisChargeEligible/
-      // tennisStartCharge. Same idea for a golf putt. Everywhere else
-      // build still works exactly as it always did.
+      // tennisStartCharge. Golf uses Space/jump for its own charge
+      // instead (see golfChargeEligible's own call site in the movement
+      // code) — swinging a putter reads more like a jump-and-release
+      // motion than a build-button hold. Everywhere else build still
+      // works exactly as it always did.
       if (tennisChargeEligible()) tennisStartCharge();
-      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     }
   });
   document.addEventListener('mouseup', e => {
     if (e.button === 0) { mineHeld = false; mining = null; }
-    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); } // both are no-ops unless a charge was actually in progress
+    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); } // a no-op unless a charge was actually in progress
   });
 
   // ================= TOUCH CONTROLS =================
@@ -7524,16 +7551,18 @@
     btnPlace.addEventListener('touchstart', e => {
       e.preventDefault(); ensureAudio();
       if (tennisChargeEligible()) tennisStartCharge();
-      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     });
-    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); });
-    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); golfReleaseCharge(); });
+    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); });
+    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
+      if (golfChargeEligible()) { golfStartCharge(); return; } // charges a putt instead of jumping while standing near your own ball
       if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
       else { touchJumpQueued = true; }
     });
+    btnJump.addEventListener('touchend', e => { e.preventDefault(); golfReleaseCharge(); }); // a no-op unless a charge was actually in progress
+    btnJump.addEventListener('touchcancel', e => { golfReleaseCharge(); });
     // Touching the fly lever auto-engages flying, same as the old fly
     // buttons did — this fires alongside (not instead of) setupLever's
     // own touchstart handler on the same element, since that one only
@@ -8818,7 +8847,7 @@
         footballCamWasActive = false;
         if (footballAvatarFigure) footballAvatarFigure.visible = false;
         const crosshairEl = document.getElementById('crosshair');
-        if (crosshairEl && !tennisCamWasActive) crosshairEl.style.display = 'block';
+        if (crosshairEl && !tennisCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
         if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
         else { workHeldRoot.visible = false; selectSlot(selectedSlot); }
       }
@@ -9586,7 +9615,7 @@
         tennisCamWasActive = false;
         if (localAvatarFigure) localAvatarFigure.visible = false;
         const crosshairEl = document.getElementById('crosshair');
-        if (crosshairEl) crosshairEl.style.display = 'block'; // see the crosshair hide further below — restored once the pulled-back view actually ends
+        if (crosshairEl && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block'; // see the crosshair hide further below — restored once the pulled-back view actually ends
         // Restore whatever the first-person held view should actually be
         // showing — exactly setWorkHeldVisual's own two branches, since
         // that's the only thing that otherwise decides it.
@@ -9747,13 +9776,14 @@
   // ================= CRAZY GOLF (9-hole minigame in The Mill) =================
   // Solo-scored, casual — no "join a side" or computer opponent the way
   // tennis and football have (there's nothing to compete against here,
-  // just your own scorecard), and deliberately kept first-person/no
-  // third-person camera for this first pass, unlike those two. The ball
-  // itself is local-only (not broadcast over multiplayer) — each
-  // player's own round is theirs alone; other players nearby won't see
-  // your ball moving, which keeps this pass a reasonable size rather
-  // than also building out shared-ball sync/contention for a
-  // fundamentally single-player scoring game.
+  // just your own scorecard). Does now get the same third-person
+  // avatar/camera treatment those two have, gated on actually being
+  // mid-hole (golfCurrentHole !== null) rather than just standing near
+  // the course. The ball itself is still local-only (not broadcast over
+  // multiplayer) — each player's own round is theirs alone; other
+  // players nearby won't see your ball moving, which keeps this a
+  // reasonable size rather than also building out shared-ball
+  // sync/contention for a fundamentally single-player scoring game.
   let golfBall = null; // { mesh, pos: Vector3, vel: Vector3 }
   let golfCurrentHole = null; // index into GOLF_HOLES, or null when no round is in progress
   let golfStrokesThisHole = 0;
@@ -9764,6 +9794,87 @@
     golfStrokesThisHole = 0;
     if (golfBall) golfBall.mesh.visible = false;
     updateGolfScoreHud();
+  }
+  // ---- Golf: pulled-back third-person camera + visible avatar ----
+  // Same pattern as football's own (mouse-yaw-steered, not locked to a
+  // fixed direction the way tennis's is) — putting needs to aim in any
+  // direction depending on where the ball and cup happen to be, not just
+  // "toward the net".
+  let golfAvatarFigure = null, golfCamBlend = 0, golfCamWasActive = false, golfLocalSwingUntil = 0;
+  function ensureGolfAvatarFigure() {
+    if (!golfAvatarFigure) {
+      golfAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+      golfAvatarFigure.visible = false;
+      scene.add(golfAvatarFigure);
+    }
+    return golfAvatarFigure;
+  }
+  function refreshGolfAvatarFigure() {
+    if (!golfAvatarFigure) return;
+    const wasVisible = golfAvatarFigure.visible;
+    scene.remove(golfAvatarFigure);
+    golfAvatarFigure = buildCustomerFigure(false, getMyAvatarColors());
+    golfAvatarFigure.visible = wasVisible;
+    scene.add(golfAvatarFigure);
+  }
+  // A short, gentle arm arc — a putting stroke is a small motion, not
+  // tennis's full overhead swing, so this uses a much smaller range and
+  // duration than tennisArmSwingRotation.
+  function golfArmSwingRotation(swingUntil, durationMs) {
+    const remaining = swingUntil - performance.now();
+    if (remaining <= 0) return -0.1;
+    const t = Math.min(1, Math.max(0, 1 - remaining/durationMs));
+    return -0.1 - Math.sin(t*Math.PI) * 1.0;
+  }
+  function updateGolfCameraFocus(dt) {
+    const nearCourse = currentWorldId === PUB_WORLD_ID && golfDistanceFromCourse(player.pos.x, player.pos.z) < 12;
+    const active = nearCourse && golfCurrentHole !== null; // only pans in once a hole's actually in progress — walking past the course doesn't summon the avatar or pull the camera back
+    const targetBlend = active ? 1 : 0;
+    golfCamBlend += (targetBlend - golfCamBlend) * Math.min(1, dt*2.2);
+    if (golfCamBlend < 0.004) {
+      golfCamBlend = 0;
+      if (golfCamWasActive) {
+        golfCamWasActive = false;
+        if (golfAvatarFigure) golfAvatarFigure.visible = false;
+        const crosshairEl = document.getElementById('crosshair');
+        if (crosshairEl && !tennisCamWasActive && !footballCamWasActive) crosshairEl.style.display = 'block';
+        if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
+        else { workHeldRoot.visible = false; selectSlot(selectedSlot); }
+      }
+      return;
+    }
+    golfCamWasActive = true;
+    const crosshairEl = document.getElementById('crosshair');
+    if (crosshairEl) crosshairEl.style.display = 'none';
+    const avatar = ensureGolfAvatarFigure();
+    avatar.visible = true;
+    avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
+    avatar.rotation.y = yaw + Math.PI; // faces the same way the (mouse-steered) camera looks — see tennis's own comment for the yaw+π derivation
+    const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
+    const swinging = performance.now() < golfLocalSwingUntil;
+    if (moving && !swinging) {
+      const swing = Math.sin(performance.now()*0.02) * 0.5;
+      avatar.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    } else if (!swinging) {
+      avatar.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+    }
+    if (swinging) {
+      const armRot = golfArmSwingRotation(golfLocalSwingUntil, 300);
+      avatar.traverse(o => { if (o.name === 'arm') o.rotation.x = armRot; });
+    }
+    heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
+    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    const desired = new THREE.Vector3(
+      player.pos.x + backX*3.6,
+      player.pos.y + player.height*0.92 + 2.0,
+      player.pos.z + backZ*3.6
+    );
+    camera.position.lerp(desired, golfCamBlend);
+    const targetPitch = -0.16; // a light downward tilt — enough to see the ball and cup clearly without tennis's steep aerial angle
+    camera.rotation.x = pitch + (targetPitch - pitch) * golfCamBlend;
   }
   function buildGolfBallMesh() {
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60 }));
@@ -9851,6 +9962,23 @@
         if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
       }
     });
+    // Sand and water — simple rectangular zones matching how each was
+    // actually built (see buildGolfCourse). Sand just drags the ball to
+    // a near-stop rather than blocking it outright; water costs a
+    // penalty stroke and sends it back to the tee, same as a real water
+    // hazard rather than just bouncing off like a wall.
+    hole.hazards.forEach(hz => {
+      if (b.pos.x < hz.x0 || b.pos.x > hz.x1+1 || b.pos.z < hz.z0 || b.pos.z > hz.z1+1) return;
+      if (hz.type === 'sand') {
+        b.vel.multiplyScalar(Math.max(0, 1 - dt*5));
+      } else {
+        showChatLogLine('⛳', 'In the water — 1 stroke penalty.');
+        golfStrokesThisHole++;
+        updateGolfScoreHud();
+        b.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
+        b.vel.set(0,0,0);
+      }
+    });
     b.mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
     const speed = Math.hypot(b.vel.x, b.vel.z);
     if (speed > 0.02) {
@@ -9910,6 +10038,7 @@
     golfStrokesThisHole++;
     updateGolfScoreHud();
     playThud(250);
+    golfLocalSwingUntil = performance.now() + 300; // animates the local avatar's own putting stroke
     return true;
   }
   let lastGolfTriggerCheck = 0, golfWasAirborne = false;
@@ -10848,7 +10977,17 @@
           touchJumpQueued = false;
         } else {
           player.vel.y += GRAVITY*dt;
-          if ((keys['Space'] || touchJumpQueued) && player.onGround) { player.vel.y = JUMP_VEL; player.onGround = false; playJump(); }
+          // Standing near your own golf ball, holding Space charges a
+          // putt instead of jumping — a held-and-released swing feels
+          // closer to an actual putting stroke than the build-button
+          // hold tennis/football's own hits use. Continuously polled
+          // here (this whole block runs every frame) rather than via
+          // separate keydown/keyup listeners, so it naturally starts and
+          // stops the moment eligibility or the key itself changes.
+          if (golfChargeEligible()) {
+            if (keys['Space'] && !golfCharging) golfStartCharge();
+            else if (!keys['Space'] && golfCharging) golfReleaseCharge();
+          } else if ((keys['Space'] || touchJumpQueued) && player.onGround) { player.vel.y = JUMP_VEL; player.onGround = false; playJump(); }
           touchJumpQueued = false;
         }
         const wasGrounded = player.onGround;
@@ -10887,6 +11026,7 @@
       updateSlCameraFocus(dt); // blends the camera toward a moving Snakes & Ladders token when relevant, then back — no-ops instantly everywhere else
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
+      updateGolfCameraFocus(dt); // ditto again, near the golf course
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -11911,6 +12051,7 @@
     refreshTitleAvatarFigure(); // so the title screen's own thumbnail reflects whatever just changed immediately, not just next reload
     refreshLocalAvatarFigure(); // ditto for the on-court figure shown near the tennis court
     refreshFootballAvatarFigure(); // ditto again for the on-pitch figure shown near the football pitch
+    refreshGolfAvatarFigure(); // and again for the on-course figure shown near the golf course
   });
 
   // ---- Title screen's own small avatar thumbnail ----

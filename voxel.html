@@ -8593,8 +8593,14 @@
   let tennisBall = null; // { mesh, pos, vel }
   const TENNIS_GRAVITY = -14; // a bit gentler than football's — tennis balls hang in the air longer relative to their travel speed
   function buildTennisBallMesh() {
-    const mat = new THREE.MeshPhongMaterial({ color: 0xd4e157, shininess: 30 });
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), mat);
+    // Bright, highly-saturated neon yellow-green with a touch of
+    // emissive glow — the previous muted colour (0xd4e157) blended into
+    // the court's own grey/white surface far too easily, especially
+    // from a distance with the new aerial camera. Closer to a real
+    // tennis ball's fluorescent optic-yellow, so it reads clearly
+    // against either the grey playing surface or the white lines.
+    const mat = new THREE.MeshPhongMaterial({ color: 0xccff00, emissive: 0x445500, shininess: 20 });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), mat); // noticeably bigger than before (was 0.14) so it's actually trackable at speed/distance
     mesh.castShadow = false;
     return mesh;
   }
@@ -10131,7 +10137,13 @@
       // storing a value for this per-frame loop to keep re-applying.
       const sprinting = keys['ShiftLeft'] && !flying;
       const submerged = !flying && waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z)));
-      const speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
+      let speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
+      // Quite a bit quicker while an active tennis match has the camera
+      // locked in (tennisMoveYaw is only ever non-null then) — covering
+      // a 22-block-wide court on foot at ordinary walking pace made wide
+      // shots essentially unreachable regardless of how well-timed the
+      // chase was.
+      if (tennisMoveYaw !== null) speed *= 1.7;
       // During an active tennis match, movement is relative to the
       // locked net-facing view (see tennisMoveYaw's own comment) rather
       // than raw mouse-look, so WASD/joystick still moves the player the

@@ -6718,6 +6718,63 @@
     o.connect(g).connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime+0.12);
   }
+  // ---- Tennis sound effects ----
+  // A crisp, percussive "pock" for the ball actually being struck — pitch
+  // and volume both rise a bit with how hard the swing was charged, so a
+  // full-power hit reads as noticeably meatier than a tap.
+  function playTennisHit(power) {
+    if (!audioCtx) return;
+    const p = Math.max(0, Math.min(1, power||0));
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(520 + p*260, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(190, audioCtx.currentTime+0.09);
+    g.gain.setValueAtTime(0.22 + p*0.16, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.13);
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.13);
+  }
+  // Short filtered-noise tap for the ball bouncing off the court — same
+  // noise-burst technique as playFootstep, just brighter/shorter so it
+  // reads as a hard-court bounce rather than a footfall.
+  function playTennisBounce() {
+    if (!audioCtx) return;
+    const dur = 0.06;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 950;
+    filter.Q.value = 0.9;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.16, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    noise.connect(filter).connect(g).connect(audioCtx.destination);
+    noise.start();
+  }
+  // Two-note rising chime for winning a point — deliberately distinct
+  // from playButtonPress's own single blip so a scored point is obviously
+  // a bigger deal than a menu tap.
+  function playTennisScore() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    [660, 880].forEach((freq, i) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine';
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, now+i*0.09);
+      g.gain.exponentialRampToValueAtTime(0.2, now+i*0.09+0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, now+i*0.09+0.22);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(now+i*0.09); o.stop(now+i*0.09+0.24);
+    });
+  }
   // A handful of short filtered noise clicks in quick succession — reads
   // as dice clattering rather than one single sound.
   function playDiceRoll() {
@@ -8585,7 +8642,7 @@
       b.pos.z = TENNIS_NET_Z + (prevZ < TENNIS_NET_Z ? -0.3 : 0.3);
       b.vel.z *= -0.25;
       b.vel.x *= 0.6;
-      playThud(200);
+      playThud(180);
       // Into the net is a fault, same as failing to return it — whoever
       // hit it last loses the point. Gated the same way tennisCheckBounce
       // gates its own scoring (only the client responsible for the side
@@ -8597,9 +8654,11 @@
       }
     }
     if (b.pos.y < TENNIS_CENTER.y) {
+      const impactSpeed = Math.abs(b.vel.y);
       b.pos.y = TENNIS_CENTER.y;
-      b.vel.y = Math.abs(b.vel.y) > 0.5 ? -b.vel.y*0.55 : 0; // bouncier than football's ball — a tennis ball keeps a lot more of its energy off a hard court
+      b.vel.y = impactSpeed > 0.5 ? -b.vel.y*0.55 : 0; // bouncier than football's ball — a tennis ball keeps a lot more of its energy off a hard court
       b.vel.x *= 0.85; b.vel.z *= 0.85; // still loses a little horizontal speed each bounce
+      if (impactSpeed > 0.5) playTennisBounce(); // skip the sound for the near-zero-velocity settling case, or a resting ball would click on every frame
       tennisCheckBounce(b.pos.z < TENNIS_NET_Z ? 'near' : 'far');
     }
     b.vel.x *= Math.max(0, 1 - dt*0.15); // very light air resistance — mostly gravity and bounces do the work here, not rolling friction like the football
@@ -8626,21 +8685,48 @@
   // tennisChargeEligible/the mousedown/mouseup handlers) scales the swing
   // on top of that baseline: a bare tap (power omitted/0) still hits like
   // the original simple version always did, holding it just hits harder.
+  // What direction/axes the player's currently steering with — the same
+  // touch joystick used for walking (moveState) on mobile, or A/D on
+  // desktop. Only the sideways axis is used (see tryHitTennisBall below);
+  // forward/back isn't, since the ball always has to go over the net.
+  function tennisAimInput() {
+    if (isTouchDevice) return moveState.x;
+    let x = 0;
+    if (keys['KeyD']) x += 1;
+    if (keys['KeyA']) x -= 1;
+    return x;
+  }
   function tryHitTennisBall(power) {
     if (!tennisBall || currentWorldId !== PUB_WORLD_ID) return false;
     const b = tennisBall;
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
     if (dPlayer > 1.3) return false;
+    const side = tennisMySide();
+    // The court runs along Z, net at TENNIS_NET_Z — a near-side player
+    // always has to send the ball toward +z (across to the far side) and
+    // a far-side player always toward -z, regardless of which way they
+    // happen to be looking (the avatar's facing is now locked toward the
+    // opponent — see updateTennisCameraFocus). Left/right steering comes
+    // from whichever way the joystick/A-D is currently held, mapped into
+    // world space so "steer right" always means the hitter's own right,
+    // on either side of the net (see the right = cross(forward,up) math
+    // in updateTennisCameraFocus's comments for why this sign flips
+    // between sides).
+    const netDirZ = side === 'far' ? -1 : 1;
+    const sideAim = Math.max(-1, Math.min(1, tennisAimInput()));
+    let fx = -sideAim * netDirZ * 0.8;
+    let fz = netDirZ;
+    const flen = Math.hypot(fx, fz) || 1;
+    fx /= flen; fz /= flen;
     const p = Math.max(0, Math.min(1, power || 0));
     const speedMul = 1 + p*0.6; // up to 60% harder at full charge
-    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     b.vel.x = fx*10*speedMul;
     b.vel.z = fz*10*speedMul;
     b.vel.y = 5.5 + p*1.5; // a harder swing also arcs a bit higher, not just faster
-    playThud(450);
+    playTennisHit(p);
     if (tennisGame) {
       tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0; tennisGame.ballInPlay = true; // a successful hit clears any pending fault — see tennisCheckBounce — and puts the ball live, which is what actually arms bounce/point scoring and the computer's own returns
-      tennisGame.lastHitterSide = tennisMySide(); // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
+      tennisGame.lastHitterSide = side; // so a shot that goes straight into the net (see updateTennisBall) knows who to fault
     }
     broadcastTennisState(true);
     return true;
@@ -8650,8 +8736,15 @@
   // normal placement — same distance check tryHitTennisBall itself uses,
   // shared here so the mousedown/touch handlers know whether to start a
   // charge instead of placing a block.
+  // Charging no longer requires standing right next to the ball — you can
+  // hold the swing anywhere on/near the court and release whenever the
+  // ball's actually in reach (tryHitTennisBall's own 1.3-distance check
+  // handles that at release time; if it's out of reach the swing just
+  // whiffs quietly). This only requires actually being in the match
+  // (tennisMySide()) and near the court, so it doesn't hijack normal
+  // block-placement anywhere else in the world.
   function tennisChargeEligible() {
-    return !!tennisBall && currentWorldId === PUB_WORLD_ID && Math.hypot(player.pos.x-tennisBall.pos.x, player.pos.z-tennisBall.pos.z) <= 1.3;
+    return !!tennisGame && !!tennisMySide() && currentWorldId === PUB_WORLD_ID && tennisDistanceFromCourt(player.pos.x, player.pos.z) < 4;
   }
   let tennisCharging = false, tennisChargeStart = 0;
   const TENNIS_CHARGE_MAX_MS = 900; // full bar in under a second — long enough to feel deliberate, short enough not to just be a delay
@@ -8747,6 +8840,7 @@
   function tennisAwardPoint(winSide) {
     tennisGame.score[winSide]++;
     updateTennisScoreHud();
+    playTennisScore();
     if (tennisGame.score[winSide] >= 11) {
       tennisGame.won = winSide;
       showChatLogLine('🏆', (tennisGame.sides[winSide].name || 'Winner') + ' wins the match!');
@@ -8777,7 +8871,7 @@
     tennisGame.lastBounceSide = null; tennisGame.bounceCount = 0;
     tennisGame.lastHitterSide = aiSide; // so a return that sails into the net (see updateTennisBall) faults the computer, not whoever it was returning against
     tennisAiSwingUntil = performance.now() + 350;
-    playThud(450);
+    playTennisHit(0.5);
     broadcastTennisState(true);
   }
   // Called whenever the ball touches the ground on a given side ('near'
@@ -8805,7 +8899,18 @@
       tennisGame.lastBounceSide = side;
       tennisGame.bounceCount = 1;
     }
-    if (side === aiSide && tennisGame.bounceCount === 1) tennisAIReturn();
+    if (side === aiSide && tennisGame.bounceCount === 1) {
+      // The computer only actually returns the ball if its own on-court
+      // figure (see updateAiAvatarFigure, which chases the ball's X
+      // position but at a finite speed) is actually close enough to it
+      // when it bounces — a shot hit wide or fast enough to outrun that
+      // chase is a miss, same as it would be for a human standing in the
+      // wrong spot, rather than being returned from wherever it happens
+      // to be standing.
+      const withinReach = aiAvatarFigure && Math.abs(aiAvatarFigure.position.x - tennisBall.pos.x) <= 1.8;
+      if (withinReach) tennisAIReturn();
+      else { showChatLogLine('🎾', "Computer couldn't reach that one!"); tennisAwardPoint(tennisOtherSide(side)); }
+    }
   }
   let lastTennisTriggerCheck = 0, tennisWasAirborne = false;
   function updateTennisTriggers() {
@@ -8835,9 +8940,11 @@
   // never seeing the far baseline, the ball's full flight, or your own
   // avatar at all. Blends the same way updateSlCameraFocus already does
   // (eased in/out, not a hard cut) into a view pulled back and up behind
-  // the player — still steered by ordinary mouse-look (yaw), just from
-  // further away — and reuses buildCustomerFigure to actually show that
-  // player's own body while this view is active.
+  // the player, locked to face the net once fully blended in (see
+  // targetYaw below — no longer mouse-look-steered, since the whole point
+  // is the avatar visibly facing the opponent) — and reuses
+  // buildCustomerFigure to actually show that player's own body while
+  // this view is active.
   let localAvatarFigure = null;
   function ensureLocalAvatarFigure() {
     if (!localAvatarFigure) {
@@ -8859,6 +8966,15 @@
     scene.add(localAvatarFigure);
   }
   let tennisCamBlend = 0, tennisCamWasActive = false;
+  // Set by updateTennisCameraFocus below to the same blended yaw the
+  // camera itself is using whenever that view's active, so walking with
+  // WASD/joystick during a match moves relative to what's actually on
+  // screen (the locked net-facing view) instead of the invisible raw
+  // mouse-look yaw underneath it. Read by the main loop's own movement
+  // block, one frame behind (this runs after movement each frame) — an
+  // imperceptible lag. Null whenever the tennis view isn't active, so
+  // movement falls straight back to ordinary mouse-look everywhere else.
+  let tennisMoveYaw = null;
   function updateTennisCameraFocus(dt) {
     // A box rather than tennisDistanceFromCourt's own round radius — the
     // Snakes & Ladders tower and Battleship arena sit only 8 blocks east
@@ -8867,13 +8983,20 @@
     // Generous to the west (where both entrance triggers are, 2 blocks
     // outside the baseline) so the view eases in on the walk up; tight
     // everywhere else.
-    const active = currentWorldId === PUB_WORLD_ID &&
+    const nearCourt = currentWorldId === PUB_WORLD_ID &&
       player.pos.x >= TENNIS_X0-6 && player.pos.x <= TENNIS_X1+3 &&
       player.pos.z >= TENNIS_Z0-3 && player.pos.z <= TENNIS_Z1+3;
+    // Doesn't pan out (or summon the avatar) just from walking up to the
+    // court — only once this player has actually gone through the 2P/vs
+    // Computer choice and joined a side (tennisJoin, called the instant
+    // either modal button is clicked, sets this synchronously).
+    const mySide = tennisMySide();
+    const active = nearCourt && !!mySide;
     const targetBlend = active ? 1 : 0;
     tennisCamBlend += (targetBlend - tennisCamBlend) * Math.min(1, dt*2.2);
     if (tennisCamBlend < 0.004) {
       tennisCamBlend = 0;
+      tennisMoveYaw = null;
       if (tennisCamWasActive) {
         tennisCamWasActive = false;
         if (localAvatarFigure) localAvatarFigure.visible = false;
@@ -8887,13 +9010,14 @@
     }
     tennisCamWasActive = true;
     const avatar = ensureLocalAvatarFigure();
-    // Only actually shown once a match is under way — walking up while
-    // nobody's playing pulls the camera back (so the court's still easy
-    // to see) but doesn't summon a body standing there with no game
-    // going on.
-    avatar.visible = !!(tennisGame && tennisGame.started);
+    avatar.visible = !!mySide;
     avatar.position.set(player.pos.x, player.pos.y, player.pos.z);
-    avatar.rotation.y = yaw;
+    // Locked to face the net/opponent — matches the same convention
+    // ensureAiAvatarFigure's own avatar already uses (aiSide==='far' ?
+    // Math.PI : 0), rather than following mouse-look, so the player's own
+    // figure visibly faces across the court instead of wherever the
+    // camera happens to be pointed.
+    avatar.rotation.y = mySide === 'far' ? Math.PI : 0;
     const moving = (player.vel.x*player.vel.x + player.vel.z*player.vel.z) > 0.01;
     if (moving) {
       const swing = Math.sin(performance.now()*0.02) * 0.5;
@@ -8909,11 +9033,24 @@
     // Same reasoning updateAppMakeRole's own pulled-back camera already
     // uses (see stopAppMakeAutomation).
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
-    // Pulled back and up behind the player along the reverse of their
-    // own facing direction (matches tryHitTennisBall's forward vector,
-    // negated), so mouse-look still steers this shot exactly like the
-    // normal first-person camera, just from further away.
-    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    // The camera's own facing is locked toward the net too, the same
+    // direction tryHitTennisBall now always swings toward (near → +z,
+    // far → -z — see its own comments for the right-vector sign math).
+    // Blended in via the shortest-angle dYaw approach updateSlCameraFocus
+    // already uses, so it eases from whatever mouse-look direction the
+    // player was last facing into the locked view rather than snapping.
+    const netDirZ = mySide === 'far' ? -1 : 1;
+    const targetYaw = netDirZ === 1 ? Math.PI : 0; // yaw whose forward vector (-sin,-cos) points along netDirZ
+    let dYaw = targetYaw - yaw;
+    while (dYaw > Math.PI) dYaw -= Math.PI*2;
+    while (dYaw < -Math.PI) dYaw += Math.PI*2;
+    camera.rotation.y = yaw + dYaw*tennisCamBlend;
+    tennisMoveYaw = camera.rotation.y; // see its own declaration above — keeps WASD/joystick movement matching this locked view
+    // Pulled back and up behind the player along the reverse of the
+    // locked facing direction (not live mouse yaw), so the pulled-back
+    // shot stays steady on the opponent instead of swinging around with
+    // the mouse mid-rally.
+    const backX = Math.sin(targetYaw), backZ = Math.cos(targetYaw);
     const desired = new THREE.Vector3(
       player.pos.x + backX*4.5,
       player.pos.y + player.height*0.92 + 2.6,
@@ -8955,7 +9092,7 @@
     // actually positioning for the shot instead of standing dead still.
     const targetX = tennisBall ? Math.max(TENNIS_X0+1, Math.min(TENNIS_X1-1, tennisBall.pos.x)) : TENNIS_CENTER.x;
     if (!aiAvatarWasVisible) { avatar.position.set(targetX, 2, baseZ); aiAvatarWasVisible = true; }
-    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*3); avatar.position.y = 2; avatar.position.z = baseZ; }
+    else { avatar.position.x += (targetX - avatar.position.x) * Math.min(1, dt*4); avatar.position.y = 2; avatar.position.z = baseZ; }
     avatar.rotation.y = aiSide === 'far' ? Math.PI : 0; // facing the net either way — see the same yaw/forward convention updateTennisCameraFocus relies on
     const swinging = performance.now() < tennisAiSwingUntil; // set by tennisAIReturn, so the swing lands roughly when the ball actually leaves
     avatar.traverse(o => { if (o.name === 'arm') o.rotation.x = swinging ? -1.6 : -0.15; });
@@ -9761,8 +9898,14 @@
       const sprinting = keys['ShiftLeft'] && !flying;
       const submerged = !flying && waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z)));
       const speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
-      const forward = new THREE.Vector3(-Math.sin(yaw),0,-Math.cos(yaw));
-      const right = new THREE.Vector3(Math.cos(yaw),0,-Math.sin(yaw));
+      // During an active tennis match, movement is relative to the
+      // locked net-facing view (see tennisMoveYaw's own comment) rather
+      // than raw mouse-look, so WASD/joystick still moves the player the
+      // way it looks on screen even though the camera itself is no
+      // longer steered by the mouse.
+      const moveYaw = tennisMoveYaw !== null ? tennisMoveYaw : yaw;
+      const forward = new THREE.Vector3(-Math.sin(moveYaw),0,-Math.cos(moveYaw));
+      const right = new THREE.Vector3(Math.cos(moveYaw),0,-Math.sin(moveYaw));
       let move = new THREE.Vector3();
       if (isTouchDevice) {
         move.addScaledVector(forward, -moveState.y);

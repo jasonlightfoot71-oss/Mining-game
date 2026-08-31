@@ -5141,7 +5141,7 @@
     buildBattleshipArena(STONE, WHITE_CONC, PLANKS, RED_CONC, GRASS);
     buildBattleshipSign();
     buildTennisCourt(WHITE_CONC, CONCRETE, STONE);
-    buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, 5, 33); // 5=Sand, 33=Blue Concrete — both existing block types, not new ones
+    buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, 5, 33, PLANKS); // 5=Sand, 33=Blue Concrete — both existing block types, not new ones
     spawnPubDecorations();
     needsRebuild = true;
   }
@@ -5476,18 +5476,20 @@
     const cupOffsetByHole = [0, 2, -2, 0, 1, -1, 2, -2, 0]; // how far the cup sits off-centre, in blocks — forces an angled putt rather than a dead-straight one
     // Each obstacle is {dx: offset from the lane's own centre line, dl:
     // distance in from the tee end} — hand-placed per hole for a rough
-    // difficulty curve (hole 1 wide open, later holes needing an actual
-    // line around 2-3 bumpers).
+    // difficulty curve. Hole 4's four form a genuine wall spanning most
+    // of the width rather than isolated bumpers — the ball has to be
+    // routed around the open end, the closest this collision model gets
+    // to a real dogleg without needing L-shaped bounds.
     const obstacleOffsetsByHole = [
       [],
       [{dx:0, dl:6}],
       [{dx:-1, dl:4},{dx:1, dl:8}],
-      [{dx:0, dl:4},{dx:0, dl:8}],
+      [{dx:-2, dl:6},{dx:-1, dl:6},{dx:0, dl:6},{dx:1, dl:6}], // wall — open gap on the right (dx:2) is the only way through
       [{dx:-1, dl:4},{dx:1, dl:6},{dx:-1, dl:9}],
-      [{dx:0, dl:6}],
+      [], // hole 6's obstacle is the tunnel itself (see tunnelOffsetsByHole) rather than a bumper
       [{dx:-2, dl:4},{dx:2, dl:4},{dx:0, dl:9}],
       [{dx:0, dl:4},{dx:-1, dl:7},{dx:1, dl:7}],
-      [{dx:-1, dl:4},{dx:1, dl:4},{dx:0, dl:8}],
+      [{dx:-1, dl:4},{dx:1, dl:4},{dx:0, dl:8}], // last one (dx:0,dl:8) doubles as the windmill's post — see windmillHoleIndex
     ];
     // Sand slows the ball to a near-stop rather than blocking it outright
     // (see updateGolfBall's own heavy extra friction); water costs a
@@ -5505,6 +5507,13 @@
       [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5}],
       [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7}], // one last water crossing right before the final green
     ];
+    // A low stone archway roofing over the fairway — purely a visual/
+    // structural feature (the ball's always well below roof height), but
+    // it's what actually reads as "a tunnel" rather than just an open
+    // lane. Only hole 6 has one, keeping it a distinct signature feature
+    // rather than diluting it across every hole.
+    const tunnelOffsetsByHole = [null, null, null, null, null, {dlFrom:5, dlTo:7}, null, null, null];
+    const windmillHoleIndex = 8; // hole 9 — its last obstacle (see above) becomes the windmill's post
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5514,18 +5523,21 @@
         const zNear = GOLF_AREA_Z_NEAR - r*(GOLF_LANE_L+GOLF_GAP); // tee end (higher/closer-to-pad z)
         const zFar = zNear - GOLF_LANE_L + 1; // cup end (lower z, deeper into the course)
         const cx = Math.round((x0+x1)/2);
+        const obstacles = obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl }));
         holes.push({
           index: i,
           bounds: { x0, x1, z0: zFar, z1: zNear }, // z0 = low(cup) edge, z1 = high(tee) edge — same ordering convention tennis's own bounds use
           tee: { x: cx, y: 2, z: zNear-1 },
           cup: { x: Math.max(x0+1, Math.min(x1-1, cx+cupOffsetByHole[i])), z: zFar+1 },
           par: parByHole[i],
-          obstacles: obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl })),
+          obstacles,
           hazards: hazardOffsetsByHole[i].map(hz => ({
             type: hz.type,
             x0: Math.max(x0, cx+hz.dxFrom), x1: Math.min(x1, cx+hz.dxTo),
             z0: zNear-hz.dlTo, z1: zNear-hz.dlFrom,
           })),
+          tunnel: tunnelOffsetsByHole[i] ? { z0: zNear-tunnelOffsetsByHole[i].dlTo, z1: zNear-tunnelOffsetsByHole[i].dlFrom } : null,
+          windmillObstacle: i === windmillHoleIndex ? obstacles[obstacles.length-1] : null,
         });
       }
     }
@@ -5535,7 +5547,17 @@
   const GOLF_AREA_X1 = GOLF_AREA_X0 + GOLF_COLS*(GOLF_LANE_W+GOLF_GAP) - GOLF_GAP - 1;
   const GOLF_AREA_Z_FAR = GOLF_AREA_Z_NEAR - GOLF_ROWS*(GOLF_LANE_L+GOLF_GAP) + GOLF_GAP + 1;
   const GOLF_BALL_Y = 2.14;
-  function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, SAND, BLUE_CONC) {
+  // Rotating windmill blade groups — updateGolfWindmills (called from
+  // the main loop) just spins each one a little every frame. Purely
+  // decorative: the collision at that spot comes from the ordinary
+  // static obstacle point at the same location (see windmillObstacle
+  // above), not the blades themselves, which keeps the physics simple
+  // rather than needing timing-based moving-obstacle collision.
+  let golfWindmills = [];
+  function updateGolfWindmills(dt) {
+    golfWindmills.forEach(w => { w.rotation.z += dt*1.4; });
+  }
+  function buildGolfCourse(WHITE_CONC, GRASS, STONE, RED_CONC, BLACK_CONC, SAND, BLUE_CONC, PLANKS) {
     // A generous connecting apron under and around the whole grid — same
     // reasoning as every other minigame's own self-contained ground
     // fill: this area isn't procedurally generated at all (see
@@ -5550,21 +5572,51 @@
     GOLF_HOLES.forEach(hole => {
       const { x0, x1, z0, z1 } = hole.bounds;
       for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) setGameBlock(x,1,z, GRASS);
-      // Low border along both long sides and across the far end (behind
-      // the cup) — the near/tee end stays open so it reads as an
-      // entrance rather than a sealed box.
-      for (let z = z0; z <= z1; z++) { setGameBlock(x0-1,1,z, WHITE_CONC); setGameBlock(x1+1,1,z, WHITE_CONC); }
-      for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,1,z0-1, WHITE_CONC);
+      // Timber edging rather than a painted concrete curb — reads much
+      // closer to a real crazy-golf course's own wooden borders. The
+      // near/tee end stays open so it reads as an entrance rather than a
+      // sealed box.
+      for (let z = z0; z <= z1; z++) { setGameBlock(x0-1,1,z, PLANKS); setGameBlock(x1+1,1,z, PLANKS); }
+      for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,1,z0-1, PLANKS);
       hole.obstacles.forEach(o => { setGameBlock(o.x,1,o.z, STONE); setGameBlock(o.x,2,o.z, STONE); });
       hole.hazards.forEach(hz => {
         const type = hz.type === 'sand' ? SAND : BLUE_CONC;
         for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(x,1,z, type);
       });
+      if (hole.tunnel) {
+        // Raises the existing side borders up through the tunnel's span
+        // and roofs over them — the ball rolling underneath never
+        // interacts with any of this (it's all well above ball height),
+        // it's there purely so the lane actually reads as passing
+        // through something instead of just being an open corridor.
+        for (let z = hole.tunnel.z0; z <= hole.tunnel.z1; z++) {
+          for (let y = 2; y <= 4; y++) { setGameBlock(x0-1,y,z, STONE); setGameBlock(x1+1,y,z, STONE); }
+          for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,4,z, STONE);
+        }
+      }
+      if (hole.windmillObstacle) {
+        const wx = hole.windmillObstacle.x+0.5, wz = hole.windmillObstacle.z+0.5;
+        const postMat = new THREE.MeshPhongMaterial({ color: 0xf2f2f2, shininess: 20 });
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.14,2.4,8), postMat);
+        post.position.set(wx, 3.2, wz);
+        scene.add(post); pubExtraProps.push(post);
+        const bladeGroup = new THREE.Group();
+        bladeGroup.position.set(wx, 4.4, wz);
+        const bladeMat = new THREE.MeshPhongMaterial({ color: 0xdd3b3b, shininess: 15, side: THREE.DoubleSide });
+        for (let k = 0; k < 4; k++) {
+          const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.1, 0.04), bladeMat);
+          blade.position.y = 0.55;
+          const wrapper = new THREE.Group();
+          wrapper.rotation.z = (Math.PI/2)*k;
+          wrapper.add(blade);
+          bladeGroup.add(wrapper);
+        }
+        scene.add(bladeGroup); pubExtraProps.push(bladeGroup);
+        golfWindmills.push(bladeGroup);
+      }
       // Raised one block above the surrounding lane surface — same
       // jump-to-activate convention every other trigger in the game
-      // uses. This was previously placed flush with the ground (no
-      // higher than the grass around it), which meant there was nothing
-      // to actually jump onto and the trigger could never fire.
+      // uses.
       setGameBlock(hole.tee.x, hole.tee.y, hole.tee.z, RED_CONC);
       const teeLabel = buildNumberLabel(String(hole.index+1));
       teeLabel.position.set(hole.tee.x+0.5, hole.tee.y+1.6, hole.tee.z+0.5);
@@ -7809,6 +7861,9 @@
       // looked exactly as wrong as the pitch did. Matches buildTennisCourt's
       // own footprint (x:-55..-33, z:36..76) with the same small margin.
       if (x >= -56 && x <= -32 && z >= 35 && z <= 77) continue;
+      // Excludes the crazy golf course — same reasoning, matches its own
+      // apron footprint from buildGolfCourse.
+      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) continue;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue; // skip anything under a roof
@@ -7897,6 +7952,9 @@
       // Matches buildFootballPitch's own footprint (x:-2..30, z:36..76)
       // with a small margin either side.
       if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
+      // Excludes the crazy golf course's own fairways for the same
+      // reason — matches its apron footprint from buildGolfCourse.
+      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) continue;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue;
@@ -9895,11 +9953,11 @@
       golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
     }
     golfBall.mesh.visible = true;
-    // One row further into the lane than the tee marker itself — the
-    // marker's now a raised block (see buildGolfCourse), so spawning the
-    // ball on its exact cell would drop it inside/on top of a solid
-    // block instead of on the normal lane surface.
-    golfBall.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z-1+0.5);
+    // Beside the tee marker (offset sideways), not one row further down
+    // the fairway — sitting "in front of" it read as if the ball had
+    // already been hit partway down the lane.
+    const teeSideX = hole.tee.x + (hole.tee.x < hole.bounds.x1 ? 1 : -1);
+    golfBall.pos.set(teeSideX+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
     golfBall.vel.set(0,0,0);
     golfBall.mesh.position.copy(golfBall.pos);
     golfCurrentHole = i;
@@ -10940,7 +10998,19 @@
         // altitude by hand even while flying level, or add extra lift
         // while diving, rather than the lever being replaced by this.
         let dy = flyMove.y;
-        if (keys['Space']) dy += speed*dt;
+        // Same golf-charge interception the ground-movement branch below
+        // has — without this, holding Space to charge a putt while still
+        // in fly mode (easy to still be in, having just flown over from
+        // another hole) just flies the player upward instead, which is
+        // most likely why charging only ever seemed to work reliably
+        // right by the first hole — the one closest to where players
+        // land and switch out of flying — and not the others.
+        if (golfChargeEligible()) {
+          if (keys['Space'] && !golfCharging) golfStartCharge();
+          else if (!keys['Space'] && golfCharging) golfReleaseCharge();
+        } else {
+          if (keys['Space']) dy += speed*dt;
+        }
         if (keys['ShiftLeft']) dy -= speed*dt;
         // Dragging the fly lever up gives a negative flyState.y (same sign
         // convention setupJoystick/setupLever use — screen Y grows
@@ -11154,6 +11224,7 @@
     updateTennisCharge(); // no-ops instantly unless the build button's currently held down charging a tennis hit
     updateGolfBall(dt);
     updateGolfCharge(); // no-ops instantly unless the build button's currently held down charging a putt
+    updateGolfWindmills(dt); // no-ops instantly unless the windmill hole was actually built
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment

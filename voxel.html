@@ -5548,6 +5548,12 @@
     // Each hole gets an ARRAY (can be more than one, walking
     // independently of each other and of any other golems on the hole).
     const golemGateByHole = [[], [{dl:6}], [{dl:4},{dl:8}], [], [], [], [], [], []];
+    // Two zombies either side of the tunnel gate (dl:6, see
+    // tunnelGateByHole) — one guarding the approach before it, one the
+    // exit after it — wandering the lane's width exactly like the
+    // golems do (same patrol/collision code, see buildGolfCourse and
+    // updateGolfBall's own golemMeshes handling), just a different mesh.
+    const zombieGateByHole = [[], [], [], [], [], [{dl:3},{dl:9}], [], [], []];
     // A hill: entering below minSpeed anywhere before crestDl means the
     // ball never makes the top — see updateGolfBall, which decelerates
     // it hard through the climb and, if it stalls out before the crest,
@@ -5568,7 +5574,18 @@
     // collision this simple a physics model doesn't have). See
     // updateGolfBall's own corner-redirect logic and buildGolfCourse's
     // angled bank markers built at each one.
-    const cornerOffsetsByHole = [[], [], [], [], [{dx:-2, dl:3},{dx:2, dl:6},{dx:-1, dl:9}], [], [], [], []];
+    // Corner bank-shots aren't used on any hole right now (hole 5 uses
+    // spinning rotors instead — see rotorOffsetsByHole below) but the
+    // mechanic itself (updateGolfBall's own redirect logic,
+    // buildGolfCorners) is left in place for a future hole.
+    const cornerOffsetsByHole = [[], [], [], [], [], [], [], [], []];
+    // A rotating 3-block bar on a fixed pivot — dx offsets the pivot
+    // sideways from the lane's own centre line, dir is +1/-1 for which
+    // way it spins. Collision is real line-segment distance (see
+    // updateGolfBall), not the simplified point-check the windmill's
+    // gate uses, since there's no narrow gap constraining where the ball
+    // can be — it has to actually be timed past the swinging bar itself.
+    const rotorOffsetsByHole = [[], [], [], [], [{dx:1, dl:3, dir:1},{dx:-1, dl:6, dir:-1},{dx:0, dl:9, dir:1}], [], [], [], []];
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5581,7 +5598,8 @@
         const obstacles = obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl }));
         const tunnelGate = tunnelGateByHole[i] ? { x: cx, z: zNear-tunnelGateByHole[i].dl } : null;
         const windmillGate = windmillGateByHole[i] ? { x: cx, z: zNear-windmillGateByHole[i].dl } : null;
-        const golemGates = golemGateByHole[i].map(g => ({ z: zNear-g.dl })); // no x — each patrols the whole width, see updateGolfGolems
+        const golemGates = golemGateByHole[i].map(g => ({ z: zNear-g.dl }));
+        const zombieGates = zombieGateByHole[i].map(g => ({ z: zNear-g.dl })); // no x — each patrols the whole width, see updateGolfGolems
         // The gate's own flanking wall blocks reuse the ordinary
         // obstacle-bumper collision (see updateGolfBall) — a physical
         // wall either side of a real gap, not a special case.
@@ -5605,8 +5623,11 @@
           windmillBladeGroup: null, // filled in by buildGolfCourse once the mesh actually exists
           golemGates,
           golemMeshes: [], // filled in by buildGolfCourse once the meshes actually exist
+          zombieGates,
           ramp: rampByHole[i] ? { z0: zNear-rampByHole[i].dlTo, z1: zNear-rampByHole[i].dlFrom, crestZ: zNear-rampByHole[i].dlCrest, minSpeed: rampByHole[i].minSpeed } : null,
           corners: cornerOffsetsByHole[i].map(c => ({ x: cx+c.dx, z: zNear-c.dl })),
+          rotors: rotorOffsetsByHole[i].map(ro => ({ x: cx+ro.dx, z: zNear-ro.dl, dir: ro.dir })),
+          rotorMeshes: [], // filled in by buildGolfCourse once the meshes actually exist
         });
       }
     }
@@ -5683,6 +5704,37 @@
     group.add(rightArm);
     const leftArm = new THREE.Mesh(armGeom.clone(), ironMat);
     leftArm.position.set(-0.63, 1.9, 0);
+    group.add(leftArm);
+    return { group, rightArm, leftArm };
+  }
+  // Same basic humanoid-box construction as the golem, just smaller and
+  // sickly green — reuses the golem's own patrol/collision/walk-bob
+  // handling wholesale (see buildGolfCourse and updateGolfBall's
+  // golemMeshes loop), just a different mesh on top of the same walking
+  // obstacle.
+  function buildGolfZombie() {
+    const group = new THREE.Group();
+    const skinMat = new THREE.MeshPhongMaterial({ color: 0x5a8a4a, shininess: 8 });
+    const clothMat = new THREE.MeshPhongMaterial({ color: 0x40492f, shininess: 4 });
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, 0.3), clothMat);
+    torso.position.y = 1.15;
+    group.add(torso);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.36), skinMat);
+    head.position.y = 1.68;
+    group.add(head);
+    const legGeom = new THREE.BoxGeometry(0.2, 0.75, 0.22);
+    [-0.13, 0.13].forEach(dx => {
+      const leg = new THREE.Mesh(legGeom, clothMat);
+      leg.position.set(dx, 0.38, 0);
+      group.add(leg);
+    });
+    const armGeom = new THREE.BoxGeometry(0.18, 0.68, 0.18);
+    armGeom.translate(0, -0.34, 0); // pivot at the shoulder — same reasoning as the golem's own arms
+    const rightArm = new THREE.Mesh(armGeom, skinMat);
+    rightArm.position.set(0.34, 1.5, 0);
+    group.add(rightArm);
+    const leftArm = new THREE.Mesh(armGeom.clone(), skinMat);
+    leftArm.position.set(-0.34, 1.5, 0);
     group.add(leftArm);
     return { group, rightArm, leftArm };
   }
@@ -5814,6 +5866,28 @@
       scene.add(bank); pubExtraProps.push(bank);
       setGameBlock(c.x, 1, c.z, STONE);
     });
+  }
+  // A rotating 3-block bar on a fixed pivot post — updateGolfRotors just
+  // spins group.rotation.y a little every frame; updateGolfBall reads
+  // that same rotation straight off the mesh to work out the bar's
+  // current endpoints for collision, same "single source of truth"
+  // reasoning the windmill's blades and the golems' positions use.
+  let golfRotors = []; // { mesh, dir, speed }
+  function updateGolfRotors(dt) {
+    golfRotors.forEach(r => { r.mesh.rotation.y += r.dir*r.speed*dt; });
+  }
+  function buildGolfRotorMesh() {
+    const group = new THREE.Group();
+    const barMat = new THREE.MeshPhongMaterial({ color: 0xb03a3a, shininess: 30 });
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(3, 0.22, 0.22), barMat);
+    group.add(bar);
+    const hubMat = new THREE.MeshPhongMaterial({ color: 0x3a3a3a, shininess: 40 });
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.16,0.32,8), hubMat);
+    group.add(hub);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.09,2.14,8), hubMat);
+    post.position.y = -1.07;
+    group.add(post);
+    return group;
   }
   function buildGolfRamp(hole, PLANKS) {
     // A visible raised hump built from actual stepped/sloped geometry —
@@ -5955,8 +6029,23 @@
         golfGolems.push({ mesh: group, xMin: hole.bounds.x0+0.5, xMax: hole.bounds.x1+0.5, dir: startAtLeft ? 1 : -1, speed: 1.6 + gi*0.3, rightArm, leftArm });
         hole.golemMeshes.push(group);
       });
+      hole.zombieGates.forEach((gate, gi) => {
+        const { group, rightArm, leftArm } = buildGolfZombie();
+        const startAtLeft = gi % 2 === 0; // one starts each side, same reasoning as the golems above
+        group.position.set((startAtLeft ? hole.bounds.x0 : hole.bounds.x1)+0.5, 2, gate.z+0.5);
+        scene.add(group); pubExtraProps.push(group);
+        golfGolems.push({ mesh: group, xMin: hole.bounds.x0+0.5, xMax: hole.bounds.x1+0.5, dir: startAtLeft ? 1 : -1, speed: 1.3 + gi*0.3, rightArm, leftArm });
+        hole.golemMeshes.push(group); // same collision handling as the golems — see updateGolfBall
+      });
       if (hole.ramp) buildGolfRamp(hole, PLANKS);
       if (hole.corners.length) buildGolfCorners(hole, STONE);
+      hole.rotors.forEach(rot => {
+        const mesh = buildGolfRotorMesh();
+        mesh.position.set(rot.x+0.5, GOLF_BALL_Y, rot.z+0.5);
+        scene.add(mesh); pubExtraProps.push(mesh);
+        golfRotors.push({ mesh, dir: rot.dir, speed: 1.6 });
+        hole.rotorMeshes.push(mesh);
+      });
       // Raised one block above the surrounding lane surface — same
       // jump-to-activate convention every other trigger in the game
       // uses.
@@ -10434,6 +10523,32 @@
         if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
       }
     });
+    // The rotors — real point-to-line-segment distance against the bar's
+    // current endpoints (read straight off the mesh's own rotation.y, so
+    // it can't drift out of sync with the visual), not the simplified
+    // point-check the windmill's gate blades use — there's no narrow
+    // opening constraining the ball's position here, it genuinely has to
+    // be timed past wherever the swinging bar currently is.
+    hole.rotorMeshes.forEach(rotMesh => {
+      const angle = rotMesh.rotation.y;
+      const px = rotMesh.position.x, pz = rotMesh.position.z, halfLen = 1.5;
+      const ax = px + Math.cos(angle)*halfLen, az = pz - Math.sin(angle)*halfLen;
+      const bx = px - Math.cos(angle)*halfLen, bz = pz + Math.sin(angle)*halfLen;
+      const segDx = bx-ax, segDz = bz-az;
+      const segLen2 = segDx*segDx + segDz*segDz;
+      let t = segLen2 > 0 ? ((b.pos.x-ax)*segDx + (b.pos.z-az)*segDz) / segLen2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const cx = ax + t*segDx, cz = az + t*segDz;
+      const rdx = b.pos.x-cx, rdz = b.pos.z-cz;
+      const rdist = Math.hypot(rdx, rdz);
+      const minDist = 0.35; // bar half-thickness + ball radius
+      if (rdist < minDist && rdist > 0.0001) {
+        const nx = rdx/rdist, nz = rdz/rdist;
+        b.pos.x = cx + nx*minDist; b.pos.z = cz + nz*minDist;
+        const vDotN = b.vel.x*nx + b.vel.z*nz;
+        if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
+      }
+    });
     // The fish — only actually solid while its jump animation has it
     // visible AND near ball height (see updateGolfFish — the 2D-only
     // collision check every other obstacle uses would otherwise still
@@ -10468,7 +10583,15 @@
     // clearing it; otherwise it's committed to rolling back.
     if (hole.ramp) {
       const r = hole.ramp;
-      if (b.pos.z <= r.z1 && b.pos.z >= r.z0) {
+      // z1+1 rather than z1 — z1 is a block INDEX, whose actual
+      // world-space footprint runs from z1 to z1+1, and the ball enters
+      // travelling from the higher-z (tee) side. Using bare z1 as the
+      // entry boundary meant the ball had to travel almost all the way
+      // through that first block before this ever became true at all —
+      // for a short up-slope that's easily most or all of the climb,
+      // which is exactly why it read as staying level right up until the
+      // down-slope.
+      if (b.pos.z <= r.z1+1 && b.pos.z >= r.z0) {
         if (!b.rampCommitted) {
           b.rampCommitted = true;
           b.rampWillClear = Math.hypot(b.vel.x, b.vel.z) >= r.minSpeed;
@@ -10553,8 +10676,8 @@
     // that mesh's own crest height, so it reads as genuinely climbing
     // and descending rather than rolling straight through.
     let renderY = b.pos.y;
-    if (hole.ramp && b.pos.z <= hole.ramp.z1 && b.pos.z >= hole.ramp.z0) {
-      const rampProgress = (hole.ramp.z1 - b.pos.z) / (hole.ramp.z1 - hole.ramp.z0); // 0 at the entry edge, 1 at the exit edge
+    if (hole.ramp && b.pos.z <= hole.ramp.z1+1 && b.pos.z >= hole.ramp.z0) {
+      const rampProgress = (hole.ramp.z1+1 - b.pos.z) / (hole.ramp.z1+1 - hole.ramp.z0); // 0 at the entry edge, 1 at the exit edge
       renderY = b.pos.y + Math.sin(rampProgress*Math.PI)*0.8;
     }
     hole.hazards.forEach(hz => {
@@ -10562,10 +10685,15 @@
       // this is the one built as an actual sloped mesh rather than a
       // flat plank walkway, so it's the one that needs this. Only
       // applies while the ball's actually on the bridge's own column.
+      // The z-range here now matches the +1 convention the water-penalty
+      // check just above uses (block index z1 spans world-space z1 to
+      // z1+1) — it didn't before, which cut the bump off for the entire
+      // entry edge of the crossing and was very likely why it looked
+      // like nothing was happening at all.
       if (hz.type !== 'realWater' || hz.bridgeX === null) return;
-      if (b.pos.x < hz.bridgeX || b.pos.x > hz.bridgeX+1 || b.pos.z < hz.z0 || b.pos.z > hz.z1) return;
-      const bridgeProgress = (hz.z1 - b.pos.z) / (hz.z1 - hz.z0); // 0 at the entry edge, 1 at the exit edge
-      renderY = b.pos.y + Math.sin(bridgeProgress*Math.PI)*0.35; // shallower peak than the course 7 ramp — this is a short 3-block hump, not a full hill
+      if (b.pos.x < hz.bridgeX || b.pos.x > hz.bridgeX+1 || b.pos.z < hz.z0 || b.pos.z > hz.z1+1) return;
+      const bridgeProgress = Math.max(0, Math.min(1, (hz.z1+1 - b.pos.z) / (hz.z1+1 - hz.z0))); // 0 at the entry edge, 1 at the exit edge
+      renderY = b.pos.y + Math.sin(bridgeProgress*Math.PI)*0.55;
     });
     b.mesh.position.set(b.pos.x, renderY, b.pos.z);
     const speed = Math.hypot(b.vel.x, b.vel.z);
@@ -11760,6 +11888,7 @@
     updateGolfWindmills(dt); // no-ops instantly unless the windmill hole was actually built
     updateGolfGolems(dt); // no-ops instantly unless the golem hole was actually built
     updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
+    updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();

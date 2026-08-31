@@ -5493,7 +5493,7 @@
       [],
       [], // hole 2 is the golem (see golemGateByHole) instead of a static bumper
       [], // hole 3 is two golems (see golemGateByHole) instead of static bumpers
-      [{dx:-2, dl:6},{dx:-1, dl:6},{dx:0, dl:6},{dx:1, dl:6}], // wall — open gap on the right (dx:2) is the only way through
+      [], // hole 4 is the water crossing (see hazardOffsetsByHole) instead of the wall
       [{dx:-1, dl:4},{dx:1, dl:6},{dx:-1, dl:9}],
       [], // hole 6 is the tunnel gate (see tunnelGateByHole) instead
       [], // hole 7 is the ramp (see rampByHole) instead
@@ -5517,12 +5517,20 @@
       [],
       [],
       [{type:'sand', dxFrom:-2, dxTo:2, dlFrom:9, dlTo:10}], // guards the green
-      [],
+      // Full lane width, 3 blocks long, real water (see buildGolfCourse
+      // and the RENDERED note on 'water' vs 'realWater' below) rather
+      // than the decorative blue-concrete the other water hazards use.
+      // bridgeDx:0 is the single-column crossing, built as a small
+      // up-and-down ramp (see buildGolfCourse) rather than a flat plank
+      // walkway; fish:true adds a jumping fish that arcs across it on a
+      // cycle (see golfFish/updateGolfFish) and blocks the ball if it's
+      // there when it lands on it.
+      [{type:'realWater', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:7, bridgeDx:0, fish:true}],
       [{type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5, bridgeDx:-3}],
       [],
       [],
       [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5, bridgeDx:2}],
-      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7, bridgeDx:3}], // one last water crossing right before the final green
+      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7, bridgeDx:2}], // one last water crossing right before the final green — bridgeDx pulled in from the very edge (was 3, which landed outside the lane's own bounds after the hazard's own x-span gets clamped to fit)
     ];
     // A gate: solid wall either side of a single one-block-wide opening
     // (see the ±2/±1 offsets below — only dx:0 stays clear), just wide
@@ -5582,6 +5590,7 @@
             x0: Math.max(x0, cx+hz.dxFrom), x1: Math.min(x1, cx+hz.dxTo),
             z0: zNear-hz.dlTo, z1: zNear-hz.dlFrom,
             bridgeX: hz.bridgeDx !== undefined ? cx+hz.bridgeDx : null,
+            fish: !!hz.fish,
           })),
           tunnelGate,
           windmillGate,
@@ -5667,6 +5676,40 @@
     leftArm.position.set(-0.63, 1.9, 0);
     group.add(leftArm);
     return { group, rightArm, leftArm };
+  }
+  // A jumping fish — spends most of its cycle hidden below the water,
+  // then arcs up and across the water hazard on a fixed rhythm. Blocks
+  // the ball the same way the windmill's blades do (checked against
+  // where it actually currently is, read straight off the mesh, so the
+  // visual arc and the collision window can't drift apart), just moving
+  // in a straight arc instead of rotating.
+  const GOLF_FISH_CYCLE = 2.4, GOLF_FISH_ARC_DURATION = 1.0;
+  let golfFish = [];
+  function buildGolfFishMesh() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x5a8ab8, shininess: 60 });
+    const finMat = new THREE.MeshPhongMaterial({ color: 0xdd8a3a, shininess: 40 });
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.55, 8), bodyMat);
+    body.rotation.z = Math.PI/2;
+    group.add(body);
+    const tail = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.22, 4), finMat);
+    tail.rotation.z = -Math.PI/2;
+    tail.position.x = -0.36;
+    group.add(tail);
+    group.visible = false;
+    return group;
+  }
+  function updateGolfFish(dt) {
+    golfFish.forEach(f => {
+      const t = (performance.now()/1000) % GOLF_FISH_CYCLE;
+      if (t > GOLF_FISH_ARC_DURATION) { f.mesh.visible = false; return; }
+      f.mesh.visible = true;
+      const progress = t / GOLF_FISH_ARC_DURATION; // 0 at the start of the jump, 1 at the end
+      f.mesh.position.x = f.bridgeX;
+      f.mesh.position.z = f.z0 + (f.z1-f.z0)*progress;
+      f.mesh.position.y = GOLF_BALL_Y + Math.sin(progress*Math.PI)*1.0; // arcs up and back down, peaking mid-jump
+      f.mesh.rotation.x = (progress-0.5)*1.4; // pitches nose-down into the dive on the way down, nose-up on the way up
+    });
   }
   // Two stone pillars flanking the gate with a lintel across the top and
   // a shallow peaked cap — a real modelled little archway rather than a
@@ -5779,25 +5822,66 @@
       for (let x = x0-1; x <= x1+1; x++) setGameBlock(x,1,z0-1, PLANKS);
       hole.obstacles.forEach(o => { setGameBlock(o.x,1,o.z, STONE); setGameBlock(o.x,2,o.z, STONE); });
       hole.hazards.forEach(hz => {
+        const isRealWater = hz.type === 'realWater';
         const type = hz.type === 'sand' ? SAND : BLUE_CONC;
         for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) {
           if (hz.bridgeX !== null && x === hz.bridgeX) continue; // paved over below instead — see the bridge itself
-          setGameBlock(x,1,z, type);
+          if (isRealWater) {
+            // Actual water rather than a coloured block — the STONE
+            // apron fill already gives it a solid floor at y=0, this
+            // just needs the walkable GRASS the main lane fill put here
+            // removed first, since water and a solid block can't
+            // legitimately occupy the same cell at once.
+            blocks.delete(key(x,1,z));
+            waterBlocks.set(key(x,1,z), 0);
+          } else {
+            setGameBlock(x,1,z, type);
+          }
         }
-        // A raised plank walkway across the one column left clear —
-        // without this there's genuinely no way to reach the rest of the
-        // fairway on foot once the hazard walls off the width, since the
-        // player has to walk the hole too, not just the ball. Simple
-        // wooden rails either side so it actually reads as a bridge
-        // rather than just a differently-coloured floor tile.
+        if (isRealWater) rebuildWaterGeometry();
         if (hz.bridgeX !== null) {
-          for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(hz.bridgeX,1,z, PLANKS);
-          const railMat = new THREE.MeshPhongMaterial({ color: 0x7a5230, shininess: 10 });
-          [-0.42, 0.42].forEach(dx => {
-            const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.4, (hz.z1-hz.z0+1)), railMat);
-            rail.position.set(hz.bridgeX+0.5+dx, 2.4, (hz.z0+hz.z1)/2+0.5);
-            scene.add(rail); pubExtraProps.push(rail);
-          });
+          if (isRealWater) {
+            // A genuine little humpback bridge — rises from the bank,
+            // peaks over the middle of the water, comes back down the
+            // far side — rather than the flat plank walkway the other
+            // water hazards use. Reuses the same wedge-mesh approach as
+            // the course 7 ramp, just much shorter/shallower.
+            const bridgeLen = hz.z1-hz.z0+1, half = bridgeLen/2;
+            const bridgeMat = new THREE.MeshPhongMaterial({ color: 0x8a6a42, shininess: 10 });
+            const up = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, half), bridgeMat);
+            up.rotation.x = Math.atan2(0.35, half);
+            up.position.set(hz.bridgeX+0.5, 2.18, hz.z0+half/2+0.5);
+            scene.add(up); pubExtraProps.push(up);
+            const down = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, half), bridgeMat);
+            down.rotation.x = -Math.atan2(0.35, half);
+            down.position.set(hz.bridgeX+0.5, 2.18, hz.z0+half+half/2+0.5);
+            scene.add(down); pubExtraProps.push(down);
+            const railMat = new THREE.MeshPhongMaterial({ color: 0x7a5230, shininess: 10 });
+            [-0.42, 0.42].forEach(dx => {
+              const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.4, bridgeLen), railMat);
+              rail.position.set(hz.bridgeX+0.5+dx, 2.5, (hz.z0+hz.z1)/2+0.5);
+              scene.add(rail); pubExtraProps.push(rail);
+            });
+          } else {
+            // A raised plank walkway across the one column left clear —
+            // without this there's genuinely no way to reach the rest of
+            // the fairway on foot once the hazard walls off the width,
+            // since the player has to walk the hole too, not just the
+            // ball. Simple wooden rails either side so it actually reads
+            // as a bridge rather than just a differently-coloured tile.
+            for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(hz.bridgeX,1,z, PLANKS);
+            const railMat = new THREE.MeshPhongMaterial({ color: 0x7a5230, shininess: 10 });
+            [-0.42, 0.42].forEach(dx => {
+              const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.4, (hz.z1-hz.z0+1)), railMat);
+              rail.position.set(hz.bridgeX+0.5+dx, 2.4, (hz.z0+hz.z1)/2+0.5);
+              scene.add(rail); pubExtraProps.push(rail);
+            });
+          }
+        }
+        if (hz.fish) {
+          const mesh = buildGolfFishMesh();
+          scene.add(mesh); pubExtraProps.push(mesh);
+          golfFish.push({ mesh, bridgeX: (hz.bridgeX !== null ? hz.bridgeX : (hz.x0+hz.x1)/2)+0.5, z0: hz.z0+0.5, z1: hz.z1+0.5 });
         }
       });
       if (hole.tunnelGate) {
@@ -10299,6 +10383,21 @@
         if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
       }
     });
+    // The fish — only actually solid while its jump animation has it
+    // visible (see updateGolfFish); checked globally rather than
+    // filtered to this hole specifically, since a fish belonging to a
+    // different hole is never going to be anywhere near the ball anyway.
+    golfFish.forEach(f => {
+      if (!f.mesh.visible) return;
+      const fdx = b.pos.x-f.mesh.position.x, fdz = b.pos.z-f.mesh.position.z;
+      const fdist = Math.hypot(fdx,fdz);
+      if (fdist < 0.5 && fdist > 0.0001) {
+        const nx = fdx/fdist, nz = fdz/fdist;
+        b.pos.x = f.mesh.position.x + nx*0.5; b.pos.z = f.mesh.position.z + nz*0.5;
+        const vDotN = b.vel.x*nx + b.vel.z*nz;
+        if (vDotN < 0) { b.vel.x -= 2*vDotN*nx*0.8; b.vel.z -= 2*vDotN*nz*0.8; }
+      }
+    });
     // The ramp — decided ONCE, the instant the ball enters the zone,
     // based on how fast it was going right then, rather than
     // continuously re-checking every frame. Continuous re-checking
@@ -11540,6 +11639,7 @@
     updateGolfCharge(); // no-ops instantly unless the build button's currently held down charging a putt
     updateGolfWindmills(dt); // no-ops instantly unless the windmill hole was actually built
     updateGolfGolems(dt); // no-ops instantly unless the golem hole was actually built
+    updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();

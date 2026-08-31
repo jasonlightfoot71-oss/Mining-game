@@ -1740,6 +1740,8 @@
     if (x >= BS_X0-4 && x <= BS_X1+4 && z >= BS_DIVIDER_Z-4 && z <= BS_DIVIDER_Z+5) return true;
     // Tennis court, including its surrounds
     if (x >= TENNIS_X0-3 && x <= TENNIS_X1+3 && z >= TENNIS_Z0-3 && z <= TENNIS_Z1+3) return true;
+    // Crazy golf course, including its apron
+    if (x >= GOLF_AREA_X0-3 && x <= GOLF_AREA_X1+3 && z >= GOLF_AREA_Z_FAR-3 && z <= GOLF_AREA_Z_NEAR+3) return true;
     return false;
   }
   function isProtectedStructuralBlock(x, y, z) {
@@ -7585,18 +7587,19 @@
     else if (e.button === 2) {
       // Holding build right next to the tennis ball charges a harder hit
       // instead of doing normal placement — see tennisChargeEligible/
-      // tennisStartCharge. Golf uses Space/jump for its own charge
-      // instead (see golfChargeEligible's own call site in the movement
-      // code) — swinging a putter reads more like a jump-and-release
-      // motion than a build-button hold. Everywhere else build still
-      // works exactly as it always did.
+      // tennisStartCharge. Golf's own build button now does the same
+      // thing (build power); jump is what actually takes the golf shot
+      // — see golfFireShot's own call site further down in the movement
+      // code. Everywhere else build still works exactly as it always
+      // did.
       if (tennisChargeEligible()) tennisStartCharge();
+      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     }
   });
   document.addEventListener('mouseup', e => {
     if (e.button === 0) { mineHeld = false; mining = null; }
-    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); } // a no-op unless a charge was actually in progress
+    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); } // both are harmless no-ops if nothing was actually in progress
   });
 
   // ================= TOUCH CONTROLS =================
@@ -7733,18 +7736,17 @@
     btnPlace.addEventListener('touchstart', e => {
       e.preventDefault(); ensureAudio();
       if (tennisChargeEligible()) tennisStartCharge();
+      else if (golfChargeEligible()) golfStartCharge();
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     });
-    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); });
-    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); });
+    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); });
+    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
-      if (golfChargeEligible()) { golfStartCharge(); return; } // charges a putt instead of jumping while standing near your own ball
+      if (golfChargeEligible()) { golfFireShot(); return; } // a discrete press takes the shot at whatever power's been built up with build — see golfChargeEligible's own comment for why this isn't hold-and-release anymore
       if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
       else { touchJumpQueued = true; }
     });
-    btnJump.addEventListener('touchend', e => { e.preventDefault(); golfReleaseCharge(); }); // a no-op unless a charge was actually in progress
-    btnJump.addEventListener('touchcancel', e => { golfReleaseCharge(); });
     // Touching the fly lever auto-engages flying, same as the old fly
     // buttons did — this fires alongside (not instead of) setupLever's
     // own touchstart handler on the same element, since that one only
@@ -10078,6 +10080,9 @@
       golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
     }
     golfBall.mesh.visible = true;
+    golfCharging = false; golfChargeMs = 0; // a fresh shot, not whatever was left over from a previous hole/attempt
+    const wrap = document.getElementById('golfChargeBarWrap');
+    if (wrap) wrap.style.display = 'none';
     golfBall.rampCommitted = false; // fresh judgement on the ramp hole each time it's (re)started, not carried over from a previous attempt
     // Beside the tee marker (offset sideways), not one row further down
     // the fairway — sitting "in front of" it read as if the ball had
@@ -10259,38 +10264,52 @@
   function golfChargeEligible() {
     return !!golfBall && golfBall.mesh.visible && currentWorldId === PUB_WORLD_ID && Math.hypot(player.pos.x-golfBall.pos.x, player.pos.z-golfBall.pos.z) < 6;
   }
-  let golfCharging = false, golfChargeStart = 0;
+  // Two separate buttons rather than one hold-and-release — build charges
+  // power (hold it, pause and resume as many times as you like, the
+  // accumulated amount is kept either way), jump actually takes the shot
+  // at whatever power's built up the moment it's pressed. This sidesteps
+  // the touch-specific bug the single-button hold-and-release version
+  // kept hitting (there's no "is the button still held" state to poll at
+  // all for firing anymore — jump is a simple discrete press).
+  let golfCharging = false, golfChargeMs = 0;
+  let golfSpacePrevDown = false; // edge-detection state for the movement code's own Space-fires-the-shot check
   const GOLF_CHARGE_MAX_MS = 900;
   function golfStartCharge() {
+    if (!golfChargeEligible()) return;
     golfCharging = true;
-    golfChargeStart = performance.now();
     const wrap = document.getElementById('golfChargeBarWrap');
     if (wrap) wrap.style.display = 'block';
-    const fill = document.getElementById('golfChargeBarFill');
-    if (fill) fill.style.width = '0%';
   }
-  function golfReleaseCharge() {
-    if (!golfCharging) return false;
-    const elapsed = performance.now() - golfChargeStart;
+  function golfPauseCharge() {
+    golfCharging = false; // bar and accumulated power both stay exactly where they were — release doesn't fire or reset anything now, only jump does
+  }
+  // Space/jump firing the shot is edge-triggered (see the movement code's
+  // own golfSpacePrevDown) rather than polled, so this only ever runs
+  // once per actual press.
+  function golfFireShot() {
+    const power = Math.max(0, Math.min(1, golfChargeMs / GOLF_CHARGE_MAX_MS));
     golfCharging = false;
+    golfChargeMs = 0;
     const wrap = document.getElementById('golfChargeBarWrap');
     if (wrap) wrap.style.display = 'none';
-    return tryPuttGolf(Math.max(0, Math.min(1, elapsed / GOLF_CHARGE_MAX_MS)));
+    tryPuttGolf(power);
   }
   function updateGolfCharge() {
     if (!golfCharging) return;
     if (!golfChargeEligible()) {
       golfCharging = false;
+      golfChargeMs = 0;
       const wrap = document.getElementById('golfChargeBarWrap');
       if (wrap) wrap.style.display = 'none';
       return;
     }
-    const frac = Math.max(0, Math.min(1, (performance.now() - golfChargeStart) / GOLF_CHARGE_MAX_MS));
+    golfChargeMs = Math.min(GOLF_CHARGE_MAX_MS, golfChargeMs + (1000/60)); // a fixed per-call step rather than measuring wall-clock elapsed time — this is called once per rendered frame, close enough to real dt for a ~1s bar without needing dt threaded through from the caller
     const fill = document.getElementById('golfChargeBarFill');
-    if (fill) fill.style.width = (frac*100) + '%';
+    if (fill) fill.style.width = ((golfChargeMs/GOLF_CHARGE_MAX_MS)*100) + '%';
   }
   // Aims wherever the player's currently facing, same as a real putt —
-  // walk around the ball to line up the shot, then charge and release.
+  // walk around the ball to line up the shot, build power with build,
+  // then press jump to actually take it.
   function tryPuttGolf(power) {
     if (!golfBall || !golfBall.mesh.visible || currentWorldId !== PUB_WORLD_ID) return false;
     const b = golfBall;
@@ -11126,35 +11145,18 @@
       // storing a value for this per-frame loop to keep re-applying.
       const sprinting = keys['ShiftLeft'] && !flying;
       const submerged = !flying && waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z)));
-      // Charging a putt near your own golf ball takes priority over every
-      // other use of Space this frame (jumping, flying up, ladder
-      // climbing, swimming up) — decided once here, centrally, and read
-      // by each of those branches below, rather than duplicated
-      // separately in each one. That duplication was exactly what let it
-      // silently work in some movement states (ground) but not others
-      // (flying, and a couple of others that never got the check added
-      // at all) — a single source of truth here can't fall out of sync
-      // with itself the way four separate copies could.
+      // Golf: build charges power (handled entirely by the build-button
+      // handlers themselves — mousedown/touchstart call golfStartCharge,
+      // mouseup/touchend call golfPauseCharge), jump actually takes the
+      // shot. Firing is edge-triggered — only on the frame Space
+      // transitions from up to down — rather than polled every frame
+      // it's held, since jump/Space is also used for actual jumping and
+      // this needs to fire exactly once per press, not repeatedly for as
+      // long as it's held down.
       const golfChargingNow = golfChargeEligible();
-      if (golfChargingNow) {
-        // Desktop only — touch devices start/stop charging directly via
-        // btnJump's own touchstart/touchend handlers instead. This is
-        // the actual bug: keys['Space'] is never true on a touch device
-        // at all (there's no physical key involved), so checking it here
-        // unconditionally meant this saw "eligible, but Space isn't
-        // held" on literally the very next frame after touchstart had
-        // already started the charge, and immediately released it again
-        // — turning every hold into a near-instant tap regardless of how
-        // long the button was actually held. Touch's own release still
-        // happens correctly on its own touchend, this just needs to stop
-        // fighting it.
-        if (!isTouchDevice) {
-          if (keys['Space'] && !golfCharging) golfStartCharge();
-          else if (!keys['Space'] && golfCharging) golfReleaseCharge();
-        }
-      } else if (golfCharging) {
-        golfReleaseCharge(); // eligibility changed mid-charge (walked off, ball gone) — release rather than leaving it stuck
-      }
+      const golfSpaceJustPressed = keys['Space'] && !golfSpacePrevDown;
+      golfSpacePrevDown = keys['Space'];
+      if (golfChargingNow && golfSpaceJustPressed) golfFireShot();
       let speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
       // Quite a bit quicker while an active tennis match has the camera
       // locked in (tennisMoveYaw is only ever non-null then) — covering

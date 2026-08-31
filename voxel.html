@@ -10123,15 +10123,7 @@
     }
     const hole = GOLF_HOLES[golfCurrentHole];
     el.style.display = 'block';
-    // TEMPORARY diagnostic suffix — the charge bar not appearing has
-    // resisted every fix so far despite the logic checking out on
-    // review, so this makes the actual eligibility state (and distance
-    // to the ball) visible directly rather than guessing blind again.
-    // Remove once this is confirmed working.
-    const chargeState = golfBall && golfBall.mesh.visible
-      ? `chg:${golfChargeEligible() ? 'READY' : 'no'} d=${Math.hypot(player.pos.x-golfBall.pos.x, player.pos.z-golfBall.pos.z).toFixed(1)} hold:${golfCharging}`
-      : 'chg:no-ball';
-    el.textContent = `⛳ Hole ${golfCurrentHole+1}/${GOLF_HOLES.length} · Par ${hole.par} · Stroke ${golfStrokesThisHole} [${chargeState}]`;
+    el.textContent = `⛳ Hole ${golfCurrentHole+1}/${GOLF_HOLES.length} · Par ${hole.par} · Stroke ${golfStrokesThisHole}`;
   }
   function golfHoleComplete() {
     const hole = GOLF_HOLES[golfCurrentHole];
@@ -11145,8 +11137,21 @@
       // with itself the way four separate copies could.
       const golfChargingNow = golfChargeEligible();
       if (golfChargingNow) {
-        if (keys['Space'] && !golfCharging) golfStartCharge();
-        else if (!keys['Space'] && golfCharging) golfReleaseCharge();
+        // Desktop only — touch devices start/stop charging directly via
+        // btnJump's own touchstart/touchend handlers instead. This is
+        // the actual bug: keys['Space'] is never true on a touch device
+        // at all (there's no physical key involved), so checking it here
+        // unconditionally meant this saw "eligible, but Space isn't
+        // held" on literally the very next frame after touchstart had
+        // already started the charge, and immediately released it again
+        // — turning every hold into a near-instant tap regardless of how
+        // long the button was actually held. Touch's own release still
+        // happens correctly on its own touchend, this just needs to stop
+        // fighting it.
+        if (!isTouchDevice) {
+          if (keys['Space'] && !golfCharging) golfStartCharge();
+          else if (!keys['Space'] && golfCharging) golfReleaseCharge();
+        }
       } else if (golfCharging) {
         golfReleaseCharge(); // eligibility changed mid-charge (walked off, ball gone) — release rather than leaving it stuck
       }

@@ -5705,10 +5705,10 @@
       if (t > GOLF_FISH_ARC_DURATION) { f.mesh.visible = false; return; }
       f.mesh.visible = true;
       const progress = t / GOLF_FISH_ARC_DURATION; // 0 at the start of the jump, 1 at the end
-      f.mesh.position.x = f.bridgeX;
-      f.mesh.position.z = f.z0 + (f.z1-f.z0)*progress;
+      f.mesh.position.x = f.x0 + (f.x1-f.x0)*progress;
+      f.mesh.position.z = f.z;
       f.mesh.position.y = GOLF_BALL_Y + Math.sin(progress*Math.PI)*1.0; // arcs up and back down, peaking mid-jump
-      f.mesh.rotation.x = (progress-0.5)*1.4; // pitches nose-down into the dive on the way down, nose-up on the way up
+      f.mesh.rotation.z = (0.5-progress)*1.4; // pitches nose-up climbing out of the water, nose-down diving back in — rotated around Z now the jump direction is along X, not Z
     });
   }
   // Two stone pillars flanking the gate with a lintel across the top and
@@ -5848,12 +5848,18 @@
             // the course 7 ramp, just much shorter/shallower.
             const bridgeLen = hz.z1-hz.z0+1, half = bridgeLen/2;
             const bridgeMat = new THREE.MeshPhongMaterial({ color: 0x8a6a42, shininess: 10 });
+            // The ball always enters from the tee side (higher z, nearer
+            // hz.z1) and exits toward the cup side (lower z, nearer
+            // hz.z0) — this rises on the entry half and falls on the
+            // exit half to match that direction of travel. (Previously
+            // had these two swapped, which read as descending first and
+            // climbing back up second — backwards.)
             const up = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, half), bridgeMat);
-            up.rotation.x = Math.atan2(0.35, half);
+            up.rotation.x = -Math.atan2(0.35, half);
             up.position.set(hz.bridgeX+0.5, 2.18, hz.z0+half/2+0.5);
             scene.add(up); pubExtraProps.push(up);
             const down = new THREE.Mesh(new THREE.BoxGeometry(1, 0.12, half), bridgeMat);
-            down.rotation.x = -Math.atan2(0.35, half);
+            down.rotation.x = Math.atan2(0.35, half);
             down.position.set(hz.bridgeX+0.5, 2.18, hz.z0+half+half/2+0.5);
             scene.add(down); pubExtraProps.push(down);
             const railMat = new THREE.MeshPhongMaterial({ color: 0x7a5230, shininess: 10 });
@@ -5881,7 +5887,11 @@
         if (hz.fish) {
           const mesh = buildGolfFishMesh();
           scene.add(mesh); pubExtraProps.push(mesh);
-          golfFish.push({ mesh, bridgeX: (hz.bridgeX !== null ? hz.bridgeX : (hz.x0+hz.x1)/2)+0.5, z0: hz.z0+0.5, z1: hz.z1+0.5 });
+          // Jumps sideways — out of the water on one side of the bridge,
+          // up and across it, back into the water on the other side —
+          // not lengthwise along the bridge's own direction of travel.
+          const fishZ = (hz.z0+hz.z1)/2+0.5;
+          golfFish.push({ mesh, x0: hz.x0+0.5, x1: hz.x1+0.5, z: fishZ });
         }
       });
       if (hole.tunnelGate) {

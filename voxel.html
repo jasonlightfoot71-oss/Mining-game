@@ -5491,7 +5491,7 @@
     // to a real dogleg without needing L-shaped bounds.
     const obstacleOffsetsByHole = [
       [],
-      [{dx:0, dl:6}],
+      [], // hole 2 is the golem (see golemGateByHole) instead of a static bumper
       [{dx:-1, dl:4},{dx:1, dl:8}],
       [{dx:-2, dl:6},{dx:-1, dl:6},{dx:0, dl:6},{dx:1, dl:6}], // wall — open gap on the right (dx:2) is the only way through
       [{dx:-1, dl:4},{dx:1, dl:6},{dx:-1, dl:9}],
@@ -5533,6 +5533,11 @@
     // actually tells them apart.
     const tunnelGateByHole = [null, null, null, null, null, {dl:6}, null, null, null];
     const windmillGateByHole = [null, null, null, null, null, null, null, null, {dl:8}];
+    // A patrolling obstacle rather than a fixed one — walks the full
+    // width of the lane and back at a fixed distance down the fairway,
+    // so the ball has to be timed past it rather than just routed around
+    // something that never moves. See buildGolfGolem/updateGolfGolems.
+    const golemGateByHole = [null, {dl:6}, null, null, null, null, null, null, null];
     // A hill: entering below minSpeed anywhere before crestDl means the
     // ball never makes the top — see updateGolfBall, which decelerates
     // it hard through the climb and, if it stalls out before the crest,
@@ -5558,6 +5563,7 @@
         const obstacles = obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl }));
         const tunnelGate = tunnelGateByHole[i] ? { x: cx, z: zNear-tunnelGateByHole[i].dl } : null;
         const windmillGate = windmillGateByHole[i] ? { x: cx, z: zNear-windmillGateByHole[i].dl } : null;
+        const golemGate = golemGateByHole[i] ? { z: zNear-golemGateByHole[i].dl } : null; // no x — it patrols the whole width, see updateGolfGolems
         // The gate's own flanking wall blocks reuse the ordinary
         // obstacle-bumper collision (see updateGolfBall) — a physical
         // wall either side of a real gap, not a special case.
@@ -5565,7 +5571,7 @@
         holes.push({
           index: i,
           bounds: { x0, x1, z0: zFar, z1: zNear }, // z0 = low(cup) edge, z1 = high(tee) edge — same ordering convention tennis's own bounds use
-          tee: { x: cx, y: 2, z: zNear-1 },
+          tee: { x: x0, y: 2, z: zNear-1 }, // left border of the lane, not the centre — see spawnGolfBallAtHole for where the ball itself actually starts
           cup: { x: Math.max(x0+1, Math.min(x1-1, cx+cupOffsetByHole[i])), z: zFar+1 },
           par: parByHole[i],
           obstacles,
@@ -5578,6 +5584,8 @@
           tunnelGate,
           windmillGate,
           windmillBladeGroup: null, // filled in by buildGolfCourse once the mesh actually exists
+          golemGate,
+          golemMesh: null, // filled in by buildGolfCourse once the mesh actually exists
           ramp: rampByHole[i] ? { z0: zNear-rampByHole[i].dlTo, z1: zNear-rampByHole[i].dlFrom, crestZ: zNear-rampByHole[i].dlCrest, minSpeed: rampByHole[i].minSpeed } : null,
         });
       }
@@ -5597,6 +5605,60 @@
   let golfWindmills = [];
   function updateGolfWindmills(dt) {
     golfWindmills.forEach(w => { w.rotation.z += dt*1.1; });
+  }
+  // A patrolling obstacle — walks the full width of its lane and back,
+  // updateGolfBall reads its CURRENT position straight off the mesh each
+  // frame for collision, same reasoning as the windmill's own live-read
+  // rotation: the visual and the collision can never drift out of sync
+  // with each other since there's only one source of truth.
+  let golfGolems = []; // { mesh, xMin, xMax, dir, speed }
+  function updateGolfGolems(dt) {
+    golfGolems.forEach(g => {
+      g.mesh.position.x += g.dir*g.speed*dt;
+      if (g.mesh.position.x >= g.xMax) { g.mesh.position.x = g.xMax; g.dir = -1; }
+      else if (g.mesh.position.x <= g.xMin) { g.mesh.position.x = g.xMin; g.dir = 1; }
+      g.mesh.rotation.y = g.dir > 0 ? Math.PI/2 : -Math.PI/2; // faces whichever way it's currently walking — see the tennis avatar's own comments for the underlying facing-direction convention this reuses
+      // A simple walking bob/arm-swing rather than a smooth glide, so it
+      // actually reads as walking rather than sliding side to side.
+      const t = performance.now()*0.006;
+      g.mesh.position.y = Math.abs(Math.sin(t))*0.12;
+      if (g.rightArm) g.rightArm.rotation.x = Math.sin(t)*0.5;
+      if (g.leftArm) g.leftArm.rotation.x = -Math.sin(t)*0.5;
+    });
+  }
+  // A blocky, Minecraft iron-golem-styled figure — oversized boxy torso,
+  // small head sunk into the shoulders, long rectangular arms hanging
+  // past the knees, thick legs. Built from simple box geometry in the
+  // same spirit as the game's own low-poly figures, just scaled up and
+  // proportioned like the real thing rather than a humanoid avatar.
+  function buildGolfGolem() {
+    const group = new THREE.Group();
+    const ironMat = new THREE.MeshPhongMaterial({ color: 0xcfd2d6, shininess: 25 });
+    const darkMat = new THREE.MeshPhongMaterial({ color: 0x8a8f96, shininess: 15 });
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.55), ironMat);
+    torso.position.y = 1.35;
+    group.add(torso);
+    const waist = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.35, 0.5), darkMat);
+    waist.position.y = 0.7;
+    group.add(waist);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 0.45), ironMat);
+    head.position.y = 2.05;
+    group.add(head);
+    const legGeom = new THREE.BoxGeometry(0.32, 0.7, 0.35);
+    [-0.22, 0.22].forEach(dx => {
+      const leg = new THREE.Mesh(legGeom, darkMat);
+      leg.position.set(dx, 0.35, 0);
+      group.add(leg);
+    });
+    const armGeom = new THREE.BoxGeometry(0.32, 1.3, 0.32);
+    armGeom.translate(0, -0.65, 0); // shifts the box to hang below its own origin, so the origin sits at the shoulder and rotation.x swings it like a real arm instead of spinning it in place around its own centre
+    const rightArm = new THREE.Mesh(armGeom, ironMat);
+    rightArm.position.set(0.63, 1.9, 0);
+    group.add(rightArm);
+    const leftArm = new THREE.Mesh(armGeom.clone(), ironMat);
+    leftArm.position.set(-0.63, 1.9, 0);
+    group.add(leftArm);
+    return { group, rightArm, leftArm };
   }
   // Two stone pillars flanking the gate with a lintel across the top and
   // a shallow peaked cap — a real modelled little archway rather than a
@@ -5739,6 +5801,13 @@
         scene.add(group); pubExtraProps.push(group);
         golfWindmills.push(bladeGroup);
         hole.windmillBladeGroup = bladeGroup;
+      }
+      if (hole.golemGate) {
+        const { group, rightArm, leftArm } = buildGolfGolem();
+        group.position.set(hole.bounds.x0+0.5, 0, hole.golemGate.z+0.5);
+        scene.add(group); pubExtraProps.push(group);
+        golfGolems.push({ mesh: group, xMin: hole.bounds.x0+0.5, xMax: hole.bounds.x1+0.5, dir: 1, speed: 1.6, rightArm, leftArm });
+        hole.golemMesh = group;
       }
       if (hole.ramp) buildGolfRamp(hole, PLANKS);
       // Raised one block above the surrounding lane surface — same
@@ -10080,15 +10149,17 @@
       golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
     }
     golfBall.mesh.visible = true;
-    golfCharging = false; golfChargeMs = 0; // a fresh shot, not whatever was left over from a previous hole/attempt
+    golfCharging = false; golfChargeMs = 0; golfChargeDir = 1; // a fresh shot, not whatever was left over from a previous hole/attempt
     const wrap = document.getElementById('golfChargeBarWrap');
     if (wrap) wrap.style.display = 'none';
     golfBall.rampCommitted = false; // fresh judgement on the ramp hole each time it's (re)started, not carried over from a previous attempt
-    // Beside the tee marker (offset sideways), not one row further down
-    // the fairway — sitting "in front of" it read as if the ball had
-    // already been hit partway down the lane.
-    const teeSideX = hole.tee.x + (hole.tee.x < hole.bounds.x1 ? 1 : -1);
-    golfBall.pos.set(teeSideX+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
+    // Same row as the tee marker, but centred across the lane's width
+    // rather than beside the marker itself — the tee now sits over on
+    // the left border (see its own definition), not centred, so "beside
+    // it" would put the ball off to one side of the fairway instead of
+    // lined up with it.
+    const cx = Math.round((hole.bounds.x0+hole.bounds.x1)/2);
+    golfBall.pos.set(cx+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
     golfBall.vel.set(0,0,0);
     golfBall.mesh.position.copy(golfBall.pos);
     golfCurrentHole = i;
@@ -10200,6 +10271,21 @@
         }
       }
     }
+    // The golem — reads its CURRENT position straight off the mesh (see
+    // updateGolfGolems, which is what's actually moving it), so this
+    // can't drift out of sync with wherever it visually is.
+    if (hole.golemMesh) {
+      const gx = hole.golemMesh.position.x, gz = hole.golemMesh.position.z;
+      const gdx = b.pos.x-gx, gdz = b.pos.z-gz;
+      const gdist = Math.hypot(gdx,gdz);
+      const minDist = 0.75; // a bit broader than the ordinary obstacle bumpers — it's a bulkier figure than a stone pillar
+      if (gdist < minDist && gdist > 0.0001) {
+        const nx = gdx/gdist, nz = gdz/gdist;
+        b.pos.x = gx + nx*minDist; b.pos.z = gz + nz*minDist;
+        const vDotN = b.vel.x*nx + b.vel.z*nz;
+        if (vDotN < 0) { b.vel.x -= 2*vDotN*nx; b.vel.z -= 2*vDotN*nz; b.vel.x *= 0.7; b.vel.z *= 0.7; }
+      }
+    }
     // The ramp — decided ONCE, the instant the ball enters the zone,
     // based on how fast it was going right then, rather than
     // continuously re-checking every frame. Continuous re-checking
@@ -10271,7 +10357,7 @@
   // the touch-specific bug the single-button hold-and-release version
   // kept hitting (there's no "is the button still held" state to poll at
   // all for firing anymore — jump is a simple discrete press).
-  let golfCharging = false, golfChargeMs = 0;
+  let golfCharging = false, golfChargeMs = 0, golfChargeDir = 1;
   let golfSpacePrevDown = false; // edge-detection state for the movement code's own Space-fires-the-shot check
   const GOLF_CHARGE_MAX_MS = 900;
   function golfStartCharge() {
@@ -10290,6 +10376,7 @@
     const power = Math.max(0, Math.min(1, golfChargeMs / GOLF_CHARGE_MAX_MS));
     golfCharging = false;
     golfChargeMs = 0;
+    golfChargeDir = 1;
     const wrap = document.getElementById('golfChargeBarWrap');
     if (wrap) wrap.style.display = 'none';
     tryPuttGolf(power);
@@ -10299,11 +10386,18 @@
     if (!golfChargeEligible()) {
       golfCharging = false;
       golfChargeMs = 0;
+      golfChargeDir = 1;
       const wrap = document.getElementById('golfChargeBarWrap');
       if (wrap) wrap.style.display = 'none';
       return;
     }
-    golfChargeMs = Math.min(GOLF_CHARGE_MAX_MS, golfChargeMs + (1000/60)); // a fixed per-call step rather than measuring wall-clock elapsed time — this is called once per rendered frame, close enough to real dt for a ~1s bar without needing dt threaded through from the caller
+    // Bounces back down once it hits full rather than just capping there
+    // — keep holding build and it counts back down again, so overshooting
+    // past the power you actually wanted is fixable by just watching for
+    // it to come back round, instead of having to let go and start over.
+    golfChargeMs += golfChargeDir * (1000/60); // a fixed per-call step rather than measuring wall-clock elapsed time — this is called once per rendered frame, close enough to real dt for a ~1s sweep without needing dt threaded through from the caller
+    if (golfChargeMs >= GOLF_CHARGE_MAX_MS) { golfChargeMs = GOLF_CHARGE_MAX_MS; golfChargeDir = -1; }
+    else if (golfChargeMs <= 0) { golfChargeMs = 0; golfChargeDir = 1; }
     const fill = document.getElementById('golfChargeBarFill');
     if (fill) fill.style.width = ((golfChargeMs/GOLF_CHARGE_MAX_MS)*100) + '%';
   }
@@ -11432,6 +11526,7 @@
     updateGolfBall(dt);
     updateGolfCharge(); // no-ops instantly unless the build button's currently held down charging a putt
     updateGolfWindmills(dt); // no-ops instantly unless the windmill hole was actually built
+    updateGolfGolems(dt); // no-ops instantly unless the golem hole was actually built
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();

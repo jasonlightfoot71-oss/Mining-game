@@ -5447,11 +5447,18 @@
     }
     // Small standing pads either side, each with its own raised trigger
     // block — one per player, on their own side, rather than one shared
-    // block either would have to walk around the divider to reach.
+    // block either would have to walk around the divider to reach. Side
+    // A's trigger sits in the MIDDLE of its pad (one block of clearance
+    // toward the divider, one away) — side B's used to have its trigger
+    // right on the pad's own edge closest to the divider, with nothing
+    // at all between it and the solid wall. Getting pushed off the
+    // trigger toward the divider (a perfectly normal approach direction)
+    // landed a player inside that wall with nowhere to go — exactly
+    // "locked in a block". Now symmetric with side A.
     fillGameBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, STONE);
     fillGameBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z-3, BS_DIVIDER_Z-1, GRASS);
-    fillGameBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, STONE);
-    fillGameBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+2, BS_DIVIDER_Z+4, GRASS);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 0, 0, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, STONE);
+    fillGameBlocks(BS_X0-3, BS_X1+3, 1, 1, BS_DIVIDER_Z+1, BS_DIVIDER_Z+3, GRASS);
     [BS_TRIGGER_A, BS_TRIGGER_B].forEach(pos => {
       setGameBlock(pos.x, pos.y, pos.z, RED_CONC);
       const label = buildNumberLabel('🚢');
@@ -8785,6 +8792,7 @@
     if (!op) return;
     scene.remove(op.group);
     otherPlayers.delete(uid);
+    removeOtherGolfBall(uid); // otherwise their ball would just sit there forever after they leave
   }
   function clearAllOtherPlayers() {
     for (const uid of Array.from(otherPlayers.keys())) removeOtherPlayer(uid);
@@ -8858,6 +8866,19 @@
           footballScoreP1 = payload.s1; footballScoreP2 = payload.s2;
           updateFootballScoreHud();
         }
+      });
+      channel.on('broadcast', { event: 'golfBall' }, ({ payload }) => {
+        if (!payload || !payload.uid || payload.uid === playerUid) return;
+        if (!payload.visible) { removeOtherGolfBall(payload.uid); return; }
+        let ob = otherGolfBalls.get(payload.uid);
+        if (!ob) {
+          const mesh = buildGolfBallMesh();
+          scene.add(mesh);
+          ob = { mesh };
+          otherGolfBalls.set(payload.uid, ob);
+        }
+        ob.mesh.visible = true;
+        ob.mesh.position.set(payload.x, payload.y, payload.z);
       });
       channel.on('broadcast', { event: 'tennisBall' }, ({ payload }) => {
         if (!payload || !tennisBall) return;
@@ -10368,6 +10389,31 @@
   // reasonable size rather than also building out shared-ball
   // sync/contention for a fundamentally single-player scoring game.
   let golfBall = null; // { mesh, pos: Vector3, vel: Vector3 }
+  // Other players' own golf balls — each one plays an entirely
+  // independent round (possibly on a different hole entirely), unlike
+  // tennis/football's single shared ball, so this is a per-uid map
+  // rather than one object. See broadcastGolfBallState/its own receive
+  // handler.
+  let otherGolfBalls = new Map(); // uid -> { mesh }
+  let lastGolfBallBroadcast = 0;
+  function broadcastGolfBallState(force) {
+    const now = performance.now();
+    if (!force && now - lastGolfBallBroadcast < 150) return;
+    lastGolfBallBroadcast = now;
+    if (mpChannel && currentWorldId === mpConnectedWorldId && golfBall) {
+      try {
+        mpChannel.send({ type: 'broadcast', event: 'golfBall', payload: {
+          uid: playerUid, x: golfBall.pos.x, y: golfBall.pos.y, z: golfBall.pos.z, visible: golfBall.mesh.visible,
+        }});
+      } catch(e) {}
+    }
+  }
+  function removeOtherGolfBall(uid) {
+    const ob = otherGolfBalls.get(uid);
+    if (!ob) return;
+    scene.remove(ob.mesh);
+    otherGolfBalls.delete(uid);
+  }
   let golfCurrentHole = null; // index into GOLF_HOLES, or null when no round is in progress
   let golfStrokesThisHole = 0;
   let golfScores = new Array(GOLF_HOLES.length).fill(null);
@@ -10490,6 +10536,7 @@
     golfCurrentHole = i;
     golfStrokesThisHole = 0;
     updateGolfScoreHud();
+    broadcastGolfBallState(true); // other players should see this ball appear right away, not wait for the next throttled tick
     showChatLogLine('⛳', `Hole ${i+1} of ${GOLF_HOLES.length} — par ${hole.par}. Putt it in!`);
   }
   function golfDistanceFromCourse(x, z) {
@@ -10513,6 +10560,7 @@
       if (golfBall) golfBall.mesh.visible = false;
       golfCurrentHole = null;
       updateGolfScoreHud();
+      broadcastGolfBallState(true); // tells other players this ball's gone, rather than leaving a stale copy of it sitting visible on their screens
     }
   }
   function updateGolfScoreHud() {
@@ -10535,6 +10583,7 @@
     playTennisScore(); // reuse the little success chime — reads fine outside tennis too
     golfBall.vel.set(0,0,0);
     golfBall.mesh.visible = false;
+    broadcastGolfBallState(true); // same reasoning — otherwise it'd sit there visible-but-finished on everyone else's screen until the next stroke happened to broadcast
     const allPlayed = golfScores.every(s => s !== null);
     if (allPlayed) {
       const total = golfScores.reduce((a,b) => a+b, 0);
@@ -10548,6 +10597,7 @@
   function updateGolfBall(dt) {
     updateGolfScoreHud(); // cheap distance/state check each frame — handles hiding the HUD if the player just walks away mid-round, not only on a stroke
     if (!golfBall || !golfBall.mesh.visible || currentWorldId !== PUB_WORLD_ID || golfCurrentHole === null) return;
+    broadcastGolfBallState(); // throttled internally — lets other players actually see this ball while it's live
     const hole = GOLF_HOLES[golfCurrentHole];
     const b = golfBall;
     b.vel.multiplyScalar(Math.max(0, 1 - dt*1.6)); // noticeably more friction than the football — a putt should settle within a couple of seconds, not roll indefinitely

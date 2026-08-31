@@ -5494,7 +5494,7 @@
       [], // hole 2 is the golem (see golemGateByHole) instead of a static bumper
       [], // hole 3 is two golems (see golemGateByHole) instead of static bumpers
       [], // hole 4 is the water crossing (see hazardOffsetsByHole) instead of the wall
-      [{dx:-1, dl:4},{dx:1, dl:6},{dx:-1, dl:9}],
+      [], // hole 5 is the three-corner bank-shot route (see cornerOffsetsByHole) instead of static bumpers
       [], // hole 6 is the tunnel gate (see tunnelGateByHole) instead
       [], // hole 7 is the ramp (see rampByHole) instead
       [{dx:0, dl:4},{dx:-1, dl:7},{dx:1, dl:7}],
@@ -5526,7 +5526,7 @@
       // cycle (see golfFish/updateGolfFish) and blocks the ball if it's
       // there when it lands on it.
       [{type:'realWater', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:7, bridgeDx:0, fish:true}],
-      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5, bridgeDx:-3}],
+      [], // hole 5 has no hazard of its own — see cornerOffsetsByHole instead
       [],
       [],
       [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5, bridgeDx:2}],
@@ -5561,6 +5561,14 @@
     // needs. minSpeed is judged once at the moment the ball actually
     // reaches this zone (see updateGolfBall), not continuously.
     const rampByHole = [null, null, null, null, null, null, {dlFrom:2, dlTo:7, dlCrest:4, minSpeed:5}, null, null];
+    // A three-bank route — hit the ball at a corner with enough pace and
+    // it redirects straight at the NEXT corner (or the cup, on the last
+    // one), same speed, new direction, rather than needing true angled-
+    // wall reflection physics (which would need proper line-segment
+    // collision this simple a physics model doesn't have). See
+    // updateGolfBall's own corner-redirect logic and buildGolfCourse's
+    // angled bank markers built at each one.
+    const cornerOffsetsByHole = [[], [], [], [], [{dx:-2, dl:3},{dx:2, dl:6},{dx:-1, dl:9}], [], [], [], []];
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5598,6 +5606,7 @@
           golemGates,
           golemMeshes: [], // filled in by buildGolfCourse once the meshes actually exist
           ramp: rampByHole[i] ? { z0: zNear-rampByHole[i].dlTo, z1: zNear-rampByHole[i].dlFrom, crestZ: zNear-rampByHole[i].dlCrest, minSpeed: rampByHole[i].minSpeed } : null,
+          corners: cornerOffsetsByHole[i].map(c => ({ x: cx+c.dx, z: zNear-c.dl })),
         });
       }
     }
@@ -5787,6 +5796,25 @@
     group.position.set(gateX, 0, gateZ);
     return { group, bladeGroup };
   }
+  // A low diagonal bank wall at each redirect point, angled to roughly
+  // bisect the turn between wherever the ball's coming from and where
+  // it's being sent next, plus a distinct floor marker so the actual
+  // redirect spot is clearly visible rather than an invisible trigger.
+  function buildGolfCorners(hole, STONE) {
+    const bankMat = new THREE.MeshPhongMaterial({ color: 0x8a8378, shininess: 10 });
+    hole.corners.forEach((c, idx) => {
+      const prev = idx === 0 ? hole.tee : hole.corners[idx-1];
+      const next = idx < hole.corners.length-1 ? hole.corners[idx+1] : hole.cup;
+      const inAngle = Math.atan2(c.x-prev.x, c.z-prev.z);
+      const outAngle = Math.atan2(next.x-c.x, next.z-c.z);
+      const bankAngle = (inAngle+outAngle)/2;
+      const bank = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.9, 0.25), bankMat);
+      bank.position.set(c.x+0.5, 2.45, c.z+0.5);
+      bank.rotation.y = bankAngle;
+      scene.add(bank); pubExtraProps.push(bank);
+      setGameBlock(c.x, 1, c.z, STONE);
+    });
+  }
   function buildGolfRamp(hole, PLANKS) {
     // A visible raised hump built from actual stepped/sloped geometry —
     // custom wedge meshes on each side (not a flat block roof) rising to
@@ -5928,6 +5956,7 @@
         hole.golemMeshes.push(group);
       });
       if (hole.ramp) buildGolfRamp(hole, PLANKS);
+      if (hole.corners.length) buildGolfCorners(hole, STONE);
       // Raised one block above the surrounding lane surface — same
       // jump-to-activate convention every other trigger in the game
       // uses.
@@ -10271,6 +10300,7 @@
     const wrap = document.getElementById('golfChargeBarWrap');
     if (wrap) wrap.style.display = 'none';
     golfBall.rampCommitted = false; // fresh judgement on the ramp hole each time it's (re)started, not carried over from a previous attempt
+    golfBall.cornerIdx = 0; // starts fresh at the first bank-shot corner too, not wherever a previous attempt left off
     // Same row as the tee marker, but centred across the lane's width
     // rather than beside the marker itself — the tee now sits over on
     // the left border (see its own definition), not centred, so "beside
@@ -10445,6 +10475,13 @@
         }
         if (b.rampWillClear) {
           b.vel.multiplyScalar(Math.max(0, 1 - dt*0.8)); // still loses some pace climbing, just not enough to actually fail a committed attempt
+          // Gravity down the far side — without this, a committed putt
+          // that had just enough pace to crest the hill would still
+          // decelerate from ordinary friction the same as anywhere else,
+          // and could easily bleed off to a dead stop partway down the
+          // back slope instead of actually rolling on down it, since
+          // nothing was ever pulling it downhill in the first place.
+          if (b.pos.z <= r.crestZ) b.vel.z -= dt*4.5;
         } else {
           b.vel.multiplyScalar(Math.max(0, 1 - dt*3.2)); // bogs down hard
           if (b.pos.z > r.crestZ && b.vel.z < 0) {
@@ -10454,6 +10491,30 @@
         }
       } else {
         b.rampCommitted = false; // clear of the zone — the next attempt gets judged fresh on its own merits
+      }
+    }
+    // The bank-shot corners — hit one dead-on and it redirects the ball
+    // straight at whatever's next (the next corner, or the cup on the
+    // last one), keeping its current speed but pointed in a new
+    // direction. b.cornerIdx tracks how many of this hole's corners have
+    // already been used, so drifting back near one already hit doesn't
+    // re-trigger it, and only advances one at a time even if the ball
+    // somehow ends up close to two at once.
+    if (hole.corners.length && (b.cornerIdx || 0) < hole.corners.length) {
+      const idx = b.cornerIdx || 0;
+      const corner = hole.corners[idx];
+      const ccx = corner.x+0.5, ccz = corner.z+0.5;
+      const cdist = Math.hypot(b.pos.x-ccx, b.pos.z-ccz);
+      if (cdist < 0.55) {
+        const next = idx+1 < hole.corners.length ? hole.corners[idx+1] : hole.cup;
+        const tx = next.x+0.5, tz = next.z+0.5;
+        const dirLen = Math.hypot(tx-ccx, tz-ccz) || 1;
+        const curSpeed = Math.hypot(b.vel.x, b.vel.z);
+        b.vel.x = (tx-ccx)/dirLen*curSpeed;
+        b.vel.z = (tz-ccz)/dirLen*curSpeed;
+        b.pos.x = ccx; b.pos.z = ccz;
+        b.cornerIdx = idx+1;
+        playThud(320);
       }
     }
     // Sand and water — simple rectangular zones matching how each was
@@ -10482,20 +10543,30 @@
         b.vel.set(0,0,0);
       }
     });
-    // Visual-only elevation over the ramp — the actual physics above
-    // stays a flat speed check (the ball's real height never changes,
-    // only whether it's fast enough to be "committed" to clearing it),
-    // but rendering it at a fixed height while a whole sloped ramp mesh
-    // rose up around it made it look like it was clipping straight
-    // through solid geometry instead of interacting with it at all. This
-    // just bumps the rendered position up over the same span the ramp
-    // mesh itself occupies, peaking at roughly the mesh's own crest
-    // height, so it reads as actually climbing and descending the hill.
+    // Visual-only elevation — the actual physics above stays flat (a
+    // speed check for the course 7 ramp, a simple "which column" check
+    // for the course 4 bridge), but rendering the ball at a fixed height
+    // while a whole sloped mesh rose up around it made it look like it
+    // was clipping straight through solid geometry rather than
+    // interacting with it at all. This bumps the rendered position up
+    // over whichever sloped feature it's actually on, peaking at roughly
+    // that mesh's own crest height, so it reads as genuinely climbing
+    // and descending rather than rolling straight through.
     let renderY = b.pos.y;
     if (hole.ramp && b.pos.z <= hole.ramp.z1 && b.pos.z >= hole.ramp.z0) {
       const rampProgress = (hole.ramp.z1 - b.pos.z) / (hole.ramp.z1 - hole.ramp.z0); // 0 at the entry edge, 1 at the exit edge
       renderY = b.pos.y + Math.sin(rampProgress*Math.PI)*0.8;
     }
+    hole.hazards.forEach(hz => {
+      // The course 4 humpback bridge specifically (see buildGolfCourse) —
+      // this is the one built as an actual sloped mesh rather than a
+      // flat plank walkway, so it's the one that needs this. Only
+      // applies while the ball's actually on the bridge's own column.
+      if (hz.type !== 'realWater' || hz.bridgeX === null) return;
+      if (b.pos.x < hz.bridgeX || b.pos.x > hz.bridgeX+1 || b.pos.z < hz.z0 || b.pos.z > hz.z1) return;
+      const bridgeProgress = (hz.z1 - b.pos.z) / (hz.z1 - hz.z0); // 0 at the entry edge, 1 at the exit edge
+      renderY = b.pos.y + Math.sin(bridgeProgress*Math.PI)*0.35; // shallower peak than the course 7 ramp — this is a short 3-block hump, not a full hill
+    });
     b.mesh.position.set(b.pos.x, renderY, b.pos.z);
     const speed = Math.hypot(b.vel.x, b.vel.z);
     if (speed > 0.02) {

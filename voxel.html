@@ -9093,7 +9093,14 @@
     if (!log) return;
     log.style.display = 'flex';
     const line = document.createElement('div');
-    line.style.cssText = 'background:rgba(0,0,0,0.55);color:#fff;padding:4px 8px;border-radius:5px;font-size:12px;transition:opacity 1s;max-width:100%;overflow-wrap:break-word;display:flex;align-items:center;gap:6px;';
+    // pointer-events:auto overrides the chatLog container's own
+    // pointer-events:none (deliberate there, so the passive text log
+    // never blocks clicks on the game canvas behind it) — without this
+    // override the play button renders fine but is completely inert,
+    // which is exactly what was happening: clicks were passing straight
+    // through the whole line to whatever's underneath it instead of
+    // ever reaching the button.
+    line.style.cssText = 'background:rgba(0,0,0,0.55);color:#fff;padding:4px 8px;border-radius:5px;font-size:12px;transition:opacity 1s;max-width:100%;overflow-wrap:break-word;display:flex;align-items:center;gap:6px;pointer-events:auto;';
     const b = document.createElement('b'); b.textContent = (isMine ? 'You' : name) + ': ';
     line.appendChild(b);
     const playBtn = document.createElement('button');

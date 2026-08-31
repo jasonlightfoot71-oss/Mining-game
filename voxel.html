@@ -451,6 +451,10 @@
   <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:320px;width:90%;color:#fff;font-size:13px;">
     <div style="margin-bottom:10px;font-weight:600;">Say something</div>
     <input id="chatInput" maxlength="120" placeholder="Type a message…" style="width:100%;box-sizing:border-box;background:#0f0f13;color:#fff;border:1px solid #444;border-radius:6px;padding:8px;font-size:13px;">
+    <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+      <button id="chatVoiceBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:5px;padding:6px 10px;font-size:13px;cursor:pointer;">🎤 Hold to record</button>
+      <span id="chatVoiceStatus" style="font-size:11px;opacity:0.75;"></span>
+    </div>
     <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end;">
       <button id="chatCancelBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;">Cancel</button>
       <button id="chatSendBtn" style="background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;">Send</button>
@@ -8831,6 +8835,10 @@
         op.chatHideAt = performance.now() + 6000;
         showChatLogLine(payload.name, payload.text);
       });
+      channel.on('broadcast', { event: 'voice' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return; // already shown locally the moment it was recorded — see sendVoiceMessage
+        showChatVoiceLine(payload.name, payload.audio, payload.mime, false);
+      });
       // Applies another player's mine/place LIVE, the moment it happens —
       // this is what was actually missing before: edits only ever became
       // visible after a full save/reload cycle, since nothing pushed
@@ -9013,6 +9021,100 @@
     if (mpChannel) {
       try { mpChannel.send({ type: 'broadcast', event: 'chat', payload: { uid: playerUid, name: getMyDisplayName(), text } }); } catch(e) {}
     }
+  }
+  // ---- Voice messages ----
+  // Records a short clip from the mic (MediaRecorder, capped at 6s so
+  // the resulting base64 payload stays small enough for a realtime
+  // broadcast message rather than needing actual file storage/upload),
+  // sends it the same way a text message goes out, and renders as a
+  // small tappable "play" line in the chat log rather than a wall of
+  // text.
+  const VOICE_MAX_MS = 6000;
+  let voiceRecorder = null, voiceChunks = [], voiceStopTimer = null, voiceStream = null;
+  function startVoiceRecording() {
+    if (voiceRecorder) return; // already recording — a held-down button firing its start handler twice shouldn't start a second recorder
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      const status = document.getElementById('chatVoiceStatus');
+      if (status) status.textContent = "Voice messages aren't supported in this browser.";
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      voiceStream = stream;
+      voiceChunks = [];
+      // Lets the browser pick whichever codec it actually supports
+      // (opus/webm almost everywhere, mp4/aac on Safari) rather than
+      // forcing one and failing outright on browsers that don't have it.
+      voiceRecorder = new MediaRecorder(stream);
+      voiceRecorder.ondataavailable = e => { if (e.data && e.data.size > 0) voiceChunks.push(e.data); };
+      voiceRecorder.onstop = () => {
+        const mime = voiceRecorder.mimeType || 'audio/webm';
+        const blob = new Blob(voiceChunks, { type: mime });
+        stream.getTracks().forEach(t => t.stop());
+        voiceStream = null; voiceRecorder = null;
+        const status = document.getElementById('chatVoiceStatus');
+        if (status) status.textContent = '';
+        if (blob.size > 0) sendVoiceMessage(blob, mime);
+      };
+      voiceRecorder.start();
+      const status = document.getElementById('chatVoiceStatus');
+      if (status) status.textContent = '🔴 Recording…';
+      voiceStopTimer = setTimeout(stopVoiceRecording, VOICE_MAX_MS);
+    }).catch(() => {
+      const status = document.getElementById('chatVoiceStatus');
+      if (status) status.textContent = "Couldn't access the microphone.";
+    });
+  }
+  function stopVoiceRecording() {
+    if (voiceStopTimer) { clearTimeout(voiceStopTimer); voiceStopTimer = null; }
+    if (voiceRecorder && voiceRecorder.state !== 'inactive') voiceRecorder.stop();
+  }
+  function sendVoiceMessage(blob, mime) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      // reader.result is a data: URL ("data:audio/webm;base64,AAAA...") —
+      // only the base64 payload itself needs to go over the wire, the
+      // mime type's sent separately and reassembled as a data URL on the
+      // receiving end (see the 'voice' broadcast handler).
+      const base64 = String(reader.result).split(',')[1] || '';
+      if (!base64) return;
+      showChatVoiceLine(getMyDisplayName(), base64, mime, true);
+      if (mpChannel) {
+        try { mpChannel.send({ type: 'broadcast', event: 'voice', payload: { uid: playerUid, name: getMyDisplayName(), audio: base64, mime } }); } catch(e) {}
+      }
+    };
+    reader.readAsDataURL(blob);
+  }
+  // Same fading chat-log panel showChatLogLine already uses, just with a
+  // little play button instead of message text — clicking it builds the
+  // data: URL back up from the base64 payload and plays it through an
+  // ordinary Audio element.
+  function showChatVoiceLine(name, base64, mime, isMine) {
+    const log = document.getElementById('chatLog');
+    if (!log) return;
+    log.style.display = 'flex';
+    const line = document.createElement('div');
+    line.style.cssText = 'background:rgba(0,0,0,0.55);color:#fff;padding:4px 8px;border-radius:5px;font-size:12px;transition:opacity 1s;max-width:100%;overflow-wrap:break-word;display:flex;align-items:center;gap:6px;';
+    const b = document.createElement('b'); b.textContent = (isMine ? 'You' : name) + ': ';
+    line.appendChild(b);
+    const playBtn = document.createElement('button');
+    playBtn.textContent = '▶️ Play voice message';
+    playBtn.style.cssText = 'background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;';
+    const audioUrl = 'data:' + mime + ';base64,' + base64;
+    playBtn.addEventListener('click', () => {
+      const audio = new Audio(audioUrl);
+      playBtn.textContent = '⏸️ Playing…';
+      audio.play().catch(() => { playBtn.textContent = "Couldn't play"; });
+      audio.onended = () => { playBtn.textContent = '▶️ Play voice message'; };
+    });
+    line.appendChild(playBtn);
+    log.appendChild(line);
+    while (log.children.length > 5) log.removeChild(log.firstChild);
+    // Voice lines stay up considerably longer than text (15s vs 8s) and
+    // don't auto-fade on the same timer — easy to still be mid-recording
+    // or mid-conversation when a text message would already be gone, and
+    // there's nothing to actually read back later the way you could
+    // still make out a fading text line.
+    setTimeout(() => { line.style.opacity = '0'; setTimeout(() => { if (line.parentNode) line.parentNode.removeChild(line); }, 1000); }, 15000);
   }
   function showChatLogLine(name, text) {
     const log = document.getElementById('chatLog');
@@ -12761,9 +12863,21 @@
   }
   function closeChatModal() {
     document.getElementById('chatModal').style.display = 'none';
+    stopVoiceRecording(); // in case the modal's closed mid-recording
   }
   document.getElementById('chatOpenBtn').addEventListener('click', openChatModal);
   document.getElementById('chatCancelBtn').addEventListener('click', closeChatModal);
+  // Press-and-hold rather than a toggle — releasing the button is what
+  // actually sends it, so there's no separate "stop" step to forget.
+  // Both mouse and touch, since this is a real HTML button either kind
+  // of input can land on.
+  const voiceBtn = document.getElementById('chatVoiceBtn');
+  voiceBtn.addEventListener('mousedown', e => { e.preventDefault(); startVoiceRecording(); });
+  voiceBtn.addEventListener('mouseup', stopVoiceRecording);
+  voiceBtn.addEventListener('mouseleave', stopVoiceRecording); // dragging off the button while still holding the mouse down shouldn't leave it recording forever
+  voiceBtn.addEventListener('touchstart', e => { e.preventDefault(); startVoiceRecording(); });
+  voiceBtn.addEventListener('touchend', e => { e.preventDefault(); stopVoiceRecording(); });
+  voiceBtn.addEventListener('touchcancel', stopVoiceRecording);
   document.getElementById('chatSendBtn').addEventListener('click', () => {
     const text = document.getElementById('chatInput').value;
     closeChatModal();

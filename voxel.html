@@ -5156,13 +5156,15 @@
   const FOOTBALL_PITCH_BOUNDS = { x0: -1, x1: 29, z0: 37, z1: 75 };
   const FOOTBALL_GOAL_X0 = 12, FOOTBALL_GOAL_X1 = 16, FOOTBALL_PITCH_CENTER_X = 14;
   const FOOTBALL_CENTER = new THREE.Vector3(14.5, 2.28, 56.5); // pitch surface is a y=1 block, whose walkable top sits at world-height 2 (see player spawn just below, which stands at the same height on the same surface) — the ball's centre needs to be that plus its own radius (0.28) to actually rest ON the grass instead of partly inside it
-  // Jump-to-activate trigger blocks just behind each goal — same pattern
-  // as tennis's own baseline triggers, opening the 2-player/vs-computer
-  // mode modal rather than requiring a "join" for ordinary casual play
-  // (which still works exactly as before, with nobody having chosen a
-  // mode at all).
-  const FOOTBALL_TRIGGER_P1 = { x: FOOTBALL_PITCH_CENTER_X, y: 2, z: FOOTBALL_PITCH_BOUNDS.z0-3 };
-  const FOOTBALL_TRIGGER_P2 = { x: FOOTBALL_PITCH_CENTER_X, y: 2, z: FOOTBALL_PITCH_BOUNDS.z1+3 };
+  // Jump-to-activate trigger blocks — same pattern as tennis's own
+  // baseline triggers, opening the 2-player/vs-computer mode modal
+  // rather than requiring a "join" for ordinary casual play (which still
+  // works exactly as before, with nobody having chosen a mode at all).
+  // Both sit on the FAR side of the pitch now, side by side — P1 used to
+  // be behind the near goal (z0-3), which put it right in the Mill's own
+  // garden area rather than anywhere near the pitch itself.
+  const FOOTBALL_TRIGGER_P1 = { x: FOOTBALL_PITCH_CENTER_X-6, y: 2, z: FOOTBALL_PITCH_BOUNDS.z1+3 };
+  const FOOTBALL_TRIGGER_P2 = { x: FOOTBALL_PITCH_CENTER_X+6, y: 2, z: FOOTBALL_PITCH_BOUNDS.z1+3 };
   function buildFootballPitch(WHITE_CONC, GRASS, STONE, CONCRETE) {
     const x0 = -2, x1 = 30, z0 = 36, z1 = 76;
     fillGameBlocks(x0, x1, 0, 0, z0, z1, STONE);
@@ -5208,6 +5210,13 @@
     // One raised trigger block behind each goal, same jump-to-activate
     // pattern as the other minigames' own start blocks.
     [FOOTBALL_TRIGGER_P1, FOOTBALL_TRIGGER_P2].forEach(pos => {
+      // A small solid patch under and around each trigger — neither the
+      // main pitch fill (which stops at z1) nor the stands (which only
+      // cover the edge columns, not the centre) actually reach out here,
+      // so without this there'd be nothing solid to stand on to jump
+      // onto the trigger at all.
+      fillGameBlocks(pos.x-2, pos.x+2, 0, 0, pos.z-2, pos.z+2, STONE);
+      fillGameBlocks(pos.x-2, pos.x+2, 1, 1, pos.z-2, pos.z+2, GRASS);
       setGameBlock(pos.x, pos.y, pos.z, WHITE_CONC);
       const label = buildNumberLabel('⚽');
       label.position.set(pos.x+0.5, pos.y+1.6, pos.z+0.5);
@@ -5481,7 +5490,7 @@
   const GOLF_AREA_X0 = -82; // sits the next lane west of the tennis court (TENNIS_X0 is -55, defined just below), with a gap between them
   const GOLF_AREA_Z_NEAR = 76; // matches TENNIS_Z1 — lines the course up along the same Z-span as the tennis court and football pitch, rather than off on its own
   function computeGolfHoles() {
-    const parByHole = [2, 3, 3, 3, 4, 4, 5, 3, 5]; // 6/7/9 bumped up a stroke — the tunnel gate, ramp, and windmill gate are all genuinely harder than a bumper
+    const parByHole = [2, 3, 3, 3, 4, 4, 5, 5, 5]; // 6/7/8/9 bumped up — the tunnel gate, ramp, run of hazards, and finale hole are all genuinely harder than a bumper
     const cupOffsetByHole = [0, 2, -2, 0, 1, -1, 0, -2, 0];
     // Each obstacle is {dx: offset from the lane's own centre line, dl:
     // distance in from the tee end} — hand-placed per hole for a rough
@@ -5497,8 +5506,8 @@
       [], // hole 5 is the three-corner bank-shot route (see cornerOffsetsByHole) instead of static bumpers
       [], // hole 6 is the tunnel gate (see tunnelGateByHole) instead
       [], // hole 7 is the ramp (see rampByHole) instead
-      [{dx:0, dl:4},{dx:-1, dl:7},{dx:1, dl:7}],
-      [{dx:-1, dl:4},{dx:1, dl:4}], // plus the windmill gate at dl:8 (see windmillGateByHole)
+      [], // hole 8 is a run of water/sand hazards (see hazardOffsetsByHole) — no obstacles
+      [], // hole 9 is the extended finale — every mechanic from the other 8 combined (see the *ByHole configs above and GOLF_HOLE9_EXTRA_LEN), no separate static obstacles of its own
     ];
     // Sand slows the ball to a near-stop rather than blocking it outright
     // (see updateGolfBall's own heavy extra friction); water costs a
@@ -5529,8 +5538,23 @@
       [], // hole 5 has no hazard of its own — see cornerOffsetsByHole instead
       [],
       [],
-      [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5, bridgeDx:2}],
-      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7, bridgeDx:2}], // one last water crossing right before the final green — bridgeDx pulled in from the very edge (was 3, which landed outside the lane's own bounds after the hazard's own x-span gets clamped to fit)
+      // Loads of hazards, no obstacles at all — alternating sand and
+      // water the whole way down, each water crossing with its own
+      // single-column bridge (see buildGolfCourse) so there's still
+      // always a way across on foot.
+      [
+        {type:'sand', dxFrom:-2, dxTo:0, dlFrom:2, dlTo:3},
+        {type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5, bridgeDx:2},
+        {type:'sand', dxFrom:0, dxTo:2, dlFrom:7, dlTo:8},
+        {type:'water', dxFrom:-3, dxTo:3, dlFrom:10, dlTo:10, bridgeDx:-2},
+      ],
+      // The finale — sand early, then a genuine water crossing (real
+      // water, bridge, jumping fish, same as course 4's) roughly
+      // two-thirds of the way down this much longer hole.
+      [
+        {type:'sand', dxFrom:-2, dxTo:2, dlFrom:5, dlTo:6},
+        {type:'realWater', dxFrom:-3, dxTo:3, dlFrom:15, dlTo:17, bridgeDx:0, fish:true},
+      ],
     ];
     // A gate: solid wall either side of a single one-block-wide opening
     // (see the ±2/±1 offsets below — only dx:0 stays clear), just wide
@@ -5539,21 +5563,21 @@
     // windmill; what's built over/around each (see buildGolfCourse) and
     // whether it has moving blades (see windmillGateByHole) is what
     // actually tells them apart.
-    const tunnelGateByHole = [null, null, null, null, null, {dl:6}, null, null, null];
-    const windmillGateByHole = [null, null, null, null, null, null, null, null, {dl:8}];
+    const tunnelGateByHole = [null, null, null, null, null, {dl:6}, null, null, {dl:8}];
+    const windmillGateByHole = [null, null, null, null, null, null, null, null, {dl:13}];
     // A patrolling obstacle rather than a fixed one — walks the full
     // width of the lane and back at a fixed distance down the fairway,
     // so the ball has to be timed past it rather than just routed around
     // something that never moves. See buildGolfGolem/updateGolfGolems.
     // Each hole gets an ARRAY (can be more than one, walking
     // independently of each other and of any other golems on the hole).
-    const golemGateByHole = [[], [{dl:6}], [{dl:4},{dl:8}], [], [], [], [], [], []];
+    const golemGateByHole = [[], [{dl:6}], [{dl:4},{dl:8}], [], [], [], [], [], [{dl:4}]];
     // Two zombies either side of the tunnel gate (dl:6, see
     // tunnelGateByHole) — one guarding the approach before it, one the
     // exit after it — wandering the lane's width exactly like the
     // golems do (same patrol/collision code, see buildGolfCourse and
     // updateGolfBall's own golemMeshes handling), just a different mesh.
-    const zombieGateByHole = [[], [], [], [], [], [{dl:3},{dl:9}], [], [], []];
+    const zombieGateByHole = [[], [], [], [], [], [{dl:3},{dl:9}], [], [], [{dl:10}]];
     // A hill: entering below minSpeed anywhere before crestDl means the
     // ball never makes the top — see updateGolfBall, which decelerates
     // it hard through the climb and, if it stalls out before the crest,
@@ -5566,7 +5590,7 @@
     // the time it got there, on top of whatever pace the climb itself
     // needs. minSpeed is judged once at the moment the ball actually
     // reaches this zone (see updateGolfBall), not continuously.
-    const rampByHole = [null, null, null, null, null, null, {dlFrom:2, dlTo:7, dlCrest:4, minSpeed:5}, null, null];
+    const rampByHole = [null, null, null, null, null, null, {dlFrom:2, dlTo:7, dlCrest:4, minSpeed:5}, null, {dlFrom:18, dlTo:22, dlCrest:20, minSpeed:5}];
     // A three-bank route — hit the ball at a corner with enough pace and
     // it redirects straight at the NEXT corner (or the cup, on the last
     // one), same speed, new direction, rather than needing true angled-
@@ -5585,7 +5609,7 @@
     // updateGolfBall), not the simplified point-check the windmill's
     // gate uses, since there's no narrow gap constraining where the ball
     // can be — it has to actually be timed past the swinging bar itself.
-    const rotorOffsetsByHole = [[], [], [], [], [{dx:1, dl:3, dir:1},{dx:-1, dl:6, dir:-1},{dx:0, dl:9, dir:1}], [], [], [], []];
+    const rotorOffsetsByHole = [[], [], [], [], [{dx:1, dl:3, dir:1},{dx:-1, dl:6, dir:-1},{dx:0, dl:9, dir:1}], [], [], [], [{dx:0, dl:2, dir:1}]];
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5593,7 +5617,12 @@
         const x0 = GOLF_AREA_X0 + c*(GOLF_LANE_W+GOLF_GAP);
         const x1 = x0 + GOLF_LANE_W - 1;
         const zNear = GOLF_AREA_Z_NEAR - r*(GOLF_LANE_L+GOLF_GAP); // tee end (higher/closer-to-pad z)
-        const zFar = zNear - GOLF_LANE_L + 1; // cup end (lower z, deeper into the course)
+        // Hole 9 (i===8) runs the length of two ordinary holes — it's
+        // the last hole in the last row, so there's nothing beyond it to
+        // collide with by extending further south. Every other hole is
+        // unaffected (extraLen is 0 for them).
+        const extraLen = i === 8 ? GOLF_HOLE9_EXTRA_LEN : 0;
+        const zFar = zNear - GOLF_LANE_L - extraLen + 1; // cup end (lower z, deeper into the course)
         const cx = Math.round((x0+x1)/2);
         const obstacles = obstacleOffsetsByHole[i].map(o => ({ x: cx+o.dx, z: zNear-o.dl }));
         const tunnelGate = tunnelGateByHole[i] ? { x: cx, z: zNear-tunnelGateByHole[i].dl } : null;
@@ -5633,9 +5662,10 @@
     }
     return holes;
   }
+  const GOLF_HOLE9_EXTRA_LEN = 12; // doubles hole 9's own length (12 -> 24) — used inside computeGolfHoles() itself, so this has to be declared before that's actually called just below
   const GOLF_HOLES = computeGolfHoles();
   const GOLF_AREA_X1 = GOLF_AREA_X0 + GOLF_COLS*(GOLF_LANE_W+GOLF_GAP) - GOLF_GAP - 1;
-  const GOLF_AREA_Z_FAR = GOLF_AREA_Z_NEAR - GOLF_ROWS*(GOLF_LANE_L+GOLF_GAP) + GOLF_GAP + 1;
+  const GOLF_AREA_Z_FAR = GOLF_AREA_Z_NEAR - GOLF_ROWS*(GOLF_LANE_L+GOLF_GAP) + GOLF_GAP + 1 - GOLF_HOLE9_EXTRA_LEN;
   const GOLF_BALL_Y = 2.14;
   // updateGolfWindmills (called from the main loop) just spins each
   // blade group a little every frame — updateGolfBall reads the current
@@ -5658,7 +5688,17 @@
       g.mesh.position.x += g.dir*g.speed*dt;
       if (g.mesh.position.x >= g.xMax) { g.mesh.position.x = g.xMax; g.dir = -1; }
       else if (g.mesh.position.x <= g.xMin) { g.mesh.position.x = g.xMin; g.dir = 1; }
-      g.mesh.rotation.y = g.dir > 0 ? Math.PI/2 : -Math.PI/2; // faces whichever way it's currently walking — see the tennis avatar's own comments for the underlying facing-direction convention this reuses
+      // Optional forward/back wander on top of the side-to-side patrol —
+      // only the zombies actually set zMin/zMax (see buildGolfCourse);
+      // the golems stay pure left-right as before.
+      let dz = 0;
+      if (g.zMin !== undefined) {
+        dz = g.zDir*g.zSpeed;
+        g.mesh.position.z += dz*dt;
+        if (g.mesh.position.z >= g.zMax) { g.mesh.position.z = g.zMax; g.zDir = -1; }
+        else if (g.mesh.position.z <= g.zMin) { g.mesh.position.z = g.zMin; g.zDir = 1; }
+      }
+      g.mesh.rotation.y = (dz !== 0 || g.zMin !== undefined) ? Math.atan2(g.dir*g.speed, dz) : (g.dir > 0 ? Math.PI/2 : -Math.PI/2); // faces whichever way it's actually currently moving — see the tennis avatar's own comments for the underlying atan2(dx,dz) facing convention
       // A simple walking bob/arm-swing rather than a smooth glide, so it
       // actually reads as walking rather than sliding side to side. Added
       // ON TOP of the ground height (2 — the lane's own walkable surface
@@ -6034,7 +6074,11 @@
         const startAtLeft = gi % 2 === 0; // one starts each side, same reasoning as the golems above
         group.position.set((startAtLeft ? hole.bounds.x0 : hole.bounds.x1)+0.5, 2, gate.z+0.5);
         scene.add(group); pubExtraProps.push(group);
-        golfGolems.push({ mesh: group, xMin: hole.bounds.x0+0.5, xMax: hole.bounds.x1+0.5, dir: startAtLeft ? 1 : -1, speed: 1.3 + gi*0.3, rightArm, leftArm });
+        golfGolems.push({
+          mesh: group, xMin: hole.bounds.x0+0.5, xMax: hole.bounds.x1+0.5, dir: startAtLeft ? 1 : -1, speed: 1.3 + gi*0.3,
+          zMin: gate.z+0.5-1.5, zMax: gate.z+0.5+1.5, zDir: 1, zSpeed: 1.0, // wanders forward/back within 3 blocks of its own spawn row, on top of the side-to-side patrol
+          rightArm, leftArm,
+        });
         hole.golemMeshes.push(group); // same collision handling as the golems — see updateGolfBall
       });
       if (hole.ramp) buildGolfRamp(hole, PLANKS);
@@ -9167,9 +9211,29 @@
       broadcastFootballState(true);
     }
   }
+  let lastFootballGameEndCheck = 0;
+  // A tighter, separate check from the score-reset above — wandering 5
+  // blocks off the pitch while actively in a chosen mode (footballMySide
+  // set) ends the match outright for this player, same as golf abandons
+  // a hole if you walk away from the course. The looser 10-block
+  // score-reset above still applies to casual, mode-less play regardless
+  // of this.
+  function checkFootballGameEndOnDistance() {
+    const mySide = footballMySide();
+    if (!mySide) return;
+    const now = performance.now();
+    if (now - lastFootballGameEndCheck < 1000) return;
+    lastFootballGameEndCheck = now;
+    if (footballDistanceFromPitch(player.pos.x, player.pos.z) > 5) {
+      showChatLogLine('⚽', 'You left the pitch — match ended.');
+      footballResetGame();
+      broadcastFootballReset();
+    }
+  }
   function updateFootballBall(dt) {
     if (!footballBall || currentWorldId !== PUB_WORLD_ID) return;
     checkFootballDistanceReset();
+    checkFootballGameEndOnDistance();
     // Only actually visible while reasonably near the pitch — the same
     // 10-block threshold the score-reset already uses, so "close enough
     // to see the score matter" and "close enough that wandering off
@@ -9215,17 +9279,41 @@
   // clear it almost instantly and stop feeling like a football pitch at
   // all.
   const FOOTBALL_GRAVITY = -17;
+  let footballSlowUntil = 0; // see tryKickFootball's own slowdown, read by the movement code's own speed calc
   function tryKickFootball() {
     if (!footballBall || currentWorldId !== PUB_WORLD_ID) return false;
     const b = footballBall;
     const dPlayer = Math.hypot(player.pos.x-b.pos.x, player.pos.z-b.pos.z);
     if (dPlayer > 1.1 || b.pos.y > FOOTBALL_CENTER.y+0.01) return false; // too far away, or already in the air
-    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    // A tackle rather than an ordinary kick if someone ELSE is standing
+    // even closer to the ball than I am right now (they're the
+    // presumptive carrier) and I'm close enough to actually challenge
+    // them for it — winning it sends the ball away from them instead of
+    // wherever I'm facing, same as stripping it off a real player rather
+    // than just striking a loose ball.
+    let carrier = null, carrierDist = dPlayer;
+    otherPlayers.forEach(op => {
+      const d = Math.hypot(op.group.position.x-b.pos.x, op.group.position.z-b.pos.z);
+      if (d < carrierDist) { carrier = op; carrierDist = d; }
+    });
+    let fx, fz;
+    if (carrier && Math.hypot(player.pos.x-carrier.group.position.x, player.pos.z-carrier.group.position.z) < 1.6) {
+      const tdx = b.pos.x - carrier.group.position.x, tdz = b.pos.z - carrier.group.position.z;
+      const tlen = Math.hypot(tdx, tdz) || 1;
+      fx = tdx/tlen; fz = tdz/tlen; // away from the carrier, not wherever I happen to be facing
+      showChatLogLine('⚽', 'Tackle won!');
+    } else {
+      fx = -Math.sin(yaw); fz = -Math.cos(yaw);
+    }
     b.vel.y = 5; // much flatter than before (was 9.6) — a driven low kick rather than a lob; still enough lift to clear a defender's feet
     b.vel.x = fx*6.5; // more horizontal pace than before (was 4.2) to make up for the flatter arc, so it still covers ground at a similar pace
     b.vel.z = fz*6.5;
     playThud(300);
     footballLocalKickUntil = performance.now() + 300; // animates the local avatar's own kick — see footballLegKickRotation
+    // A kick costs a little of the kicker's own pace — real enough that
+    // whoever's chasing (or was just tackled off it) gets a real chance
+    // to close the gap, not just cosmetic.
+    footballSlowUntil = performance.now() + 500;
     broadcastFootballState();
     return true;
   }
@@ -11612,6 +11700,8 @@
       golfSpacePrevDown = keys['Space'];
       if (golfChargingNow && golfSpaceJustPressed) golfFireShot();
       let speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
+      // Recovering from a kick — see tryKickFootball's own comment.
+      if (performance.now() < footballSlowUntil) speed *= 0.55;
       // Quite a bit quicker while an active tennis match has the camera
       // locked in (tennisMoveYaw is only ever non-null then) — covering
       // a 22-block-wide court on foot at ordinary walking pace made wide

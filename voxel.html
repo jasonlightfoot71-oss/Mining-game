@@ -7688,7 +7688,15 @@
   window._voxelWasSubmerged = false;
 
   // ================= RAYCAST (voxel step) =================
-  function voxelRaycast() {
+  // skipWater lets the ray pass straight through water to whatever's
+  // behind/underneath it, rather than stopping there — used for mining
+  // and the crosshair highlight, so being underwater doesn't mean every
+  // attempt to mine terrain just removes the surrounding water instead
+  // of ever reaching the seabed. NOT used for placing: dropping a solid
+  // block into a water cell (displacing it, see replacingWater below) is
+  // an existing, intentional way to fill water in, which depends on the
+  // ray still being able to land ON the water cell itself.
+  function voxelRaycast(skipWater) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
     const step = 0.06;
@@ -7698,7 +7706,11 @@
       const vx=Math.floor(p.x), vy=Math.floor(p.y), vz=Math.floor(p.z);
       const k = key(vx,vy,vz);
       if (blocks.has(k)) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:false };
-      if (waterBlocks.has(k)) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:true };
+      if (waterBlocks.has(k)) {
+        if (!skipWater) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:true };
+        prev = {x:vx,y:vy,z:vz};
+        continue;
+      }
       prev = {x:vx,y:vy,z:vz};
     }
     return null;
@@ -7738,7 +7750,12 @@
         }
       }
     }
-    const r = voxelRaycast();
+    // Sees straight through water to whatever's behind/under it unless
+    // the water bucket itself is selected — the bucket's still how you
+    // deliberately scoop water up, but mining with anything else now
+    // reaches the actual terrain instead of just clearing the water in
+    // front of it.
+    const r = voxelRaycast(selectedSlot !== WATER_SLOT);
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
@@ -12033,14 +12050,14 @@
       workHeldRoot.position.y = -0.35 + (moving ? Math.sin(bobT)*0.02 : 0);
 
       // mining
-      const r = voxelRaycast();
+      const r = voxelRaycast(selectedSlot !== WATER_SLOT); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
       if (r) {
         outline.visible = true;
         outline.position.set(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5);
       } else { outline.visible = false; }
 
       if (mining) {
-        const rr = voxelRaycast();
+        const rr = voxelRaycast(selectedSlot !== WATER_SLOT); // same reasoning as doMine's own raycast above
         const currentKey = rr ? key(rr.hit.x,rr.hit.y,rr.hit.z) : null;
         if (currentKey !== mining.k) {
           if (!rr) { mining = null; crackMesh.visible = false; } // nothing under the crosshair — stop entirely

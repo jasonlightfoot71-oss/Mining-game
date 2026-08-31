@@ -5528,7 +5528,14 @@
     // it hard through the climb and, if it stalls out before the crest,
     // sends it back the way it came rather than leaving it stranded
     // motionless on the slope.
-    const rampByHole = [null, null, null, null, null, null, {dlFrom:4, dlTo:9, dlCrest:6.5, minSpeed:6.5}, null, null];
+    // dlFrom kept close to the tee deliberately — the rolling friction
+    // above bleeds off speed roughly in proportion to distance
+    // travelled, so a ramp placed deep into the hole would demand an
+    // unrealistically hard putt just to still be moving fast enough by
+    // the time it got there, on top of whatever pace the climb itself
+    // needs. minSpeed is judged once at the moment the ball actually
+    // reaches this zone (see updateGolfBall), not continuously.
+    const rampByHole = [null, null, null, null, null, null, {dlFrom:2, dlTo:7, dlCrest:4, minSpeed:5}, null, null];
     const holes = [];
     for (let r = 0; r < GOLF_ROWS; r++) {
       for (let c = 0; c < GOLF_COLS; c++) {
@@ -5607,21 +5614,27 @@
     const group = new THREE.Group();
     const wallMat = new THREE.MeshPhongMaterial({ color: 0xe8e2d0, shininess: 15 });
     const roofMat = new THREE.MeshPhongMaterial({ color: 0x8a4a3a, shininess: 20 });
-    // A little round tower straddling the gate, with the opening itself
-    // left clear at ground level for the ball — the tower reads as the
-    // windmill's own base rather than just scenery next to the hole.
-    const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.3, 2.6, 12, 1, true), wallMat);
-    tower.position.set(0, 3.3, 0);
-    group.add(tower);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(1.35, 1.1, 12), roofMat);
+    // Two flanking side walls, open front-to-back, NOT a full drum — a
+    // solid ring all the way around (what this used to be) has no
+    // actual opening in it anywhere, which contradicted the gap the
+    // physics was relying on: there'd be nothing for the ball to
+    // visibly roll through at all.
+    const wallGeom = new THREE.BoxGeometry(0.4, 2.6, 1.3);
+    [-0.85, 0.85].forEach(dx => {
+      const wall = new THREE.Mesh(wallGeom, wallMat);
+      wall.position.set(dx, 3.3, 0);
+      group.add(wall);
+    });
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(1.3, 1.1, 4), roofMat);
     roof.position.set(0, 5.15, 0);
+    roof.rotation.y = Math.PI/4;
     group.add(roof);
-    // Blade axle sits right at the gate's own opening — see
-    // updateGolfBall's own gate-blocking check for why this height/
-    // position specifically.
+    // Blade axle spans between the two side walls, right at the gate's
+    // own opening — see updateGolfBall's own gate-blocking check for why
+    // this height/position specifically.
     const axleMat = new THREE.MeshPhongMaterial({ color: 0x4a4a4a, shininess: 30 });
-    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.1,0.1,0.5,8), axleMat);
-    axle.rotation.x = Math.PI/2;
+    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,1.9,8), axleMat);
+    axle.rotation.z = Math.PI/2;
     axle.position.set(0, GOLF_BALL_Y, 0);
     group.add(axle);
     const bladeGroup = new THREE.Group();
@@ -10038,6 +10051,7 @@
       golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
     }
     golfBall.mesh.visible = true;
+    golfBall.rampCommitted = false; // fresh judgement on the ramp hole each time it's (re)started, not carried over from a previous attempt
     // Beside the tee marker (offset sideways), not one row further down
     // the fairway — sitting "in front of" it read as if the ball had
     // already been hit partway down the lane.
@@ -10136,22 +10150,35 @@
         }
       }
     }
-    // The ramp — a genuine speed check rather than true terrain-
-    // following. Extra deceleration the whole way up (steeper than the
-    // ordinary rolling friction above), and if it stalls out below
-    // minSpeed before actually reaching the crest, it rolls back down
-    // the way it came rather than stopping dead mid-slope.
+    // The ramp — decided ONCE, the instant the ball enters the zone,
+    // based on how fast it was going right then, rather than
+    // continuously re-checking every frame. Continuous re-checking
+    // against ordinary rolling friction meant speed was GUARANTEED to
+    // eventually drop below any real threshold no matter how hard it
+    // was hit — friction decays speed roughly linearly with distance
+    // travelled here, so a several-block climb was always going to bleed
+    // off far more speed than any putt could realistically start with.
+    // Judging it once at entry avoids that: hit it hard enough to still
+    // be above minSpeed when it reaches the ramp and it's committed to
+    // clearing it; otherwise it's committed to rolling back.
     if (hole.ramp) {
       const r = hole.ramp;
-      if (b.pos.z <= r.z1+1 && b.pos.z >= r.z0) {
-        b.vel.multiplyScalar(Math.max(0, 1 - dt*2.2));
-        const climbingUp = b.vel.z < 0; // holes always run tee(high z) -> cup(low z), so climbing = heading toward lower z
-        const pastCrest = b.pos.z <= r.crestZ;
-        const rampSpeed = Math.hypot(b.vel.x, b.vel.z);
-        if (!pastCrest && climbingUp && rampSpeed < r.minSpeed && rampSpeed > 0.05) {
-          b.vel.z = Math.abs(b.vel.z) * 1.3;
-          b.vel.x *= 0.6;
+      if (b.pos.z <= r.z1 && b.pos.z >= r.z0) {
+        if (!b.rampCommitted) {
+          b.rampCommitted = true;
+          b.rampWillClear = Math.hypot(b.vel.x, b.vel.z) >= r.minSpeed;
         }
+        if (b.rampWillClear) {
+          b.vel.multiplyScalar(Math.max(0, 1 - dt*0.8)); // still loses some pace climbing, just not enough to actually fail a committed attempt
+        } else {
+          b.vel.multiplyScalar(Math.max(0, 1 - dt*3.2)); // bogs down hard
+          if (b.pos.z > r.crestZ && b.vel.z < 0) {
+            const rampSpeed = Math.hypot(b.vel.x, b.vel.z);
+            if (rampSpeed < 2.5) { b.vel.z = Math.abs(b.vel.z)*1.2 + 0.6; b.vel.x *= 0.5; }
+          }
+        }
+      } else {
+        b.rampCommitted = false; // clear of the zone — the next attempt gets judged fresh on its own merits
       }
     }
     // Sand and water — simple rectangular zones matching how each was

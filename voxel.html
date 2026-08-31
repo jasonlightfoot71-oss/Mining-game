@@ -5503,16 +5503,24 @@
     // penalty stroke and resets to the tee, same as a real water hazard.
     // {dxFrom/dxTo: x-span relative to the lane's own centre, dlFrom/dlTo:
     // z-span, both measured in from the tee end}.
+    // Water spans most of the fairway but always leaves one column as a
+    // "bridge" (bridgeDx, rendered as a raised plank walkway — see
+    // buildGolfCourse) — without one there's no way to actually cross on
+    // foot at all once the hazard walls off the rest of the width, since
+    // the player has to walk down the fairway too, not just the ball.
+    // Clearing the ball straight over that same column is also the
+    // "safe" line across (see updateGolfBall), so it doubles as the
+    // intended route for both.
     const hazardOffsetsByHole = [
       [],
       [],
       [{type:'sand', dxFrom:-2, dxTo:2, dlFrom:9, dlTo:10}], // guards the green
       [],
-      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5}], // a strip right across the fairway — clear it in the air or go round
+      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:5, dlTo:5, bridgeDx:-3}],
       [],
       [],
-      [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5}],
-      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7}], // one last water crossing right before the final green
+      [{type:'water', dxFrom:0, dxTo:2, dlFrom:5, dlTo:5, bridgeDx:2}],
+      [{type:'water', dxFrom:-3, dxTo:3, dlFrom:7, dlTo:7, bridgeDx:3}], // one last water crossing right before the final green
     ];
     // A gate: solid wall either side of a single one-block-wide opening
     // (see the ±2/±1 offsets below — only dx:0 stays clear), just wide
@@ -5563,6 +5571,7 @@
             type: hz.type,
             x0: Math.max(x0, cx+hz.dxFrom), x1: Math.min(x1, cx+hz.dxTo),
             z0: zNear-hz.dlTo, z1: zNear-hz.dlFrom,
+            bridgeX: hz.bridgeDx !== undefined ? cx+hz.bridgeDx : null,
           })),
           tunnelGate,
           windmillGate,
@@ -5699,7 +5708,25 @@
       hole.obstacles.forEach(o => { setGameBlock(o.x,1,o.z, STONE); setGameBlock(o.x,2,o.z, STONE); });
       hole.hazards.forEach(hz => {
         const type = hz.type === 'sand' ? SAND : BLUE_CONC;
-        for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(x,1,z, type);
+        for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) {
+          if (hz.bridgeX !== null && x === hz.bridgeX) continue; // paved over below instead — see the bridge itself
+          setGameBlock(x,1,z, type);
+        }
+        // A raised plank walkway across the one column left clear —
+        // without this there's genuinely no way to reach the rest of the
+        // fairway on foot once the hazard walls off the width, since the
+        // player has to walk the hole too, not just the ball. Simple
+        // wooden rails either side so it actually reads as a bridge
+        // rather than just a differently-coloured floor tile.
+        if (hz.bridgeX !== null) {
+          for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(hz.bridgeX,1,z, PLANKS);
+          const railMat = new THREE.MeshPhongMaterial({ color: 0x7a5230, shininess: 10 });
+          [-0.42, 0.42].forEach(dx => {
+            const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.4, (hz.z1-hz.z0+1)), railMat);
+            rail.position.set(hz.bridgeX+0.5+dx, 2.4, (hz.z0+hz.z1)/2+0.5);
+            scene.add(rail); pubExtraProps.push(rail);
+          });
+        }
       });
       if (hole.tunnelGate) {
         const g = buildGolfStoneGate(hole.tunnelGate.x+0.5, hole.tunnelGate.z+0.5);
@@ -10069,6 +10096,24 @@
     const dz = Math.max(GOLF_AREA_Z_FAR-1 - z, 0, z - (GOLF_AREA_Z_NEAR+1));
     return Math.sqrt(dx*dx + dz*dz);
   }
+  let lastGolfDistanceCheck = 0;
+  // Wandering more than 5 blocks past the course's own edge mid-hole
+  // abandons it — same "walked away, it resets" idea tennis and
+  // football already use for their own score, just ending the current
+  // attempt outright here since there's no ongoing match state to fall
+  // back to. Jump the tee again to restart it.
+  function checkGolfDistanceReset() {
+    if (golfCurrentHole === null) return;
+    const now = performance.now();
+    if (now - lastGolfDistanceCheck < 1000) return; // once a second is plenty — this doesn't need per-frame precision
+    lastGolfDistanceCheck = now;
+    if (golfDistanceFromCourse(player.pos.x, player.pos.z) > 5) {
+      showChatLogLine('⛳', `Hole ${golfCurrentHole+1} abandoned — you wandered off the course.`);
+      if (golfBall) golfBall.mesh.visible = false;
+      golfCurrentHole = null;
+      updateGolfScoreHud();
+    }
+  }
   function updateGolfScoreHud() {
     const el = document.getElementById('golfScoreHud');
     if (!el) return;
@@ -10078,7 +10123,15 @@
     }
     const hole = GOLF_HOLES[golfCurrentHole];
     el.style.display = 'block';
-    el.textContent = `⛳ Hole ${golfCurrentHole+1}/${GOLF_HOLES.length} · Par ${hole.par} · Stroke ${golfStrokesThisHole}`;
+    // TEMPORARY diagnostic suffix — the charge bar not appearing has
+    // resisted every fix so far despite the logic checking out on
+    // review, so this makes the actual eligibility state (and distance
+    // to the ball) visible directly rather than guessing blind again.
+    // Remove once this is confirmed working.
+    const chargeState = golfBall && golfBall.mesh.visible
+      ? `chg:${golfChargeEligible() ? 'READY' : 'no'} d=${Math.hypot(player.pos.x-golfBall.pos.x, player.pos.z-golfBall.pos.z).toFixed(1)} hold:${golfCharging}`
+      : 'chg:no-ball';
+    el.textContent = `⛳ Hole ${golfCurrentHole+1}/${GOLF_HOLES.length} · Par ${hole.par} · Stroke ${golfStrokesThisHole} [${chargeState}]`;
   }
   function golfHoleComplete() {
     const hole = GOLF_HOLES[golfCurrentHole];
@@ -10188,6 +10241,7 @@
     // hazard rather than just bouncing off like a wall.
     hole.hazards.forEach(hz => {
       if (b.pos.x < hz.x0 || b.pos.x > hz.x1+1 || b.pos.z < hz.z0 || b.pos.z > hz.z1+1) return;
+      if (hz.bridgeX !== null && b.pos.x >= hz.bridgeX && b.pos.x <= hz.bridgeX+1) return; // safe line across, same column the walkway uses
       if (hz.type === 'sand') {
         b.vel.multiplyScalar(Math.max(0, 1 - dt*5));
       } else {
@@ -11371,6 +11425,7 @@
     updateGolfBall(dt);
     updateGolfCharge(); // no-ops instantly unless the build button's currently held down charging a putt
     updateGolfWindmills(dt); // no-ops instantly unless the windmill hole was actually built
+    checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
     updateBsTriggers(); // debounced internally — see its own comment

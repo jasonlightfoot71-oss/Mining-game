@@ -5696,6 +5696,17 @@
     tail.rotation.z = -Math.PI/2;
     tail.position.x = -0.36;
     group.add(tail);
+    // A rounded head at the nose end, plus a couple of small dark eyes —
+    // without it the whole thing just read as two cones stuck together.
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), bodyMat);
+    head.position.x = 0.2;
+    group.add(head);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    [-0.07, 0.07].forEach(dz => {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 4), eyeMat);
+      eye.position.set(0.27, 0.02, dz);
+      group.add(eye);
+    });
     group.visible = false;
     return group;
   }
@@ -5707,7 +5718,7 @@
       const progress = t / GOLF_FISH_ARC_DURATION; // 0 at the start of the jump, 1 at the end
       f.mesh.position.x = f.x0 + (f.x1-f.x0)*progress;
       f.mesh.position.z = f.z;
-      f.mesh.position.y = GOLF_BALL_Y + Math.sin(progress*Math.PI)*1.0; // arcs up and back down, peaking mid-jump
+      f.mesh.position.y = GOLF_BALL_Y + Math.sin(progress*Math.PI)*0.5; // arcs up and back down, peaking mid-jump — enough to clear the bridge's own rails without going absurdly high
       f.mesh.rotation.z = (0.5-progress)*1.4; // pitches nose-up climbing out of the water, nose-down diving back in — rotated around Z now the jump direction is along X, not Z
     });
   }
@@ -10394,11 +10405,17 @@
       }
     });
     // The fish — only actually solid while its jump animation has it
-    // visible (see updateGolfFish); checked globally rather than
-    // filtered to this hole specifically, since a fish belonging to a
-    // different hole is never going to be anywhere near the ball anyway.
+    // visible AND near ball height (see updateGolfFish — the 2D-only
+    // collision check every other obstacle uses would otherwise still
+    // block the ball even while the fish is high overhead mid-arc, which
+    // isn't really "hitting" it in any sensible sense). That leaves a
+    // real dodge available: time a putt for when it's up near the peak
+    // of its jump and it should sail underneath untouched. Checked
+    // globally rather than filtered to this hole specifically, since a
+    // fish belonging to a different hole is never going to be anywhere
+    // near the ball anyway.
     golfFish.forEach(f => {
-      if (!f.mesh.visible) return;
+      if (!f.mesh.visible || Math.abs(f.mesh.position.y - GOLF_BALL_Y) > 0.3) return;
       const fdx = b.pos.x-f.mesh.position.x, fdz = b.pos.z-f.mesh.position.z;
       const fdist = Math.hypot(fdx,fdz);
       if (fdist < 0.5 && fdist > 0.0001) {
@@ -10453,7 +10470,15 @@
         showChatLogLine('⛳', 'In the water — 1 stroke penalty.');
         golfStrokesThisHole++;
         updateGolfScoreHud();
-        b.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
+        // Centred across the lane, same as an actual fresh start (see
+        // spawnGolfBallAtHole) — the tee marker itself now sits over on
+        // the left border rather than centred (see its own definition),
+        // so resetting straight to hole.tee.x was dropping the ball back
+        // right on top of that raised block instead of back on the
+        // fairway, which is very likely why it looked like it never
+        // reappeared at all.
+        const cx = Math.round((hole.bounds.x0+hole.bounds.x1)/2);
+        b.pos.set(cx+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
         b.vel.set(0,0,0);
       }
     });

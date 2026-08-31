@@ -5560,9 +5560,14 @@
         const type = hz.type === 'sand' ? SAND : BLUE_CONC;
         for (let x = hz.x0; x <= hz.x1; x++) for (let z = hz.z0; z <= hz.z1; z++) setGameBlock(x,1,z, type);
       });
-      setGameBlock(hole.tee.x, 1, hole.tee.z, RED_CONC);
+      // Raised one block above the surrounding lane surface — same
+      // jump-to-activate convention every other trigger in the game
+      // uses. This was previously placed flush with the ground (no
+      // higher than the grass around it), which meant there was nothing
+      // to actually jump onto and the trigger could never fire.
+      setGameBlock(hole.tee.x, hole.tee.y, hole.tee.z, RED_CONC);
       const teeLabel = buildNumberLabel(String(hole.index+1));
-      teeLabel.position.set(hole.tee.x+0.5, 2.6, hole.tee.z+0.5);
+      teeLabel.position.set(hole.tee.x+0.5, hole.tee.y+1.6, hole.tee.z+0.5);
       scene.add(teeLabel); pubExtraProps.push(teeLabel);
       setGameBlock(hole.cup.x, 1, hole.cup.z, BLACK_CONC);
       const poleMat = new THREE.MeshPhongMaterial({ color: 0x8a8a8a, shininess: 30 });
@@ -9890,7 +9895,11 @@
       golfBall = { mesh, pos: new THREE.Vector3(), vel: new THREE.Vector3(0,0,0) };
     }
     golfBall.mesh.visible = true;
-    golfBall.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z+0.5);
+    // One row further into the lane than the tee marker itself — the
+    // marker's now a raised block (see buildGolfCourse), so spawning the
+    // ball on its exact cell would drop it inside/on top of a solid
+    // block instead of on the normal lane surface.
+    golfBall.pos.set(hole.tee.x+0.5, GOLF_BALL_Y, hole.tee.z-1+0.5);
     golfBall.vel.set(0,0,0);
     golfBall.mesh.position.copy(golfBall.pos);
     golfCurrentHole = i;

@@ -10482,7 +10482,21 @@
         b.vel.set(0,0,0);
       }
     });
-    b.mesh.position.set(b.pos.x, b.pos.y, b.pos.z);
+    // Visual-only elevation over the ramp — the actual physics above
+    // stays a flat speed check (the ball's real height never changes,
+    // only whether it's fast enough to be "committed" to clearing it),
+    // but rendering it at a fixed height while a whole sloped ramp mesh
+    // rose up around it made it look like it was clipping straight
+    // through solid geometry instead of interacting with it at all. This
+    // just bumps the rendered position up over the same span the ramp
+    // mesh itself occupies, peaking at roughly the mesh's own crest
+    // height, so it reads as actually climbing and descending the hill.
+    let renderY = b.pos.y;
+    if (hole.ramp && b.pos.z <= hole.ramp.z1 && b.pos.z >= hole.ramp.z0) {
+      const rampProgress = (hole.ramp.z1 - b.pos.z) / (hole.ramp.z1 - hole.ramp.z0); // 0 at the entry edge, 1 at the exit edge
+      renderY = b.pos.y + Math.sin(rampProgress*Math.PI)*0.8;
+    }
+    b.mesh.position.set(b.pos.x, renderY, b.pos.z);
     const speed = Math.hypot(b.vel.x, b.vel.z);
     if (speed > 0.02) {
       const axis = new THREE.Vector3(-b.vel.z, 0, b.vel.x).normalize();

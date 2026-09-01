@@ -1874,6 +1874,12 @@
         const blend = pubBlendFactor(x, z);
         if (blend < 1) h = Math.max(0, Math.round(h * blend));
         const allowWater = pubWaterAllowed(x, z);
+        // Ensure any water actually placed here is deep enough to swim/
+        // fish in, not just a 1-block puddle — the height noise alone
+        // very often only dips 1-2 blocks below SEA_LEVEL. This floors
+        // the seabed down to a guaranteed minimum depth wherever water
+        // is actually going to be placed; dry land is untouched.
+        if (allowWater && h < SEA_LEVEL && SEA_LEVEL - h < 3) h = SEA_LEVEL - 3;
         // Surface now depends on BOTH axes: rocky peaks still need real
         // height, but low moisture gives sandy/dry ground even inland
         // (not just at the waterline), and everything else defaults to
@@ -4056,10 +4062,10 @@
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 2); // glass door
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(ix0, gy, iz0, 0, 3, reg);  // counter
+    addFurnitureTracked(ix0, gy, iz0, 2, 3, reg);  // counter — rot=2 so it faces south, away from the north wall it backs onto (rot=0 had it facing straight into that wall)
     addFurnitureTracked(ix1, gy, iz0, 2, 22, reg); // shelving
     addFurnitureTracked(ix0, gy, iz1, 0, 25, reg); // bottle shelf
-    addFurnitureTracked(ix1, gy, iz1, 2, 20, reg); // fridge
+    addFurnitureTracked(ix1, gy, iz1, 0, 20, reg); // fridge — rot=0 so it faces north, away from the south wall (was facing into it)
     placeShellSign(shell, doorSide, name, reg);
   }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
@@ -4067,9 +4073,9 @@
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 3); // double wood door
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(shell.midX, gy, iz0, 0, 5, reg); // bar counter
+    addFurnitureTracked(shell.midX, gy, iz0, 2, 5, reg); // bar counter — rot=2 so it faces the room, not the wall behind it
     addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
-    addFurnitureTracked(ix1, gy, iz1, 2, 18, reg); // fridge
+    addFurnitureTracked(ix1, gy, iz1, 0, 18, reg); // fridge — was facing straight into the south wall
     addFurnitureTracked(ix0 + 1, gy, iz0 + 1, 0, 12, reg); // table
     addFurnitureTracked(ix0 + 1, gy, iz0 + 2, 0, 13, reg); // chair
     addFurnitureTracked(ix1 - 1, gy, iz0 + 1, 2, 12, reg); // table
@@ -4100,8 +4106,8 @@
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 4); // french doors
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(shell.midX, gy, iz0, 0, 3, reg);  // reception desk
-    addFurnitureTracked(ix0, gy, shell.midZ, 0, 0, reg);  // couch
+    addFurnitureTracked(shell.midX, gy, iz0, 2, 3, reg);  // reception desk — faces the room, not the wall
+    addFurnitureTracked(ix0, gy, shell.midZ, 3, 0, reg);  // couch — faces east, away from the west wall it's set against
     addFurnitureTracked(ix0 + 1, gy, shell.midZ, 0, 2, reg); // coffee table
     addFurnitureTracked(ix1 - 1, gy, iz1 - 1, 2, 29, reg); // suite bed (2x2 footprint — kept a cell clear of both walls)
     addFurnitureTracked(ix1, gy, iz0, 2, 30, reg);        // wardrobe
@@ -7941,7 +7947,7 @@
     if (!audioCtx) return;
     ensureWindNoise();
     if (!windGain) return;
-    const targetGain = active ? 0.08 : 0;
+    const targetGain = active ? 0.03 : 0;
     const targetFreq = active ? 900 : 500;
     const now = audioCtx.currentTime;
     windGain.gain.setTargetAtTime(targetGain, now, 0.3);
@@ -7980,8 +7986,8 @@
     if (!rainNoise) rainNoise = makeLoopingNoise(2.5, 'bandpass', 2200, 0.5); // brighter hiss — reads as rain
     if (!snowNoise) snowNoise = makeLoopingNoise(3, 'lowpass', 380, 0.4);   // soft, muffled hush — snow is near-silent in reality, just a faint atmosphere
     const now = audioCtx.currentTime;
-    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.06 : 0, now, 0.6);
-    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.025 : 0, now, 0.8);
+    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.022 : 0, now, 0.6);
+    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.009 : 0, now, 0.8);
   }
   let birdChirpTimer = 3;
   function playBirdChirp() {

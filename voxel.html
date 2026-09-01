@@ -4167,16 +4167,21 @@
     const x1 = x0 + w - 1, z1 = z0 + d - 1;
     const midX = x0 + Math.floor(w / 2), midZ = z0 + Math.floor(d / 2);
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); }
+    // Solid on all four sides here, with no door-shaped gap cut in yet —
+    // the gap gets carved afterward by carveDoorGap, once the actual
+    // door TYPE (and so its real width) is known. Doing it here with a
+    // single hard-coded 1-wide gap was the bug: a 2-wide door (Double
+    // Wood Door, French Doors — both used by these buildings) needs 2
+    // wall columns removed, addDoor's own safety check refuses to place
+    // itself into a spot where the second column is still solid wall,
+    // and the result was a hole in the wall with no door ever actually
+    // placed in it.
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {
         const edge = (x === x0 || x === x1 || z === z0 || z === z1);
         if (!edge) continue;
         const isCorner = (x === x0 || x === x1) && (z === z0 || z === z1);
         for (let y = gy + 1; y <= gy + h; y++) {
-          if (doorSide === 'south' && z === z1 && x === midX && y <= gy + 2) continue;
-          if (doorSide === 'north' && z === z0 && x === midX && y <= gy + 2) continue;
-          if (doorSide === 'east'  && x === x1 && z === midZ && y <= gy + 2) continue;
-          if (doorSide === 'west'  && x === x0 && z === midZ && y <= gy + 2) continue;
           let type = palette.wall;
           if (isCorner) type = palette.trim;
           else if (y === gy + h) type = palette.trim;
@@ -4193,6 +4198,22 @@
     }
     return { x0, x1, z0, z1, gy, h, midX, midZ };
   }
+  // Removes the correct number of wall columns for the door about to go
+  // there — 1 for a normal door, 2 for a double/French door — using the
+  // exact same sideways direction addDoor's own doorCellsClear check
+  // uses, so what gets cut out of the wall always matches what the door
+  // placement itself is actually going to require.
+  function carveDoorGap(shell, doorSide, wide) {
+    let bx, bz, sx, sz;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; sx = 1; sz = 0; }
+    else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; sx = -1; sz = 0; }
+    else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; sx = 0; sz = 1; }
+    else { bx = shell.x0; bz = shell.midZ; sx = 0; sz = -1; }
+    for (let y = shell.gy + 1; y <= shell.gy + 2; y++) {
+      blocks.delete(key(bx, y, bz));
+      if (wide === 2) blocks.delete(key(bx + sx, y, bz + sz));
+    }
+  }
   // Fixes a real bug, not just a style tweak: door "sideways" direction
   // (see doorSidewaysDir) determines which world axis the panel's own
   // width lies along once rotated — rot 0/2 keeps the panel's width on
@@ -4203,12 +4224,15 @@
   // what made every door appear rotated 90° off from the wall it was
   // set into.
   function placeShellDoor(shell, doorSide, reg, doorTypeIdx) {
+    const idx = doorTypeIdx === undefined ? 0 : doorTypeIdx;
+    const wide = (DOOR_TYPES[idx] && DOOR_TYPES[idx].wide) || 1;
+    carveDoorGap(shell, doorSide, wide);
     let bx, bz, rot;
     if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; rot = 0; }
     else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; rot = 2; }
     else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; rot = 1; }
     else { bx = shell.x0; bz = shell.midZ; rot = 3; }
-    const dk = addDoor(bx, shell.gy, bz, rot, doorTypeIdx === undefined ? 0 : doorTypeIdx);
+    const dk = addDoor(bx, shell.gy, bz, rot, idx);
     if (dk) reg.doorKeys.push(dk);
   }
   function placeShellSign(shell, doorSide, text, reg) {
@@ -4549,7 +4573,15 @@
     // for 3 slices — 6 plots — instead of 4/8, but that's the trade-off
     // for buildings that are genuinely, comfortably separate rather
     // than packed as densely as the chunk technically allows.
-    const slices = [[1, 4], [11, 14], [21, 24]];
+    // Depth is 5 here, not 4 — 4 briefly caused a different bug: several
+    // buildings' interior furniture math assumes at least 3 usable rows
+    // inside the walls, and at depth 4 that shrinks to exactly 2, which
+    // pushed some furniture positions out past the last interior row and
+    // straight into the wall/doorway itself (the "furniture blocking
+    // doors" and pieces embedded in walls). 5 keeps a proper 3-row
+    // interior for everything the same size as it was before this gap
+    // change.
+    const slices = [[1, 5], [12, 16], [23, 27]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -7021,8 +7053,13 @@
     });
     pools.forEach(pool => {
       if (ambientFish.length >= AMBIENT_FISH_MAX) return;
-      if (pool.cols.length < 4) return; // an actual body of water, not one stray deep tile
-      const alreadyCovered = ambientFish.some(f => Math.hypot(f.pool.cx-pool.cx, f.pool.cz-pool.cz) < 16);
+      // Lowered from 4 — after the recent water-generation cutback (to
+      // fix performance), most ponds/lakes are smaller than before, so
+      // requiring 4 deep columns was excluding a lot of perfectly real,
+      // just modest-sized bodies of water from ever getting a fish at
+      // all. 2 still filters out a single stray deep tile.
+      if (pool.cols.length < 2) return;
+      const alreadyCovered = ambientFish.some(f => Math.hypot(f.pool.cx-pool.cx, f.pool.cz-pool.cz) < 10);
       if (alreadyCovered) return;
       const fishHere = 1 + (pool.cols.length > 40 ? 1 : 0); // a second fish for genuinely large bodies of water
       for (let i = 0; i < fishHere && ambientFish.length < AMBIENT_FISH_MAX; i++) {

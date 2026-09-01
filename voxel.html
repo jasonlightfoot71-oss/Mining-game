@@ -1035,7 +1035,7 @@
     }
   }
   function applyWorldData(data) {
-    blocks.clear(); waterBlocks.clear(); stepRotations.clear();
+    blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
     clearAllFixtures();
     clearAllLadders();
     clearAllWallpapers();
@@ -5011,7 +5011,7 @@
     return g;
   }
   function generatePubWorld() {
-    blocks.clear(); waterBlocks.clear(); stepRotations.clear();
+    blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
     clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
     clearPubExtras();
 
@@ -5795,9 +5795,16 @@
   // in a straight arc instead of rotating.
   const GOLF_FISH_CYCLE = 2.4, GOLF_FISH_ARC_DURATION = 1.0;
   let golfFish = [];
-  function buildGolfFishMesh() {
+  // Shared by both the golf course's own jumping fish and the ambient
+  // fish that populate deep water generally (see scanAndSpawnAmbientFish
+  // below) — same basic shape, just parameterised on colour. The head
+  // used to be noticeably smaller than the body (a 0.11 sphere against a
+  // 0.55-long cone), which read as out of proportion; it's a good bit
+  // bigger now.
+  const FISH_COLORS = [0x5a8ab8, 0xdd8a3a, 0xc0392b, 0xdaa520, 0x708090, 0x2e8b57, 0xb0306a];
+  function buildFishMesh(bodyColorHex) {
     const group = new THREE.Group();
-    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x5a8ab8, shininess: 60 });
+    const bodyMat = new THREE.MeshPhongMaterial({ color: bodyColorHex, shininess: 60 });
     const finMat = new THREE.MeshPhongMaterial({ color: 0xdd8a3a, shininess: 40 });
     const body = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.55, 8), bodyMat);
     body.rotation.z = Math.PI/2;
@@ -5808,17 +5815,99 @@
     group.add(tail);
     // A rounded head at the nose end, plus a couple of small dark eyes —
     // without it the whole thing just read as two cones stuck together.
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), bodyMat);
-    head.position.x = 0.2;
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 9, 7), bodyMat); // was 0.11 — noticeably bigger now, closer to the body's own thickness instead of a small bump on the end
+    head.position.x = 0.19;
     group.add(head);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    [-0.07, 0.07].forEach(dz => {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 6, 4), eyeMat);
-      eye.position.set(0.27, 0.02, dz);
+    [-0.08, 0.08].forEach(dz => {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 4), eyeMat);
+      eye.position.set(0.3, 0.03, dz);
       group.add(eye);
     });
-    group.visible = false;
-    return group;
+    return group; // starts visible — the golf course's own jumping fish hides it explicitly at its own spawn point instead, since that's specific to its hide-until-it-jumps behaviour, not something ambient swimming fish should inherit
+  }
+  // ---- Ambient fish, anywhere in the world ----
+  // Not saved/persisted anywhere and not tied to any specific spot —
+  // just a periodic scan of whatever water currently exists, spawning a
+  // few fish into any body deep enough to bother, and re-scanning every
+  // so often to pick up water that's changed since (new chunks streamed
+  // in, someone dug out a new hole, filled one in, etc). Nothing here
+  // remembers where a fish was on a previous visit; it's recomputed
+  // fresh from the current terrain every time.
+  let ambientFish = [];
+  let lastAmbientFishScan = 0;
+  const AMBIENT_FISH_MAX = 20;
+  function clearAmbientFish() {
+    ambientFish.forEach(f => scene.remove(f.mesh));
+    ambientFish = [];
+  }
+  function scanAndSpawnAmbientFish() {
+    if (ambientFish.length >= AMBIENT_FISH_MAX) return;
+    // Groups every water cell by its (x,z) column to work out how deep
+    // the water actually is there — "deeper than a block" means at
+    // least 2 stacked water cells in the same column, not just a single
+    // shallow puddle layer.
+    const columns = new Map();
+    waterBlocks.forEach((level, k) => {
+      const parts = k.split(',');
+      const x = +parts[0], y = +parts[1], z = +parts[2];
+      const ck = x+','+z;
+      let col = columns.get(ck);
+      if (!col) columns.set(ck, { x, z, minY:y, maxY:y });
+      else { if (y < col.minY) col.minY = y; if (y > col.maxY) col.maxY = y; }
+    });
+    const deepCols = [];
+    columns.forEach(col => { if (col.maxY - col.minY + 1 > 1) deepCols.push(col); });
+    if (!deepCols.length) return;
+    // Simple greedy proximity clustering into rough "pools" — doesn't
+    // need to be a precise flood-fill of the actual connected body of
+    // water, just good enough to group nearby deep columns together and
+    // give each fish a sensible area to wander within.
+    const pools = [];
+    deepCols.forEach(c => {
+      let pool = pools.find(p => Math.abs(p.cx-c.x) < 14 && Math.abs(p.cz-c.z) < 14);
+      if (!pool) { pool = { cx: c.x, cz: c.z, cols: [] }; pools.push(pool); }
+      pool.cols.push(c);
+    });
+    pools.forEach(pool => {
+      if (ambientFish.length >= AMBIENT_FISH_MAX) return;
+      if (pool.cols.length < 4) return; // an actual body of water, not one stray deep tile
+      const alreadyCovered = ambientFish.some(f => Math.hypot(f.pool.cx-pool.cx, f.pool.cz-pool.cz) < 16);
+      if (alreadyCovered) return;
+      const fishHere = 1 + (pool.cols.length > 40 ? 1 : 0); // a second fish for genuinely large bodies of water
+      for (let i = 0; i < fishHere && ambientFish.length < AMBIENT_FISH_MAX; i++) {
+        const col = pool.cols[Math.floor(Math.random()*pool.cols.length)];
+        const mesh = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
+        const swimY = col.minY + 0.6; // a bit up off the floor, comfortably below the surface
+        mesh.position.set(col.x+0.5, swimY, col.z+0.5);
+        scene.add(mesh);
+        ambientFish.push({ mesh, pool, baseY: swimY, bobOffset: Math.random()*Math.PI*2, targetX: col.x+0.5, targetZ: col.z+0.5, speed: 0.6+Math.random()*0.5, wanderTimer: 0 });
+      }
+    });
+  }
+  function updateAmbientFish(dt) {
+    const now = performance.now();
+    if (now - lastAmbientFishScan > 15000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); }
+    ambientFish.forEach(f => {
+      f.wanderTimer -= dt;
+      if (f.wanderTimer <= 0) {
+        // Picks its next spot from its OWN pool's own deep columns, so it
+        // keeps wandering within the same body of water rather than
+        // drifting off toward the bank or through solid ground.
+        const col = f.pool.cols[Math.floor(Math.random()*f.pool.cols.length)];
+        f.targetX = col.x+0.5; f.targetZ = col.z+0.5;
+        f.wanderTimer = 4 + Math.random()*4;
+      }
+      const dx = f.targetX-f.mesh.position.x, dz = f.targetZ-f.mesh.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 0.15) {
+        const step = Math.min(dist, f.speed*dt);
+        f.mesh.position.x += (dx/dist)*step;
+        f.mesh.position.z += (dz/dist)*step;
+        f.mesh.rotation.y = Math.atan2(dx, dz);
+      }
+      f.mesh.position.y = f.baseY + Math.sin(now*0.001 + f.bobOffset)*0.15; // a gentle bob, phase-offset per fish so a whole pool doesn't bob in unison
+    });
   }
   function updateGolfFish(dt) {
     golfFish.forEach(f => {
@@ -6047,7 +6136,8 @@
           }
         }
         if (hz.fish) {
-          const mesh = buildGolfFishMesh();
+          const mesh = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
+          mesh.visible = false; // hidden until its own jump cycle actually shows it — see updateGolfFish
           scene.add(mesh); pubExtraProps.push(mesh);
           // Jumps sideways — out of the water on one side of the bridge,
           // up and across it, back into the water on the other side —
@@ -12163,6 +12253,7 @@
     updateGolfGolems(dt); // no-ops instantly unless the golem hole was actually built
     updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
     updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
+    updateAmbientFish(dt); // periodically scans for deep water anywhere and spawns/wanders fish in it — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
@@ -13377,7 +13468,7 @@
     terrainStreamingActive = true;
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
     generatedChunks.clear(); lastStreamChunkKey = null;
-    blocks.clear(); waterBlocks.clear(); stepRotations.clear();
+    blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
     clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
     clearPubExtras(); // in case the last thing loaded was the community pub
     updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on

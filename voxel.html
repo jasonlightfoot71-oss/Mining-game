@@ -389,6 +389,15 @@
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
+<button id="villageMapBtn" style="display:none;position:fixed;top:12px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;">🗺️</button>
+<div id="villageMapModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+  <div style="background:rgba(20,20,25,0.97);color:#fff;border-radius:10px;padding:18px;max-width:360px;width:90%;max-height:70vh;overflow-y:auto;font-family:-apple-system,sans-serif;box-sizing:border-box;">
+    <h3 style="margin:0 0 10px;font-size:16px;">🗺️ Discovered Villages</h3>
+    <div id="villageMapList" style="display:flex;flex-direction:column;gap:6px;font-size:13px;"></div>
+    <div id="villageMapEmpty" style="display:none;opacity:0.65;font-size:13px;">Fly around and find one — they'll be listed here, in every world, since a village always generates at the same coordinates.</div>
+    <button id="villageMapCloseBtn" style="margin-top:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Close</button>
+  </div>
+</div>
 <div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
@@ -4029,6 +4038,25 @@
     const fk = addFurniture(bx, by, bz, rot, typeIdx);
     if (fk) reg.furnitureKeys.push(fk);
   }
+  // For furniture whose TYPE carries special meaning to the Mill's own
+  // role/task system (isWorkSpot on Bar Counter, scanned globally by
+  // nearestBarCounter() regardless of which world/location it's in) —
+  // placing one of those via addFurniture in a village would make the
+  // game think a real member of staff could clock on there, which is
+  // exactly what was pulling players back into the Mill's fixed bar-work
+  // camera the moment they got close to a village pub. This places the
+  // same visual model as a plain decorative prop instead — tracked in
+  // the village's own registry (not the Mill's pubExtraProps) so it's
+  // torn down correctly when the chunk unloads.
+  function placeVillageProp(builder, bx, by, bz, rot, reg) {
+    const g = builder();
+    g.position.set(bx + 0.5, by + 1, bz + 0.5);
+    g.rotation.y = rot * Math.PI/2;
+    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(g);
+    reg.props = reg.props || [];
+    reg.props.push(g);
+  }
 
   // ── Building types ──────────────────────────────────────────────
   function buildVillageHouse(plot, gy, rng, palette, doorSide, reg) {
@@ -4073,7 +4101,7 @@
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 3); // double wood door
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(shell.midX, gy, iz0, 2, 5, reg); // bar counter — rot=2 so it faces the room, not the wall behind it
+    placeVillageProp(buildBarCounter, shell.midX, gy, iz0, 2, reg); // decorative only — see placeVillageProp's comment on why a real Bar Counter can't be used here
     addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
     addFurnitureTracked(ix1, gy, iz1, 0, 18, reg); // fridge — was facing straight into the south wall
     addFurnitureTracked(ix0 + 1, gy, iz0 + 1, 0, 12, reg); // table
@@ -4221,8 +4249,14 @@
 
   // ── Assembly ────────────────────────────────────────────────────
   function buildVillageInChunk(cx, cz, rng) {
-    const FS = 24;
-    const originLocal = 3 + Math.floor(rng() * 3);
+    // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
+    // between plots along the road from 1 row to 3) specifically so
+    // buildings have real breathing room around them instead of nearly
+    // touching their neighbours — origin is fixed rather than jittered
+    // now since 30 leaves only 1 block of margin against the 32-block
+    // chunk it has to fit inside.
+    const FS = 30;
+    const originLocal = 1;
     const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
@@ -4252,16 +4286,16 @@
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], npcs: [] };
 
-    for (let x = wx0 + 10; x <= wx0 + 13; x++) for (let z = wz0; z <= wz1; z++) { blocks.set(key(x, gy, z), palette.path); trackVillageHeight(x, z, gy); }
+    for (let x = wx0 + 13; x <= wx0 + 16; x++) for (let z = wz0; z <= wz1; z++) { blocks.set(key(x, gy, z), palette.path); trackVillageHeight(x, z, gy); }
 
-    const postX = wx0 + 11, postZ = wz0;
+    const postX = wx0 + 14, postZ = wz0;
     blocks.set(key(postX, gy + 1, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 1);
     blocks.set(key(postX, gy + 2, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 2);
     const sk0 = addSign(postX, gy + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
     if (sk0) reg.signKeys.push(sk0);
 
-    const slices = [[1, 7], [9, 15], [17, 23]];
-    const westX0 = wx0 + 1, westX1 = wx0 + 9, eastX0 = wx0 + 14, eastX1 = wx0 + 22;
+    const slices = [[1, 7], [11, 17], [21, 27]];
+    const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
       plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
@@ -4293,6 +4327,7 @@
     reg.npcs = spawnVillageNPCs(ck, bounds, npcCount, rng);
 
     villageRegistry.set(ck, reg);
+    recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
   }
   function maybeBuildVillage(cx, cz) {
     const info = villageInfoForChunk(cx, cz);
@@ -4305,10 +4340,59 @@
     v.furnitureKeys.forEach(fk => removeFurniture(fk));
     v.doorKeys.forEach(dk => removeDoor(dk));
     v.signKeys.forEach(sk => removeSign(sk));
+    if (v.props) v.props.forEach(p => scene.remove(p));
     v.npcs.forEach(n => scene.remove(n.mesh));
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageRegistry.delete(ck);
   }
+
+  // ── Village map (discovered villages, saved locally) ──────────────
+  // Village placement is fully deterministic from world coordinates
+  // alone (see villageInfoForChunk) — the same village exists at the
+  // same spot in every world/save, not just the one it was found in.
+  // So a single global "villages I've found" list, persisted the same
+  // way the display name already is, makes sense regardless of which
+  // save happens to be open: finding one once puts it on the map for
+  // good, in any world.
+  const VILLAGE_LOG_KEY = 'voxelDiscoveredVillages';
+  function loadVillageLog() {
+    try { return JSON.parse(localStorage.getItem(VILLAGE_LOG_KEY) || '[]'); } catch (e) { return []; }
+  }
+  function saveVillageLog(list) {
+    try { localStorage.setItem(VILLAGE_LOG_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function recordVillageDiscovery(name, x, z) {
+    const list = loadVillageLog();
+    if (list.some(v => v.x === x && v.z === z)) return; // same village streaming back in on a later visit — already on the list
+    list.push({ name, x, z, foundAt: Date.now() });
+    saveVillageLog(list);
+  }
+  function renderVillageMap() {
+    const list = loadVillageLog().sort((a, b) => a.foundAt - b.foundAt);
+    const container = document.getElementById('villageMapList');
+    const empty = document.getElementById('villageMapEmpty');
+    container.innerHTML = '';
+    empty.style.display = list.length ? 'none' : 'block';
+    list.forEach(v => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;background:rgba(255,255,255,0.06);padding:7px 10px;border-radius:6px;';
+      const label = document.createElement('span');
+      label.textContent = v.name;
+      row.appendChild(label);
+      const coords = document.createElement('span');
+      coords.style.cssText = 'opacity:0.75;font-variant-numeric:tabular-nums;white-space:nowrap;';
+      coords.textContent = 'x ' + v.x + ', z ' + v.z;
+      row.appendChild(coords);
+      container.appendChild(row);
+    });
+  }
+  document.getElementById('villageMapBtn').addEventListener('click', () => {
+    renderVillageMap();
+    document.getElementById('villageMapModal').style.display = 'flex';
+  });
+  document.getElementById('villageMapCloseBtn').addEventListener('click', () => {
+    document.getElementById('villageMapModal').style.display = 'none';
+  });
 
   // ================= THE COMMUNITY PUB =================
   // A hand-designed shared world, generated entirely client-side (not
@@ -7947,7 +8031,7 @@
     if (!audioCtx) return;
     ensureWindNoise();
     if (!windGain) return;
-    const targetGain = active ? 0.03 : 0;
+    const targetGain = active ? 0.01 : 0;
     const targetFreq = active ? 900 : 500;
     const now = audioCtx.currentTime;
     windGain.gain.setTargetAtTime(targetGain, now, 0.3);
@@ -7986,8 +8070,8 @@
     if (!rainNoise) rainNoise = makeLoopingNoise(2.5, 'bandpass', 2200, 0.5); // brighter hiss — reads as rain
     if (!snowNoise) snowNoise = makeLoopingNoise(3, 'lowpass', 380, 0.4);   // soft, muffled hush — snow is near-silent in reality, just a faint atmosphere
     const now = audioCtx.currentTime;
-    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.022 : 0, now, 0.6);
-    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.009 : 0, now, 0.8);
+    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.007 : 0, now, 0.6);
+    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.003 : 0, now, 0.8);
   }
   let birdChirpTimer = 3;
   function playBirdChirp() {
@@ -9793,7 +9877,44 @@
   // Same fading chat-log panel showChatLogLine already uses, just with a
   // little play button instead of message text — clicking it builds the
   // data: URL back up from the base64 payload and plays it through an
-  // ordinary Audio element.
+  // Decodes and plays a data: URL through the game's own AudioContext
+  // rather than a plain <audio> element. This matters specifically for
+  // auto-playing an incoming voice message on the RECEIVING player's
+  // device: a fresh HTMLMediaElement's own .play() is subject to each
+  // browser's separate (and often much stricter — especially on mobile)
+  // autoplay policy, regardless of any earlier interaction on the page.
+  // audioCtx, by contrast, is already running by this point — it was
+  // resumed by ensureAudio() back when the player pressed Start, which
+  // is exactly why footsteps/wind/rain already play automatically with
+  // no further gesture needed. Routing voice messages through that same
+  // already-unlocked context sidesteps the HTMLMediaElement policy
+  // entirely instead of hitting it on every single incoming message.
+  function playVoiceClip(audioUrl, playBtn) {
+    const done = () => { playBtn.textContent = '▶️ Play voice message'; };
+    const fallbackToAudioTag = () => {
+      const audio = new Audio(audioUrl);
+      audio.play().catch(() => { playBtn.textContent = '▶️ Play voice message (tap to play)'; });
+      audio.onended = done;
+    };
+    playBtn.textContent = '🔊 Playing…';
+    if (!audioCtx) { fallbackToAudioTag(); return; } // no context yet — shouldn't normally happen, ensureAudio runs on Start, but never leave playback silently broken if it somehow hasn't
+    const resumed = audioCtx.state === 'suspended' ? audioCtx.resume() : Promise.resolve();
+    resumed
+      .then(() => fetch(audioUrl))
+      .then(r => r.arrayBuffer())
+      .then(buf => audioCtx.decodeAudioData(buf))
+      .then(decoded => {
+        const src = audioCtx.createBufferSource();
+        src.buffer = decoded;
+        src.connect(audioCtx.destination);
+        src.onended = done;
+        src.start();
+      })
+      .catch(fallbackToAudioTag); // decode failure or anything else unexpected — the old plain-<audio> path as a safety net
+  }
+  // Same fading chat-log panel showChatLogLine already uses, just with a
+  // little play button instead of message text — clicking it (or, for
+  // an incoming message, arriving) plays the clip via playVoiceClip.
   function showChatVoiceLine(name, base64, mime, isMine) {
     const log = document.getElementById('chatLog');
     if (!log) return;
@@ -9813,19 +9934,13 @@
     playBtn.textContent = isMine ? '▶️ Play voice message' : '🔊 Playing…';
     playBtn.style.cssText = 'background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;';
     const audioUrl = 'data:' + mime + ';base64,' + base64;
-    const playClip = () => {
-      const audio = new Audio(audioUrl);
-      playBtn.textContent = '🔊 Playing…';
-      audio.play().catch(() => { playBtn.textContent = '▶️ Play voice message (tap to play)'; }); // autoplay blocked (some browsers require a fresh user gesture even after earlier interaction) — falls back to the ordinary tap-to-play button rather than silently doing nothing
-      audio.onended = () => { playBtn.textContent = '▶️ Play voice message'; };
-    };
+    const playClip = () => playVoiceClip(audioUrl, playBtn);
     playBtn.addEventListener('click', playClip);
     line.appendChild(playBtn);
     // Auto-plays incoming messages from someone else — not your own,
     // since you already know what you just said. Still leaves the
     // button there either way, both to replay it again and as the
-    // fallback if the browser's autoplay policy blocks the automatic
-    // attempt.
+    // fallback if playback somehow still doesn't fire automatically.
     if (!isMine) playClip();
     log.appendChild(line);
     while (log.children.length > 5) log.removeChild(log.firstChild);
@@ -13841,6 +13956,7 @@
     document.getElementById('coinsDisplay').style.display = 'block';
     document.getElementById('coordsDisplay').style.display = 'block';
     document.getElementById('millCompass').style.display = 'flex';
+    document.getElementById('villageMapBtn').style.display = terrainStreamingActive ? 'block' : 'none'; // only meaningful in the infinite streamed world where villages actually generate
     document.getElementById('playerRadar').style.display = 'block';
     updateCoinsDisplay();
     updateRoleTag();

@@ -1976,9 +1976,9 @@
         // basins are now a genuinely rare, special encounter rather than
         // "every now and again."
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*0.33*amp); // halved again (was 0.65, before that 1.3, before that 2) — water is still the single biggest lag lever
-        if (oceanField > 0.92) { // raised again (was 0.85) — basins now genuinely rare
-          const oceanStrength = (oceanField - 0.92) / 0.08; // 0 at the basin's edge, 1 at its deepest core
+        let h = Math.round(baseline + n*0.16*amp); // halved again (was 0.33) — water reduced several times over now, this is the smallest local contribution yet
+        if (oceanField > 0.96) { // raised again (was 0.92) — basins are now a very rare, special encounter
+          const oceanStrength = (oceanField - 0.96) / 0.04; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
@@ -2016,7 +2016,7 @@
           // enough for fish, without undoing the frequency/size cuts
           // that actually fixed the performance problem.
           let targetDepth = 2 + Math.round(depthNoise*2);
-          if (oceanField > 0.92) targetDepth += 1;
+          if (oceanField > 0.96) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
         // Surface now depends on BOTH axes: rocky peaks still need real
@@ -4355,9 +4355,36 @@
     w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
-    // Interior furniture temporarily removed entirely — narrowing down a
-    // crash-on-village-discovery report. Shell/door/sign/light stay so
-    // we can tell whether removing furniture specifically clears it.
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    // Which interior column is actually "away from the door" flips
+    // depending on which wall the door is on — this wasn't accounted
+    // for before, so on every house where the door happened to be on
+    // the west wall, furniture that was meant to sit at the back ended
+    // up right next to the door instead (and vice versa). backRot/
+    // frontRot face each column away from whichever wall it's actually
+    // against, not a fixed direction.
+    const backX = doorSide === 'west' ? ix1 : ix0;
+    const frontX = doorSide === 'west' ? ix0 : ix1;
+    const backRot = doorSide === 'west' ? 1 : 3;
+    const frontRot = doorSide === 'west' ? 3 : 1;
+    if (variant === 0) {
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as the other variants' beds
+      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed — kept at the back, away from the door
+      addFurnitureTracked(backX, gy, iz1, backRot, 30, reg); // wardrobe
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch — same side as the door, but offset to a corner, not the threshold itself
+      addFurnitureTracked(frontX, gy, iz1, frontRot, 2, reg); // coffee table
+    } else if (variant === 1) {
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — its anchor must leave room for the +1 extension regardless of which wall it's now next to
+      addFurnitureTracked(bedX, gy, iz0, 0, 28, reg);  // single bed (2x2 footprint)
+      addFurnitureTracked(backX, gy, iz1, backRot, 3, reg); // cabinet — kept clear of the bed's footprint
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch
+      addFurnitureTracked(frontX === ix1 ? ix1 - 1 : ix0 + 1, gy, iz0, frontRot, 1, reg); // tv — one cell further in, next to the couch rather than crowding the same corner
+    } else {
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as variant 1's bed above
+      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed
+      addFurnitureTracked(backX, gy, iz1, backRot, 31, reg); // chest of drawers
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 4, reg); // armchair
+    }
     placeShellLight(shell, doorSide, reg);
     return shell;
   }
@@ -4365,6 +4392,11 @@
     const w = Math.min(6, plot.x1 - plot.x0 + 1), d = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 2); // glass door
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(ix0, gy, iz0, 2, 3, reg);  // counter — rot=2 so it faces south, away from the north wall it backs onto (rot=0 had it facing straight into that wall)
+    addFurnitureTracked(ix1, gy, iz0, 2, 22, reg); // shelving
+    addFurnitureTracked(ix0, gy, iz1, 0, 25, reg); // bottle shelf
+    addFurnitureTracked(ix1, gy, iz1, 0, 20, reg); // fridge — rot=0 so it faces north, away from the south wall (was facing into it)
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4373,6 +4405,14 @@
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0); // switched from a 2-wide door to a plain single door — removes an entire class of edge cases around the wide-door wall gap
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    placeVillageProp(buildBarCounter, shell.midX, gy, iz0, 2, reg); // decorative only — see placeVillageProp's comment on why a real Bar Counter can't be used here
+    addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
+    addFurnitureTracked(ix1, gy, iz1, 0, 18, reg); // fridge — was facing straight into the south wall
+    addFurnitureTracked(ix0 + 1, gy, iz0 + 1, 0, 12, reg); // table
+    addFurnitureTracked(ix0 + 1, gy, iz0 + 2, 0, 13, reg); // chair
+    addFurnitureTracked(ix1 - 1, gy, iz0 + 1, 2, 12, reg); // table
+    addFurnitureTracked(ix1 - 1, gy, iz0 + 2, 2, 13, reg); // chair
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4382,6 +4422,8 @@
     const bx0 = plot.x0, bz0 = plot.z0;
     const shell = buildShell(bx0, bz0, barnW, barnD, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
+    addFurnitureTracked(shell.x0 + 1, gy, shell.z0 + 1, 0, 24, reg); // storage barrel
+    addFurnitureTracked(shell.x1 - 1, gy, shell.z0 + 1, 2, 26, reg); // gas bottle / storage
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     const fieldZ0 = bz0 + barnD + 1, fieldZ1 = plot.z1;
@@ -4400,6 +4442,20 @@
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 2); // glass door — switched from a 2-wide French door for the same reason as the pub's own door change
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    // The couch used to always sit at ix0 — fine when the door was on
+    // the east wall, but when it was on the west wall instead, ix0 was
+    // the exact interior cell right inside the doorway. backX always
+    // means "the wall opposite the door" now, regardless of which one
+    // that actually is.
+    const backX = doorSide === 'west' ? ix1 : ix0;
+    const backRot = doorSide === 'west' ? 1 : 3;
+    addFurnitureTracked(shell.midX, gy, iz0, 2, 3, reg);  // reception desk — faces the room, not the wall
+    addFurnitureTracked(backX, gy, shell.midZ, backRot, 0, reg);  // couch
+    addFurnitureTracked(backX === ix1 ? ix1 - 1 : ix0 + 1, gy, shell.midZ, backRot, 2, reg); // coffee table
+    addFurnitureTracked(ix1 - 1, gy, iz1 - 1, 2, 29, reg); // suite bed (2x2 footprint — kept a cell clear of both walls)
+    addFurnitureTracked(ix1, gy, iz0, 2, 30, reg);        // wardrobe
+    addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4425,6 +4481,11 @@
         blocks.set(key(shell.x1 + 1, gy + h + 2, z), stonePalette.trim); trackVillageHeight(shell.x1 + 1, z, gy + h + 2);
       }
     }
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(shell.midX, gy, iz1, 0, 4, reg);  // armchair "throne"
+    addFurnitureTracked(ix0, gy, iz0, 0, 12, reg);        // table
+    addFurnitureTracked(ix1, gy, iz0, 2, 13, reg);        // chair
+    addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);         // cabinet
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4558,7 +4619,7 @@
     const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
     let roadY = columnHeight.get(centerKey);
     if (roadY === undefined) roadY = SEA_LEVEL + 3;
-    roadY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(roadY)));
+    roadY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(roadY))); // same sea-level floor as each plot below — the road shouldn't dip underwater either
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
@@ -4647,7 +4708,11 @@
       const pcx = Math.floor((plot.x0 + plot.x1) / 2), pcz = Math.floor((plot.z0 + plot.z1) / 2);
       let plotY = columnHeight.get(pcx + ',' + pcz);
       if (plotY === undefined) plotY = roadY;
-      plotY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
+      // Floored at SEA_LEVEL (was SEA_LEVEL-1, which let a building's own
+      // ground floor sit a block BELOW the water table it was flooring
+      // — every building now sits at or above sea level, never in a dip
+      // low enough to look partially sunken next to nearby water.
+      plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
           for (let y = Math.max(0, plotY - 6); y <= plotY + 12; y++) {

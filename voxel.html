@@ -393,6 +393,7 @@
 <div id="villageMapModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
   <div style="background:rgba(20,20,25,0.97);color:#fff;border-radius:10px;padding:18px;max-width:360px;width:90%;max-height:70vh;overflow-y:auto;font-family:-apple-system,sans-serif;box-sizing:border-box;">
     <h3 style="margin:0 0 10px;font-size:16px;">🗺️ Discovered Villages</h3>
+    <div id="villageMapStatus" style="display:none;font-size:12px;color:#ffe27a;margin-bottom:8px;"></div>
     <div id="villageMapList" style="display:flex;flex-direction:column;gap:6px;font-size:13px;"></div>
     <div id="villageMapEmpty" style="display:none;opacity:0.65;font-size:13px;">Fly around and find one — they'll be listed here, in every world, since a village always generates at the same coordinates.</div>
     <button id="villageMapCloseBtn" style="margin-top:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Close</button>
@@ -4034,6 +4035,25 @@
     const sk = addSign(bx, shell.gy + 3, bz, nx, 0, nz, 1, text);
     if (sk) reg.signKeys.push(sk);
   }
+  // Mounted on the wall OPPOSITE the door, at the lowest wall row (which
+  // — unlike the row at gy+2 — is never a window per buildShell's own
+  // pattern, so this is always mounting to solid wall). Reuses the
+  // existing torch/spotlight fixture system as-is: it already only
+  // actually renders/lights when within LIGHT_ACTIVE_RADIUS of the
+  // player (see updateLightVisibility), so placing one per building
+  // across any number of villages stays cheap. MAX_LIGHTS is still
+  // checked here as a sanity ceiling, same as manual placement gets.
+  function placeShellLight(shell, doorSide, reg) {
+    let bx, bz, nx, nz;
+    const by = shell.gy + 1;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z0; nx = 0; nz = 1; }
+    else if (doorSide === 'north') { bx = shell.midX; bz = shell.z1; nx = 0; nz = -1; }
+    else if (doorSide === 'east') { bx = shell.x0; bz = shell.midZ; nx = 1; nz = 0; }
+    else { bx = shell.x1; bz = shell.midZ; nx = -1; nz = 0; }
+    if (fixtures.size >= MAX_LIGHTS) return;
+    const fk = addFixture(bx, by, bz, nx, 0, nz);
+    if (fk) reg.fixtureKeys.push(fk);
+  }
   function addFurnitureTracked(bx, by, bz, rot, typeIdx, reg) {
     const fk = addFurniture(bx, by, bz, rot, typeIdx);
     if (fk) reg.furnitureKeys.push(fk);
@@ -4084,6 +4104,7 @@
       addFurnitureTracked(ix1, gy, iz0, 2, 4, reg);  // armchair
       addFurnitureTracked(ix0, gy, iz1, 0, 31, reg); // chest of drawers
     }
+    placeShellLight(shell, doorSide, reg);
   }
   function buildVillageShop(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(6, plot.x1 - plot.x0 + 1), d = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
@@ -4095,6 +4116,7 @@
     addFurnitureTracked(ix0, gy, iz1, 0, 25, reg); // bottle shelf
     addFurnitureTracked(ix1, gy, iz1, 0, 20, reg); // fridge — rot=0 so it faces north, away from the south wall (was facing into it)
     placeShellSign(shell, doorSide, name, reg);
+    placeShellLight(shell, doorSide, reg);
   }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
@@ -4109,6 +4131,7 @@
     addFurnitureTracked(ix1 - 1, gy, iz0 + 1, 2, 12, reg); // table
     addFurnitureTracked(ix1 - 1, gy, iz0 + 2, 2, 13, reg); // chair
     placeShellSign(shell, doorSide, name, reg);
+    placeShellLight(shell, doorSide, reg);
   }
   function buildVillageFarm(plot, gy, rng, palette, doorSide, reg, name) {
     const barnW = 5, barnD = 5, h = 3;
@@ -4118,6 +4141,7 @@
     addFurnitureTracked(shell.x0 + 1, gy, shell.z0 + 1, 0, 24, reg); // storage barrel
     addFurnitureTracked(shell.x1 - 1, gy, shell.z0 + 1, 2, 26, reg); // gas bottle / storage
     placeShellSign(shell, doorSide, name, reg);
+    placeShellLight(shell, doorSide, reg);
     const fieldZ0 = bz0 + barnD + 1, fieldZ1 = plot.z1;
     if (fieldZ1 >= fieldZ0) {
       for (let x = plot.x0; x <= plot.x1; x++) {
@@ -4141,6 +4165,7 @@
     addFurnitureTracked(ix1, gy, iz0, 2, 30, reg);        // wardrobe
     addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
     placeShellSign(shell, doorSide, name, reg);
+    placeShellLight(shell, doorSide, reg);
   }
   function buildVillageCastle(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
@@ -4169,6 +4194,7 @@
     addFurnitureTracked(ix1, gy, iz0, 2, 13, reg);        // chair
     addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);         // cabinet
     placeShellSign(shell, doorSide, name, reg);
+    placeShellLight(shell, doorSide, reg);
   }
 
   // ── Villager NPCs ───────────────────────────────────────────────
@@ -4284,7 +4310,7 @@
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], npcs: [] };
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], npcs: [] };
 
     for (let x = wx0 + 13; x <= wx0 + 16; x++) for (let z = wz0; z <= wz1; z++) { blocks.set(key(x, gy, z), palette.path); trackVillageHeight(x, z, gy); }
 
@@ -4340,6 +4366,7 @@
     v.furnitureKeys.forEach(fk => removeFurniture(fk));
     v.doorKeys.forEach(dk => removeDoor(dk));
     v.signKeys.forEach(sk => removeSign(sk));
+    if (v.fixtureKeys) v.fixtureKeys.forEach(fk => removeFixture(fk));
     if (v.props) v.props.forEach(p => scene.remove(p));
     v.npcs.forEach(n => scene.remove(n.mesh));
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
@@ -4355,6 +4382,7 @@
   // save happens to be open: finding one once puts it on the map for
   // good, in any world.
   const VILLAGE_LOG_KEY = 'voxelDiscoveredVillages';
+  const VILLAGE_MAX_FAVORITES = 10;
   function loadVillageLog() {
     try { return JSON.parse(localStorage.getItem(VILLAGE_LOG_KEY) || '[]'); } catch (e) { return []; }
   }
@@ -4364,11 +4392,36 @@
   function recordVillageDiscovery(name, x, z) {
     const list = loadVillageLog();
     if (list.some(v => v.x === x && v.z === z)) return; // same village streaming back in on a later visit — already on the list
-    list.push({ name, x, z, foundAt: Date.now() });
+    list.push({ name, x, z, foundAt: Date.now(), favorite: false });
     saveVillageLog(list);
   }
+  function setVillageMapStatus(text) {
+    const el = document.getElementById('villageMapStatus');
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
+    clearTimeout(setVillageMapStatus._timer);
+    if (text) setVillageMapStatus._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+  }
+  function toggleVillageFavorite(x, z) {
+    const list = loadVillageLog();
+    const entry = list.find(v => v.x === x && v.z === z);
+    if (!entry) return;
+    if (!entry.favorite) {
+      const favCount = list.filter(v => v.favorite).length;
+      if (favCount >= VILLAGE_MAX_FAVORITES) {
+        setVillageMapStatus('⭐ Max ' + VILLAGE_MAX_FAVORITES + ' favourites — unstar one first');
+        return;
+      }
+    }
+    entry.favorite = !entry.favorite;
+    saveVillageLog(list);
+    renderVillageMap();
+  }
   function renderVillageMap() {
-    const list = loadVillageLog().sort((a, b) => a.foundAt - b.foundAt);
+    // Favourites first (their own most-recently-favourited-last order
+    // isn't tracked, so this just keeps discovery order within each
+    // group), then everything else.
+    const list = loadVillageLog().sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || (a.foundAt - b.foundAt));
     const container = document.getElementById('villageMapList');
     const empty = document.getElementById('villageMapEmpty');
     container.innerHTML = '';
@@ -4376,11 +4429,21 @@
     list.forEach(v => {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;background:rgba(255,255,255,0.06);padding:7px 10px;border-radius:6px;';
+      const left = document.createElement('div');
+      left.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;';
+      const starBtn = document.createElement('button');
+      starBtn.textContent = v.favorite ? '⭐' : '☆';
+      starBtn.title = v.favorite ? 'Remove from favourites' : 'Add to favourites (max ' + VILLAGE_MAX_FAVORITES + ')';
+      starBtn.style.cssText = 'background:none;border:none;font-size:16px;cursor:pointer;padding:0;line-height:1;flex-shrink:0;';
+      starBtn.addEventListener('click', () => toggleVillageFavorite(v.x, v.z));
+      left.appendChild(starBtn);
       const label = document.createElement('span');
       label.textContent = v.name;
-      row.appendChild(label);
+      label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      left.appendChild(label);
+      row.appendChild(left);
       const coords = document.createElement('span');
-      coords.style.cssText = 'opacity:0.75;font-variant-numeric:tabular-nums;white-space:nowrap;';
+      coords.style.cssText = 'opacity:0.75;font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0;';
       coords.textContent = 'x ' + v.x + ', z ' + v.z;
       row.appendChild(coords);
       container.appendChild(row);

@@ -1962,7 +1962,15 @@
         // water blocks to the total count.
         if (allowWater && h < SEA_LEVEL) {
           const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
-          let targetDepth = 1 + Math.round(depthNoise*2);
+          // Minimum raised from 1 to 2 — fish only spawn in a column
+          // with at least 2 stacked water cells (see
+          // scanAndSpawnAmbientFish's own "deeper than a block" check),
+          // and reducing overall water AREA to fix the lag (rarer,
+          // smaller bodies) meant almost nothing was left clearing that
+          // bar. This keeps the areas that do have water reliably deep
+          // enough for fish, without undoing the frequency/size cuts
+          // that actually fixed the performance problem.
+          let targetDepth = 2 + Math.round(depthNoise*2);
           if (oceanField > 0.76) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
@@ -4129,6 +4137,19 @@
     const prev = columnHeight.get(ck);
     if (prev === undefined || y > prev) columnHeight.set(ck, y);
   }
+  // Separate from columnHeight/trackVillageHeight above on purpose —
+  // that one tracks the TALLEST block ever placed in a column, which
+  // for anywhere under a roof is the roof itself, high above the actual
+  // floor. Villager NPCs need the real walkable surface, so every place
+  // an actual walkable surface gets placed (road, a connecting path
+  // step, a plot's own graded ground, a building's floor) also records
+  // it here — nothing else does.
+  const villageGroundHeight = new Map(); // "x,z" -> walkable surface y
+  function markVillageGround(x, z, y) { villageGroundHeight.set(x + ',' + z, y); }
+  function villageSurfaceY(x, z, fallback) {
+    const gy = villageGroundHeight.get(Math.floor(x) + ',' + Math.floor(z));
+    return gy === undefined ? fallback : gy;
+  }
   function addPyramidRoof(x0, x1, z0, z1, topY, palette, maxLayers) {
     let cx0 = x0 - 1, cx1 = x1 + 1, cz0 = z0 - 1, cz1 = z1 + 1, y = topY, layer = 0;
     while (cx0 <= cx1 && cz0 <= cz1 && layer < (maxLayers || 5)) {
@@ -4144,7 +4165,7 @@
   function buildShell(x0, z0, w, d, h, gy, palette, doorSide, roofStyle) {
     const x1 = x0 + w - 1, z1 = z0 + d - 1;
     const midX = x0 + Math.floor(w / 2), midZ = z0 + Math.floor(d / 2);
-    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); }
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); }
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {
         const edge = (x === x0 || x === x1 || z === z0 || z === z1);
@@ -4297,7 +4318,7 @@
     placeShellLight(shell, doorSide, reg);
   }
   function buildVillageFarm(plot, gy, rng, palette, doorSide, reg, name) {
-    const barnW = 5, barnD = 5, h = 3;
+    const barnW = Math.min(5, plot.x1 - plot.x0 + 1), barnD = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
     const bx0 = plot.x0, bz0 = plot.z0;
     const shell = buildShell(bx0, bz0, barnW, barnD, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
@@ -4361,8 +4382,15 @@
   }
 
   // ── Villager NPCs ───────────────────────────────────────────────
+  // bounds.y is only ever a FALLBACK now — the actual foot height at
+  // any given (x,z) comes from villageSurfaceY (the real walkable
+  // ground recorded as the village was built), so a villager crossing
+  // from the road onto a lower- or higher-set path/plot follows the
+  // step down or up instead of continuing to walk at one fixed height
+  // regardless of what's actually under their feet.
   function villageNpcBlocked(x, z, bounds) {
-    if (isSolid(x, bounds.y + 0.1, z) || isSolid(x, bounds.y + 1.3, z)) return true;
+    const footY = villageSurfaceY(x, z, bounds.y - 1) + 1;
+    if (isSolid(x, footY + 0.1, z) || isSolid(x, footY + 1.3, z)) return true;
     for (const f of furniture.values()) {
       const dx = x - (f.bx + 0.5), dz = z - (f.bz + 0.5);
       if (dx * dx + dz * dz < 0.6 * 0.6) return true;
@@ -4394,7 +4422,8 @@
         shirtIdx: Math.floor(rng() * AVATAR_SHIRT_TONES.length),
         pantsIdx: Math.floor(rng() * AVATAR_PANTS_TONES.length),
       };
-      const mesh = placeVillageNpcMesh(spot.x, bounds.y, spot.z, colors);
+      const spawnY = villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1;
+      const mesh = placeVillageNpcMesh(spot.x, spawnY, spot.z, colors);
       const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
       villageNPCs.push(w);
       created.push(w);
@@ -4427,6 +4456,7 @@
       }
       w.mesh.position.x = nx;
       w.mesh.position.z = nz;
+      w.mesh.position.y = villageSurfaceY(nx, nz, w.bounds.y - 1) + 1;
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t * 4) * 0.5;
       w.mesh.traverse(o => {
@@ -4459,6 +4489,7 @@
       for (let y = Math.max(0, curY - 2); y < curY; y++) blocks.set(key(x, y, z), 2);
       blocks.set(key(x, curY, z), palette.path);
       trackVillageHeight(x, z, curY);
+      markVillageGround(x, z, curY);
     }
   }
   function buildVillageInChunk(cx, cz, rng) {
@@ -4499,6 +4530,7 @@
         for (let y = Math.max(0, roadY - 3); y < roadY; y++) blocks.set(key(x, y, z), 2);
         blocks.set(key(x, roadY, z), palette.path);
         trackVillageHeight(x, z, roadY);
+        markVillageGround(x, z, roadY);
       }
     }
 
@@ -4508,15 +4540,16 @@
     const sk0 = addSign(postX, roadY + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
     if (sk0) reg.signKeys.push(sk0);
 
-    // Five slices per side now instead of three — up to 10 building
-    // plots instead of 6 (the practical ceiling for a village that has
-    // to fit inside one 32-block chunk with real spacing between
-    // buildings; going further, e.g. to a literal 20, would mean a
-    // village spanning multiple chunks, a bigger change to how villages
-    // stream in/out). Plot depth is smaller (5, was 7) to fit the extra
-    // slices in the same footprint — pub/hotel/farm end up a little
-    // more compact than before, everything still fits.
-    const slices = [[1, 5], [7, 11], [13, 17], [19, 23], [25, 29]];
+    // Four slices per side (was briefly five, with 1-row gaps — those
+    // gaps turned out too tight: a pyramid roof overhangs 1 block past
+    // its own walls on every side, so two buildings only 1 row apart
+    // had their roof eaves actually overlapping into each other, which
+    // is what "generating inside each other" actually was). 3-row gaps
+    // guarantee real clearance (1 block of overhang + 1 clear + 1 block
+    // of the neighbour's own overhang), so 4 slices — 8 plots — is the
+    // practical ceiling with buildings that are actually, visibly
+    // separate. Still up from the original 3 slices / 6 plots.
+    const slices = [[1, 4], [8, 11], [15, 18], [22, 25]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -4524,7 +4557,7 @@
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    let pool = ['house', 'house', 'house', 'house', 'house', 'house', 'house', 'pub', 'shop', 'farm'];
+    let pool = ['house', 'house', 'house', 'house', 'pub', 'shop', 'farm', 'house'];
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
     if (rng() < 0.3) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
     if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'castle'; }
@@ -4555,6 +4588,7 @@
           for (let y = Math.max(0, plotY - 3); y < plotY; y++) blocks.set(key(x, y, z), 2);
           blocks.set(key(x, plotY, z), 0);
           trackVillageHeight(x, z, plotY);
+          markVillageGround(x, z, plotY);
         }
       }
 

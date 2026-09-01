@@ -1439,6 +1439,28 @@
 
   // ================= SCENE =================
   const scene = new THREE.Scene();
+  // Frees the actual GPU-side buffers for an object and everything under
+  // it — scene.remove() alone only detaches it from the render graph,
+  // it does NOT free geometry/material/texture memory, which stays
+  // allocated until something explicitly disposes it. That gap didn't
+  // matter much for things created once and rarely torn down, but
+  // villages create and destroy a real number of meshes (furniture,
+  // doors, signs, lights, NPC figures) every time a chunk streams in or
+  // out — continuous flight streams through many of these in quick
+  // succession, and without disposal each one leaked GPU memory that
+  // never came back. That's what was actually driving the WebGL context
+  // loss/crash-and-reboot behaviour, not rendering cost in a single
+  // frame. Always call this alongside scene.remove(), not instead of it.
+  function disposeObject3D(obj) {
+    if (!obj) return;
+    obj.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach(m => { if (m.map) m.map.dispose(); m.dispose(); });
+      }
+    });
+  }
   const skyColor = new THREE.Color(0x7ec0ee);
   scene.background = skyColor.clone();
   scene.fog = new THREE.Fog(skyColor.getHex(), 26, 70);
@@ -2874,6 +2896,7 @@
     const f = fixtures.get(fk);
     if (!f) return;
     scene.remove(f.light); scene.remove(f.stick); scene.remove(f.flame);
+    disposeObject3D(f.stick); disposeObject3D(f.flame); // f.light is a THREE.PointLight — no geometry/material of its own to dispose
     fixtures.delete(fk);
   }
   function clearAllFixtures() {
@@ -3110,8 +3133,7 @@
     const s = signs.get(fk);
     if (!s) return;
     scene.remove(s.mesh);
-    s.mesh.material.map && s.mesh.material.map.dispose();
-    s.mesh.material.dispose();
+    disposeObject3D(s.mesh); // also covers geometry, which the material-only disposal here previously missed
     signs.delete(fk);
   }
   function clearAllSigns() {
@@ -3269,6 +3291,7 @@
     const d = doors.get(dk);
     if (!d) return;
     scene.remove(d.group);
+    disposeObject3D(d.group);
     doors.delete(dk);
   }
   function clearAllDoors() {
@@ -4088,6 +4111,7 @@
     const f = furniture.get(fk);
     if (!f) return;
     scene.remove(f.group);
+    disposeObject3D(f.group);
     furniture.delete(fk);
   }
   function clearAllFurniture() {
@@ -4712,8 +4736,16 @@
     v.doorKeys.forEach(dk => removeDoor(dk));
     v.signKeys.forEach(sk => removeSign(sk));
     if (v.fixtureKeys) v.fixtureKeys.forEach(fk => removeFixture(fk));
-    if (v.props) v.props.forEach(p => scene.remove(p));
-    v.npcs.forEach(n => scene.remove(n.mesh));
+    // NPC figures and decorative props (the bar counter etc. — see
+    // placeVillageProp) are the biggest single source of what was
+    // actually leaking here: each NPC alone is a whole buildCustomerFigure
+    // — a couple dozen individual meshes for one villager — and a
+    // village can have a dozen NPCs. None of it was ever disposed, just
+    // detached from the scene, so flying through several villages back
+    // to back accumulated real GPU memory that never came back until the
+    // context itself gave out.
+    if (v.props) v.props.forEach(p => { scene.remove(p); disposeObject3D(p); });
+    v.npcs.forEach(n => { scene.remove(n.mesh); disposeObject3D(n.mesh); });
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageRegistry.delete(ck);
   }
@@ -4973,6 +5005,7 @@
   }
   function removeVehicleInstance(v) {
     scene.remove(v.group);
+    disposeObject3D(v.group);
     const i = vehicles.indexOf(v);
     if (i >= 0) vehicles.splice(i, 1);
   }
@@ -7072,7 +7105,7 @@
   let lastAmbientFishScan = 0;
   const AMBIENT_FISH_MAX = 20;
   function clearAmbientFish() {
-    ambientFish.forEach(f => scene.remove(f.mesh));
+    ambientFish.forEach(f => { scene.remove(f.mesh); disposeObject3D(f.mesh); });
     ambientFish = [];
   }
   function scanAndSpawnAmbientFish() {
@@ -7139,7 +7172,7 @@
     for (let i = ambientFish.length - 1; i >= 0; i--) {
       const f = ambientFish[i];
       const dx = f.pool.cx - player.pos.x, dz = f.pool.cz - player.pos.z;
-      if (dx*dx + dz*dz > FISH_DESPAWN_DIST_SQ) { scene.remove(f.mesh); ambientFish.splice(i, 1); }
+      if (dx*dx + dz*dz > FISH_DESPAWN_DIST_SQ) { scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1); }
     }
     if (now - lastAmbientFishScan > 8000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); }
     ambientFish.forEach(f => {
@@ -10383,7 +10416,8 @@
     const op = otherPlayers.get(uid);
     if (!op) return;
     scene.remove(op.group);
-    if (op.vehicleGroup) scene.remove(op.vehicleGroup);
+    disposeObject3D(op.group);
+    if (op.vehicleGroup) { scene.remove(op.vehicleGroup); disposeObject3D(op.vehicleGroup); }
     otherPlayers.delete(uid);
     removeOtherGolfBall(uid); // otherwise their ball would just sit there forever after they leave
   }
@@ -10815,7 +10849,7 @@
       try {
         if (op.vehicleType >= 0) {
           if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType) {
-            if (op.vehicleGroup) scene.remove(op.vehicleGroup);
+            if (op.vehicleGroup) { scene.remove(op.vehicleGroup); disposeObject3D(op.vehicleGroup); }
             op.vehicleGroup = VEHICLE_TYPES[op.vehicleType] ? VEHICLE_TYPES[op.vehicleType].build() : null;
             if (op.vehicleGroup) scene.add(op.vehicleGroup);
             op.vehicleTypeBuilt = op.vehicleType;

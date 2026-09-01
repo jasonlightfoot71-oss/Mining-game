@@ -1976,9 +1976,9 @@
         // basins are now a genuinely rare, special encounter rather than
         // "every now and again."
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*0.65*amp);
-        if (oceanField > 0.85) {
-          const oceanStrength = (oceanField - 0.85) / 0.15; // 0 at the basin's edge, 1 at its deepest core
+        let h = Math.round(baseline + n*0.33*amp); // halved again (was 0.65, before that 1.3, before that 2) — water is still the single biggest lag lever
+        if (oceanField > 0.92) { // raised again (was 0.85) — basins now genuinely rare
+          const oceanStrength = (oceanField - 0.92) / 0.08; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
@@ -2016,7 +2016,7 @@
           // enough for fish, without undoing the frequency/size cuts
           // that actually fixed the performance problem.
           let targetDepth = 2 + Math.round(depthNoise*2);
-          if (oceanField > 0.85) targetDepth += 1;
+          if (oceanField > 0.92) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
         // Surface now depends on BOTH axes: rocky peaks still need real
@@ -7138,21 +7138,35 @@
   // fresh from the current terrain every time.
   let ambientFish = [];
   let lastAmbientFishScan = 0;
-  const AMBIENT_FISH_MAX = 45;
+  // Redesigned to be player-centered, per request: up to 20 fish live
+  // within a 20-block radius of wherever you currently are, appearing
+  // and disappearing as you move rather than being tied to fixed pools
+  // discovered once and never revisited. Despawn uses a slightly larger
+  // radius than spawn (26 vs 20) purely so a fish sitting right at the
+  // boundary doesn't flicker in and out every scan as you hover near
+  // the edge.
+  const AMBIENT_FISH_MAX = 20;
+  const FISH_SPAWN_RADIUS = 20;
+  const FISH_DESPAWN_RADIUS = 26;
   function clearAmbientFish() {
     ambientFish.forEach(f => { scene.remove(f.mesh); disposeObject3D(f.mesh); });
     ambientFish = [];
   }
   function scanAndSpawnAmbientFish() {
     if (ambientFish.length >= AMBIENT_FISH_MAX) return;
-    // Groups every water cell by its (x,z) column to work out how deep
-    // the water actually is there — "deeper than a block" means at
-    // least 2 stacked water cells in the same column, not just a single
-    // shallow puddle layer.
+    // Groups every water cell WITHIN FISH_SPAWN_RADIUS of the player by
+    // its (x,z) column to work out how deep the water actually is there
+    // — "deeper than a block" means at least 2 stacked water cells in
+    // the same column, not just a single shallow puddle layer. Scoping
+    // the scan to the player's own radius (rather than every water
+    // block currently loaded) is what makes this cheap enough to run
+    // often — it's a small, bounded area, not the whole loaded world.
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
     const columns = new Map();
     waterBlocks.forEach((level, k) => {
       const parts = k.split(',');
       const x = +parts[0], y = +parts[1], z = +parts[2];
+      if (Math.abs(x-px) > FISH_SPAWN_RADIUS || Math.abs(z-pz) > FISH_SPAWN_RADIUS) return;
       const ck = x+','+z;
       let col = columns.get(ck);
       if (!col) columns.set(ck, { x, z, minY:y, maxY:y });
@@ -7161,67 +7175,36 @@
     const deepCols = [];
     columns.forEach(col => { if (col.maxY - col.minY + 1 > 1) deepCols.push(col); });
     if (!deepCols.length) return;
-    // Simple greedy proximity clustering into rough "pools" — doesn't
-    // need to be a precise flood-fill of the actual connected body of
-    // water, just good enough to group nearby deep columns together and
-    // give each fish a sensible area to wander within.
-    const pools = [];
-    deepCols.forEach(c => {
-      let pool = pools.find(p => Math.abs(p.cx-c.x) < 14 && Math.abs(p.cz-c.z) < 14);
-      if (!pool) { pool = { cx: c.x, cz: c.z, cols: [] }; pools.push(pool); }
-      pool.cols.push(c);
-    });
-    pools.forEach(pool => {
-      if (ambientFish.length >= AMBIENT_FISH_MAX) return;
-      // Lowered from 4 — after the recent water-generation cutback (to
-      // fix performance), most ponds/lakes are smaller than before, so
-      // requiring 4 deep columns was excluding a lot of perfectly real,
-      // just modest-sized bodies of water from ever getting a fish at
-      // all. 2 still filters out a single stray deep tile.
-      if (pool.cols.length < 2) return;
-      const alreadyCovered = ambientFish.some(f => Math.hypot(f.pool.cx-pool.cx, f.pool.cz-pool.cz) < 10);
-      if (alreadyCovered) return;
-      // Scales further with pool size now, and starts from more fish
-      // per pool generally — fish were reported as very sparse per area,
-      // and with the despawn fix now freeing up budget as you travel,
-      // there's headroom to be more generous per pool without the old
-      // "one pool near spawn eats the whole world's budget" problem.
-      const fishHere = 2 + Math.min(3, Math.floor(pool.cols.length / 12));
-      for (let i = 0; i < fishHere && ambientFish.length < AMBIENT_FISH_MAX; i++) {
-        const col = pool.cols[Math.floor(Math.random()*pool.cols.length)];
-        const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
-        const swimY = col.minY + 0.6; // a bit up off the floor, comfortably below the surface
-        mesh.position.set(col.x+0.5, swimY, col.z+0.5);
-        scene.add(mesh);
-        ambientFish.push({ mesh, tail, pool, baseY: swimY, bobOffset: Math.random()*Math.PI*2, targetX: col.x+0.5, targetZ: col.z+0.5, speed: 0.6+Math.random()*0.5, wanderTimer: 0 });
-      }
-    });
+    while (ambientFish.length < AMBIENT_FISH_MAX && deepCols.length) {
+      const col = deepCols[Math.floor(Math.random()*deepCols.length)];
+      const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
+      const swimY = col.minY + 0.6; // a bit up off the floor, comfortably below the surface
+      mesh.position.set(col.x+0.5, swimY, col.z+0.5);
+      scene.add(mesh);
+      // cols is a shared reference to this scan's whole deep-column list
+      // (not a copy per fish) — cheap, and it's only ever used to pick a
+      // wander target, so slightly stale data as the player moves on is
+      // harmless; the fish will have despawned by the time it matters.
+      ambientFish.push({ mesh, tail, cols: deepCols, baseY: swimY, bobOffset: Math.random()*Math.PI*2, targetX: col.x+0.5, targetZ: col.z+0.5, speed: 0.6+Math.random()*0.5, wanderTimer: 0 });
+    }
   }
   function updateAmbientFish(dt) {
     const now = performance.now();
-    // Removes fish whose pool is now far from the player — without this,
-    // whichever pools get discovered FIRST (near spawn/The Mill, since
-    // that's naturally where a session starts) would permanently fill
-    // AMBIENT_FISH_MAX and stay there for the rest of the session, and
-    // scanAndSpawnAmbientFish bails out the moment that cap is hit — so
-    // no fish could ever spawn anywhere else again, no matter how far
-    // the player then travelled. This frees their slot back up once
-    // they're well outside where the player could see them anyway (the
-    // water they were in has long since unloaded by this point too).
-    const FISH_DESPAWN_DIST_SQ = 120*120;
+    const px = player.pos.x, pz = player.pos.z;
     for (let i = ambientFish.length - 1; i >= 0; i--) {
       const f = ambientFish[i];
-      const dx = f.pool.cx - player.pos.x, dz = f.pool.cz - player.pos.z;
-      if (dx*dx + dz*dz > FISH_DESPAWN_DIST_SQ) { scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1); }
+      const dx = f.mesh.position.x - px, dz = f.mesh.position.z - pz;
+      if (dx*dx + dz*dz > FISH_DESPAWN_RADIUS*FISH_DESPAWN_RADIUS) { scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1); }
     }
-    if (now - lastAmbientFishScan > 8000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); }
+    if (now - lastAmbientFishScan > 3000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); } // frequent — this is now a small, cheap, local scan rather than the whole loaded world
     ambientFish.forEach(f => {
       f.wanderTimer -= dt;
       if (f.wanderTimer <= 0) {
-        // Picks its next spot from its OWN pool's own deep columns, so it
-        // keeps wandering within the same body of water rather than
-        // drifting off toward the bank or through solid ground.
-        const col = f.pool.cols[Math.floor(Math.random()*f.pool.cols.length)];
+        // Picks its next spot from the same nearby-columns list it
+        // spawned from, so it keeps wandering within reach of the
+        // player rather than drifting off toward the bank or through
+        // solid ground.
+        const col = f.cols[Math.floor(Math.random()*f.cols.length)];
         f.targetX = col.x+0.5; f.targetZ = col.z+0.5;
         f.wanderTimer = 4 + Math.random()*4;
       }
@@ -7287,11 +7270,16 @@
       scene.add(group);
       ambientBirds.push({
         group, wingL, wingR, angle,
-        radius: 18 + Math.random()*28,
-        height: 16 + Math.random()*16,
+        // Height and radius were both way too generous before (up to 32
+        // blocks straight up, which is why they were never actually
+        // spotted) — much lower and closer now, so they're visible
+        // without needing to look almost straight overhead.
+        radius: 12 + Math.random()*14,
+        height: 5 + Math.random()*6,
         speed: 0.12 + Math.random()*0.14,
         dir: Math.random() < 0.5 ? 1 : -1,
         flapOffset: Math.random()*Math.PI*2,
+        radiusPulseOffset: Math.random()*Math.PI*2,
       });
     }
   }
@@ -7300,9 +7288,13 @@
     const now = performance.now();
     ambientBirds.forEach(b => {
       b.angle += b.speed*dt*b.dir;
-      b.group.position.x = player.pos.x + Math.cos(b.angle)*b.radius;
-      b.group.position.z = player.pos.z + Math.sin(b.angle)*b.radius;
-      b.group.position.y = player.pos.y + b.height + Math.sin(now*0.0006 + b.flapOffset)*1.5;
+      // Radius breathes in and out too now, not just height — reads as
+      // properly drifting closer and further rather than just bobbing
+      // vertically in place.
+      const r = b.radius + Math.sin(now*0.00035 + b.radiusPulseOffset)*4;
+      b.group.position.x = player.pos.x + Math.cos(b.angle)*r;
+      b.group.position.z = player.pos.z + Math.sin(b.angle)*r;
+      b.group.position.y = player.pos.y + b.height + Math.sin(now*0.0006 + b.flapOffset)*3; // bigger vertical swing (was 1.5) — much more noticeably "up and down" now
       // Faces the direction of travel — tangent to its own circle, sign
       // flipped depending on which way around it's orbiting.
       b.group.rotation.y = -(b.angle + (b.dir > 0 ? Math.PI/2 : -Math.PI/2));

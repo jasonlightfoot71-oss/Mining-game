@@ -4355,36 +4355,9 @@
     w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
-    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    // Which interior column is actually "away from the door" flips
-    // depending on which wall the door is on — this wasn't accounted
-    // for before, so on every house where the door happened to be on
-    // the west wall, furniture that was meant to sit at the back ended
-    // up right next to the door instead (and vice versa). backRot/
-    // frontRot face each column away from whichever wall it's actually
-    // against, not a fixed direction.
-    const backX = doorSide === 'west' ? ix1 : ix0;
-    const frontX = doorSide === 'west' ? ix0 : ix1;
-    const backRot = doorSide === 'west' ? 1 : 3;
-    const frontRot = doorSide === 'west' ? 3 : 1;
-    if (variant === 0) {
-      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as the other variants' beds
-      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed — kept at the back, away from the door
-      addFurnitureTracked(backX, gy, iz1, backRot, 30, reg); // wardrobe
-      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch — same side as the door, but offset to a corner, not the threshold itself
-      addFurnitureTracked(frontX, gy, iz1, frontRot, 2, reg); // coffee table
-    } else if (variant === 1) {
-      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — its anchor must leave room for the +1 extension regardless of which wall it's now next to
-      addFurnitureTracked(bedX, gy, iz0, 0, 28, reg);  // single bed (2x2 footprint)
-      addFurnitureTracked(backX, gy, iz1, backRot, 3, reg); // cabinet — kept clear of the bed's footprint
-      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch
-      addFurnitureTracked(frontX === ix1 ? ix1 - 1 : ix0 + 1, gy, iz0, frontRot, 1, reg); // tv — one cell further in, next to the couch rather than crowding the same corner
-    } else {
-      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as variant 1's bed above
-      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed
-      addFurnitureTracked(backX, gy, iz1, backRot, 31, reg); // chest of drawers
-      addFurnitureTracked(frontX, gy, iz0, frontRot, 4, reg); // armchair
-    }
+    // Interior furniture temporarily removed entirely — narrowing down a
+    // crash-on-village-discovery report. Shell/door/sign/light stay so
+    // we can tell whether removing furniture specifically clears it.
     placeShellLight(shell, doorSide, reg);
     return shell;
   }
@@ -4392,11 +4365,6 @@
     const w = Math.min(6, plot.x1 - plot.x0 + 1), d = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 2); // glass door
-    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(ix0, gy, iz0, 2, 3, reg);  // counter — rot=2 so it faces south, away from the north wall it backs onto (rot=0 had it facing straight into that wall)
-    addFurnitureTracked(ix1, gy, iz0, 2, 22, reg); // shelving
-    addFurnitureTracked(ix0, gy, iz1, 0, 25, reg); // bottle shelf
-    addFurnitureTracked(ix1, gy, iz1, 0, 20, reg); // fridge — rot=0 so it faces north, away from the south wall (was facing into it)
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4405,14 +4373,6 @@
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0); // switched from a 2-wide door to a plain single door — removes an entire class of edge cases around the wide-door wall gap
-    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    placeVillageProp(buildBarCounter, shell.midX, gy, iz0, 2, reg); // decorative only — see placeVillageProp's comment on why a real Bar Counter can't be used here
-    addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
-    addFurnitureTracked(ix1, gy, iz1, 0, 18, reg); // fridge — was facing straight into the south wall
-    addFurnitureTracked(ix0 + 1, gy, iz0 + 1, 0, 12, reg); // table
-    addFurnitureTracked(ix0 + 1, gy, iz0 + 2, 0, 13, reg); // chair
-    addFurnitureTracked(ix1 - 1, gy, iz0 + 1, 2, 12, reg); // table
-    addFurnitureTracked(ix1 - 1, gy, iz0 + 2, 2, 13, reg); // chair
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4422,8 +4382,6 @@
     const bx0 = plot.x0, bz0 = plot.z0;
     const shell = buildShell(bx0, bz0, barnW, barnD, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
-    addFurnitureTracked(shell.x0 + 1, gy, shell.z0 + 1, 0, 24, reg); // storage barrel
-    addFurnitureTracked(shell.x1 - 1, gy, shell.z0 + 1, 2, 26, reg); // gas bottle / storage
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     const fieldZ0 = bz0 + barnD + 1, fieldZ1 = plot.z1;
@@ -4442,20 +4400,6 @@
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 2); // glass door — switched from a 2-wide French door for the same reason as the pub's own door change
-    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    // The couch used to always sit at ix0 — fine when the door was on
-    // the east wall, but when it was on the west wall instead, ix0 was
-    // the exact interior cell right inside the doorway. backX always
-    // means "the wall opposite the door" now, regardless of which one
-    // that actually is.
-    const backX = doorSide === 'west' ? ix1 : ix0;
-    const backRot = doorSide === 'west' ? 1 : 3;
-    addFurnitureTracked(shell.midX, gy, iz0, 2, 3, reg);  // reception desk — faces the room, not the wall
-    addFurnitureTracked(backX, gy, shell.midZ, backRot, 0, reg);  // couch
-    addFurnitureTracked(backX === ix1 ? ix1 - 1 : ix0 + 1, gy, shell.midZ, backRot, 2, reg); // coffee table
-    addFurnitureTracked(ix1 - 1, gy, iz1 - 1, 2, 29, reg); // suite bed (2x2 footprint — kept a cell clear of both walls)
-    addFurnitureTracked(ix1, gy, iz0, 2, 30, reg);        // wardrobe
-    addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4481,11 +4425,6 @@
         blocks.set(key(shell.x1 + 1, gy + h + 2, z), stonePalette.trim); trackVillageHeight(shell.x1 + 1, z, gy + h + 2);
       }
     }
-    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-    addFurnitureTracked(shell.midX, gy, iz1, 0, 4, reg);  // armchair "throne"
-    addFurnitureTracked(ix0, gy, iz0, 0, 12, reg);        // table
-    addFurnitureTracked(ix1, gy, iz0, 2, 13, reg);        // chair
-    addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);         // cabinet
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4749,7 +4688,7 @@
     });
 
     const ck = cx + '_' + cz;
-    const npcCount = 3 + built + Math.floor(rng() * 3);
+    const npcCount = Math.min(5, 3 + built + Math.floor(rng() * 3)); // capped at 5 — each NPC is a full multi-mesh figure, so this is a real chunk of the per-village GPU cost
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.

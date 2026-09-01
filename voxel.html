@@ -4766,7 +4766,8 @@
         vehicleCamWasActive = false;
         const crosshairEl = document.getElementById('crosshair');
         if (crosshairEl && !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
-        heldMesh.visible = true; heldStepGroup.visible = true; workHeldRoot.visible = false;
+        if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
+        else { workHeldRoot.visible = false; selectSlot(selectedSlot); } // restores heldMesh/heldStepGroup correctly for whatever's actually selected, same as tennis/football/golf's own teardown does
       }
       return;
     }

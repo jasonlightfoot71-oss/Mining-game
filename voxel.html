@@ -1906,9 +1906,13 @@
         // being low was necessary but not sufficient for water to
         // actually appear: the local detail noise still had to happen to
         // roll near its own minimum at the same spot. Centring it means
-        // roughly half of any low-elevation area now genuinely dips
-        // below baseline instead of almost always sitting above it,
-        // which is the main reason water had become so rare.
+        // more of a low-elevation area genuinely dips below baseline
+        // instead of almost always sitting above it. Multiplier dialled
+        // back to 1.3 (was 2) after the full-strength version made water
+        // common enough to cause real lag — rebuildWaterGeometry rescans
+        // every water block in the loaded world on every rebuild, so
+        // total water volume directly drives frame cost, not just how
+        // "correct" the noise distribution is.
         const n = fbm(x*0.045, z*0.045) - 0.5;
         const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
         const baseline = SEA_LEVEL - 3 + elevation*5; // lowered back to -3 (from -2) specifically so water becomes reachable across a wider elevation range again — the calmer overall variety made genuinely low elevation rare enough that water had nearly stopped appearing at all; the elevation*5 slope itself is unchanged, so this doesn't affect how dramatic mountains get, just how easy it is to dip below sea level
@@ -1921,10 +1925,15 @@
         // it does, it pulls the baseline down hard regardless of what
         // the regional elevation says — that's deliberate: a proper lake
         // shouldn't care that it's sitting in an otherwise-hilly area.
+        // Threshold raised from 0.62 to 0.76 — fbm's output clusters
+        // near 0.5, so this makes basins a genuinely sparse, special
+        // occurrence rather than a near-constant background presence,
+        // which is the other big lever on total water volume (and so on
+        // frame cost) alongside the multiplier above.
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*2*amp);
-        if (oceanField > 0.62) {
-          const oceanStrength = (oceanField - 0.62) / 0.38; // 0 at the basin's edge, 1 at its deepest core
+        let h = Math.round(baseline + n*1.3*amp);
+        if (oceanField > 0.76) {
+          const oceanStrength = (oceanField - 0.76) / 0.24; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
@@ -1945,15 +1954,16 @@
         // to exactly SEA_LEVEL-3, which reads as an unnatural dead-flat
         // shelf, especially right where it meets the surrounding natural
         // slope. This uses its own fine-grained noise so the floor
-        // itself undulates (roughly 1-4 blocks deep) rather than being
+        // itself undulates (roughly 1-3 blocks deep) rather than being
         // one flat plane, and only pushes meaningfully deeper (up to
-        // ~6) inside an actual ocean/lake basin — small puddles stay
+        // ~4) inside an actual ocean/lake basin — small puddles stay
         // shallow and uneven, the genuinely large bodies of water read
-        // as properly deep.
+        // as properly deep, without every column adding several extra
+        // water blocks to the total count.
         if (allowWater && h < SEA_LEVEL) {
           const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
-          let targetDepth = 1 + Math.round(depthNoise*3);
-          if (oceanField > 0.62) targetDepth += 2;
+          let targetDepth = 1 + Math.round(depthNoise*2);
+          if (oceanField > 0.76) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
         // Surface now depends on BOTH axes: rocky peaks still need real
@@ -4887,10 +4897,18 @@
   }
   function exitVehicle() {
     if (!ridingVehicle) return;
-    ridingVehicle.x = player.pos.x; ridingVehicle.y = player.pos.y; ridingVehicle.z = player.pos.z; ridingVehicle.yaw = yaw;
+    const v = ridingVehicle;
     flying = vehiclePrevFlying;
     ridingVehicle = null;
     document.getElementById('vehicleExitBtn').style.display = 'none';
+    // Cleans itself up rather than staying parked wherever you happened
+    // to get out — vehicles can be driven a long way from where they
+    // were placed, so leaving a real one behind on exit meant they'd
+    // just accumulate scattered across the whole world with no
+    // practical way to find and remove them all again. A player who
+    // wants one back can always place a fresh one from the hotbar.
+    removeVehicleInstance(v);
+    playThud(200);
   }
   document.getElementById('vehicleEnterBtn').addEventListener('click', () => enterVehicle(nearestVehicleToPlayer(3)));
   document.getElementById('vehicleExitBtn').addEventListener('click', exitVehicle);

@@ -8419,6 +8419,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x3a2a1a });
     } else if (i === ROOM_SLOT || i === BATHROOM_SLOT || i === BAR_SLOT || i === KITCHEN_SLOT || i === CELLAR_SLOT || i === BEDROOM_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x7a5a3a });
+    } else if (i === VEHICLE_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: VEHICLE_TYPES[vehicleTypeIdx].swatch });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }

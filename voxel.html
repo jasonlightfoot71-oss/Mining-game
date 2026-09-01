@@ -407,6 +407,8 @@
   <button id="taskActionBtn" style="display:none;background:rgba(212,160,23,0.4);border:1px solid rgba(212,160,23,0.8);color:#ffe27a;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;"></button>
   <button id="appMakeLeaveBtn" style="display:none;background:rgba(190,60,50,0.45);border:1px solid rgba(220,90,80,0.85);color:#ffe0da;border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer;font-weight:600;">🚪 Leave Role</button>
 </div>
+<button id="vehicleEnterBtn" style="display:none;position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(20,120,80,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;">🚗 Enter Vehicle</button>
+<button id="vehicleExitBtn" style="display:none;position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(190,60,50,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;">🚪 Exit Vehicle</button>
 <div id="roleAnnounce" style="display:none;position:fixed;top:18%;left:50%;transform:translateX(-50%);z-index:26;background:rgba(20,20,25,0.9);color:#fff;padding:16px 22px;border-radius:10px;text-align:center;font-size:15px;max-width:320px;">
   <div id="roleAnnounceTitle" style="font-size:20px;margin-bottom:4px;"></div>
   <div id="roleAnnounceDesc" style="opacity:0.85;font-size:13px;"></div>
@@ -999,13 +1001,16 @@
     for (const d of doors.values()) doorsArr.push([d.bx,d.by,d.bz,d.rot,d.doorTypeIdx]);
     const furnitureArr = [];
     for (const f of furniture.values()) furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]);
+    const vehiclesArr = vehicles.map(v => v === ridingVehicle
+      ? [player.pos.x, player.pos.y, player.pos.z, yaw, v.typeIdx] // currently being driven — its own stored x/y/z is stale until exitVehicle() runs, so use the live player position instead
+      : [v.x, v.y, v.z, v.yaw, v.typeIdx]);
     return {
       chunked: !infiniteWorldActive, // legacy full-content chunk flag — only set for the old finite system (Mill, pre-existing worlds); infinite worlds use chunkMode instead
       chunkMode: infiniteWorldActive ? 'edits' : undefined, // tells loadWorldData() this world's terrain is procedural + edit-diffs, not a stored snapshot
       lights: lightsArr, ladders: laddersArr,
-      wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr,
+      wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr, vehicles: vehiclesArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
-      yaw, pitch, flying, selectedSlot, dayTime
+      yaw, pitch, flying: ridingVehicle ? vehiclePrevFlying : flying, selectedSlot, dayTime
     };
   }
   async function saveWorld() {
@@ -1052,6 +1057,7 @@
     clearAllSigns();
     clearAllDoors();
     clearAllFurniture();
+    clearAllVehicles();
     clearPubExtras(); // in case the last thing loaded was the community pub
     (data.blocks||[]).forEach(([x,y,z,t,rot]) => {
       const k = key(x,y,z);
@@ -1082,6 +1088,7 @@
     (data.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''));
     (data.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => addDoor(bx,by,bz,rot||0,typeIdx||0));
     (data.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => addFurniture(bx,by,bz,rot||0,typeIdx||0));
+    (data.vehicles||[]).forEach(([x,y,z,vyaw,typeIdx]) => addVehicle(x,y,z,vyaw||0,typeIdx||0));
   }
   async function loadPubFixtureData() {
     try {
@@ -1375,6 +1382,7 @@
   const KITCHEN_SLOT = BAR_SLOT + 1;   // "Kitchen Furniture" hotbar entry — see FURNITURE_TYPES (category:'kitchen')
   const CELLAR_SLOT = KITCHEN_SLOT + 1; // "Cellar Furniture" hotbar entry — see FURNITURE_TYPES (category:'cellar')
   const BEDROOM_SLOT = CELLAR_SLOT + 1; // "Bedroom Furniture" hotbar entry — see FURNITURE_TYPES (category:'bedroom')
+  const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -1591,6 +1599,7 @@
     clearAllSigns();
     clearAllDoors();
     clearAllFurniture();
+    clearAllVehicles();
     clearPubExtras(); // in case the last thing loaded was the community pub
     for (let x = -half; x < half; x++) {
       for (let z = -half; z < half; z++) {
@@ -3377,11 +3386,69 @@
     });
     return group;
   }
+  // A handful of procedurally-drawn "channels" instead of a flat colour
+  // — there's no real image asset to show, so each is drawn on a small
+  // canvas the same way signs/shirt patterns already are. One is picked
+  // per TV when it's built and stays fixed (a real broadcast doesn't
+  // change frame to frame either), so two TVs in the same room don't
+  // necessarily show the same thing.
+  function buildTVPictureTexture() {
+    const w = 128, h = 72;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    const channel = Math.floor(Math.random() * 5);
+    if (channel === 0) {
+      // Sunset landscape
+      const sky = ctx.createLinearGradient(0, 0, 0, h);
+      sky.addColorStop(0, '#2a3a6a'); sky.addColorStop(0.55, '#e8834a'); sky.addColorStop(1, '#f2c14e');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#f7e08a'; ctx.beginPath(); ctx.arc(w*0.5, h*0.58, 12, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#1a2a1a';
+      ctx.beginPath(); ctx.moveTo(0, h*0.72); ctx.lineTo(w*0.3, h*0.6); ctx.lineTo(w*0.55, h*0.75); ctx.lineTo(w*0.8, h*0.62); ctx.lineTo(w, h*0.72); ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath(); ctx.fill();
+    } else if (channel === 1) {
+      // Rolling green hills
+      ctx.fillStyle = '#9fd4f0'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#fff'; [ [20,14,7], [40,10,5], [90,16,8] ].forEach(([x,y,r]) => { ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill(); });
+      ctx.fillStyle = '#4a9a4a'; ctx.beginPath(); ctx.ellipse(w*0.3, h*1.05, 60, 30, 0, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#3a8a3a'; ctx.beginPath(); ctx.ellipse(w*0.8, h*1.1, 70, 32, 0, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = '#5a3a20'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(w*0.62, h); ctx.lineTo(w*0.62, h*0.55); ctx.stroke();
+      ctx.fillStyle = '#2e6b3a'; ctx.beginPath(); ctx.arc(w*0.62, h*0.48, 10, 0, Math.PI*2); ctx.fill();
+    } else if (channel === 2) {
+      // "Match highlights" — a green pitch with a scoreline bar, no
+      // actual footage, just enough for it to read as sport at a glance.
+      ctx.fillStyle = '#2e8a3a'; ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 2;
+      ctx.strokeRect(6, 6, w-12, h-12);
+      ctx.beginPath(); ctx.moveTo(w/2, 6); ctx.lineTo(w/2, h-6); ctx.stroke();
+      ctx.beginPath(); ctx.arc(w/2, h/2, 10, 0, Math.PI*2); ctx.stroke();
+      ctx.fillStyle = 'rgba(10,10,10,0.75)'; ctx.fillRect(0, h-16, w, 16);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('2 — 1', w/2, h-8);
+    } else if (channel === 3) {
+      // News-style colour bars/graphic panel
+      ctx.fillStyle = '#1a2233'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#c9302c'; ctx.fillRect(0, h-18, w, 18);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('BREAKING NEWS', 6, h-9);
+      ctx.fillStyle = '#3a5a8a';
+      for (let i = 0; i < 4; i++) ctx.fillRect(10 + i*28, 14, 20, 30);
+    } else {
+      // Retro colour-bar test card
+      const barColors = ['#c0c0c0', '#c0c000', '#00c0c0', '#00c000', '#c000c0', '#c00000', '#0000c0'];
+      const barW = w / barColors.length;
+      barColors.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(i*barW, 0, barW+1, h*0.8); });
+      ctx.fillStyle = '#111'; ctx.fillRect(0, h*0.8, w, h*0.2);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.magFilter = THREE.NearestFilter;
+    return tex;
+  }
   function buildTV() {
     const group = new THREE.Group();
     const standMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 20 });
     const bezelMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 30 });
-    const screenMat = new THREE.MeshPhongMaterial({ color: 0x3a6a9a, shininess: 60, emissive: 0x0d1f2e });
+    const screenMat = new THREE.MeshPhongMaterial({ map: buildTVPictureTexture(), shininess: 60, emissive: 0x0d1f2e, emissiveIntensity: 0.25 });
     const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.22), standMat);
     base.position.set(0, 0.32, 0);
     group.add(base);
@@ -3602,7 +3669,7 @@
     const group = new THREE.Group();
     const bracketMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 20 });
     const bezelMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 30 });
-    const screenMat = new THREE.MeshPhongMaterial({ color: 0x3a6a9a, shininess: 60, emissive: 0x0d1f2e });
+    const screenMat = new THREE.MeshPhongMaterial({ map: buildTVPictureTexture(), shininess: 60, emissive: 0x0d1f2e, emissiveIntensity: 0.25 });
     // mount arm runs up the back wall (local +Z) to screen height, so
     // this reads as wall-mounted rather than standing on its own legs
     const arm = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.5, 0.06), bracketMat);
@@ -4456,6 +4523,272 @@
   document.getElementById('villageMapCloseBtn').addEventListener('click', () => {
     document.getElementById('villageMapModal').style.display = 'none';
   });
+
+  // ================= VEHICLES =================
+  // Rideable props, placed from their own hotbar slot exactly the way
+  // furniture is (see FURNITURE_TYPES/addFurniture for the pattern this
+  // mirrors) — but tracked in their own plain array rather than a
+  // block-keyed Map, since unlike furniture a vehicle's position actually
+  // changes once you're driving it around; it's saved by its live
+  // position, not the cell it was first placed on.
+  function buildScooter() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 40 });
+    const accentMat = new THREE.MeshPhongMaterial({ color: 0x3ac0e0, shininess: 60, emissive: 0x0a3a44 });
+    const wheelMat = new THREE.MeshPhongMaterial({ color: 0x111111, shininess: 20 });
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.04, 0.62), bodyMat);
+    deck.position.set(0, 0.22, 0);
+    group.add(deck);
+    const stem = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.7, 0.05), bodyMat);
+    stem.position.set(0, 0.58, -0.28);
+    group.add(stem);
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.04, 0.04), bodyMat);
+    bar.position.set(0, 0.92, -0.28);
+    group.add(bar);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.01, 0.5), accentMat);
+    stripe.position.set(0, 0.245, 0);
+    group.add(stripe);
+    [-0.28, 0.26].forEach(zoff => {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.04, 10), wheelMat);
+      wheel.rotation.z = Math.PI/2;
+      wheel.position.set(0, 0.09, zoff);
+      group.add(wheel);
+    });
+    return group;
+  }
+  function buildFlyingCar() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xd93a3a, shininess: 60 });
+    const glassMat = new THREE.MeshPhongMaterial({ color: 0x274a5e, shininess: 90, transparent: true, opacity: 0.7 });
+    const thrusterMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 30, emissive: 0x1a5aff, emissiveIntensity: 0.6 });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.28, 1.7), bodyMat);
+    hull.position.set(0, 0.35, 0);
+    group.add(hull);
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.24, 0.8), glassMat);
+    cabin.position.set(0, 0.58, -0.05);
+    group.add(cabin);
+    [[-0.36, -0.6], [0.36, -0.6], [-0.36, 0.65], [0.36, 0.65]].forEach(([x, z]) => {
+      const thruster = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.18, 10), thrusterMat);
+      thruster.rotation.x = Math.PI/2;
+      thruster.position.set(x, 0.24, z);
+      group.add(thruster);
+    });
+    return group;
+  }
+  function buildHelicopter() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0xe8e030, shininess: 50 });
+    const glassMat = new THREE.MeshPhongMaterial({ color: 0x274a5e, shininess: 90, transparent: true, opacity: 0.65 });
+    const rotorMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 20 });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.4, 0.9, 10), bodyMat);
+    body.rotation.z = Math.PI/2;
+    body.position.set(0, 0.5, 0.1);
+    group.add(body);
+    const bubble = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8), glassMat);
+    bubble.position.set(0, 0.48, -0.55);
+    group.add(bubble);
+    const tailBoom = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 0.9, 8), bodyMat);
+    tailBoom.rotation.z = Math.PI/2;
+    tailBoom.position.set(0, 0.55, 0.95);
+    group.add(tailBoom);
+    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.28, 0.2), bodyMat);
+    tailFin.position.set(0, 0.68, 1.35);
+    group.add(tailFin);
+    const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.3, 0.03), rotorMat);
+    tailRotor.position.set(0.1, 0.68, 1.38);
+    group.add(tailRotor);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.14, 6), bodyMat);
+    mast.position.set(0, 0.98, 0.1);
+    group.add(mast);
+    const rotor = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.02, 0.08), rotorMat);
+    rotor.position.set(0, 1.06, 0.1);
+    group.add(rotor);
+    const skidMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 10 });
+    [-0.34, 0.34].forEach(x => {
+      const skid = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 1.1), skidMat);
+      skid.position.set(x, 0.05, 0.1);
+      group.add(skid);
+      [-0.3, 0.3].forEach(zoff => {
+        const strut = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.22, 0.03), skidMat);
+        strut.position.set(x, 0.17, 0.1 + zoff);
+        group.add(strut);
+      });
+    });
+    group.userData.rotor = rotor;
+    group.userData.tailRotor = tailRotor;
+    return group;
+  }
+  function buildHotAirBalloon() {
+    const group = new THREE.Group();
+    const basketMat = new THREE.MeshPhongMaterial({ color: 0x8a5a34, shininess: 5 });
+    const envColors = [0xd93a3a, 0xf2c14e, 0x3a7ad9, 0xffffff];
+    const basket = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.6), basketMat);
+    basket.position.set(0, 0.2, 0);
+    group.add(basket);
+    const envelope = new THREE.Mesh(new THREE.SphereGeometry(0.75, 12, 10), new THREE.MeshPhongMaterial({ color: envColors[Math.floor(Math.random()*envColors.length)], shininess: 15 }));
+    envelope.scale.set(1, 1.25, 1);
+    envelope.position.set(0, 2.05, 0);
+    group.add(envelope);
+    [[-0.26, -0.26], [0.26, -0.26], [-0.26, 0.26], [0.26, 0.26]].forEach(([x, z]) => {
+      const points = [new THREE.Vector3(x, 0.4, z), new THREE.Vector3(x*1.6, 1.35, z*1.6)];
+      const geom = new THREE.BufferGeometry().setFromPoints(points);
+      const rope = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: 0x3a2a1a }));
+      group.add(rope);
+    });
+    return group;
+  }
+  function buildBoat() {
+    const group = new THREE.Group();
+    const hullMat = new THREE.MeshPhongMaterial({ color: 0x8a5a34, shininess: 20 });
+    const trimMat = new THREE.MeshPhongMaterial({ color: 0xe8e2cc, shininess: 20 });
+    const mastMat = new THREE.MeshPhongMaterial({ color: 0x5a3a20, shininess: 5 });
+    const sailMat = new THREE.MeshPhongMaterial({ color: 0xf4f0e4, shininess: 5, side: THREE.DoubleSide });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 1.9), hullMat);
+    hull.position.set(0, 0.18, 0);
+    group.add(hull);
+    // Tapered bow — a box, scaled down and tilted at the front, reads as
+    // a simple wedge without needing a custom BufferGeometry.
+    const bow = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.5), hullMat);
+    bow.position.set(0, 0.18, -1.05);
+    bow.rotation.x = Math.PI/8;
+    group.add(bow);
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.06, 1.9), trimMat);
+    rim.position.set(0, 0.37, 0);
+    group.add(rim);
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.3, 6), mastMat);
+    mast.position.set(0, 1.0, -0.1);
+    group.add(mast);
+    const sail = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.9), sailMat);
+    sail.position.set(0.02, 1.0, -0.1);
+    sail.rotation.y = Math.PI/2;
+    group.add(sail);
+    return group;
+  }
+  const VEHICLE_TYPES = [
+    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5 },
+    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5 },
+    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7 },
+    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55 },
+    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2 },
+  ];
+  let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
+  let vehicleSeq = 0;
+  const vehicles = []; // { id, group, x, y, z, yaw, typeIdx } — live array, see the section comment above for why not a Map
+  function addVehicle(x, y, z, yaw, typeIdx) {
+    const type = VEHICLE_TYPES[typeIdx] || VEHICLE_TYPES[0];
+    const group = type.build();
+    group.position.set(x, y, z);
+    group.rotation.y = yaw;
+    group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(group);
+    const v = { id: vehicleSeq++, group, x, y, z, yaw, typeIdx };
+    vehicles.push(v);
+    return v;
+  }
+  function removeVehicleInstance(v) {
+    scene.remove(v.group);
+    const i = vehicles.indexOf(v);
+    if (i >= 0) vehicles.splice(i, 1);
+  }
+  function clearAllVehicles() {
+    vehicles.slice().forEach(removeVehicleInstance);
+  }
+  function nearestVehicleToPlayer(maxDist) {
+    let best = null, bestDist = maxDist;
+    vehicles.forEach(v => {
+      if (v === ridingVehicle) return;
+      const dx = player.pos.x - v.x, dy = player.pos.y - v.y, dz = player.pos.z - v.z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (dist < bestDist) { best = v; bestDist = dist; }
+    });
+    return best;
+  }
+  // Floats a boat on the surface of whatever water body it's currently
+  // over — scanned fresh from the player's own current height each call
+  // rather than trusting anything cached, the same "recompute, don't
+  // remember" approach the terrain/fish systems already use. Returns
+  // null (leaves height untouched) when there's no water nearby at all,
+  // so a boat can still be driven over dry land without being yanked
+  // down to y=0.
+  function waterSurfaceYNear(x, z) {
+    const fx = Math.floor(x), fz = Math.floor(z);
+    const scanTop = Math.floor(player.pos.y) + 4, scanBottom = Math.floor(player.pos.y) - 8;
+    for (let y = scanTop; y >= scanBottom; y--) {
+      if (waterBlocks.has(key(fx, y, fz))) return y + 0.75;
+    }
+    return null;
+  }
+
+  // ---- Riding ----
+  let ridingVehicle = null;
+  let vehiclePrevFlying = false;
+  let vehicleCamBlend = 0, vehicleCamWasActive = false;
+  function enterVehicle(v) {
+    if (ridingVehicle || !v) return;
+    ridingVehicle = v;
+    vehiclePrevFlying = flying;
+    flying = !!VEHICLE_TYPES[v.typeIdx].flies;
+    player.pos.set(v.x, v.y, v.z);
+    yaw = v.yaw;
+    player.vel.set(0, 0, 0);
+    document.getElementById('vehicleEnterBtn').style.display = 'none';
+    document.getElementById('vehicleExitBtn').style.display = 'block';
+    ensureAudio();
+  }
+  function exitVehicle() {
+    if (!ridingVehicle) return;
+    ridingVehicle.x = player.pos.x; ridingVehicle.y = player.pos.y; ridingVehicle.z = player.pos.z; ridingVehicle.yaw = yaw;
+    flying = vehiclePrevFlying;
+    ridingVehicle = null;
+    document.getElementById('vehicleExitBtn').style.display = 'none';
+  }
+  document.getElementById('vehicleEnterBtn').addEventListener('click', () => enterVehicle(nearestVehicleToPlayer(3)));
+  document.getElementById('vehicleExitBtn').addEventListener('click', exitVehicle);
+  // Same third-person pull-back pattern as updateTennisCameraFocus/
+  // updateFootballCameraFocus (see either's own comment) — the player's
+  // OWN position/movement code is still what's actually authoritative
+  // (see the speed multiplier and boat height-clamp in the main
+  // movement block); this only moves the camera and the vehicle mesh
+  // itself to visually follow along.
+  function updateVehicleCameraFocus(dt) {
+    if (!ridingVehicle) {
+      const near = nearestVehicleToPlayer(3);
+      const otherSceneActive = tennisCamWasActive || footballCamWasActive || golfCamWasActive;
+      document.getElementById('vehicleEnterBtn').style.display = (near && !otherSceneActive) ? 'block' : 'none';
+    } else {
+      document.getElementById('vehicleEnterBtn').style.display = 'none';
+    }
+    const targetBlend = ridingVehicle ? 1 : 0;
+    vehicleCamBlend += (targetBlend - vehicleCamBlend) * Math.min(1, dt*3);
+    if (vehicleCamBlend < 0.004) {
+      vehicleCamBlend = 0;
+      if (vehicleCamWasActive) {
+        vehicleCamWasActive = false;
+        const crosshairEl = document.getElementById('crosshair');
+        if (crosshairEl && !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
+        heldMesh.visible = true; heldStepGroup.visible = true; workHeldRoot.visible = false;
+      }
+      return;
+    }
+    vehicleCamWasActive = true;
+    const crosshairEl = document.getElementById('crosshair');
+    if (crosshairEl) crosshairEl.style.display = 'none';
+    heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
+    const v = ridingVehicle;
+    v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
+    v.group.rotation.y = yaw + Math.PI;
+    if (v.group.userData.rotor) v.group.userData.rotor.rotation.y += dt*40;
+    if (v.group.userData.tailRotor) v.group.userData.tailRotor.rotation.x += dt*50;
+    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    const desired = new THREE.Vector3(
+      player.pos.x + backX*5,
+      player.pos.y + player.height*0.92 + 2.2,
+      player.pos.z + backZ*5
+    );
+    camera.position.lerp(desired, vehicleCamBlend);
+    const targetPitch = -0.15;
+    camera.rotation.x = pitch + (targetPitch - pitch) * vehicleCamBlend;
+  }
 
   // ================= THE COMMUNITY PUB =================
   // A hand-designed shared world, generated entirely client-side (not
@@ -5609,7 +5942,7 @@
   }
   function generatePubWorld() {
     blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
-    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
+    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
     clearPubExtras();
 
     const GRASS=0, DIRT=1, STONE=2, BRICK=7, GLASS=8, PLANKS=6, CONCRETE=10,
@@ -6536,6 +6869,57 @@
       f.mesh.position.y = f.baseY + Math.sin(now*0.001 + f.bobOffset)*0.15; // a gentle bob, phase-offset per fish so a whole pool doesn't bob in unison
     });
   }
+  // ================= AMBIENT BIRDS =================
+  // A small flock that just orbits wherever the player currently is —
+  // deliberately not tied to any real position of their own the way the
+  // fish above are tied to a pool: recomputing each bird's world spot
+  // from the player's CURRENT position every frame means they never need
+  // despawn/respawn logic at all, they're simply always circling
+  // somewhere near you no matter how far or fast you fly.
+  let ambientBirds = [];
+  const AMBIENT_BIRD_MAX = 6;
+  function buildBirdMesh() {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color: 0x2a2620 });
+    const body = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.16, 5), mat);
+    body.rotation.z = Math.PI/2;
+    group.add(body);
+    const wingGeom = new THREE.BoxGeometry(0.2, 0.008, 0.05);
+    const wingL = new THREE.Mesh(wingGeom, mat); wingL.position.set(0, 0, -0.09); group.add(wingL);
+    const wingR = new THREE.Mesh(wingGeom, mat); wingR.position.set(0, 0, 0.09); group.add(wingR);
+    return { group, wingL, wingR };
+  }
+  function spawnAmbientBirds() {
+    while (ambientBirds.length < AMBIENT_BIRD_MAX) {
+      const { group, wingL, wingR } = buildBirdMesh();
+      const angle = Math.random()*Math.PI*2;
+      scene.add(group);
+      ambientBirds.push({
+        group, wingL, wingR, angle,
+        radius: 18 + Math.random()*28,
+        height: 16 + Math.random()*16,
+        speed: 0.12 + Math.random()*0.14,
+        dir: Math.random() < 0.5 ? 1 : -1,
+        flapOffset: Math.random()*Math.PI*2,
+      });
+    }
+  }
+  function updateAmbientBirds(dt) {
+    if (ambientBirds.length < AMBIENT_BIRD_MAX) spawnAmbientBirds();
+    const now = performance.now();
+    ambientBirds.forEach(b => {
+      b.angle += b.speed*dt*b.dir;
+      b.group.position.x = player.pos.x + Math.cos(b.angle)*b.radius;
+      b.group.position.z = player.pos.z + Math.sin(b.angle)*b.radius;
+      b.group.position.y = player.pos.y + b.height + Math.sin(now*0.0006 + b.flapOffset)*1.5;
+      // Faces the direction of travel — tangent to its own circle, sign
+      // flipped depending on which way around it's orbiting.
+      b.group.rotation.y = -(b.angle + (b.dir > 0 ? Math.PI/2 : -Math.PI/2));
+      const flap = Math.sin(now*0.018 + b.flapOffset)*0.6;
+      b.wingL.rotation.x = flap;
+      b.wingR.rotation.x = -flap;
+    });
+  }
   function updateGolfFish(dt) {
     golfFish.forEach(f => {
       const t = (performance.now()/1000) % GOLF_FISH_CYCLE;
@@ -7006,7 +7390,7 @@
       // whatever was actually saved last time — this is what makes
       // adding or removing things inside The Mill actually stick,
       // instead of quietly reverting to the template on every visit.
-      clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
+      clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
       applyFixtureData(savedData);
     }
     applyAllBlockEdits(); // restores any player edits to the building's interior — see its own comment for why this is separate from the chunk-streaming edit system
@@ -7960,7 +8344,7 @@
     camera.updateProjectionMatrix();
   }
 
-  function toggleFly() { flying = !flying; player.vel.set(0,0,0); updateModeTag(); }
+  function toggleFly() { if (ridingVehicle) return; flying = !flying; player.vel.set(0,0,0); updateModeTag(); }
 
   document.addEventListener('keydown', e => {
     // Without this guard, typing in any text field (sign text, world name,
@@ -7989,7 +8373,7 @@
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
-      const total = BLOCK_TYPES.length + 12; // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture
+      const total = BLOCK_TYPES.length + 13; // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture, +1 Vehicles
       let s = selectedSlot + (e.deltaY > 0 ? 1 : -1);
       s = ((s % total) + total) % total;
       selectSlot(s);
@@ -8751,6 +9135,16 @@
       if (!trySpendCoins(furnType.cost, furnType.name)) return;
       const rot = snapYawToStepIndex(yaw); // faces the same direction the player is currently facing
       addFurniture(r.hit.x, r.hit.y, r.hit.z, rot, typeIdx);
+      playThud(400);
+      return;
+    }
+
+    if (selectedSlot === VEHICLE_SLOT) {
+      const nearby = nearestVehicleToPlayer(2.2);
+      if (nearby) { removeVehicleInstance(nearby); playThud(200); return; }
+      const type = VEHICLE_TYPES[vehicleTypeIdx];
+      if (!trySpendCoins(type.cost, type.name)) return;
+      addVehicle(r.hit.x + 0.5, r.hit.y + 1, r.hit.z + 0.5, yaw, vehicleTypeIdx);
       playThud(400);
       return;
     }
@@ -12753,6 +13147,7 @@
       golfSpacePrevDown = keys['Space'];
       if (golfChargingNow && golfSpaceJustPressed) golfFireShot();
       let speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
+      if (ridingVehicle) speed *= VEHICLE_TYPES[ridingVehicle.typeIdx].speedMult;
       // Recovering from a kick — see tryKickFootball's own comment.
       if (performance.now() < footballSlowUntil) speed *= 0.55;
       // Quite a bit quicker while an active tennis match has the camera
@@ -12900,6 +13295,15 @@
         }
       }
 
+      // A boat floats — whatever height the normal flight math above just
+      // produced (including any pitch-follow climb/dive) gets overridden
+      // to sit right on the local water surface instead, so looking up
+      // doesn't send it climbing into the air.
+      if (ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx].boat) {
+        const wy = waterSurfaceYNear(player.pos.x, player.pos.z);
+        if (wy !== null) player.pos.y = wy;
+      }
+
       const eyeSubmerged = waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.92), Math.floor(player.pos.z)));
       document.getElementById('waterOverlay').style.display = eyeSubmerged ? 'block' : 'none';
 
@@ -12911,6 +13315,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
+      updateVehicleCameraFocus(dt); // third-person pull-back while riding any placed vehicle — see its own comment
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -13034,6 +13439,7 @@
     updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
     updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
     updateAmbientFish(dt); // periodically scans for deep water anywhere and spawns/wanders fish in it — see its own comments
+    updateAmbientBirds(dt); // a small flock that orbits wherever the player currently is — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();
@@ -13697,6 +14103,87 @@
   makeFurnitureSlot(CELLAR_SLOT,   'cellar',   'Cellar Furniture',   cellarTypeIdx,   () => cellarTypeIdx,   v => cellarTypeIdx = v);
   makeFurnitureSlot(BEDROOM_SLOT,  'bedroom',  'Bedroom Furniture',  bedroomTypeIdx,  () => bedroomTypeIdx,  v => bedroomTypeIdx = v);
 
+  // Vehicles — its own small popup rather than reusing showFurniturePopup/
+  // makeFurnitureSlot, since vehicles aren't FURNITURE_TYPES entries at
+  // all (they're rideable, not just decorative — see the VEHICLES
+  // section for why they get their own array/placement functions).
+  function vehicleIconCanvas(typeIdx) {
+    const type = VEHICLE_TYPES[typeIdx];
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const hex = '#' + type.swatch.toString(16).padStart(6,'0');
+    ctx.fillStyle = hex;
+    if (type.name === 'Electric Scooter') {
+      ctx.fillRect(15,10,3,15); ctx.fillRect(10,8,13,3);
+      ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(10,28,3,0,Math.PI*2); ctx.arc(24,28,3,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = hex; ctx.fillRect(8,25,18,3);
+    } else if (type.name === 'Flying Car') {
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(4,14,26,10,4); else ctx.rect(4,14,26,10);
+      ctx.fill();
+      ctx.fillStyle = '#274a5e'; ctx.fillRect(10,9,14,7);
+    } else if (type.name === 'Helicopter') {
+      ctx.beginPath(); ctx.ellipse(14,18,9,7,0,0,Math.PI*2); ctx.fill();
+      ctx.fillRect(22,17,9,3);
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(3,8,28,2);
+    } else if (type.name === 'Hot Air Balloon') {
+      ctx.beginPath(); ctx.ellipse(17,13,10,12,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#8a5a34'; ctx.fillRect(13,27,8,5);
+    } else { // Boat
+      ctx.beginPath(); ctx.moveTo(4,20); ctx.lineTo(30,20); ctx.lineTo(25,29); ctx.lineTo(9,29); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#f4f0e4'; ctx.beginPath(); ctx.moveTo(17,20); ctx.lineTo(17,5); ctx.lineTo(25,17); ctx.closePath(); ctx.fill();
+    }
+    return c;
+  }
+  function updateVehicleSlotIcon() {
+    const slotEl = slotElByIndex[VEHICLE_SLOT];
+    if (!slotEl) return;
+    const old = slotEl.querySelector('canvas.swatch');
+    if (old) old.remove();
+    slotEl.insertBefore(vehicleIconCanvas(vehicleTypeIdx), slotEl.querySelector('.family-badge'));
+  }
+  function showVehiclePopup(slotEl) {
+    closeFamilyPopup();
+    const rect = slotEl.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    VEHICLE_TYPES.forEach((t, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item';
+      btn.title = t.name + costLabel(t.cost);
+      btn.appendChild(vehicleIconCanvas(idx));
+      const label = document.createElement('span');
+      label.className = 'popup-item-label';
+      label.textContent = t.name + costLabel(t.cost);
+      btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        vehicleTypeIdx = idx;
+        updateVehicleSlotIcon();
+        selectSlot(VEHICLE_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    document.body.appendChild(popup);
+    openFamilyPopup = popup;
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Vehicles — placed on the ground; walk up to one for an Enter Vehicle prompt, tap this slot again while looking at/near one to pick it back up';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(vehicleIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showVehiclePopup(slot); });
+    slotElByIndex[VEHICLE_SLOT] = slot;
+    hotbar.appendChild(slot);
+  }
+
   // Real orientation lock — works on most Android browsers, but only
   // inside a fullscreen element, hence requesting that first. iOS Safari
   // doesn't support screen.orientation.lock at all (WebKit bug 257695,
@@ -14250,7 +14737,7 @@
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
     generatedChunks.clear(); lastStreamChunkKey = null;
     blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
-    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture();
+    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
     clearPubExtras(); // in case the last thing loaded was the community pub
     updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
     spawnDefault();

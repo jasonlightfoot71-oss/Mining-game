@@ -3917,8 +3917,8 @@
   const HOTEL_NAMES  = ['Grand Hotel',"The Traveller's Rest",'Riverside Hotel','The Golden Lodge'];
   const CASTLE_NAMES = ['Stonewatch Castle','Ravenhold Castle','Ironkeep','Thornwall Castle'];
 
-  const VILLAGE_CHUNK_STRIDE = 9; // 9 chunks * 32 blocks = 288 — "roughly every 300 blocks"
-  const VILLAGE_SKIP_CHANCE = 0.15; // some grid cells stay empty, so spacing isn't perfectly mechanical
+  const VILLAGE_CHUNK_STRIDE = 5; // 5 chunks * 32 blocks = 160 — roughly every 160 blocks, closer together and easier to stumble across
+  const VILLAGE_SKIP_CHANCE = 0.05; // rarely skipped now, so they show up close to as often as the grid allows
   const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
@@ -3927,8 +3927,8 @@
   // roughly-300-blocks spacing without ever landing right on a grid line.
   function villageGridHomeChunk(gx, gz) {
     const r = mulberry32(seedFromHash(gx * 104729 + 11, gz * 105359 + 17));
-    const ox = 2 + Math.floor(r() * (VILLAGE_CHUNK_STRIDE - 4));
-    const oz = 2 + Math.floor(r() * (VILLAGE_CHUNK_STRIDE - 4));
+    const ox = 1 + Math.floor(r() * Math.max(1, VILLAGE_CHUNK_STRIDE - 2));
+    const oz = 1 + Math.floor(r() * Math.max(1, VILLAGE_CHUNK_STRIDE - 2));
     return [gx * VILLAGE_CHUNK_STRIDE + ox, gz * VILLAGE_CHUNK_STRIDE + oz];
   }
   function villageInfoForChunk(cx, cz) {
@@ -7941,7 +7941,7 @@
     if (!audioCtx) return;
     ensureWindNoise();
     if (!windGain) return;
-    const targetGain = active ? 0.22 : 0;
+    const targetGain = active ? 0.08 : 0;
     const targetFreq = active ? 900 : 500;
     const now = audioCtx.currentTime;
     windGain.gain.setTargetAtTime(targetGain, now, 0.3);
@@ -7980,8 +7980,8 @@
     if (!rainNoise) rainNoise = makeLoopingNoise(2.5, 'bandpass', 2200, 0.5); // brighter hiss — reads as rain
     if (!snowNoise) snowNoise = makeLoopingNoise(3, 'lowpass', 380, 0.4);   // soft, muffled hush — snow is near-silent in reality, just a faint atmosphere
     const now = audioCtx.currentTime;
-    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.16 : 0, now, 0.6);
-    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.06 : 0, now, 0.8);
+    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.06 : 0, now, 0.6);
+    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.025 : 0, now, 0.8);
   }
   let birdChirpTimer = 3;
   function playBirdChirp() {

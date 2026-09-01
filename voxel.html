@@ -396,7 +396,8 @@
     <div id="villageMapStatus" style="display:none;font-size:12px;color:#ffe27a;margin-bottom:8px;"></div>
     <div id="villageMapList" style="display:flex;flex-direction:column;gap:6px;font-size:13px;"></div>
     <div id="villageMapEmpty" style="display:none;opacity:0.65;font-size:13px;">Fly around and find one — they'll be listed here, in every world, since a village always generates at the same coordinates.</div>
-    <button id="villageMapCloseBtn" style="margin-top:14px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Close</button>
+    <button id="villageMapClearBtn" style="margin-top:14px;background:rgba(190,60,50,0.35);border:1px solid rgba(255,120,110,0.5);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Clear discovered (keep ⭐ favourites)</button>
+    <button id="villageMapCloseBtn" style="margin-top:8px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Close</button>
   </div>
 </div>
 <div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
@@ -4540,16 +4541,15 @@
     const sk0 = addSign(postX, roadY + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
     if (sk0) reg.signKeys.push(sk0);
 
-    // Four slices per side (was briefly five, with 1-row gaps — those
-    // gaps turned out too tight: a pyramid roof overhangs 1 block past
-    // its own walls on every side, so two buildings only 1 row apart
-    // had their roof eaves actually overlapping into each other, which
-    // is what "generating inside each other" actually was). 3-row gaps
-    // guarantee real clearance (1 block of overhang + 1 clear + 1 block
-    // of the neighbour's own overhang), so 4 slices — 8 plots — is the
-    // practical ceiling with buildings that are actually, visibly
-    // separate. Still up from the original 3 slices / 6 plots.
-    const slices = [[1, 4], [8, 11], [15, 18], [22, 25]];
+    // Gaps widened a lot further (3 rows wasn't enough in practice —
+    // between roof overhangs, the connecting path's own dig-out radius,
+    // and plots at very different heights needing more run for their
+    // staircase, 3 was still letting buildings read as touching or
+    // overlapping). 6-row gaps between slices, which only leaves room
+    // for 3 slices — 6 plots — instead of 4/8, but that's the trade-off
+    // for buildings that are genuinely, comfortably separate rather
+    // than packed as densely as the chunk technically allows.
+    const slices = [[1, 4], [11, 14], [21, 24]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -4557,7 +4557,7 @@
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    let pool = ['house', 'house', 'house', 'house', 'pub', 'shop', 'farm', 'house'];
+    let pool = ['house', 'house', 'house', 'pub', 'shop', 'farm'];
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
     if (rng() < 0.3) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
     if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'castle'; }
@@ -4713,6 +4713,14 @@
   document.getElementById('villageMapBtn').addEventListener('click', () => {
     renderVillageMap();
     document.getElementById('villageMapModal').style.display = 'flex';
+  });
+  document.getElementById('villageMapClearBtn').addEventListener('click', () => {
+    const list = loadVillageLog();
+    const kept = list.filter(v => v.favorite);
+    const removedCount = list.length - kept.length;
+    saveVillageLog(kept);
+    renderVillageMap();
+    setVillageMapStatus(removedCount > 0 ? `Cleared ${removedCount} — favourites kept` : 'Nothing to clear');
   });
   document.getElementById('villageMapCloseBtn').addEventListener('click', () => {
     document.getElementById('villageMapModal').style.display = 'none';

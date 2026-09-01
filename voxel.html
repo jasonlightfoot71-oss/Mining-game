@@ -4356,20 +4356,34 @@
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    // Which interior column is actually "away from the door" flips
+    // depending on which wall the door is on — this wasn't accounted
+    // for before, so on every house where the door happened to be on
+    // the west wall, furniture that was meant to sit at the back ended
+    // up right next to the door instead (and vice versa). backRot/
+    // frontRot face each column away from whichever wall it's actually
+    // against, not a fixed direction.
+    const backX = doorSide === 'west' ? ix1 : ix0;
+    const frontX = doorSide === 'west' ? ix0 : ix1;
+    const backRot = doorSide === 'west' ? 1 : 3;
+    const frontRot = doorSide === 'west' ? 3 : 1;
     if (variant === 0) {
-      addFurnitureTracked(ix0, gy, iz0, 0, 29, reg); // double bed
-      addFurnitureTracked(ix0, gy, iz1, 0, 30, reg); // wardrobe
-      addFurnitureTracked(ix1, gy, iz0, 2, 0, reg);  // couch
-      addFurnitureTracked(ix1, gy, iz1, 2, 2, reg);  // coffee table
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as the other variants' beds
+      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed — kept at the back, away from the door
+      addFurnitureTracked(backX, gy, iz1, backRot, 30, reg); // wardrobe
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch — same side as the door, but offset to a corner, not the threshold itself
+      addFurnitureTracked(frontX, gy, iz1, frontRot, 2, reg); // coffee table
     } else if (variant === 1) {
-      addFurnitureTracked(ix0, gy, iz0, 0, 28, reg); // single bed (2x2 footprint)
-      addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);  // cabinet — kept clear of the bed's footprint
-      addFurnitureTracked(ix1 - 1, gy, iz0, 2, 0, reg); // couch
-      addFurnitureTracked(ix1, gy, iz0, 2, 1, reg); // tv
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — its anchor must leave room for the +1 extension regardless of which wall it's now next to
+      addFurnitureTracked(bedX, gy, iz0, 0, 28, reg);  // single bed (2x2 footprint)
+      addFurnitureTracked(backX, gy, iz1, backRot, 3, reg); // cabinet — kept clear of the bed's footprint
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 0, reg); // couch
+      addFurnitureTracked(frontX === ix1 ? ix1 - 1 : ix0 + 1, gy, iz0, frontRot, 1, reg); // tv — one cell further in, next to the couch rather than crowding the same corner
     } else {
-      addFurnitureTracked(ix0, gy, iz0, 0, 29, reg); // double bed
-      addFurnitureTracked(ix1, gy, iz0, 2, 4, reg);  // armchair
-      addFurnitureTracked(ix0, gy, iz1, 0, 31, reg); // chest of drawers
+      const bedX = backX === ix1 ? ix1 - 1 : backX; // footprint-2 item — same reasoning as variant 1's bed above
+      addFurnitureTracked(bedX, gy, iz0, 0, 29, reg);  // double bed
+      addFurnitureTracked(backX, gy, iz1, backRot, 31, reg); // chest of drawers
+      addFurnitureTracked(frontX, gy, iz0, frontRot, 4, reg); // armchair
     }
     placeShellLight(shell, doorSide, reg);
     return shell;
@@ -4390,7 +4404,7 @@
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
-    placeShellDoor(shell, doorSide, reg, 3); // double wood door
+    placeShellDoor(shell, doorSide, reg, 0); // switched from a 2-wide door to a plain single door — removes an entire class of edge cases around the wide-door wall gap
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
     placeVillageProp(buildBarCounter, shell.midX, gy, iz0, 2, reg); // decorative only — see placeVillageProp's comment on why a real Bar Counter can't be used here
     addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
@@ -4427,11 +4441,18 @@
   function buildVillageHotel(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
-    placeShellDoor(shell, doorSide, reg, 4); // french doors
+    placeShellDoor(shell, doorSide, reg, 2); // glass door — switched from a 2-wide French door for the same reason as the pub's own door change
     const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    // The couch used to always sit at ix0 — fine when the door was on
+    // the east wall, but when it was on the west wall instead, ix0 was
+    // the exact interior cell right inside the doorway. backX always
+    // means "the wall opposite the door" now, regardless of which one
+    // that actually is.
+    const backX = doorSide === 'west' ? ix1 : ix0;
+    const backRot = doorSide === 'west' ? 1 : 3;
     addFurnitureTracked(shell.midX, gy, iz0, 2, 3, reg);  // reception desk — faces the room, not the wall
-    addFurnitureTracked(ix0, gy, shell.midZ, 3, 0, reg);  // couch — faces east, away from the west wall it's set against
-    addFurnitureTracked(ix0 + 1, gy, shell.midZ, 0, 2, reg); // coffee table
+    addFurnitureTracked(backX, gy, shell.midZ, backRot, 0, reg);  // couch
+    addFurnitureTracked(backX === ix1 ? ix1 - 1 : ix0 + 1, gy, shell.midZ, backRot, 2, reg); // coffee table
     addFurnitureTracked(ix1 - 1, gy, iz1 - 1, 2, 29, reg); // suite bed (2x2 footprint — kept a cell clear of both walls)
     addFurnitureTracked(ix1, gy, iz0, 2, 30, reg);        // wardrobe
     addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
@@ -4443,7 +4464,7 @@
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
     const stonePalette = Object.assign({}, palette, { wall: 2, trim: 14 });
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, stonePalette, doorSide, 'flat');
-    placeShellDoor(shell, doorSide, reg, 3);
+    placeShellDoor(shell, doorSide, reg, 0); // switched from a 2-wide door, same reasoning as the pub/hotel
     [[shell.x0, shell.z0], [shell.x0, shell.z1], [shell.x1, shell.z0], [shell.x1, shell.z1]].forEach(([tx, tz]) => {
       for (let y = gy + h + 1; y <= gy + h + 3; y++) { blocks.set(key(tx, y, tz), 2); trackVillageHeight(tx, tz, y); }
       blocks.set(key(tx, gy + h + 4, tz), 14); trackVillageHeight(tx, tz, gy + h + 4);
@@ -4645,7 +4666,21 @@
     // doors" and pieces embedded in walls). 5 keeps a proper 3-row
     // interior for everything the same size as it was before this gap
     // change.
-    const slices = [[1, 5], [12, 16], [23, 27]];
+    // Widened again — 6-row gaps still weren't reading as enough space.
+    // Down to 2 slices per side now (4 plots total, was 6) with a 9-row
+    // gap between them — a bigger cut to building count than any
+    // previous pass, but this is now genuinely generous room between
+    // buildings rather than the tightest margin that technically avoided
+    // overlap.
+    // Depth is 5 here, not 4 — 4 briefly caused a different bug: several
+    // buildings' interior furniture math assumes at least 3 usable rows
+    // inside the walls, and at depth 4 that shrinks to exactly 2, which
+    // pushed some furniture positions out past the last interior row and
+    // straight into the wall/doorway itself (the "furniture blocking
+    // doors" and pieces embedded in walls). 5 keeps a proper 3-row
+    // interior for everything the same size as it was before this gap
+    // change.
+    const slices = [[6, 10], [20, 24]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -4653,10 +4688,10 @@
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    let pool = ['house', 'house', 'house', 'pub', 'shop', 'farm'];
+    let pool = ['house', 'pub', 'shop', 'farm'];
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
     if (rng() < 0.3) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
-    if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'castle'; }
+    if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house' || t === 'pub' || t === 'shop'); if (idx >= 0) pool[idx] = 'castle'; }
 
     let built = 0;
     plots.forEach((plot, i) => {
@@ -7103,7 +7138,7 @@
   // fresh from the current terrain every time.
   let ambientFish = [];
   let lastAmbientFishScan = 0;
-  const AMBIENT_FISH_MAX = 20;
+  const AMBIENT_FISH_MAX = 45;
   function clearAmbientFish() {
     ambientFish.forEach(f => { scene.remove(f.mesh); disposeObject3D(f.mesh); });
     ambientFish = [];
@@ -7146,7 +7181,12 @@
       if (pool.cols.length < 2) return;
       const alreadyCovered = ambientFish.some(f => Math.hypot(f.pool.cx-pool.cx, f.pool.cz-pool.cz) < 10);
       if (alreadyCovered) return;
-      const fishHere = 1 + (pool.cols.length > 40 ? 1 : 0); // a second fish for genuinely large bodies of water
+      // Scales further with pool size now, and starts from more fish
+      // per pool generally — fish were reported as very sparse per area,
+      // and with the despawn fix now freeing up budget as you travel,
+      // there's headroom to be more generous per pool without the old
+      // "one pool near spawn eats the whole world's budget" problem.
+      const fishHere = 2 + Math.min(3, Math.floor(pool.cols.length / 12));
       for (let i = 0; i < fishHere && ambientFish.length < AMBIENT_FISH_MAX; i++) {
         const col = pool.cols[Math.floor(Math.random()*pool.cols.length)];
         const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);

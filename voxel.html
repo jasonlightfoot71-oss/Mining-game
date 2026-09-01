@@ -4314,6 +4314,7 @@
       addFurnitureTracked(ix0, gy, iz1, 0, 31, reg); // chest of drawers
     }
     placeShellLight(shell, doorSide, reg);
+    return shell;
   }
   function buildVillageShop(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(6, plot.x1 - plot.x0 + 1), d = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
@@ -4326,6 +4327,7 @@
     addFurnitureTracked(ix1, gy, iz1, 0, 20, reg); // fridge — rot=0 so it faces north, away from the south wall (was facing into it)
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
+    return shell;
   }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
@@ -4341,6 +4343,7 @@
     addFurnitureTracked(ix1 - 1, gy, iz0 + 2, 2, 13, reg); // chair
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
+    return shell;
   }
   function buildVillageFarm(plot, gy, rng, palette, doorSide, reg, name) {
     const barnW = Math.min(5, plot.x1 - plot.x0 + 1), barnD = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
@@ -4361,6 +4364,7 @@
         }
       }
     }
+    return shell;
   }
   function buildVillageHotel(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
@@ -4375,6 +4379,7 @@
     addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
+    return shell;
   }
   function buildVillageCastle(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
@@ -4404,6 +4409,7 @@
     addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);         // cabinet
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
+    return shell;
   }
 
   // ── Villager NPCs ───────────────────────────────────────────────
@@ -4624,17 +4630,29 @@
         }
       }
 
-      if (type === 'house') { buildVillageHouse(plot, plotY, rng, palette, doorSide, reg); }
-      else if (type === 'shop') { buildVillageShop(plot, plotY, rng, palette, doorSide, reg, SHOP_NAMES[Math.floor(rng() * SHOP_NAMES.length)]); }
-      else if (type === 'pub') { buildVillagePub(plot, plotY, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
-      else if (type === 'farm') { buildVillageFarm(plot, plotY, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
-      else if (type === 'hotel') { buildVillageHotel(plot, plotY, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
-      else if (type === 'castle') { buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
+      let shell = null;
+      if (type === 'house') { shell = buildVillageHouse(plot, plotY, rng, palette, doorSide, reg); }
+      else if (type === 'shop') { shell = buildVillageShop(plot, plotY, rng, palette, doorSide, reg, SHOP_NAMES[Math.floor(rng() * SHOP_NAMES.length)]); }
+      else if (type === 'pub') { shell = buildVillagePub(plot, plotY, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
+      else if (type === 'farm') { shell = buildVillageFarm(plot, plotY, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
+      else if (type === 'hotel') { shell = buildVillageHotel(plot, plotY, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
+      else if (type === 'castle') { shell = buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
       built++;
 
+      // Connects to the building's own ACTUAL wall (shell.x1/x0), not the
+      // plot's outer edge — a real bug before: most buildings are
+      // narrower than their plot (a 9-wide pub in a 12-wide plot, say),
+      // so a path anchored to the plot edge started in empty yard space
+      // several blocks short of the real door, and for west-side plots
+      // it was even worse — plot.x1 there is literally the same
+      // coordinate the path's own "target" argument used, so the path
+      // ran backwards over a single block instead of actually crossing
+      // the gap to the road.
       const pathZ = Math.max(plot.z0, Math.min(plot.z1, pcz));
-      if (plot.side === 'west') carveConnectingPath(plot.x1 + 1, wx0 + 12, pathZ, plotY, roadY, palette);
-      else carveConnectingPath(plot.x0 - 1, wx0 + 17, pathZ, plotY, roadY, palette);
+      if (shell) {
+        if (plot.side === 'west') carveConnectingPath(shell.x1 + 1, wx0 + 12, pathZ, plotY, roadY, palette);
+        else carveConnectingPath(shell.x0 - 1, wx0 + 17, pathZ, plotY, roadY, palette);
+      }
     });
 
     const ck = cx + '_' + cz;

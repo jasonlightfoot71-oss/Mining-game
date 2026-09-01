@@ -1964,6 +1964,7 @@
       anyWaterTouchedThisStream = true;
     }
     generatedChunks.add(ck);
+    maybeBuildVillage(cx, cz);
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -1972,6 +1973,7 @@
   function unloadChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
+    teardownVillage(ck);
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
@@ -3858,6 +3860,421 @@
   function removeFurnitureForBlock(bx,by,bz) {
     const fk = key(bx,by,bz);
     if (furniture.has(fk)) removeFurniture(fk);
+  }
+
+  // ================= PROCEDURAL VILLAGES =================
+  // Small, varied settlements scattered through the infinite streamed
+  // world, roughly every 300 blocks. Each village is fully deterministic
+  // — its position, palette, building mix, and layout all come from a
+  // seeded PRNG keyed off its home chunk's coordinates, exactly like
+  // tree placement already does (chunkTreeRoll) — so it looks identical
+  // every time that chunk streams back in, for every player, with no
+  // need to sync anything over the network. Villages are stamped AFTER
+  // a chunk's normal terrain has generated (see the call in
+  // generateChunkTerrain) and torn down when that chunk unloads (see
+  // teardownVillage, called from unloadChunkTerrain) — furniture, doors,
+  // signs, and NPCs are all tracked per-chunk so nothing is left behind.
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function() {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function seedFromHash(a, b) { return Math.floor(hash(a, b) * 4294967296) >>> 0; }
+
+  // Block palettes — each pulls from the existing block-type variety
+  // (different wood/stone/brick/concrete families) so different
+  // villages are visibly built from different materials.
+  const VILLAGE_PALETTES = [
+    { name: 'Oak Cottage',      wall: 6,  trim: 3,  roof: 18, floor: 6,  glass: 8,  path: 28 },
+    { name: 'Cobblestone Hamlet', wall: 11, trim: 14, roof: 12, floor: 2,  glass: 8,  path: 2  },
+    { name: 'Birch Town',       wall: 20, trim: 39, roof: 19, floor: 20, glass: 36, path: 28 },
+    { name: 'Brick Row',        wall: 7,  trim: 15, roof: 18, floor: 7,  glass: 8,  path: 28 },
+    { name: 'Desert Outpost',   wall: 27, trim: 41, roof: 32, floor: 5,  glass: 37, path: 28 },
+    { name: 'Snow Village',     wall: 31, trim: 40, roof: 33, floor: 31, glass: 8,  path: 29 },
+  ];
+  const VILLAGE_NAMES = ['Oakhaven','Millbrook','Stonebridge','Fernwood','Ashford','Briarcliff','Thistledown','Hollowmere','Copperfield','Wrenfield','Foxglove','Larkspur'];
+  const SHOP_NAMES   = ['General Store','Village Shop','Corner Store','Market Stall'];
+  const PUB_NAMES    = ["The Oak Arms","The Crown Inn","The Copper Kettle","The Wandering Sheep","The Stone Anchor"];
+  const FARM_NAMES   = ['Hillside Farm','Green Acres Farm','Old Barn Farm','Meadow Farm'];
+  const HOTEL_NAMES  = ['Grand Hotel',"The Traveller's Rest",'Riverside Hotel','The Golden Lodge'];
+  const CASTLE_NAMES = ['Stonewatch Castle','Ravenhold Castle','Ironkeep','Thornwall Castle'];
+
+  const VILLAGE_CHUNK_STRIDE = 9; // 9 chunks * 32 blocks = 288 — "roughly every 300 blocks"
+  const VILLAGE_SKIP_CHANCE = 0.15; // some grid cells stay empty, so spacing isn't perfectly mechanical
+  const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
+  let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
+
+  // Exactly one candidate chunk per VILLAGE_CHUNK_STRIDE x STRIDE grid
+  // cell, jittered within it — this is what gives villages their
+  // roughly-300-blocks spacing without ever landing right on a grid line.
+  function villageGridHomeChunk(gx, gz) {
+    const r = mulberry32(seedFromHash(gx * 104729 + 11, gz * 105359 + 17));
+    const ox = 2 + Math.floor(r() * (VILLAGE_CHUNK_STRIDE - 4));
+    const oz = 2 + Math.floor(r() * (VILLAGE_CHUNK_STRIDE - 4));
+    return [gx * VILLAGE_CHUNK_STRIDE + ox, gz * VILLAGE_CHUNK_STRIDE + oz];
+  }
+  function villageInfoForChunk(cx, cz) {
+    const gx = Math.floor(cx / VILLAGE_CHUNK_STRIDE), gz = Math.floor(cz / VILLAGE_CHUNK_STRIDE);
+    const [hx, hz] = villageGridHomeChunk(gx, gz);
+    if (hx !== cx || hz !== cz) return null;
+    if (Math.abs(gx) <= 1 && Math.abs(gz) <= 1) return null; // keep well clear of The Mill / spawn
+    const rng = mulberry32(seedFromHash(cx * 7349 + cz * 4201 + 99, cz * 8171 + cx * 1913 + 77));
+    if (rng() < VILLAGE_SKIP_CHANCE) return null;
+    return { rng };
+  }
+
+  function trackVillageHeight(x, z, y) {
+    const ck = x + ',' + z;
+    const prev = columnHeight.get(ck);
+    if (prev === undefined || y > prev) columnHeight.set(ck, y);
+  }
+  function addPyramidRoof(x0, x1, z0, z1, topY, palette, maxLayers) {
+    let cx0 = x0 - 1, cx1 = x1 + 1, cz0 = z0 - 1, cz1 = z1 + 1, y = topY, layer = 0;
+    while (cx0 <= cx1 && cz0 <= cz1 && layer < (maxLayers || 5)) {
+      for (let x = cx0; x <= cx1; x++) for (let z = cz0; z <= cz1; z++) { blocks.set(key(x, y, z), palette.roof); trackVillageHeight(x, z, y); }
+      cx0++; cx1--; cz0++; cz1--; y++; layer++;
+    }
+  }
+  // Hollow rectangular shell — floor, walls with a windowed pattern and
+  // a door-sized gap on one side, and either a small pyramid roof or a
+  // flat capped roof (for the castle's crenellations). Returns the
+  // bounding info every caller needs to place a door, furniture, and a
+  // sign consistently.
+  function buildShell(x0, z0, w, d, h, gy, palette, doorSide, roofStyle) {
+    const x1 = x0 + w - 1, z1 = z0 + d - 1;
+    const midX = x0 + Math.floor(w / 2), midZ = z0 + Math.floor(d / 2);
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); }
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const edge = (x === x0 || x === x1 || z === z0 || z === z1);
+        if (!edge) continue;
+        const isCorner = (x === x0 || x === x1) && (z === z0 || z === z1);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          if (doorSide === 'south' && z === z1 && x === midX && y <= gy + 2) continue;
+          if (doorSide === 'north' && z === z0 && x === midX && y <= gy + 2) continue;
+          if (doorSide === 'east'  && x === x1 && z === midZ && y <= gy + 2) continue;
+          if (doorSide === 'west'  && x === x0 && z === midZ && y <= gy + 2) continue;
+          let type = palette.wall;
+          if (isCorner) type = palette.trim;
+          else if (y === gy + h) type = palette.trim;
+          else if (y === gy + 2 && (x + z) % 3 === 0) type = palette.glass;
+          blocks.set(key(x, y, z), type);
+          trackVillageHeight(x, z, y);
+        }
+      }
+    }
+    if (roofStyle === 'flat') {
+      for (let x = x0 - 1; x <= x1 + 1; x++) for (let z = z0 - 1; z <= z1 + 1; z++) { blocks.set(key(x, gy + h + 1, z), palette.roof); trackVillageHeight(x, z, gy + h + 1); }
+    } else {
+      addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 4);
+    }
+    return { x0, x1, z0, z1, gy, h, midX, midZ };
+  }
+  function placeShellDoor(shell, doorSide, reg, doorTypeIdx) {
+    let bx, bz, rot;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; rot = 1; }
+    else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; rot = 3; }
+    else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; rot = 0; }
+    else { bx = shell.x0; bz = shell.midZ; rot = 2; }
+    const dk = addDoor(bx, shell.gy, bz, rot, doorTypeIdx === undefined ? 0 : doorTypeIdx);
+    if (dk) reg.doorKeys.push(dk);
+  }
+  function placeShellSign(shell, doorSide, text, reg) {
+    let bx, bz, nx, nz;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; nx = 0; nz = 1; }
+    else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; nx = 0; nz = -1; }
+    else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; nx = 1; nz = 0; }
+    else { bx = shell.x0; bz = shell.midZ; nx = -1; nz = 0; }
+    const sk = addSign(bx, shell.gy + 3, bz, nx, 0, nz, 1, text);
+    if (sk) reg.signKeys.push(sk);
+  }
+  function addFurnitureTracked(bx, by, bz, rot, typeIdx, reg) {
+    const fk = addFurniture(bx, by, bz, rot, typeIdx);
+    if (fk) reg.furnitureKeys.push(fk);
+  }
+
+  // ── Building types ──────────────────────────────────────────────
+  function buildVillageHouse(plot, gy, rng, palette, doorSide, reg) {
+    const variant = Math.floor(rng() * 3);
+    let w, d, h;
+    if (variant === 0) { w = 6; d = 6; h = 3; }
+    else if (variant === 1) { w = 8; d = 5; h = 3; }
+    else { w = 5; d = 5; h = 4; }
+    w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
+    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
+    placeShellDoor(shell, doorSide, reg, 0);
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    if (variant === 0) {
+      addFurnitureTracked(ix0, gy, iz0, 0, 29, reg); // double bed
+      addFurnitureTracked(ix0, gy, iz1, 0, 30, reg); // wardrobe
+      addFurnitureTracked(ix1, gy, iz0, 2, 0, reg);  // couch
+      addFurnitureTracked(ix1, gy, iz1, 2, 2, reg);  // coffee table
+    } else if (variant === 1) {
+      addFurnitureTracked(ix0, gy, iz0, 0, 28, reg); // single bed
+      addFurnitureTracked(ix0 + 1, gy, iz0, 0, 3, reg); // cabinet
+      addFurnitureTracked(ix1 - 1, gy, iz1, 2, 0, reg); // couch
+      addFurnitureTracked(ix1, gy, iz1, 2, 1, reg); // tv
+    } else {
+      addFurnitureTracked(ix0, gy, iz0, 0, 29, reg); // double bed
+      addFurnitureTracked(ix1, gy, iz0, 2, 4, reg);  // armchair
+      addFurnitureTracked(ix0, gy, iz1, 0, 31, reg); // chest of drawers
+    }
+  }
+  function buildVillageShop(plot, gy, rng, palette, doorSide, reg, name) {
+    const w = Math.min(6, plot.x1 - plot.x0 + 1), d = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
+    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
+    placeShellDoor(shell, doorSide, reg, 2); // glass door
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(ix0, gy, iz0, 0, 3, reg);  // counter
+    addFurnitureTracked(ix1, gy, iz0, 2, 22, reg); // shelving
+    addFurnitureTracked(ix0, gy, iz1, 0, 25, reg); // bottle shelf
+    addFurnitureTracked(ix1, gy, iz1, 2, 20, reg); // fridge
+    placeShellSign(shell, doorSide, name, reg);
+  }
+  function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
+    const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
+    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
+    placeShellDoor(shell, doorSide, reg, 3); // double wood door
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(shell.midX, gy, iz0, 0, 5, reg); // bar counter
+    addFurnitureTracked(ix0, gy, iz1, 0, 16, reg); // drinks cabinet
+    addFurnitureTracked(ix1, gy, iz1, 2, 18, reg); // fridge
+    addFurnitureTracked(ix0 + 1, gy, iz0 + 1, 0, 12, reg); // table
+    addFurnitureTracked(ix0 + 1, gy, iz0 + 2, 0, 13, reg); // chair
+    addFurnitureTracked(ix1 - 1, gy, iz0 + 1, 2, 12, reg); // table
+    addFurnitureTracked(ix1 - 1, gy, iz0 + 2, 2, 13, reg); // chair
+    placeShellSign(shell, doorSide, name, reg);
+  }
+  function buildVillageFarm(plot, gy, rng, palette, doorSide, reg, name) {
+    const barnW = 5, barnD = 5, h = 3;
+    const bx0 = plot.x0, bz0 = plot.z0;
+    const shell = buildShell(bx0, bz0, barnW, barnD, h, gy, palette, doorSide);
+    placeShellDoor(shell, doorSide, reg, 0);
+    addFurnitureTracked(shell.x0 + 1, gy, shell.z0 + 1, 0, 24, reg); // storage barrel
+    addFurnitureTracked(shell.x1 - 1, gy, shell.z0 + 1, 2, 26, reg); // gas bottle / storage
+    placeShellSign(shell, doorSide, name, reg);
+    const fieldZ0 = bz0 + barnD + 1, fieldZ1 = plot.z1;
+    if (fieldZ1 >= fieldZ0) {
+      for (let x = plot.x0; x <= plot.x1; x++) {
+        for (let z = fieldZ0; z <= fieldZ1; z++) {
+          const isFencePost = (x === plot.x0 || x === plot.x1 || z === fieldZ0 || z === fieldZ1);
+          if (isFencePost) { blocks.set(key(x, gy + 1, z), palette.trim); trackVillageHeight(x, z, gy + 1); }
+          else if ((x + z) % 2 === 0) { blocks.set(key(x, gy + 1, z), 4); trackVillageHeight(x, z, gy + 1); } // crop rows (leaves block)
+        }
+      }
+    }
+  }
+  function buildVillageHotel(plot, gy, rng, palette, doorSide, reg, name) {
+    const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
+    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
+    placeShellDoor(shell, doorSide, reg, 4); // french doors
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(shell.midX, gy, iz0, 0, 3, reg);  // reception desk
+    addFurnitureTracked(ix0, gy, shell.midZ, 0, 0, reg);  // couch
+    addFurnitureTracked(ix0 + 1, gy, shell.midZ, 0, 2, reg); // coffee table
+    addFurnitureTracked(ix1, gy, iz1, 2, 29, reg);        // suite bed
+    addFurnitureTracked(ix1 - 1, gy, iz1, 2, 30, reg);    // wardrobe
+    addFurnitureTracked(ix0, gy, iz1, 0, 1, reg);         // tv
+    placeShellSign(shell, doorSide, name, reg);
+  }
+  function buildVillageCastle(plot, gy, rng, palette, doorSide, reg, name) {
+    const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 5;
+    const stonePalette = Object.assign({}, palette, { wall: 2, trim: 14 });
+    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, stonePalette, doorSide, 'flat');
+    placeShellDoor(shell, doorSide, reg, 3);
+    [[shell.x0, shell.z0], [shell.x0, shell.z1], [shell.x1, shell.z0], [shell.x1, shell.z1]].forEach(([tx, tz]) => {
+      for (let y = gy + h + 1; y <= gy + h + 3; y++) { blocks.set(key(tx, y, tz), 2); trackVillageHeight(tx, tz, y); }
+      blocks.set(key(tx, gy + h + 4, tz), 14); trackVillageHeight(tx, tz, gy + h + 4);
+    });
+    for (let x = shell.x0 - 1; x <= shell.x1 + 1; x++) {
+      if (x % 2 === 0) {
+        blocks.set(key(x, gy + h + 2, shell.z0 - 1), stonePalette.trim); trackVillageHeight(x, shell.z0 - 1, gy + h + 2);
+        blocks.set(key(x, gy + h + 2, shell.z1 + 1), stonePalette.trim); trackVillageHeight(x, shell.z1 + 1, gy + h + 2);
+      }
+    }
+    for (let z = shell.z0 - 1; z <= shell.z1 + 1; z++) {
+      if (z % 2 === 0) {
+        blocks.set(key(shell.x0 - 1, gy + h + 2, z), stonePalette.trim); trackVillageHeight(shell.x0 - 1, z, gy + h + 2);
+        blocks.set(key(shell.x1 + 1, gy + h + 2, z), stonePalette.trim); trackVillageHeight(shell.x1 + 1, z, gy + h + 2);
+      }
+    }
+    const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+    addFurnitureTracked(shell.midX, gy, iz1, 0, 4, reg);  // armchair "throne"
+    addFurnitureTracked(ix0, gy, iz0, 0, 12, reg);        // table
+    addFurnitureTracked(ix1, gy, iz0, 2, 13, reg);        // chair
+    addFurnitureTracked(ix0, gy, iz1, 0, 3, reg);         // cabinet
+    placeShellSign(shell, doorSide, name, reg);
+  }
+
+  // ── Villager NPCs ───────────────────────────────────────────────
+  function villageNpcBlocked(x, z, bounds) {
+    if (isSolid(x, bounds.y + 0.1, z) || isSolid(x, bounds.y + 1.3, z)) return true;
+    for (const f of furniture.values()) {
+      const dx = x - (f.bx + 0.5), dz = z - (f.bz + 0.5);
+      if (dx * dx + dz * dz < 0.6 * 0.6) return true;
+    }
+    return false;
+  }
+  function pickVillageWanderTarget(bounds) {
+    for (let i = 0; i < 8; i++) {
+      const x = bounds.xMin + Math.random() * (bounds.xMax - bounds.xMin);
+      const z = bounds.zMin + Math.random() * (bounds.zMax - bounds.zMin);
+      if (!villageNpcBlocked(x, z, bounds)) return { x, z };
+    }
+    return { x: (bounds.xMin + bounds.xMax) / 2, z: (bounds.zMin + bounds.zMax) / 2 };
+  }
+  function placeVillageNpcMesh(x, y, z, colors) {
+    const g = buildCustomerFigure(false, colors);
+    g.position.set(x, y, z);
+    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(g);
+    return g;
+  }
+  function spawnVillageNPCs(ck, bounds, count, rng) {
+    const created = [];
+    for (let i = 0; i < count; i++) {
+      const spot = pickVillageWanderTarget(bounds);
+      const colors = {
+        skinIdx: Math.floor(rng() * AVATAR_SKIN_TONES.length),
+        hairIdx: Math.floor(rng() * AVATAR_HAIR_TONES.length),
+        shirtIdx: Math.floor(rng() * AVATAR_SHIRT_TONES.length),
+        pantsIdx: Math.floor(rng() * AVATAR_PANTS_TONES.length),
+      };
+      const mesh = placeVillageNpcMesh(spot.x, bounds.y, spot.z, colors);
+      const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
+      villageNPCs.push(w);
+      created.push(w);
+    }
+    return created;
+  }
+  function updateVillageNPCs(dt) {
+    if (villageNPCs.length === 0) return;
+    const t = performance.now() * 0.005;
+    villageNPCs.forEach(w => {
+      if (w.waitTimer > 0) {
+        w.waitTimer -= dt;
+        w.mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+        return;
+      }
+      const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 0.15) {
+        w.target = pickVillageWanderTarget(w.bounds);
+        w.waitTimer = 1 + Math.random() * 3;
+        return;
+      }
+      const speed = 0.9;
+      const nx = w.mesh.position.x + (dx / dist) * speed * dt;
+      const nz = w.mesh.position.z + (dz / dist) * speed * dt;
+      if (villageNpcBlocked(nx, nz, w.bounds)) {
+        w.target = pickVillageWanderTarget(w.bounds);
+        w.waitTimer = 0.4;
+        return;
+      }
+      w.mesh.position.x = nx;
+      w.mesh.position.z = nz;
+      w.mesh.rotation.y = Math.atan2(dx, dz);
+      const swing = Math.sin(t * 4) * 0.5;
+      w.mesh.traverse(o => {
+        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+      });
+    });
+  }
+
+  // ── Assembly ────────────────────────────────────────────────────
+  function buildVillageInChunk(cx, cz, rng) {
+    const FS = 24;
+    const originLocal = 3 + Math.floor(rng() * 3);
+    const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
+    const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
+    const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
+    for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
+
+    const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
+    let padY = columnHeight.get(centerKey);
+    if (padY === undefined) padY = SEA_LEVEL + 3;
+    padY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(padY)));
+    const gy = padY;
+
+    for (let x = wx0; x <= wx1; x++) {
+      for (let z = wz0; z <= wz1; z++) {
+        const yLo = Math.max(0, padY - 6), yHi = padY + 18;
+        for (let y = yLo; y <= yHi; y++) {
+          const k = key(x, y, z);
+          blocks.delete(k); stepRotations.delete(k);
+          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+        }
+        for (let y = Math.max(0, padY - 3); y < padY; y++) blocks.set(key(x, y, z), 2);
+        blocks.set(key(x, padY, z), 0);
+        columnHeight.set(x + ',' + z, padY);
+      }
+    }
+
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], npcs: [] };
+
+    for (let x = wx0 + 10; x <= wx0 + 13; x++) for (let z = wz0; z <= wz1; z++) { blocks.set(key(x, gy, z), palette.path); trackVillageHeight(x, z, gy); }
+
+    const postX = wx0 + 11, postZ = wz0;
+    blocks.set(key(postX, gy + 1, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 1);
+    blocks.set(key(postX, gy + 2, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 2);
+    const sk0 = addSign(postX, gy + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
+    if (sk0) reg.signKeys.push(sk0);
+
+    const slices = [[1, 7], [9, 15], [17, 23]];
+    const westX0 = wx0 + 1, westX1 = wx0 + 9, eastX0 = wx0 + 14, eastX1 = wx0 + 22;
+    const plots = [];
+    slices.forEach(([zl0, zl1]) => {
+      plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
+      plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
+    });
+
+    let pool = ['house', 'house', 'pub', 'shop', 'farm', 'house'];
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
+    if (rng() < 0.3) { const idx = pool.findIndex(t => t !== 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
+    if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'castle'; }
+
+    let built = 0;
+    plots.forEach((plot, i) => {
+      if (rng() < 0.15) return; // some plots stay empty, so village size varies
+      const type = pool[i];
+      const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
+      if (type === 'house') { buildVillageHouse(plot, gy, rng, palette, doorSide, reg); }
+      else if (type === 'shop') { buildVillageShop(plot, gy, rng, palette, doorSide, reg, SHOP_NAMES[Math.floor(rng() * SHOP_NAMES.length)]); }
+      else if (type === 'pub') { buildVillagePub(plot, gy, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
+      else if (type === 'farm') { buildVillageFarm(plot, gy, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
+      else if (type === 'hotel') { buildVillageHotel(plot, gy, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
+      else if (type === 'castle') { buildVillageCastle(plot, gy, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
+      built++;
+    });
+
+    const ck = cx + '_' + cz;
+    const npcCount = 3 + built + Math.floor(rng() * 3);
+    const bounds = { xMin: wx0 + 0.5, xMax: wx1 - 0.5, zMin: wz0 + 0.5, zMax: wz1 - 0.5, y: gy + 1 };
+    reg.npcs = spawnVillageNPCs(ck, bounds, npcCount, rng);
+
+    villageRegistry.set(ck, reg);
+  }
+  function maybeBuildVillage(cx, cz) {
+    const info = villageInfoForChunk(cx, cz);
+    if (!info) return;
+    buildVillageInChunk(cx, cz, info.rng);
+  }
+  function teardownVillage(ck) {
+    const v = villageRegistry.get(ck);
+    if (!v) return;
+    v.furnitureKeys.forEach(fk => removeFurniture(fk));
+    v.doorKeys.forEach(dk => removeDoor(dk));
+    v.signKeys.forEach(sk => removeSign(sk));
+    v.npcs.forEach(n => scene.remove(n.mesh));
+    villageNPCs = villageNPCs.filter(n => n.ck !== ck);
+    villageRegistry.delete(ck);
   }
 
   // ================= THE COMMUNITY PUB =================
@@ -11973,6 +12390,7 @@
     waterTime += dt;
     waterMat.uniforms.uTime.value = waterTime;
     updateWanderingCustomers(dt);
+    updateVillageNPCs(dt);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
 
     // While App Make/Bar/Bar Team Leader/Kitchen's automated scenes are

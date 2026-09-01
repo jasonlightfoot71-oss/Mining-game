@@ -1515,6 +1515,18 @@
   const waterBlocks = new Map(); // "x,y,z" -> flow level: 0 = source (player-placed, or a falling
                                   // column's own body — see below), 1..MAX_SPREAD = flowing water,
                                   // weaker (shallower) the further it's spread from a source.
+  // Which water blocks the flow simulation below actually bothers
+  // checking each tick — most of waterBlocks is NOT in here. Naturally
+  // generated lakes/oceans are already sitting in a settled, correct
+  // shape the moment they're created (the terrain generator fills them
+  // up to the right height directly), so they have no need to run
+  // through fall/spread logic at all; they only join this set if
+  // something actually disturbs them (mining next to one, or a player
+  // placing new water). With water now much more common than before,
+  // scanning literally all of it every ~260ms was the real cost —
+  // scanning only what's actually mid-motion stays cheap regardless of
+  // how much static water exists in the world.
+  const activeWaterBlocks = new Set();
   const key = (x,y,z) => x+','+y+','+z;
 
   // Water flow — each tick:
@@ -1535,29 +1547,40 @@
   const MAX_SPREAD = 4; // how many blocks flowing water can travel sideways from a source before stopping
   let lastWaterTick = 0;
   function updateWaterFlow() {
+    if (activeWaterBlocks.size === 0) return;
     const fallMoves = [];  // [fromKey, toKey]
     const spreadAdds = []; // [toKey, level]
+    const settled = [];    // keys that did nothing this tick — dropped from the active set below, until something reactivates them (mining next to them, more water arriving)
 
-    waterBlocks.forEach((level, k) => {
+    activeWaterBlocks.forEach(k => {
+      const level = waterBlocks.get(k);
+      if (level === undefined) { settled.push(k); return; } // already gone (mined out, or consumed by something else) — nothing left to simulate here
       const [x,y,z] = k.split(',').map(Number);
+      let didSomething = false;
 
       if (y > 0) {
         const belowKey = key(x,y-1,z);
         if (!blocks.has(belowKey) && !waterBlocks.has(belowKey)) {
           fallMoves.push([k, belowKey]);
+          activeWaterBlocks.add(belowKey); // keeps simulating at its new spot next tick
           return; // falling this tick — don't also try to spread from where it's leaving
         }
       }
 
-      if (level >= MAX_SPREAD) return; // too far from a source already — stop spreading further
-      [[x+1,y,z],[x-1,y,z],[x,y,z+1],[x,y,z-1]].forEach(([nx,ny,nz]) => {
-        const nk = key(nx,ny,nz);
-        if (blocks.has(nk)) return; // solid — can't flow through it
-        const existing = waterBlocks.get(nk);
-        if (existing !== undefined && existing <= level+1) return; // already equal or stronger water there
-        spreadAdds.push([nk, level+1]);
-      });
+      if (level < MAX_SPREAD) { // MAX_SPREAD or beyond is already too far from a source to spread further
+        [[x+1,y,z],[x-1,y,z],[x,y,z+1],[x,y,z-1]].forEach(([nx,ny,nz]) => {
+          const nk = key(nx,ny,nz);
+          if (blocks.has(nk)) return; // solid — can't flow through it
+          const existing = waterBlocks.get(nk);
+          if (existing !== undefined && existing <= level+1) return; // already equal or stronger water there
+          spreadAdds.push([nk, level+1]);
+          didSomething = true;
+        });
+      }
+      if (!didSomething) settled.push(k);
     });
+
+    settled.forEach(k => activeWaterBlocks.delete(k));
 
     if (!fallMoves.length && !spreadAdds.length) return;
 
@@ -1565,6 +1588,7 @@
     spreadAdds.forEach(([to, lvl]) => {
       const existing = waterBlocks.get(to);
       if (existing === undefined || existing > lvl) waterBlocks.set(to, lvl);
+      activeWaterBlocks.add(to);
     });
     // Water settling/spreading only ever changes waterBlocks — it never
     // touches the terrain block map or its mesh instances at all, so
@@ -9116,6 +9140,13 @@
     if (r.isWater) {
       // Water comes out instantly, no timed dig
       waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
+      // Scooping out one cell can leave neighbouring water with
+      // somewhere new to flow into, same idea as mining a solid block —
+      // see activeWaterBlocks' own comment.
+      [[r.hit.x+1,r.hit.y,r.hit.z],[r.hit.x-1,r.hit.y,r.hit.z],[r.hit.x,r.hit.y+1,r.hit.z],[r.hit.x,r.hit.y-1,r.hit.z],[r.hit.x,r.hit.y,r.hit.z+1],[r.hit.x,r.hit.y,r.hit.z-1]].forEach(([nx,ny,nz]) => {
+        const nk = key(nx,ny,nz);
+        if (waterBlocks.has(nk)) activeWaterBlocks.add(nk);
+      });
       recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, -1);
       rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all
       playThud(220);
@@ -9301,7 +9332,7 @@
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
     if (selectedSlot === WATER_SLOT) {
-      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); recordWaterEdit(x, y, z, 0); rebuildWaterGeometry(); playThud(280); }
+      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); activeWaterBlocks.add(k); recordWaterEdit(x, y, z, 0); rebuildWaterGeometry(); playThud(280); }
     } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
       if (type && type.cost && !trySpendCoins(type.cost, type.name)) return;
@@ -13544,6 +13575,16 @@
             // in `blocks` now versus before.
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
+            // Wakes up any water sitting right next to the block that
+            // was just mined out — this is the only place natural,
+            // otherwise-static water (a lake, an ocean) ever needs to
+            // start actually flowing: something opened up a gap next to
+            // it. See activeWaterBlocks' own comment for why most water
+            // ISN'T normally simulated at all.
+            [[bx+1,by,bz],[bx-1,by,bz],[bx,by+1,bz],[bx,by-1,bz],[bx,by,bz+1],[bx,by,bz-1]].forEach(([nx,ny,nz]) => {
+              const nk = key(nx,ny,nz);
+              if (waterBlocks.has(nk)) activeWaterBlocks.add(nk);
+            });
             recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
             removeFixturesForBlock(bx, by, bz);
             removeLaddersForBlock(bx, by, bz);

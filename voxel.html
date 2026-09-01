@@ -983,6 +983,29 @@
     clearTimeout(el._t);
     el._t = setTimeout(() => { el.style.opacity = '0'; }, 3000);
   }
+  // Every key any currently-built village has registered as its own
+  // (see villageRegistry, populated in buildVillageInChunk) — used below
+  // to keep village content OUT of the saved world entirely. This is the
+  // actual fix for furniture/signs/doors ending up floating disconnected
+  // from village buildings after a generation-code change: village
+  // content was being saved like real player-placed items, so an old
+  // save would keep old furniture positions frozen forever even after
+  // the terrain (which regenerates fresh from the current code every
+  // time, deterministically, like any other streamed terrain) moved to
+  // match a newer layout. Villages were never meant to persist at all —
+  // same as trees or hills, they should regenerate identically every
+  // time from the seed, not be "remembered" from whatever the code
+  // looked like on the day they were first visited.
+  function collectVillageOwnedKeys() {
+    const owned = { furniture: new Set(), doors: new Set(), signs: new Set(), fixtures: new Set() };
+    villageRegistry.forEach(v => {
+      v.furnitureKeys.forEach(k => owned.furniture.add(k));
+      v.doorKeys.forEach(k => owned.doors.add(k));
+      v.signKeys.forEach(k => owned.signs.add(k));
+      if (v.fixtureKeys) v.fixtureKeys.forEach(k => owned.fixtures.add(k));
+    });
+    return owned;
+  }
   // Shared by saveWorld() below — builds the same data shape
   // applyWorldData() consumes, from the live fixture/door/wallpaper/
   // ladder/furniture Maps. Blocks/water are NOT included here any more —
@@ -990,18 +1013,19 @@
   // for why; they're saved separately, by saveChangedChunks(), before
   // this ever gets called.
   function serializeWorldData() {
+    const villageOwned = collectVillageOwnedKeys();
     const lightsArr = [];
-    for (const f of fixtures.values()) lightsArr.push([f.bx,f.by,f.bz,f.nx,f.ny,f.nz]);
+    for (const [fk, f] of fixtures) { if (villageOwned.fixtures.has(fk)) continue; lightsArr.push([f.bx,f.by,f.bz,f.nx,f.ny,f.nz]); }
     const laddersArr = [];
     for (const l of ladders.values()) laddersArr.push([l.bx,l.by,l.bz,l.nx,l.ny,l.nz]);
     const wallpapersArr = [];
     for (const w of wallpapers.values()) wallpapersArr.push([w.bx,w.by,w.bz,w.nx,w.ny,w.nz,w.colorIdx]);
     const signsArr = [];
-    for (const s of signs.values()) signsArr.push([s.bx,s.by,s.bz,s.nx,s.ny,s.nz,s.sizeIdx,s.text]);
+    for (const [sk, s] of signs) { if (villageOwned.signs.has(sk)) continue; signsArr.push([s.bx,s.by,s.bz,s.nx,s.ny,s.nz,s.sizeIdx,s.text]); }
     const doorsArr = [];
-    for (const d of doors.values()) doorsArr.push([d.bx,d.by,d.bz,d.rot,d.doorTypeIdx]);
+    for (const [dk, d] of doors) { if (villageOwned.doors.has(dk)) continue; doorsArr.push([d.bx,d.by,d.bz,d.rot,d.doorTypeIdx]); }
     const furnitureArr = [];
-    for (const f of furniture.values()) furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]);
+    for (const [fk, f] of furniture) { if (villageOwned.furniture.has(fk)) continue; furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]); }
     const vehiclesArr = vehicles.map(v => v === ridingVehicle
       ? [player.pos.x, player.pos.y, player.pos.z, yaw, v.typeIdx] // currently being driven — its own stored x/y/z is stale until exitVehicle() runs, so use the live player position instead
       : [v.x, v.y, v.z, v.yaw, v.typeIdx]);
@@ -1065,7 +1089,7 @@
       blocks.set(k, t);
       if (rot) stepRotations.set(k, rot); // rot undefined/0 for older saves or non-step blocks — nothing to store
     });
-    (data.water||[]).forEach(([x,y,z,lvl]) => waterBlocks.set(key(x,y,z), lvl||0)); // lvl||0 — older saves have no 4th element, treat as source
+    (data.water||[]).forEach(([x,y,z,lvl]) => waterBlocks.set(key(x,y,z), lvl || 1)); // lvl||1 — older saves store a flow-level integer (or nothing) here, not a height fraction; both fall back to a full block, same as rebuildWaterGeometry's own fallback
     applyFixtureData(data);
     if (data.player) player.pos.set(data.player.x, data.player.y, data.player.z);
     if (typeof data.yaw === 'number') yaw = data.yaw;
@@ -1640,7 +1664,7 @@
           blocks.set(key(x,y,z), type);
         }
         if (h < SEA_LEVEL) {
-          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
+          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1); // full-height block — see the water hotbar's partial-height entries for the only other values this now takes
         }
         if (h > SEA_LEVEL && Math.random() < 0.025) {
           const trunkH = 3 + Math.floor(Math.random()*2);
@@ -1908,12 +1932,12 @@
         // actually appear: the local detail noise still had to happen to
         // roll near its own minimum at the same spot. Centring it means
         // more of a low-elevation area genuinely dips below baseline
-        // instead of almost always sitting above it. Multiplier dialled
-        // back to 1.3 (was 2) after the full-strength version made water
-        // common enough to cause real lag — rebuildWaterGeometry rescans
-        // every water block in the loaded world on every rebuild, so
-        // total water volume directly drives frame cost, not just how
-        // "correct" the noise distribution is.
+        // instead of almost always sitting above it. Multiplier halved
+        // again, to 0.65 (was 1.3, before that 2) — water is still the
+        // single biggest lag source (rebuildWaterGeometry rescans every
+        // water block in the loaded world on every rebuild), so this is
+        // a direct, blunt cut to total volume rather than a subtler
+        // noise-shape tweak.
         const n = fbm(x*0.045, z*0.045) - 0.5;
         const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
         const baseline = SEA_LEVEL - 3 + elevation*5; // lowered back to -3 (from -2) specifically so water becomes reachable across a wider elevation range again — the calmer overall variety made genuinely low elevation rare enough that water had nearly stopped appearing at all; the elevation*5 slope itself is unchanged, so this doesn't affect how dramatic mountains get, just how easy it is to dip below sea level
@@ -1926,15 +1950,13 @@
         // it does, it pulls the baseline down hard regardless of what
         // the regional elevation says — that's deliberate: a proper lake
         // shouldn't care that it's sitting in an otherwise-hilly area.
-        // Threshold raised from 0.62 to 0.76 — fbm's output clusters
-        // near 0.5, so this makes basins a genuinely sparse, special
-        // occurrence rather than a near-constant background presence,
-        // which is the other big lever on total water volume (and so on
-        // frame cost) alongside the multiplier above.
+        // Threshold raised again, to 0.85 (was 0.76, before that 0.62) —
+        // basins are now a genuinely rare, special encounter rather than
+        // "every now and again."
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*1.3*amp);
-        if (oceanField > 0.76) {
-          const oceanStrength = (oceanField - 0.76) / 0.24; // 0 at the basin's edge, 1 at its deepest core
+        let h = Math.round(baseline + n*0.65*amp);
+        if (oceanField > 0.85) {
+          const oceanStrength = (oceanField - 0.85) / 0.15; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
@@ -1972,7 +1994,7 @@
           // enough for fish, without undoing the frequency/size cuts
           // that actually fixed the performance problem.
           let targetDepth = 2 + Math.round(depthNoise*2);
-          if (oceanField > 0.76) targetDepth += 1;
+          if (oceanField > 0.85) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
         // Surface now depends on BOTH axes: rocky peaks still need real
@@ -2013,7 +2035,7 @@
           blocks.set(key(x,y,z), type);
         }
         if (allowWater && h < SEA_LEVEL) {
-          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 0);
+          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1); // full-height block — see the water hotbar's partial-height entries for the only other values this now takes
           anyWaterTouchedThisStream = true;
         }
         if (treeChance && h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
@@ -2727,15 +2749,27 @@
   function rebuildWaterGeometry() {
     const positions = [];
     const normals = [];
-    for (const [k] of waterBlocks) {
+    for (const [k, level] of waterBlocks) {
       const [x,y,z] = k.split(',').map(Number);
+      // Height fraction (1, 0.75, 0.5, 0.25 — see the water hotbar's
+      // partial-height entries, for manually shaping a shoreline now
+      // that automatic flow/spread is off). Anything else stored here —
+      // old integer "flow level" values from a save made before this,
+      // or 0 — just falls back to a full block. Occlusion below is
+      // unchanged and still treats any water neighbour as fully hiding
+      // a shared face regardless of height difference, so a small seam
+      // can show right at the boundary between two different heights —
+      // an acceptable trade-off for not needing full per-neighbour
+      // height comparisons here.
+      const h = (typeof level === 'number' && level > 0 && level < 1) ? level : 1;
       for (const face of WATER_FACES) {
         const [dx,dy,dz] = face.d;
         if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
         const [a,b,c,d] = face.c;
         // two triangles: a,b,c and a,c,d
         for (const corner of [a,b,c, a,c,d]) {
-          positions.push(x+corner[0], y+corner[1], z+corner[2]);
+          const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
+          positions.push(x+corner[0], y+cy, z+corner[2]);
           normals.push(dx, dy, dz);
         }
       }
@@ -7092,7 +7126,22 @@
   }
   function updateAmbientFish(dt) {
     const now = performance.now();
-    if (now - lastAmbientFishScan > 15000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); }
+    // Removes fish whose pool is now far from the player — without this,
+    // whichever pools get discovered FIRST (near spawn/The Mill, since
+    // that's naturally where a session starts) would permanently fill
+    // AMBIENT_FISH_MAX and stay there for the rest of the session, and
+    // scanAndSpawnAmbientFish bails out the moment that cap is hit — so
+    // no fish could ever spawn anywhere else again, no matter how far
+    // the player then travelled. This frees their slot back up once
+    // they're well outside where the player could see them anyway (the
+    // water they were in has long since unloaded by this point too).
+    const FISH_DESPAWN_DIST_SQ = 120*120;
+    for (let i = ambientFish.length - 1; i >= 0; i--) {
+      const f = ambientFish[i];
+      const dx = f.pool.cx - player.pos.x, dz = f.pool.cz - player.pos.z;
+      if (dx*dx + dz*dz > FISH_DESPAWN_DIST_SQ) { scene.remove(f.mesh); ambientFish.splice(i, 1); }
+    }
+    if (now - lastAmbientFishScan > 8000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); }
     ambientFish.forEach(f => {
       f.wanderTimer -= dt;
       if (f.wanderTimer <= 0) {
@@ -7365,7 +7414,7 @@
             // removed first, since water and a solid block can't
             // legitimately occupy the same cell at once.
             blocks.delete(key(x,1,z));
-            waterBlocks.set(key(x,1,z), 0);
+            waterBlocks.set(key(x,1,z), 1); // full-height block
           } else {
             setGameBlock(x,1,z, type);
           }
@@ -9447,7 +9496,13 @@
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
     if (selectedSlot === WATER_SLOT) {
-      if (!waterBlocks.has(k)) { waterBlocks.set(k, 0); activeWaterBlocks.add(k); recordWaterEdit(x, y, z, 0); rebuildWaterGeometry(); playThud(280); }
+      if (!waterBlocks.has(k)) {
+        const h = WATER_HEIGHTS[waterHeightIdx];
+        waterBlocks.set(k, h);
+        recordWaterEdit(x, y, z, h);
+        rebuildWaterGeometry();
+        playThud(280);
+      }
     } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
       if (type && type.cost && !trySpendCoins(type.cost, type.name)) return;
@@ -13749,10 +13804,14 @@
     // setupFreeLookZone's own touchmove listener, the same way it updates
     // yaw/pitch directly outside a scene — see its own comment for why.
 
-    if (performance.now() - lastWaterTick >= WATER_TICK_MS) {
-      lastWaterTick = performance.now();
-      updateWaterFlow();
-    }
+    // Water flow/spread simulation is disabled entirely now (was ticking
+    // roughly 4x/second) — even limited to only currently-disturbed
+    // water, it was still a meaningful chunk of the remaining lag once
+    // water became common enough. Water placed by generation or by hand
+    // now just sits exactly where it's put, permanently — see the new
+    // partial-height water hotbar entries (full/3-4/half/1-4 block) for
+    // manually shaping a shoreline or an edge yourself instead of
+    // relying on it spreading there on its own.
     updateChunkStreaming(); // cheap early-exit unless a chunk boundary was actually just crossed — see its own comment
     updateLightVisibility(); // throttled internally — see its own comment
     updateHudExtras(); // throttled internally — see its own comment
@@ -13964,6 +14023,61 @@
     ctx.stroke();
     return c;
   }
+  // Partial-height water — full/3-4/half/1-4 block — for manually
+  // shaping a shoreline or an edge by hand, now that water no longer
+  // spreads or flows on its own (see the note where updateWaterFlow's
+  // call was removed). Icon is a simple block outline with the fill
+  // rising from the bottom by the matching fraction, so the height is
+  // obvious at a glance in the hotbar/popup.
+  const WATER_HEIGHTS = [1, 0.75, 0.5, 0.25];
+  const WATER_HEIGHT_LABELS = ['Full Block', '3/4 Block', 'Half Block', '1/4 Block'];
+  let waterHeightIdx = 0;
+  function waterHeightIconCanvas(idx) {
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const frac = WATER_HEIGHTS[idx];
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(5, 4, 24, 26);
+    const fillH = 24 * frac;
+    const grad = ctx.createLinearGradient(0, 30 - fillH, 0, 30);
+    grad.addColorStop(0, '#8fd4f5'); grad.addColorStop(1, '#2f7fc1');
+    ctx.fillStyle = grad;
+    ctx.fillRect(6, 30 - fillH, 22, fillH);
+    return c;
+  }
+  function updateWaterSlotIcon() {
+    const slotEl = slotElByIndex[WATER_SLOT];
+    if (!slotEl) return;
+    const old = slotEl.querySelector('canvas.swatch');
+    if (old) old.remove();
+    slotEl.appendChild(waterHeightIconCanvas(waterHeightIdx));
+  }
+  function showWaterHeightPopup(slotEl) {
+    closeFamilyPopup();
+    const rect = slotEl.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    WATER_HEIGHT_LABELS.forEach((label, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item';
+      btn.title = label;
+      btn.appendChild(waterHeightIconCanvas(idx));
+      const lbl = document.createElement('span');
+      lbl.className = 'popup-item-label';
+      lbl.textContent = label;
+      btn.appendChild(lbl);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        waterHeightIdx = idx;
+        updateWaterSlotIcon();
+        selectSlot(WATER_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    document.body.appendChild(popup);
+    openFamilyPopup = popup;
+  }
   // Appended to every priced item's tooltip/label so the cost is always
   // visible right next to its name, not just discoverable by trying to
   // place it — returns '' for anything with no cost (still free).
@@ -14074,11 +14188,15 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'Water';
+    slot.title = 'Water — full/3-4/half/1-4 block, for hand-shaping a shoreline (water no longer spreads on its own)';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '0';
     slot.appendChild(keyEl);
-    slot.appendChild(waterDropCanvas());
-    slot.addEventListener('click', () => selectSlot(WATER_SLOT));
+    slot.appendChild(waterHeightIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showWaterHeightPopup(slot); });
     slotElByIndex[WATER_SLOT] = slot;
     hotbar.appendChild(slot);
   }

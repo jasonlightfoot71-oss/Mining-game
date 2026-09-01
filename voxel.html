@@ -8360,6 +8360,16 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyF') toggleFly();
+    if (e.code === 'KeyE') {
+      // Vehicles: E both gets in and gets back out — added specifically
+      // because the on-screen Enter/Exit Vehicle buttons are unreliable
+      // to actually click while the mouse is pointer-locked (desktop
+      // hides the cursor entirely during normal play, so there's nothing
+      // visible to aim a click at). A keyboard shortcut sidesteps that
+      // regardless of input device.
+      if (ridingVehicle) exitVehicle();
+      else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); }
+    }
     if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
     if (e.code === 'KeyG' && currentWorldId === PUB_WORLD_ID) {
       landscapeModeEnabled = !landscapeModeEnabled;
@@ -10025,11 +10035,12 @@
     let op = otherPlayers.get(uid);
     if (!op) {
       const group = buildCustomerFigure(false, colors); // reuses the same low-poly figure built for the Mill's decorative customers, but with THIS player's own chosen colours rather than a random look
-      group.add(buildNameSprite(name));
+      const nameSprite = buildNameSprite(name);
+      group.add(nameSprite);
       const chatSprite = buildChatSprite();
       group.add(chatSprite);
       scene.add(group);
-      op = { group, chatSprite, targetPos: new THREE.Vector3(0,0,0), targetYaw: 0, lastUpdate: performance.now(), chatHideAt: 0, uid, lastPos: new THREE.Vector3(0,0,0) };
+      op = { group, nameSprite, chatSprite, targetPos: new THREE.Vector3(0,0,0), targetYaw: 0, lastUpdate: performance.now(), chatHideAt: 0, uid, lastPos: new THREE.Vector3(0,0,0), vehicleType: -1, vehicleGroup: null, vehicleTypeBuilt: -1 };
       otherPlayers.set(uid, op);
     }
     if (name) op.displayName = name;
@@ -10039,6 +10050,7 @@
     const op = otherPlayers.get(uid);
     if (!op) return;
     scene.remove(op.group);
+    if (op.vehicleGroup) scene.remove(op.vehicleGroup);
     otherPlayers.delete(uid);
     removeOtherGolfBall(uid); // otherwise their ball would just sit there forever after they leave
   }
@@ -10070,6 +10082,7 @@
         op.targetPos.set(payload.x, payload.y, payload.z);
         op.targetYaw = payload.yaw;
         op.lastUpdate = performance.now();
+        op.vehicleType = typeof payload.vehicleType === 'number' ? payload.vehicleType : -1;
       });
       channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
         if (!payload) return;
@@ -10433,7 +10446,7 @@
       const now = performance.now();
       if (now - mpLastBroadcast > 150) {
         mpLastBroadcast = now;
-        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw } }); } catch(e) {}
+        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1 } }); } catch(e) {}
       }
     }
     const now2 = performance.now();
@@ -10458,6 +10471,32 @@
         });
       } else {
         op.group.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+      }
+      // Shows a vehicle mesh in place of this player's own body the
+      // moment their broadcast reports them riding one — same visual
+      // idea as the local player's own updateVehicleCameraFocus, just
+      // driven by the network payload instead of local input. The
+      // name/chat sprites stay children of op.group (and stay visible)
+      // so they still float in the right spot above whichever one is
+      // actually showing.
+      if (op.vehicleType >= 0) {
+        if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType) {
+          if (op.vehicleGroup) scene.remove(op.vehicleGroup);
+          op.vehicleGroup = VEHICLE_TYPES[op.vehicleType] ? VEHICLE_TYPES[op.vehicleType].build() : null;
+          if (op.vehicleGroup) scene.add(op.vehicleGroup);
+          op.vehicleTypeBuilt = op.vehicleType;
+        }
+        if (op.vehicleGroup) {
+          op.vehicleGroup.visible = true;
+          op.vehicleGroup.position.copy(op.group.position);
+          op.vehicleGroup.rotation.y = op.group.rotation.y + Math.PI;
+          if (op.vehicleGroup.userData.rotor) op.vehicleGroup.userData.rotor.rotation.y += dt*40;
+          if (op.vehicleGroup.userData.tailRotor) op.vehicleGroup.userData.tailRotor.rotation.x += dt*50;
+        }
+        op.group.children.forEach(c => { if (c !== op.nameSprite && c !== op.chatSprite) c.visible = false; });
+      } else {
+        if (op.vehicleGroup) op.vehicleGroup.visible = false;
+        op.group.children.forEach(c => { c.visible = true; });
       }
       if (op.chatHideAt && now2 > op.chatHideAt) { op.chatSprite.visible = false; op.chatHideAt = 0; }
       if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
@@ -14549,7 +14588,7 @@
       document.getElementById('hint').style.display = 'block';
       document.getElementById('hint').innerHTML = visitMode
         ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — mining and placing are disabled'
-        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Hold LMB mine · RMB place · 1-9/scroll select';
+        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · 1-9/scroll select';
       renderer.domElement.requestPointerLock();
     }
     if (visitMode) document.getElementById('visitBanner').style.display = 'flex';

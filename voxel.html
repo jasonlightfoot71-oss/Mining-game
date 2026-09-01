@@ -389,7 +389,7 @@
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
-<button id="villageMapBtn" style="display:none;position:fixed;top:12px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;">🗺️</button>
+<button id="villageMapBtn" style="display:none;position:fixed;bottom:186px;right:22px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;">🗺️</button>
 <div id="villageMapModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
   <div style="background:rgba(20,20,25,0.97);color:#fff;border-radius:10px;padding:18px;max-width:360px;width:90%;max-height:70vh;overflow-y:auto;font-family:-apple-system,sans-serif;box-sizing:border-box;">
     <h3 style="margin:0 0 10px;font-size:16px;">🗺️ Discovered Villages</h3>
@@ -8031,7 +8031,7 @@
     if (!audioCtx) return;
     ensureWindNoise();
     if (!windGain) return;
-    const targetGain = active ? 0.01 : 0;
+    const targetGain = active ? 0.002 : 0;
     const targetFreq = active ? 900 : 500;
     const now = audioCtx.currentTime;
     windGain.gain.setTargetAtTime(targetGain, now, 0.3);
@@ -8070,8 +8070,8 @@
     if (!rainNoise) rainNoise = makeLoopingNoise(2.5, 'bandpass', 2200, 0.5); // brighter hiss — reads as rain
     if (!snowNoise) snowNoise = makeLoopingNoise(3, 'lowpass', 380, 0.4);   // soft, muffled hush — snow is near-silent in reality, just a faint atmosphere
     const now = audioCtx.currentTime;
-    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.007 : 0, now, 0.6);
-    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.003 : 0, now, 0.8);
+    rainNoise.gain.gain.setTargetAtTime(rainOn ? 0.0014 : 0, now, 0.6);
+    snowNoise.gain.gain.setTargetAtTime(snowOn ? 0.0006 : 0, now, 0.8);
   }
   let birdChirpTimer = 3;
   function playBirdChirp() {

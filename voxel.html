@@ -1876,10 +1876,33 @@
         // noise's smooth, continuous shape.
         const elevation = biomeStretch(fbm(x*0.008, z*0.008));
         const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
-        const n = fbm(x*0.045, z*0.045); // local detail noise, same as before
+        // Centred to -0.5..0.5 rather than used raw (0..1) — it was
+        // being added on TOP of baseline unconditionally before, which
+        // meant it could only ever push height UP, never down. Baseline
+        // being low was necessary but not sufficient for water to
+        // actually appear: the local detail noise still had to happen to
+        // roll near its own minimum at the same spot. Centring it means
+        // roughly half of any low-elevation area now genuinely dips
+        // below baseline instead of almost always sitting above it,
+        // which is the main reason water had become so rare.
+        const n = fbm(x*0.045, z*0.045) - 0.5;
         const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
         const baseline = SEA_LEVEL - 3 + elevation*5; // lowered back to -3 (from -2) specifically so water becomes reachable across a wider elevation range again — the calmer overall variety made genuinely low elevation rare enough that water had nearly stopped appearing at all; the elevation*5 slope itself is unchanged, so this doesn't affect how dramatic mountains get, just how easy it is to dip below sea level
-        let h = Math.round(baseline + n*amp);
+        // A second, much larger and slower-changing noise field, entirely
+        // separate from the regional elevation above — elevation alone
+        // only ever produces small, scattered dips, never a body of
+        // water big enough to read as "a lake" or "an ocean" rather than
+        // a puddle. This one only crosses its own threshold in sparse,
+        // wide patches (its wavelength is roughly 550 blocks), and where
+        // it does, it pulls the baseline down hard regardless of what
+        // the regional elevation says — that's deliberate: a proper lake
+        // shouldn't care that it's sitting in an otherwise-hilly area.
+        const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
+        let h = Math.round(baseline + n*2*amp);
+        if (oceanField > 0.62) {
+          const oceanStrength = (oceanField - 0.62) / 0.38; // 0 at the basin's edge, 1 at its deepest core
+          h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
+        }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
         // Near The Mill, taper generated height down toward the pad's
         // own fixed ground level (y=0) instead of cutting off abruptly —
@@ -1893,12 +1916,22 @@
         const blend = pubBlendFactor(x, z);
         if (blend < 1) h = Math.max(0, Math.round(h * blend));
         const allowWater = pubWaterAllowed(x, z);
-        // Ensure any water actually placed here is deep enough to swim/
-        // fish in, not just a 1-block puddle — the height noise alone
-        // very often only dips 1-2 blocks below SEA_LEVEL. This floors
-        // the seabed down to a guaranteed minimum depth wherever water
-        // is actually going to be placed; dry land is untouched.
-        if (allowWater && h < SEA_LEVEL && SEA_LEVEL - h < 3) h = SEA_LEVEL - 3;
+        // A staggered, per-column floor instead of one flat cut at a
+        // fixed depth — the old version pinned EVERY shallow spot down
+        // to exactly SEA_LEVEL-3, which reads as an unnatural dead-flat
+        // shelf, especially right where it meets the surrounding natural
+        // slope. This uses its own fine-grained noise so the floor
+        // itself undulates (roughly 1-4 blocks deep) rather than being
+        // one flat plane, and only pushes meaningfully deeper (up to
+        // ~6) inside an actual ocean/lake basin — small puddles stay
+        // shallow and uneven, the genuinely large bodies of water read
+        // as properly deep.
+        if (allowWater && h < SEA_LEVEL) {
+          const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
+          let targetDepth = 1 + Math.round(depthNoise*3);
+          if (oceanField > 0.62) targetDepth += 2;
+          if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
+        }
         // Surface now depends on BOTH axes: rocky peaks still need real
         // height, but low moisture gives sandy/dry ground even inland
         // (not just at the waterline), and everything else defaults to
@@ -3444,6 +3477,31 @@
     tex.magFilter = THREE.NearestFilter;
     return tex;
   }
+  // Every screen tagged tvScreen (both buildTV and buildWallTV do this)
+  // carries its own random next-change time, set on creation and reset
+  // here each time it flips — staggered per-TV rather than a single
+  // shared timer, so a room with several TVs doesn't have them all
+  // switch channel in lockstep. Only worth checking occasionally, not
+  // every frame — furniture can't be THAT numerous that iterating it
+  // once every couple of seconds is expensive, but there's no reason to
+  // do it 60 times a second either.
+  let tvChannelCheckTimer = 0;
+  function updateTVChannels(dt) {
+    tvChannelCheckTimer -= dt;
+    if (tvChannelCheckTimer > 0) return;
+    tvChannelCheckTimer = 2;
+    const now = performance.now();
+    furniture.forEach(f => {
+      f.group.traverse(o => {
+        if (o.userData.tvScreen && now >= o.userData.nextChannelAt) {
+          if (o.material.map) o.material.map.dispose();
+          o.material.map = buildTVPictureTexture();
+          o.material.needsUpdate = true;
+          o.userData.nextChannelAt = now + 15000 + Math.random()*25000;
+        }
+      });
+    });
+  }
   function buildTV() {
     const group = new THREE.Group();
     const standMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 20 });
@@ -3460,6 +3518,8 @@
     group.add(bezel);
     const screen = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.5, 0.02), screenMat);
     screen.position.set(0, 0.86, -0.031);
+    screen.userData.tvScreen = true; // tagged so updateTVChannels can find it later and cycle the picture — see that function's own comment
+    screen.userData.nextChannelAt = performance.now() + 15000 + Math.random()*25000;
     group.add(screen);
     return group;
   }
@@ -3680,6 +3740,8 @@
     group.add(bezel);
     const screen = new THREE.Mesh(new THREE.BoxGeometry(1.02, 0.54, 0.02), screenMat);
     screen.position.set(0, 1.7, 0.17);
+    screen.userData.tvScreen = true;
+    screen.userData.nextChannelAt = performance.now() + 15000 + Math.random()*25000;
     group.add(screen);
     return group;
   }
@@ -4341,6 +4403,30 @@
   }
 
   // ── Assembly ────────────────────────────────────────────────────
+  // Steps from (x0,y0) to (x1,y0-ish) at a fixed z, easing toward y1 by
+  // at most ~1 block of elevation per block of horizontal distance —
+  // a plain staircase rather than a straight ramp, so a bigger height
+  // difference between a building and the road just takes more steps
+  // instead of ever looking like a cliff or a floating path.
+  function carveConnectingPath(x0, x1, z, y0, y1, palette) {
+    const dir = x1 >= x0 ? 1 : -1;
+    const total = Math.abs(x1 - x0) || 1;
+    let curY = y0, step = 0;
+    for (let x = x0; x !== x1 + dir; x += dir) {
+      step++;
+      const remaining = total - step + 1;
+      const diff = y1 - curY;
+      if (diff !== 0) curY += Math.sign(diff) * Math.min(Math.abs(diff), Math.ceil(Math.abs(diff) / Math.max(1, remaining)));
+      for (let y = curY - 4; y <= curY + 4; y++) {
+        const k = key(x, y, z);
+        blocks.delete(k); stepRotations.delete(k);
+        if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+      }
+      for (let y = Math.max(0, curY - 2); y < curY; y++) blocks.set(key(x, y, z), 2);
+      blocks.set(key(x, curY, z), palette.path);
+      trackVillageHeight(x, z, curY);
+    }
+  }
   function buildVillageInChunk(cx, cz, rng) {
     // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
     // between plots along the road from 1 row to 3) specifically so
@@ -4356,38 +4442,47 @@
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
 
     const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
-    let padY = columnHeight.get(centerKey);
-    if (padY === undefined) padY = SEA_LEVEL + 3;
-    padY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(padY)));
-    const gy = padY;
-
-    for (let x = wx0; x <= wx1; x++) {
-      for (let z = wz0; z <= wz1; z++) {
-        const yLo = Math.max(0, padY - 6), yHi = padY + 18;
-        for (let y = yLo; y <= yHi; y++) {
-          const k = key(x, y, z);
-          blocks.delete(k); stepRotations.delete(k);
-          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-        }
-        for (let y = Math.max(0, padY - 3); y < padY; y++) blocks.set(key(x, y, z), 2);
-        blocks.set(key(x, padY, z), 0);
-        columnHeight.set(x + ',' + z, padY);
-      }
-    }
+    let roadY = columnHeight.get(centerKey);
+    if (roadY === undefined) roadY = SEA_LEVEL + 3;
+    roadY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(roadY)));
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], npcs: [] };
 
-    for (let x = wx0 + 13; x <= wx0 + 16; x++) for (let z = wz0; z <= wz1; z++) { blocks.set(key(x, gy, z), palette.path); trackVillageHeight(x, z, gy); }
+    // The road is the one part of the village that DOES stay a single
+    // flat grade — everything else below is deliberately NOT flattened
+    // as one whole pad any more (see each plot's own grading further
+    // down), but the street itself staying level and predictable is
+    // what makes it read as a road rather than just another gap.
+    for (let x = wx0 + 13; x <= wx0 + 16; x++) {
+      for (let z = wz0; z <= wz1; z++) {
+        for (let y = Math.max(0, roadY - 6); y <= roadY + 4; y++) {
+          const k = key(x, y, z);
+          blocks.delete(k); stepRotations.delete(k);
+          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+        }
+        for (let y = Math.max(0, roadY - 3); y < roadY; y++) blocks.set(key(x, y, z), 2);
+        blocks.set(key(x, roadY, z), palette.path);
+        trackVillageHeight(x, z, roadY);
+      }
+    }
 
     const postX = wx0 + 14, postZ = wz0;
-    blocks.set(key(postX, gy + 1, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 1);
-    blocks.set(key(postX, gy + 2, postZ), palette.trim); trackVillageHeight(postX, postZ, gy + 2);
-    const sk0 = addSign(postX, gy + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
+    blocks.set(key(postX, roadY + 1, postZ), palette.trim); trackVillageHeight(postX, postZ, roadY + 1);
+    blocks.set(key(postX, roadY + 2, postZ), palette.trim); trackVillageHeight(postX, postZ, roadY + 2);
+    const sk0 = addSign(postX, roadY + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
     if (sk0) reg.signKeys.push(sk0);
 
-    const slices = [[1, 7], [11, 17], [21, 27]];
+    // Five slices per side now instead of three — up to 10 building
+    // plots instead of 6 (the practical ceiling for a village that has
+    // to fit inside one 32-block chunk with real spacing between
+    // buildings; going further, e.g. to a literal 20, would mean a
+    // village spanning multiple chunks, a bigger change to how villages
+    // stream in/out). Plot depth is smaller (5, was 7) to fit the extra
+    // slices in the same footprint — pub/hotel/farm end up a little
+    // more compact than before, everything still fits.
+    const slices = [[1, 5], [7, 11], [13, 17], [19, 23], [25, 29]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -4395,28 +4490,59 @@
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    let pool = ['house', 'house', 'pub', 'shop', 'farm', 'house'];
+    let pool = ['house', 'house', 'house', 'house', 'house', 'house', 'house', 'pub', 'shop', 'farm'];
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
-    if (rng() < 0.3) { const idx = pool.findIndex(t => t !== 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
+    if (rng() < 0.3) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
     if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'castle'; }
 
     let built = 0;
     plots.forEach((plot, i) => {
-      if (rng() < 0.15) return; // some plots stay empty, so village size varies
+      if (rng() < 0.15) return; // some plots stay empty, so village size still varies
       const type = pool[i];
       const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
-      if (type === 'house') { buildVillageHouse(plot, gy, rng, palette, doorSide, reg); }
-      else if (type === 'shop') { buildVillageShop(plot, gy, rng, palette, doorSide, reg, SHOP_NAMES[Math.floor(rng() * SHOP_NAMES.length)]); }
-      else if (type === 'pub') { buildVillagePub(plot, gy, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
-      else if (type === 'farm') { buildVillageFarm(plot, gy, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
-      else if (type === 'hotel') { buildVillageHotel(plot, gy, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
-      else if (type === 'castle') { buildVillageCastle(plot, gy, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
+
+      // This plot grades ONLY its own footprint, to ITS OWN sampled
+      // height — read from the natural terrain still sitting there
+      // right now, before this plot (and only this plot) gets levelled.
+      // This is what actually lets one house sit in a dip and its
+      // neighbour sit up on a rise, instead of the whole village being
+      // one dead-flat pad regardless of the real landscape.
+      const pcx = Math.floor((plot.x0 + plot.x1) / 2), pcz = Math.floor((plot.z0 + plot.z1) / 2);
+      let plotY = columnHeight.get(pcx + ',' + pcz);
+      if (plotY === undefined) plotY = roadY;
+      plotY = Math.max(SEA_LEVEL - 1, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
+      for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
+        for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
+          for (let y = Math.max(0, plotY - 6); y <= plotY + 12; y++) {
+            const k = key(x, y, z);
+            blocks.delete(k); stepRotations.delete(k);
+            if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+          }
+          for (let y = Math.max(0, plotY - 3); y < plotY; y++) blocks.set(key(x, y, z), 2);
+          blocks.set(key(x, plotY, z), 0);
+          trackVillageHeight(x, z, plotY);
+        }
+      }
+
+      if (type === 'house') { buildVillageHouse(plot, plotY, rng, palette, doorSide, reg); }
+      else if (type === 'shop') { buildVillageShop(plot, plotY, rng, palette, doorSide, reg, SHOP_NAMES[Math.floor(rng() * SHOP_NAMES.length)]); }
+      else if (type === 'pub') { buildVillagePub(plot, plotY, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
+      else if (type === 'farm') { buildVillageFarm(plot, plotY, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
+      else if (type === 'hotel') { buildVillageHotel(plot, plotY, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
+      else if (type === 'castle') { buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
       built++;
+
+      const pathZ = Math.max(plot.z0, Math.min(plot.z1, pcz));
+      if (plot.side === 'west') carveConnectingPath(plot.x1 + 1, wx0 + 12, pathZ, plotY, roadY, palette);
+      else carveConnectingPath(plot.x0 - 1, wx0 + 17, pathZ, plotY, roadY, palette);
     });
 
     const ck = cx + '_' + cz;
     const npcCount = 3 + built + Math.floor(rng() * 3);
-    const bounds = { xMin: wx0 + 0.5, xMax: wx1 - 0.5, zMin: wz0 + 0.5, zMax: wz1 - 0.5, y: gy + 1 };
+    // Kept close to the road rather than the whole footprint — plots
+    // now vary in height, and the wandering-NPC logic isn't terrain-
+    // aware enough to path between different plot elevations cleanly.
+    const bounds = { xMin: wx0 + 10, xMax: wx0 + 19, zMin: wz0 + 0.5, zMax: wz1 - 0.5, y: roadY + 1 };
     reg.npcs = spawnVillageNPCs(ck, bounds, npcCount, rng);
 
     villageRegistry.set(ck, reg);
@@ -4787,8 +4913,11 @@
       player.pos.z + backZ*5
     );
     camera.position.lerp(desired, vehicleCamBlend);
-    const targetPitch = -0.15;
-    camera.rotation.x = pitch + (targetPitch - pitch) * vehicleCamBlend;
+    // Deliberately no pitch override here (unlike tennis/football/golf's
+    // identical-looking blend, which DO lock pitch toward a fixed
+    // gameplay angle) — vehicles should let you freely look up and down
+    // while riding, so camera.rotation.x is left exactly as the normal
+    // per-frame `camera.rotation.x = pitch;` above already set it.
   }
 
   // ================= THE COMMUNITY PUB =================
@@ -10482,25 +10611,27 @@
       // name/chat sprites stay children of op.group (and stay visible)
       // so they still float in the right spot above whichever one is
       // actually showing.
-      if (op.vehicleType >= 0) {
-        if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType) {
-          if (op.vehicleGroup) scene.remove(op.vehicleGroup);
-          op.vehicleGroup = VEHICLE_TYPES[op.vehicleType] ? VEHICLE_TYPES[op.vehicleType].build() : null;
-          if (op.vehicleGroup) scene.add(op.vehicleGroup);
-          op.vehicleTypeBuilt = op.vehicleType;
+      try {
+        if (op.vehicleType >= 0) {
+          if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType) {
+            if (op.vehicleGroup) scene.remove(op.vehicleGroup);
+            op.vehicleGroup = VEHICLE_TYPES[op.vehicleType] ? VEHICLE_TYPES[op.vehicleType].build() : null;
+            if (op.vehicleGroup) scene.add(op.vehicleGroup);
+            op.vehicleTypeBuilt = op.vehicleType;
+          }
+          if (op.vehicleGroup) {
+            op.vehicleGroup.visible = true;
+            op.vehicleGroup.position.copy(op.group.position);
+            op.vehicleGroup.rotation.y = op.group.rotation.y + Math.PI;
+            if (op.vehicleGroup.userData.rotor) op.vehicleGroup.userData.rotor.rotation.y += dt*40;
+            if (op.vehicleGroup.userData.tailRotor) op.vehicleGroup.userData.tailRotor.rotation.x += dt*50;
+          }
+          op.group.children.forEach(c => { if (c !== op.nameSprite && c !== op.chatSprite) c.visible = false; });
+        } else {
+          if (op.vehicleGroup) op.vehicleGroup.visible = false;
+          op.group.children.forEach(c => { c.visible = true; });
         }
-        if (op.vehicleGroup) {
-          op.vehicleGroup.visible = true;
-          op.vehicleGroup.position.copy(op.group.position);
-          op.vehicleGroup.rotation.y = op.group.rotation.y + Math.PI;
-          if (op.vehicleGroup.userData.rotor) op.vehicleGroup.userData.rotor.rotation.y += dt*40;
-          if (op.vehicleGroup.userData.tailRotor) op.vehicleGroup.userData.tailRotor.rotation.x += dt*50;
-        }
-        op.group.children.forEach(c => { if (c !== op.nameSprite && c !== op.chatSprite) c.visible = false; });
-      } else {
-        if (op.vehicleGroup) op.vehicleGroup.visible = false;
-        op.group.children.forEach(c => { c.visible = true; });
-      }
+      } catch (err) { console.warn('other-player vehicle render error (recovered):', err); } // same reasoning as the local player's own try/catch above — must never freeze the frame loop
       if (op.chatHideAt && now2 > op.chatHideAt) { op.chatSprite.visible = false; op.chatHideAt = 0; }
       if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
     });
@@ -13357,7 +13488,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      updateVehicleCameraFocus(dt); // third-person pull-back while riding any placed vehicle — see its own comment
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;
@@ -13482,6 +13613,7 @@
     updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
     updateAmbientFish(dt); // periodically scans for deep water anywhere and spawns/wanders fish in it — see its own comments
     updateAmbientBirds(dt); // a small flock that orbits wherever the player currently is — see its own comments
+    updateTVChannels(dt); // periodically swaps each placed TV's picture — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment
     updateSlTriggers(); // debounced internally — see its own comment
     updateSlTokenColors();

@@ -3921,7 +3921,11 @@
     const gx = Math.floor(cx / VILLAGE_CHUNK_STRIDE), gz = Math.floor(cz / VILLAGE_CHUNK_STRIDE);
     const [hx, hz] = villageGridHomeChunk(gx, gz);
     if (hx !== cx || hz !== cz) return null;
-    if (Math.abs(gx) <= 1 && Math.abs(gz) <= 1) return null; // keep well clear of The Mill / spawn
+    // Actual overlap with The Mill / minigame zones is checked precisely
+    // against the real footprint in buildVillageInChunk (see checkPts) —
+    // that's a tight, accurate check, so there's no need for a coarse
+    // whole-grid-cell skip here too (that used to block a huge ~860-block
+    // radius around spawn, which is why villages weren't showing up).
     const rng = mulberry32(seedFromHash(cx * 7349 + cz * 4201 + 99, cz * 8171 + cx * 1913 + 77));
     if (rng() < VILLAGE_SKIP_CHANCE) return null;
     return { rng };

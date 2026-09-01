@@ -5824,7 +5824,13 @@
       eye.position.set(0.3, 0.03, dz);
       group.add(eye);
     });
-    return group; // starts visible — the golf course's own jumping fish hides it explicitly at its own spawn point instead, since that's specific to its hide-until-it-jumps behaviour, not something ambient swimming fish should inherit
+    // Starts visible — the golf course's own jumping fish hides it
+    // explicitly at its own spawn point instead, since that's specific
+    // to its hide-until-it-jumps behaviour, not something ambient
+    // swimming fish should inherit. Returns the tail separately too, so
+    // whatever's animating this thing can wag it independently of the
+    // body — see updateAmbientFish/updateGolfFish's own tail-wag code.
+    return { group, tail };
   }
   // ---- Ambient fish, anywhere in the world ----
   // Not saved/persisted anywhere and not tied to any specific spot —
@@ -5877,11 +5883,11 @@
       const fishHere = 1 + (pool.cols.length > 40 ? 1 : 0); // a second fish for genuinely large bodies of water
       for (let i = 0; i < fishHere && ambientFish.length < AMBIENT_FISH_MAX; i++) {
         const col = pool.cols[Math.floor(Math.random()*pool.cols.length)];
-        const mesh = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
+        const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
         const swimY = col.minY + 0.6; // a bit up off the floor, comfortably below the surface
         mesh.position.set(col.x+0.5, swimY, col.z+0.5);
         scene.add(mesh);
-        ambientFish.push({ mesh, pool, baseY: swimY, bobOffset: Math.random()*Math.PI*2, targetX: col.x+0.5, targetZ: col.z+0.5, speed: 0.6+Math.random()*0.5, wanderTimer: 0 });
+        ambientFish.push({ mesh, tail, pool, baseY: swimY, bobOffset: Math.random()*Math.PI*2, targetX: col.x+0.5, targetZ: col.z+0.5, speed: 0.6+Math.random()*0.5, wanderTimer: 0 });
       }
     });
   }
@@ -5900,12 +5906,36 @@
       }
       const dx = f.targetX-f.mesh.position.x, dz = f.targetZ-f.mesh.position.z;
       const dist = Math.hypot(dx, dz);
+      let moving = false;
       if (dist > 0.15) {
         const step = Math.min(dist, f.speed*dt);
-        f.mesh.position.x += (dx/dist)*step;
-        f.mesh.position.z += (dz/dist)*step;
-        f.mesh.rotation.y = Math.atan2(dx, dz);
+        const nx = f.mesh.position.x + (dx/dist)*step;
+        const nz = f.mesh.position.z + (dz/dist)*step;
+        // Only actually commits to the move if the destination is still
+        // water at roughly the fish's own depth — otherwise a wander
+        // target on the far side of an irregularly-shaped pool could
+        // have it cut straight across dry land or a shallow bank to get
+        // there. Blocked → just picks a fresh (hopefully reachable)
+        // target next frame instead of forcing its way through.
+        const checkY = Math.round(f.baseY);
+        if (waterBlocks.has(key(Math.floor(nx), checkY, Math.floor(nz))) || waterBlocks.has(key(Math.floor(nx), checkY-1, Math.floor(nz)))) {
+          f.mesh.position.x = nx; f.mesh.position.z = nz;
+          // Local "forward" for this mesh is +X (the body cone points
+          // that way by default, see buildFishMesh), not +Z the way the
+          // humanoid figures elsewhere in the game do — using their own
+          // atan2(dx,dz) facing formula here was exactly why it kept
+          // swimming sideways to whatever direction it was actually
+          // moving in.
+          f.mesh.rotation.y = Math.atan2(-dz, dx);
+          moving = true;
+        } else {
+          f.wanderTimer = 0;
+        }
       }
+      // Tail wag while actually moving — still while parked between
+      // wander points, same as a real fish barely moving its tail when
+      // it's just hanging in the water.
+      if (f.tail) f.tail.rotation.y = moving ? Math.sin(now*0.012)*0.6 : Math.sin(now*0.004)*0.15;
       f.mesh.position.y = f.baseY + Math.sin(now*0.001 + f.bobOffset)*0.15; // a gentle bob, phase-offset per fish so a whole pool doesn't bob in unison
     });
   }
@@ -5919,6 +5949,7 @@
       f.mesh.position.z = f.z;
       f.mesh.position.y = GOLF_BALL_Y + Math.sin(progress*Math.PI)*0.5; // arcs up and back down, peaking mid-jump — enough to clear the bridge's own rails without going absurdly high
       f.mesh.rotation.z = (0.5-progress)*1.4; // pitches nose-up climbing out of the water, nose-down diving back in — rotated around Z now the jump direction is along X, not Z
+      if (f.tail) f.tail.rotation.y = Math.sin(performance.now()*0.02)*0.7; // a quick wag through the whole jump, not just while swimming
     });
   }
   // Two stone pillars flanking the gate with a lintel across the top and
@@ -6136,14 +6167,14 @@
           }
         }
         if (hz.fish) {
-          const mesh = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
+          const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
           mesh.visible = false; // hidden until its own jump cycle actually shows it — see updateGolfFish
           scene.add(mesh); pubExtraProps.push(mesh);
           // Jumps sideways — out of the water on one side of the bridge,
           // up and across it, back into the water on the other side —
           // not lengthwise along the bridge's own direction of travel.
           const fishZ = (hz.z0+hz.z1)/2+0.5;
-          golfFish.push({ mesh, x0: hz.x0+0.5, x1: hz.x1+0.5, z: fishZ });
+          golfFish.push({ mesh, tail, x0: hz.x0+0.5, x1: hz.x1+0.5, z: fishZ });
         }
       });
       if (hole.tunnelGate) {

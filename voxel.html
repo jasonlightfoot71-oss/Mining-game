@@ -2108,9 +2108,17 @@
       if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
       anyWaterTouchedThisStream = true;
     }
-    taperChunkWaterEdges(cx, cz);
+    // Village generation runs BEFORE the taper now (used to be the other
+    // way round) — a house that hadn't been built yet at the moment the
+    // taper ran couldn't act as a stopping wall for it, so it would step
+    // straight through where the house was about to go. The village's
+    // own footprint-clearing already deletes any water sitting there
+    // either way, so the end result wasn't actually wrong before, but
+    // now the taper genuinely sees the real wall and stops at it
+    // directly, the same as it would for solid terrain.
     generatedChunks.add(ck);
     maybeBuildVillage(cx, cz);
+    taperChunkWaterEdges(cx, cz);
   }
   // Only ever touches the SHORELINE of a body of water, never its
   // interior — a water column only qualifies if at least one of its 4
@@ -2151,12 +2159,20 @@
       let depth = 0;
       while (waterBlocks.has(key(x, y-depth, z))) depth++;
       if (depth === 0) return;
+      // Steps down a quarter-block at a time same as before, but once it
+      // bottoms out at 1/4 it doesn't just stop there — a gently
+      // sloping shore can take far more than depth*4 steps to actually
+      // reach solid ground, and stopping on the depth-based countdown
+      // alone left a gap between where the taper ended and where the
+      // real shore actually was. Now it keeps laying a constant 1/4
+      // film outward for as long as it takes, and the ONLY thing that
+      // actually ends it is hitting solid ground.
       let h = depth - 0.25, step = 0;
-      while (h > 0) {
+      while (step < 400) { // generous safety cap against a pathological case where solid ground is never found — this is a one-time generation cost, not a per-frame one, so this bound is only ever a safety net, not a real limit in practice
         const sx = x + dx*step, sz = z + dz*step;
         if (blocks.has(key(sx, y, sz))) break; // solid ground here — the taper has reached the actual shore, stop
-        setWaterColumnHeight(sx, sz, h);
-        h -= 0.25;
+        setWaterColumnHeight(sx, sz, Math.max(0.25, h));
+        if (h > 0.25) h -= 0.25;
         step++;
       }
     });

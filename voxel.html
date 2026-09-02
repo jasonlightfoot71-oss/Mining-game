@@ -2119,15 +2119,19 @@
   // water on every side costs nothing here; only the two end columns
   // that actually border land get touched. This is what keeps a huge
   // lake cheap: the amount of work scales with the shoreline's
-  // PERIMETER, not the lake's total area. From each such edge block,
-  // outward toward the land it borders: the edge block itself becomes
-  // 3/4 height, one block further out becomes 1/2, one more becomes
-  // 1/4 (only where that column doesn't already have solid ground
-  // sitting there — never floats water over a hill) — a shallow,
-  // gradually receding "beach" instead of full-height water ending
-  // abruptly at a vertical wall. Runs once, at generation time, as part
-  // of building this chunk — not a per-frame simulation, so it adds no
-  // ongoing cost regardless of how much water exists.
+  // PERIMETER, not the lake's total area (or its depth).
+  //
+  // Accounts for depth now, not just the single top layer — a 3-deep
+  // edge steps down a quarter-block at a time all the way from 2.75 to
+  // 0.25 (2 full + 3/4, 2 full + 1/2, 2 full + 1/4, 2 full, 1 full +
+  // 3/4, 1 full + 1/2, 1 full + 1/4, 1 full, 3/4, 1/2, 1/4) before
+  // finally reaching dry land, rather than only ever fading a single
+  // surface layer regardless of how deep the water actually is there.
+  // Same rule at any depth: from the edge, each step outward is exactly
+  // 0.25 blocks shorter than the last, until there's nothing left.
+  // Runs once, at generation time, as part of building this chunk — not
+  // a per-frame simulation, so it adds no ongoing cost regardless of how
+  // much water exists or how deep it is.
   function taperChunkWaterEdges(cx, cz) {
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE, y = SEA_LEVEL;
     const edgeCells = [];
@@ -2141,13 +2145,36 @@
       }
     }
     edgeCells.forEach(({x,z,dx,dz}) => {
-      waterBlocks.set(key(x,y,z), 0.75);
-      [[x+dx,z+dz,0.5],[x+dx*2,z+dz*2,0.25]].forEach(([sx,sz,h]) => {
-        const sk = key(sx,y,sz);
-        if (!blocks.has(sk) && !waterBlocks.has(sk)) waterBlocks.set(sk, h);
-      });
+      // How deep the water actually is at this particular edge column —
+      // counts the stack of full-height blocks straight down from the
+      // surface.
+      let depth = 0;
+      while (waterBlocks.has(key(x, y-depth, z))) depth++;
+      if (depth === 0) return;
+      let h = depth - 0.25, step = 0;
+      while (h > 0) {
+        const sx = x + dx*step, sz = z + dz*step;
+        if (blocks.has(key(sx, y, sz))) break; // solid ground here — the taper has reached the actual shore, stop
+        setWaterColumnHeight(sx, sz, h);
+        h -= 0.25;
+        step++;
+      }
     });
     if (edgeCells.length) anyWaterTouchedThisStream = true; // makes sure the rebuild this chunk's own streaming pass triggers actually picks up these new/adjusted cells
+  }
+  // Stacks water blocks downward from the surface (y=SEA_LEVEL) to
+  // represent a total column height of h blocks — h=2.75 becomes 2 full
+  // blocks with a 3/4 block on top of them, since the only part of a
+  // real body of water that would ever be a fraction of a block is its
+  // surface; everything beneath that is still an ordinary full block of
+  // water.
+  function setWaterColumnHeight(x, z, h) {
+    const layers = Math.ceil(h);
+    let topFrac = h - Math.floor(h);
+    if (topFrac < 0.001) topFrac = 1; // h was a whole number — the top layer is full too, not a sliver
+    for (let i = 0; i < layers; i++) {
+      waterBlocks.set(key(x, SEA_LEVEL - i, z), i === 0 ? topFrac : 1);
+    }
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is

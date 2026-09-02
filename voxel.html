@@ -1976,9 +1976,9 @@
         // basins are now a genuinely rare, special encounter rather than
         // "every now and again."
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*0.16*amp); // halved again (was 0.33) — water reduced several times over now, this is the smallest local contribution yet
-        if (oceanField > 0.96) { // raised again (was 0.92) — basins are now a very rare, special encounter
-          const oceanStrength = (oceanField - 0.96) / 0.04; // 0 at the basin's edge, 1 at its deepest core
+        let h = Math.round(baseline + n*0.08*amp); // halved yet again (was 0.16) — this local contribution is now barely a factor at all
+        if (oceanField > 0.985) { // raised again (was 0.96) — basins are now close to a once-in-a-while landmark rather than a routine feature
+          const oceanStrength = (oceanField - 0.985) / 0.015; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
@@ -2016,7 +2016,7 @@
           // enough for fish, without undoing the frequency/size cuts
           // that actually fixed the performance problem.
           let targetDepth = 2 + Math.round(depthNoise*2);
-          if (oceanField > 0.96) targetDepth += 1;
+          if (oceanField > 0.985) targetDepth += 1;
           if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
         }
         // Surface now depends on BOTH axes: rocky peaks still need real
@@ -2159,30 +2159,29 @@
       let depth = 0;
       while (waterBlocks.has(key(x, y-depth, z))) depth++;
       if (depth === 0) return;
-      // Steps down a quarter-block at a time same as before. Bounded
-      // strictly to THIS chunk now, and much more conservatively capped
-      // — the previous version could walk straight across a chunk
-      // boundary into a neighbour that hasn't been generated yet, where
-      // columnHeight comes back undefined for every column there; that
-      // was treated as "not dry land yet, keep going" instead of "stop,
-      // we don't know what's there", which is what actually flooded
-      // huge swathes of ungenerated territory. This has now caused two
-      // rounds of flooding the map, so the priority is staying safely
-      // bounded over always reaching the literal shoreline — a genuinely
-      // gentle slope may not get a perfectly seamless taper all the way
-      // to the real edge any more, which is a fair trade for this never
-      // running away across the world again.
+      // Fixed, predictable step count — exactly depth*4 - 1 (1 block
+      // deep steps 3 out, 2 deep steps 7 out, 3 deep steps 11 out, 4
+      // deep steps 15 out — each quarter-block shorter than the last),
+      // stopping EARLY only if it hits terrain/a protected area/the
+      // chunk edge first. This deliberately does NOT keep searching for
+      // "real ground" beyond that count any more — the open-ended
+      // version was the direct cause of two separate rounds of flooding
+      // (it could walk for dozens of blocks through open space, or even
+      // straight across a chunk boundary into ungenerated territory,
+      // before finding anything to stop it on). Bounded and predictable
+      // beats always finding the literal shoreline.
+      const maxSteps = depth*4 - 1;
       let h = depth - 0.25, step = 0;
-      while (step < 16) {
+      while (step < maxSteps) {
         const sx = x + dx*step, sz = z + dz*step;
         if (sx < x0 || sx >= x0+CHUNK_SIZE || sz < z0 || sz >= z0+CHUNK_SIZE) break; // never leave the chunk currently being generated
         const colH = columnHeight.get(sx+','+sz);
         if (colH === undefined) break; // unknown ground — never treat "we don't know" as "keep going"
         if (!pubWaterAllowed(sx, sz)) break; // The Mill, minigames, and their surrounding buffer — never allowed to have water at all, regardless of local ground height
-        if (colH >= SEA_LEVEL) break; // this column's actual ground reaches at or above the waterline — genuine dry land/shore, not just "no block happens to sit exactly at sea level"
+        if (colH >= SEA_LEVEL) break; // this column's actual ground reaches at or above the waterline
         if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.) occupying the water's own surface cell
-        setWaterColumnHeight(sx, sz, Math.max(0.25, h));
-        if (h > 0.25) h -= 0.25;
+        setWaterColumnHeight(sx, sz, h);
+        h -= 0.25;
         step++;
       }
     });

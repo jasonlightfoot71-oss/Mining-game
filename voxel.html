@@ -8553,6 +8553,18 @@
   crackMesh.visible = false;
   scene.add(crackMesh);
 
+  // Highlight for a targeted piece of furniture — a distinct colour
+  // (amber, not the plain block outline's black) specifically so it's
+  // obvious you've got a piece of furniture lined up rather than the
+  // floor tile under it. Sized bigger than a single block since most
+  // furniture is visually wider than the 1x1 (or 2x2) cell it's
+  // anchored to.
+  const furnitureOutlineGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1));
+  const furnitureOutlineMat = new THREE.LineBasicMaterial({ color: 0xffb020, linewidth: 2 });
+  const furnitureOutline = new THREE.LineSegments(furnitureOutlineGeom, furnitureOutlineMat);
+  furnitureOutline.visible = false;
+  scene.add(furnitureOutline);
+
   // ================= WORK-HELD PROPS (first person) =================
   // While actually on shift, the hand shows a themed prop instead of
   // whatever's selected in the hotbar — a nod to actually doing the job
@@ -9340,6 +9352,28 @@
   // block into a water cell (displacing it, see replacingWater below) is
   // an existing, intentional way to fill water in, which depends on the
   // ray still being able to land ON the water cell itself.
+  // Furniture isn't part of the block grid voxelRaycast below walks, so
+  // it needs its own simple check: for each placed piece, project it
+  // onto the look direction and see how far the ray passes from its
+  // centre. Good enough for "am I looking roughly at this thing", which
+  // is all this needs to be — not a precise per-mesh hit test. Returns
+  // the closest qualifying piece within maxDist, or null.
+  function raycastFurniture(maxDist) {
+    const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    let bestFk = null, bestDist = maxDist;
+    furniture.forEach((f, fk) => {
+      const type = FURNITURE_TYPES[f.typeIdx];
+      const footprint = (type && type.footprint) || 1;
+      const target = new THREE.Vector3(f.bx + footprint/2, f.by + 1.4, f.bz + footprint/2);
+      const along = target.clone().sub(origin).dot(dir);
+      if (along < 0 || along > bestDist) return;
+      const closest = origin.clone().addScaledVector(dir, along);
+      if (closest.distanceTo(target) > 0.8) return;
+      bestDist = along; bestFk = fk;
+    });
+    return bestFk ? { fk: bestFk, dist: bestDist } : null;
+  }
   function voxelRaycast(skipWater) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
@@ -9400,6 +9434,28 @@
     // reaches the actual terrain instead of just clearing the water in
     // front of it.
     const r = voxelRaycast(selectedSlot !== WATER_SLOT);
+    // Furniture removal — instant, no timed dig the way blocks have,
+    // since there's no "hardness" to a piece of furniture. Only wins
+    // over a block if it's actually the closer of the two along the
+    // same look direction, so you can't reach through a wall to delete
+    // furniture in the next room. This is a genuine permanent delete —
+    // removeFurniture disposes its GPU resources and the next autosave
+    // simply won't have it any more, there's no undo.
+    let blockDist = Infinity;
+    if (r) {
+      const camPos = camera.getWorldPosition(new THREE.Vector3());
+      blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5));
+    }
+    const furnitureTarget = raycastFurniture(6);
+    if (furnitureTarget && furnitureTarget.dist < blockDist) {
+      const f = furniture.get(furnitureTarget.fk);
+      if (!f || !canEditAt(f.bx, f.bz)) { mineHeld = false; return; } // same view-only guard as normal mining, checked against the furniture's own location
+      removeFurniture(furnitureTarget.fk);
+      furnitureOutline.visible = false;
+      playThud(180);
+      mineHeld = false;
+      return;
+    }
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
@@ -13803,10 +13859,31 @@
 
       // mining
       const r = voxelRaycast(selectedSlot !== WATER_SLOT); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
+      let blockDist = Infinity;
       if (r) {
-        outline.visible = true;
-        outline.position.set(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5);
-      } else { outline.visible = false; }
+        const camPos = camera.getWorldPosition(new THREE.Vector3());
+        blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5));
+      }
+      const furnitureTarget = raycastFurniture(6);
+      if (furnitureTarget && furnitureTarget.dist < blockDist) {
+        // Furniture takes priority over whatever block is under/behind
+        // it — the amber outline is what you're actually about to mine
+        // if you click right now, so the plain block outline underneath
+        // it stays hidden to avoid implying you'd hit the floor instead.
+        const f = furniture.get(furnitureTarget.fk);
+        const type = FURNITURE_TYPES[f.typeIdx];
+        const footprint = (type && type.footprint) || 1;
+        furnitureOutline.visible = true;
+        furnitureOutline.position.set(f.bx + footprint/2, f.by + 1 + footprint*0.35, f.bz + footprint/2);
+        furnitureOutline.scale.set(footprint*0.9, footprint*0.8, footprint*0.9);
+        outline.visible = false;
+      } else {
+        furnitureOutline.visible = false;
+        if (r) {
+          outline.visible = true;
+          outline.position.set(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5);
+        } else { outline.visible = false; }
+      }
 
       if (mining) {
         const rr = voxelRaycast(selectedSlot !== WATER_SLOT); // same reasoning as doMine's own raycast above

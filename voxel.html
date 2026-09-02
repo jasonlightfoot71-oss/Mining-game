@@ -1947,22 +1947,29 @@
         // noise's smooth, continuous shape.
         const elevation = biomeStretch(fbm(x*0.008, z*0.008));
         const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
-        // Centred to -0.5..0.5 rather than used raw (0..1) — it was
-        // being added on TOP of baseline unconditionally before, which
-        // meant it could only ever push height UP, never down. Baseline
-        // being low was necessary but not sufficient for water to
-        // actually appear: the local detail noise still had to happen to
-        // roll near its own minimum at the same spot. Centring it means
-        // more of a low-elevation area genuinely dips below baseline
-        // instead of almost always sitting above it. Multiplier halved
-        // again, to 0.65 (was 1.3, before that 2) — water is still the
-        // single biggest lag source (rebuildWaterGeometry rescans every
-        // water block in the loaded world on every rebuild), so this is
-        // a direct, blunt cut to total volume rather than a subtler
-        // noise-shape tweak.
-        const n = fbm(x*0.045, z*0.045) - 0.5;
-        const amp = 4 + elevation*10;          // reduced from 18 — gentler height swings, both calmer terrain and a smaller vertical range to scan per column
-        const baseline = SEA_LEVEL - 3 + elevation*5; // lowered back to -3 (from -2) specifically so water becomes reachable across a wider elevation range again — the calmer overall variety made genuinely low elevation rare enough that water had nearly stopped appearing at all; the elevation*5 slope itself is unchanged, so this doesn't affect how dramatic mountains get, just how easy it is to dip below sea level
+        // Real fix, not another shrink: every previous round of "reduce
+        // water" cut the SAME noise term that also produces hills and
+        // mountains — the baseline below used to average out barely
+        // above SEA_LEVEL for typical (mid-range) elevation, so even a
+        // small amount of local noise was enough to dip huge stretches
+        // of the map below the waterline; shrinking that noise further
+        // and further just flattened everything toward sea level
+        // instead of actually making water rarer, which is exactly why
+        // "no terrain rises above sea level" was true almost everywhere.
+        // amp is restored to a proper range (real hills/valleys again,
+        // not a sliver), and n is used at FULL strength now — the actual
+        // lever for water frequency is baseline below, not this.
+        const n = fbm(x*0.045, z*0.045) - 0.5; // centred -0.5..0.5, so local noise can push a column down as easily as up
+        const amp = 3 + elevation*11;
+        // Sits well ABOVE sea level for most of the elevation range now
+        // — SEA_LEVEL-6 at the very lowest elevation, up to SEA_LEVEL+16
+        // at the highest, and averaging around SEA_LEVEL+5 for ordinary
+        // mid-range elevation. Water becomes possible only where
+        // elevation is genuinely LOW (not just "slightly below
+        // average"), which is what actually makes it the exception
+        // rather than the rule, instead of merely shrinking how far
+        // local noise can reach either way.
+        const baseline = SEA_LEVEL - 6 + elevation*22;
         // A second, much larger and slower-changing noise field, entirely
         // separate from the regional elevation above — elevation alone
         // only ever produces small, scattered dips, never a body of
@@ -1972,12 +1979,9 @@
         // it does, it pulls the baseline down hard regardless of what
         // the regional elevation says — that's deliberate: a proper lake
         // shouldn't care that it's sitting in an otherwise-hilly area.
-        // Threshold raised again, to 0.85 (was 0.76, before that 0.62) —
-        // basins are now a genuinely rare, special encounter rather than
-        // "every now and again."
         const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*0.08*amp); // halved yet again (was 0.16) — this local contribution is now barely a factor at all
-        if (oceanField > 0.985) { // raised again (was 0.96) — basins are now close to a once-in-a-while landmark rather than a routine feature
+        let h = Math.round(baseline + n*amp);
+        if (oceanField > 0.985) { // basins are a rare, special encounter
           const oceanStrength = (oceanField - 0.985) / 0.015; // 0 at the basin's edge, 1 at its deepest core
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }

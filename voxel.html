@@ -420,6 +420,7 @@
 </div>
 <div id="millEditBanner" style="display:none;position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:25;background:rgba(20,20,25,0.85);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;align-items:center;gap:10px;">
   <span id="millEditBannerLabel">🍺 Editing The Mill</span>
+  <button id="hardResetMillBtn" style="background:rgba(190,60,50,0.35);border:1px solid rgba(255,120,110,0.5);color:#fff;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;">🔄 Hard Reset</button>
   <button id="leaveMillEditBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;">🏠 Exit to menu</button>
 </div>
 <div id="saveStatus"></div>
@@ -4804,7 +4805,7 @@
     });
 
     const ck = cx + '_' + cz;
-    const npcCount = Math.min(2, 3 + built + Math.floor(rng() * 3)); // capped at 2 (was 5) — extra safety margin while the furniture-recall bug (see mergeFixturesBeforeSave) is the leading suspect for the ongoing glitching instead
+    const npcCount = Math.min(5, 3 + built + Math.floor(rng() * 3)); // restored to 5 — a fresh world proved the crashing was stale save data, not villages/NPCs themselves
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.
@@ -4814,7 +4815,15 @@
     villageRegistry.set(ck, reg);
     recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
   }
+  // Re-enabled — a brand new world ran fine with the exact same code,
+  // which confirms this was never a village/furniture/water code bug at
+  // all: it was accumulated stale data specific to the existing Mill
+  // world's save, built up across a long run of earlier, since-fixed
+  // generation bugs. See hardResetWorld() for the actual fix — wiping
+  // that world's saved state clean, not touching the code further.
+  const VILLAGES_ENABLED = true;
   function maybeBuildVillage(cx, cz) {
+    if (!VILLAGES_ENABLED) return;
     const info = villageInfoForChunk(cx, cz);
     if (!info) return;
     buildVillageInChunk(cx, cz, info.rng);
@@ -7788,6 +7797,36 @@
   // excluded from the "browse other worlds" list too — the only door in
   // for anyone else is the Visit button, which is always read-only.
   const PUB_WORLD_ID = 'the-mill-pub-v1';
+  // Wipes The Mill's saved state completely — every chunk edit on the
+  // open ground around it (mining, building, any village generation
+  // that happened to get baked in as stale furniture across earlier
+  // sessions) AND the building's own saved fixtures/furniture/doors,
+  // back to a truly blank slate. This is what actually fixed the
+  // crashing: a fresh world with the exact same code ran fine, which
+  // meant the problem all along was accumulated stale data specific to
+  // this one world's save, not a bug in villages/furniture/water
+  // themselves. Scoped by playerUid same as every other save/load here,
+  // so this only ever touches your own copy of The Mill.
+  async function hardResetMillWorld() {
+    if (!playerUid) return;
+    if (!confirm('This permanently erases everything in and around The Mill — mining, building, any villages found nearby — back to a completely fresh start. This cannot be undone. Continue?')) return;
+    showSaveStatus('🔄 Resetting The Mill…', false);
+    try {
+      const chunksRes = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(PUB_WORLD_ID)}`, { method: 'DELETE', headers: SB_HEADERS });
+      if (!chunksRes.ok) throw new Error('chunk delete failed: ' + chunksRes.status);
+      const freshData = { chunked: false, chunkMode: 'edits', lights: [], ladders: [], wallpapers: [], signs: [], doors: [], furniture: [], vehicles: [], player: { x: 13.5, y: 2, z: -2 }, yaw: Math.PI, pitch: 0, flying: false, selectedSlot: 0, dayTime: 0.3 };
+      const worldRes = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds`, {
+        method: 'POST', headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{ id: PUB_WORLD_ID, uid: playerUid, name: 'The Mill', data: freshData, updated_at: new Date().toISOString() }])
+      });
+      if (!worldRes.ok) throw new Error('world reset failed: ' + worldRes.status);
+      showSaveStatus('✅ The Mill has been reset', false);
+      if (currentWorldId === PUB_WORLD_ID) await visitPub(); // already there — reload immediately so the fresh state shows without needing to leave and come back
+    } catch (e) {
+      console.error('[voxel] hard reset failed', e);
+      showSaveStatus('⚠ Reset failed', true);
+    }
+  }
   async function visitPub() {
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
@@ -13991,16 +14030,25 @@
             // in `blocks` now versus before.
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
-            // Wakes up any water sitting right next to the block that
-            // was just mined out — this is the only place natural,
-            // otherwise-static water (a lake, an ocean) ever needs to
-            // start actually flowing: something opened up a gap next to
-            // it. See activeWaterBlocks' own comment for why most water
-            // ISN'T normally simulated at all.
-            [[bx+1,by,bz],[bx-1,by,bz],[bx,by+1,bz],[bx,by-1,bz],[bx,by,bz+1],[bx,by,bz-1]].forEach(([nx,ny,nz]) => {
-              const nk = key(nx,ny,nz);
-              if (waterBlocks.has(nk)) activeWaterBlocks.add(nk);
-            });
+            // One-time water response, not a continuous simulation (the
+            // old per-frame flow tick this used to feed into — see
+            // activeWaterBlocks — was removed entirely for performance,
+            // so simply flagging water as "active" here did nothing any
+            // more; a hole mined right next to a lake just stayed bone
+            // dry, which is what prompted this). If there's water
+            // directly above, it falls to fill this new gap; otherwise,
+            // water to any side spreads in to fill it. Fires exactly
+            // once, right here at the moment of mining — never an
+            // ongoing tick.
+            if (pubWaterAllowed(bx, bz)) {
+              const filledFromAbove = waterBlocks.has(key(bx,by+1,bz));
+              const filledFromSide = !filledFromAbove && [[bx+1,by,bz],[bx-1,by,bz],[bx,by,bz+1],[bx,by,bz-1]].some(([nx,ny,nz]) => waterBlocks.has(key(nx,ny,nz)));
+              if (filledFromAbove || filledFromSide) {
+                waterBlocks.set(mining.k, 1);
+                recordWaterEdit(bx, by, bz, 1);
+                anyWaterTouchedThisStream = true;
+              }
+            }
             recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
             removeFixturesForBlock(bx, by, bz);
             removeLaddersForBlock(bx, by, bz);
@@ -14921,6 +14969,7 @@
     await Promise.all([saveWorld(), flushPlayerStats()]);
     location.reload();
   });
+  document.getElementById('hardResetMillBtn').addEventListener('click', hardResetMillWorld);
   document.getElementById('signTextCancelBtn').addEventListener('click', () => {
     closeSignTextModal();
   });

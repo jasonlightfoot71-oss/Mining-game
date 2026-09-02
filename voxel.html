@@ -9539,16 +9539,26 @@
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
     if (r.isWater) {
-      // Water comes out instantly, no timed dig
-      waterBlocks.delete(key(r.hit.x,r.hit.y,r.hit.z));
-      // Scooping out one cell can leave neighbouring water with
-      // somewhere new to flow into, same idea as mining a solid block —
-      // see activeWaterBlocks' own comment.
-      [[r.hit.x+1,r.hit.y,r.hit.z],[r.hit.x-1,r.hit.y,r.hit.z],[r.hit.x,r.hit.y+1,r.hit.z],[r.hit.x,r.hit.y-1,r.hit.z],[r.hit.x,r.hit.y,r.hit.z+1],[r.hit.x,r.hit.y,r.hit.z-1]].forEach(([nx,ny,nz]) => {
-        const nk = key(nx,ny,nz);
-        if (waterBlocks.has(nk)) activeWaterBlocks.add(nk);
-      });
-      recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, -1);
+      // Drains a quarter-block at a time now instead of coming out
+      // whole — mine it once and a full block becomes 3/4, mine that
+      // and it becomes 1/2, then 1/4, then finally gone on the fourth
+      // hit. If there's a deeper layer of water sitting right below
+      // this one (a genuinely deep lake, not just a puddle), it's
+      // already its own separate full-height entry underneath — so once
+      // the top layer is fully drained away, the raycast naturally
+      // reaches that next layer down and starts draining IT the same
+      // way, with no special-casing needed here for depth.
+      const k = key(r.hit.x,r.hit.y,r.hit.z);
+      const current = waterBlocks.get(k);
+      const currentHeight = (typeof current === 'number' && current > 0 && current <= 1) ? current : 1;
+      const nextHeight = currentHeight - 0.25;
+      if (nextHeight > 0.001) {
+        waterBlocks.set(k, nextHeight);
+        recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, nextHeight);
+      } else {
+        waterBlocks.delete(k);
+        recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, -1);
+      }
       rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all
       playThud(220);
       return;

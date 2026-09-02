@@ -2159,20 +2159,35 @@
   // the next pass and get tapered again, pushing the beach a little
   // further inland each cycle forever.
   const taperedWaterOrigins = new Set();
-  function taperWaterEdgesInArea(x0, x1, z0, z1) {
-    const y = SEA_LEVEL;
+  // Finds the topmost water cell in this column, searching outward from
+  // yHint (the player's own current height) rather than assuming
+  // SEA_LEVEL — that assumption was the actual bug behind water you
+  // manually place NOT tapering at all: natural lakes always sit at
+  // sea level by construction, but water placed by hand can be at any
+  // height depending on where you're standing when you place it, and
+  // the old version only ever looked at the one fixed sea-level height.
+  function findWaterSurfaceY(x, z, yHint) {
+    const base = Math.round(yHint);
+    for (let dy = 8; dy >= -8; dy--) {
+      const y = base + dy;
+      if (waterBlocks.has(key(x,y,z))) return y;
+    }
+    return null;
+  }
+  function taperWaterEdgesInArea(x0, x1, z0, z1, yHint) {
     const edgeCells = [];
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {
         const ck = x+','+z;
         if (taperedWaterOrigins.has(ck)) continue;
-        if (!waterBlocks.has(key(x,y,z))) continue;
+        const y = findWaterSurfaceY(x, z, yHint);
+        if (y === null) continue;
         [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dz]) => {
-          if (!waterBlocks.has(key(x+dx,y,z+dz))) edgeCells.push({x,z,dx,dz,ck});
+          if (!waterBlocks.has(key(x+dx,y,z+dz))) edgeCells.push({x,z,y,dx,dz,ck});
         });
       }
     }
-    edgeCells.forEach(({x,z,dx,dz,ck}) => {
+    edgeCells.forEach(({x,z,y,dx,dz,ck}) => {
       taperedWaterOrigins.add(ck); // marked BEFORE processing, unconditionally
       let depth = 0;
       while (waterBlocks.has(key(x, y-depth, z))) depth++;
@@ -2184,9 +2199,9 @@
         const colH = columnHeight.get(sx+','+sz);
         if (colH === undefined) break; // unknown ground — never treat "we don't know" as "keep going"
         if (!pubWaterAllowed(sx, sz)) break; // The Mill, minigames, and their surrounding buffer
-        if (colH >= SEA_LEVEL) break; // genuine dry land/shore
+        if (colH >= y) break; // dry ground reaching at/above THIS water's own surface — not necessarily sea level, since this water might not be at sea level either
         if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.)
-        setWaterColumnHeight(sx, sz, h);
+        setWaterColumnHeight(sx, sz, y, h);
         h -= 0.25;
         step++;
       }
@@ -2205,35 +2220,23 @@
     if (now - lastWaterTaperScan < 3000) return;
     lastWaterTaperScan = now;
     const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
-    const touched = taperWaterEdgesInArea(px-10, px+10, pz-10, pz+10);
+    const touched = taperWaterEdgesInArea(px-10, px+10, pz-10, pz+10, player.pos.y);
     if (touched) scheduleWaterRebuild();
   }
-  // Stacks water blocks downward from the surface (y=SEA_LEVEL) to
+  // Stacks water blocks downward from a given surface height (topY) to
   // represent a total column height of h blocks — h=2.75 becomes 2 full
   // blocks with a 3/4 block on top of them, since the only part of a
   // real body of water that would ever be a fraction of a block is its
   // surface; everything beneath that is still an ordinary full block of
-  // water.
-  function setWaterColumnHeight(x, z, h) {
+  // water. topY is whatever this particular body of water's own surface
+  // actually is — not hardcoded to SEA_LEVEL, for the same reason
+  // findWaterSurfaceY above isn't either.
+  function setWaterColumnHeight(x, z, topY, h) {
     const layers = Math.ceil(h);
     let topFrac = h - Math.floor(h);
     if (topFrac < 0.001) topFrac = 1; // h was a whole number — the top layer is full too, not a sliver
     for (let i = 0; i < layers; i++) {
-      waterBlocks.set(key(x, SEA_LEVEL - i, z), i === 0 ? topFrac : 1);
-    }
-  }
-  // Stacks water blocks downward from the surface (y=SEA_LEVEL) to
-  // represent a total column height of h blocks — h=2.75 becomes 2 full
-  // blocks with a 3/4 block on top of them, since the only part of a
-  // real body of water that would ever be a fraction of a block is its
-  // surface; everything beneath that is still an ordinary full block of
-  // water.
-  function setWaterColumnHeight(x, z, h) {
-    const layers = Math.ceil(h);
-    let topFrac = h - Math.floor(h);
-    if (topFrac < 0.001) topFrac = 1; // h was a whole number — the top layer is full too, not a sliver
-    for (let i = 0; i < layers; i++) {
-      waterBlocks.set(key(x, SEA_LEVEL - i, z), i === 0 ? topFrac : 1);
+      waterBlocks.set(key(x, topY - i, z), i === 0 ? topFrac : 1);
     }
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded

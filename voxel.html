@@ -2992,6 +2992,7 @@
     scene.remove(f.light); scene.remove(f.stick); scene.remove(f.flame);
     disposeObject3D(f.stick); disposeObject3D(f.flame); // f.light is a THREE.PointLight — no geometry/material of its own to dispose
     fixtures.delete(fk);
+    deletedKeysThisSession.fixtures.add(fk);
   }
   function clearAllFixtures() {
     for (const fk of Array.from(fixtures.keys())) removeFixture(fk);
@@ -3067,6 +3068,7 @@
     if (!l) return;
     scene.remove(l.group);
     ladders.delete(fk);
+    deletedKeysThisSession.ladders.add(fk);
   }
   function clearAllLadders() {
     for (const fk of Array.from(ladders.keys())) removeLadder(fk);
@@ -3129,6 +3131,7 @@
     if (!w) return;
     scene.remove(w.mesh);
     wallpapers.delete(fk);
+    deletedKeysThisSession.wallpapers.add(fk);
   }
   function clearAllWallpapers() {
     for (const fk of Array.from(wallpapers.keys())) removeWallpaper(fk);
@@ -3229,6 +3232,7 @@
     scene.remove(s.mesh);
     disposeObject3D(s.mesh); // also covers geometry, which the material-only disposal here previously missed
     signs.delete(fk);
+    deletedKeysThisSession.signs.add(fk);
   }
   function clearAllSigns() {
     for (const fk of Array.from(signs.keys())) removeSign(fk);
@@ -3387,6 +3391,7 @@
     scene.remove(d.group);
     disposeObject3D(d.group);
     doors.delete(dk);
+    deletedKeysThisSession.doors.add(dk);
   }
   function clearAllDoors() {
     for (const dk of Array.from(doors.keys())) removeDoor(dk);
@@ -4207,6 +4212,7 @@
     scene.remove(f.group);
     disposeObject3D(f.group);
     furniture.delete(fk);
+    deletedKeysThisSession.furniture.add(fk);
   }
   function clearAllFurniture() {
     for (const fk of Array.from(furniture.keys())) removeFurniture(fk);
@@ -4786,7 +4792,7 @@
     });
 
     const ck = cx + '_' + cz;
-    const npcCount = Math.min(5, 3 + built + Math.floor(rng() * 3)); // capped at 5 — each NPC is a full multi-mesh figure, so this is a real chunk of the per-village GPU cost
+    const npcCount = Math.min(2, 3 + built + Math.floor(rng() * 3)); // capped at 2 (was 5) — extra safety margin while the furniture-recall bug (see mergeFixturesBeforeSave) is the leading suspect for the ongoing glitching instead
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.
@@ -9352,27 +9358,39 @@
   // block into a water cell (displacing it, see replacingWater below) is
   // an existing, intentional way to fill water in, which depends on the
   // ray still being able to land ON the water cell itself.
-  // Furniture isn't part of the block grid voxelRaycast below walks, so
-  // it needs its own simple check: for each placed piece, project it
-  // onto the look direction and see how far the ray passes from its
-  // centre. Good enough for "am I looking roughly at this thing", which
-  // is all this needs to be — not a precise per-mesh hit test. Returns
-  // the closest qualifying piece within maxDist, or null.
+  // Covers furniture, torches/fixtures, and doors — none of them are
+  // part of the block grid voxelRaycast below walks, so they all need
+  // this same simple check: project the candidate onto the look
+  // direction and see how far the ray passes from it. Good enough for
+  // "am I looking roughly at this thing", which is all this needs to
+  // be — not a precise per-mesh hit test. Returns the closest
+  // qualifying object of any of the three kinds within maxDist, or
+  // null, tagged with which kind it is so the caller knows which
+  // removeX function to call.
   function raycastFurniture(maxDist) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
-    let bestFk = null, bestDist = maxDist;
-    furniture.forEach((f, fk) => {
-      const type = FURNITURE_TYPES[f.typeIdx];
-      const footprint = (type && type.footprint) || 1;
-      const target = new THREE.Vector3(f.bx + footprint/2, f.by + 1.4, f.bz + footprint/2);
+    let bestKey = null, bestKind = null, bestDist = maxDist;
+    function consider(kind, k, wx, wy, wz, radius) {
+      const target = new THREE.Vector3(wx, wy, wz);
       const along = target.clone().sub(origin).dot(dir);
       if (along < 0 || along > bestDist) return;
       const closest = origin.clone().addScaledVector(dir, along);
-      if (closest.distanceTo(target) > 0.8) return;
-      bestDist = along; bestFk = fk;
+      if (closest.distanceTo(target) > radius) return;
+      bestDist = along; bestKey = k; bestKind = kind;
+    }
+    furniture.forEach((f, fk) => {
+      const type = FURNITURE_TYPES[f.typeIdx];
+      const footprint = (type && type.footprint) || 1;
+      consider('furniture', fk, f.bx + footprint/2, f.by + 1.4, f.bz + footprint/2, 0.8);
     });
-    return bestFk ? { fk: bestFk, dist: bestDist } : null;
+    fixtures.forEach((f, fk) => {
+      consider('fixture', fk, f.bx + 0.5 + f.nx*0.3, f.by + 0.5 + f.ny*0.3, f.bz + 0.5 + f.nz*0.3, 0.55);
+    });
+    doors.forEach((d, dk) => {
+      consider('door', dk, d.bx + 0.5, d.by + 1, d.bz + 0.5, 0.7);
+    });
+    return bestKey ? { kind: bestKind, fk: bestKey, dist: bestDist } : null;
   }
   function voxelRaycast(skipWater) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
@@ -9448,9 +9466,15 @@
     }
     const furnitureTarget = raycastFurniture(6);
     if (furnitureTarget && furnitureTarget.dist < blockDist) {
-      const f = furniture.get(furnitureTarget.fk);
-      if (!f || !canEditAt(f.bx, f.bz)) { mineHeld = false; return; } // same view-only guard as normal mining, checked against the furniture's own location
-      removeFurniture(furnitureTarget.fk);
+      // Same instant-delete idea for all three kinds now — furniture,
+      // torches/fixtures, and doors — dispatched to whichever removeX
+      // function actually owns that map.
+      const store = furnitureTarget.kind === 'fixture' ? fixtures : furnitureTarget.kind === 'door' ? doors : furniture;
+      const obj = store.get(furnitureTarget.fk);
+      if (!obj || !canEditAt(obj.bx, obj.bz)) { mineHeld = false; return; } // same view-only guard as normal mining, checked against the object's own location
+      if (furnitureTarget.kind === 'fixture') removeFixture(furnitureTarget.fk);
+      else if (furnitureTarget.kind === 'door') removeDoor(furnitureTarget.fk);
+      else removeFurniture(furnitureTarget.fk);
       furnitureOutline.visible = false;
       playThud(180);
       mineHeld = false;
@@ -11041,6 +11065,15 @@
   // proper multi-way merge or undo. It substantially reduces the most
   // common and most damaging case (someone's whole addition vanishing)
   // without pretending to be a complete solution.
+  // Tracks every key explicitly removed this session (mining a piece of
+  // furniture, a torch, a door — or a village tearing one down as its
+  // chunk unloads) — checked by mergeFixturesBeforeSave below so it
+  // never resurrects something that was deliberately deleted. Without
+  // this, deleting anything that had already been saved at least once
+  // got silently undone by the very next autosave: the merge logic
+  // can't otherwise tell "another player added this since I loaded" apart
+  // from "I just deleted this", and always assumed the former.
+  const deletedKeysThisSession = { fixtures: new Set(), ladders: new Set(), wallpapers: new Set(), signs: new Set(), doors: new Set(), furniture: new Set() };
   async function mergeFixturesBeforeSave() {
     if (!currentWorldId) return;
     try {
@@ -11049,12 +11082,12 @@
       const rows = await res.json();
       const remote = rows[0] && rows[0].data;
       if (!remote) return;
-      (remote.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => { if (!fixtures.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addFixture(bx,by,bz,nx,ny,nz); });
-      (remote.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => { if (!ladders.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addLadder(bx,by,bz,nx,ny,nz); });
-      (remote.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => { if (!wallpapers.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0); });
-      (remote.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => { if (!signs.has(faceKeyFor(bx,by,bz,nx,ny,nz))) addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''); });
-      (remote.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => { if (!doors.has(key(bx,by,bz))) addDoor(bx,by,bz,rot||0,typeIdx||0); });
-      (remote.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => { if (!furniture.has(key(bx,by,bz))) addFurniture(bx,by,bz,rot||0,typeIdx||0); });
+      (remote.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!fixtures.has(fk) && !deletedKeysThisSession.fixtures.has(fk)) addFixture(bx,by,bz,nx,ny,nz); });
+      (remote.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!ladders.has(fk) && !deletedKeysThisSession.ladders.has(fk)) addLadder(bx,by,bz,nx,ny,nz); });
+      (remote.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!wallpapers.has(fk) && !deletedKeysThisSession.wallpapers.has(fk)) addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0); });
+      (remote.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!signs.has(fk) && !deletedKeysThisSession.signs.has(fk)) addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''); });
+      (remote.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => { const k=key(bx,by,bz); if (!doors.has(k) && !deletedKeysThisSession.doors.has(k)) addDoor(bx,by,bz,rot||0,typeIdx||0); });
+      (remote.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => { const k=key(bx,by,bz); if (!furniture.has(k) && !deletedKeysThisSession.furniture.has(k)) addFurniture(bx,by,bz,rot||0,typeIdx||0); });
     } catch (e) {
       console.warn('[voxel] fixture merge failed', e);
     }
@@ -13866,17 +13899,30 @@
       }
       const furnitureTarget = raycastFurniture(6);
       if (furnitureTarget && furnitureTarget.dist < blockDist) {
-        // Furniture takes priority over whatever block is under/behind
-        // it — the amber outline is what you're actually about to mine
-        // if you click right now, so the plain block outline underneath
-        // it stays hidden to avoid implying you'd hit the floor instead.
-        const f = furniture.get(furnitureTarget.fk);
-        const type = FURNITURE_TYPES[f.typeIdx];
-        const footprint = (type && type.footprint) || 1;
-        furnitureOutline.visible = true;
-        furnitureOutline.position.set(f.bx + footprint/2, f.by + 1 + footprint*0.35, f.bz + footprint/2);
-        furnitureOutline.scale.set(footprint*0.9, footprint*0.8, footprint*0.9);
+        // Takes priority over whatever block is under/behind it — the
+        // amber outline is what you're actually about to mine if you
+        // click right now, so the plain block outline underneath it
+        // stays hidden to avoid implying you'd hit the floor instead.
+        // Sized/positioned a bit differently per kind since a torch and
+        // a wardrobe aren't remotely the same shape — this doesn't need
+        // to be exact, just clearly centred on the right thing.
         outline.visible = false;
+        furnitureOutline.visible = true;
+        if (furnitureTarget.kind === 'fixture') {
+          const f = fixtures.get(furnitureTarget.fk);
+          furnitureOutline.position.set(f.bx + 0.5 + f.nx*0.3, f.by + 0.5 + f.ny*0.3, f.bz + 0.5 + f.nz*0.3);
+          furnitureOutline.scale.set(0.5, 0.5, 0.5);
+        } else if (furnitureTarget.kind === 'door') {
+          const d = doors.get(furnitureTarget.fk);
+          furnitureOutline.position.set(d.bx + 0.5, d.by + 1, d.bz + 0.5);
+          furnitureOutline.scale.set(0.9, 2, 0.9);
+        } else {
+          const f = furniture.get(furnitureTarget.fk);
+          const type = FURNITURE_TYPES[f.typeIdx];
+          const footprint = (type && type.footprint) || 1;
+          furnitureOutline.position.set(f.bx + footprint/2, f.by + 1 + footprint*0.35, f.bz + footprint/2);
+          furnitureOutline.scale.set(footprint*0.9, footprint*0.8, footprint*0.9);
+        }
       } else {
         furnitureOutline.visible = false;
         if (r) {

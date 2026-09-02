@@ -2113,17 +2113,13 @@
       if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
       anyWaterTouchedThisStream = true;
     }
-    // Village generation runs BEFORE the taper now (used to be the other
-    // way round) — a house that hadn't been built yet at the moment the
-    // taper ran couldn't act as a stopping wall for it, so it would step
-    // straight through where the house was about to go. The village's
-    // own footprint-clearing already deletes any water sitting there
-    // either way, so the end result wasn't actually wrong before, but
-    // now the taper genuinely sees the real wall and stops at it
-    // directly, the same as it would for solid terrain.
+    // Village generation still happens here as part of building this
+    // chunk — the water taper itself no longer runs at generation time
+    // at all any more (see taperWaterEdgesInArea/
+    // updateWaterTaperNearPlayer further down for why and how it works
+    // now instead).
     generatedChunks.add(ck);
     maybeBuildVillage(cx, cz);
-    taperChunkWaterEdges(cx, cz);
   }
   // Only ever touches the SHORELINE of a body of water, never its
   // interior — a water column only qualifies if at least one of its 4
@@ -2134,75 +2130,97 @@
   // lake cheap: the amount of work scales with the shoreline's
   // PERIMETER, not the lake's total area (or its depth).
   //
-  // Accounts for depth now, not just the single top layer — a 3-deep
-  // edge steps down a quarter-block at a time all the way from 2.75 to
-  // 0.25 (2 full + 3/4, 2 full + 1/2, 2 full + 1/4, 2 full, 1 full +
-  // 3/4, 1 full + 1/2, 1 full + 1/4, 1 full, 3/4, 1/2, 1/4) before
-  // finally reaching dry land, rather than only ever fading a single
-  // surface layer regardless of how deep the water actually is there.
-  // Same rule at any depth: from the edge, each step outward is exactly
-  // 0.25 blocks shorter than the last, until there's nothing left.
-  // Runs once, at generation time, as part of building this chunk — not
-  // a per-frame simulation, so it adds no ongoing cost regardless of how
-  // much water exists or how deep it is. That said: fast/continuous
-  // flying streams many chunks through generation in quick succession,
-  // and each one's own taper work — however individually cheap — was
-  // still adding up to a real, repeated cost at exactly that moment.
-  // Now restricted to only where it actually matters for the player
-  // right now: skipped entirely while flying, and even while walking,
-  // only water within 10 blocks of the player's current position gets
-  // considered at all. This trades away tapering shorelines far from
-  // the player (they just keep whatever their natural generated depth
-  // was, untapered) for guaranteed low, local, on-the-ground-only cost.
-  function taperChunkWaterEdges(cx, cz) {
-    if (flying) return;
-    const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE, y = SEA_LEVEL;
-    const px = player.pos.x, pz = player.pos.z;
+  // Accounts for depth — a 3-deep edge steps down a quarter-block at a
+  // time all the way from 2.75 to 0.25 (2 full + 3/4, 2 full + 1/2, 2
+  // full + 1/4, 2 full, 1 full + 3/4, 1 full + 1/2, 1 full + 1/4, 1
+  // full, 3/4, 1/2, 1/4) before finally reaching dry land. Same rule at
+  // any depth: from the edge, each step outward is exactly 0.25 blocks
+  // shorter than the last, until there's nothing left, stopping EARLY
+  // only if it hits terrain/a protected area first.
+  //
+  // Not tied to chunk generation any more — that was the actual bug
+  // behind "it just doesn't work". A chunk only ever generates once,
+  // and almost every lake gets discovered by FLYING over it first,
+  // which meant the taper's one and only chance to run had already been
+  // skipped (it was gated on !flying) before you ever landed and walked
+  // over to look at it — nothing ever re-checked that water again after
+  // the chunk was marked generated. This is now a small periodic scan
+  // centred on wherever the player currently is (see
+  // updateWaterTaperNearPlayer below, called every few seconds, only
+  // while walking) — so it works on ANY water you approach on foot,
+  // whenever that happens to be, not just water lucky enough to be
+  // walked near at the exact instant its chunk first streamed in.
+  //
+  // taperedWaterOrigins is what makes it safe to re-scan the same area
+  // repeatedly without the shoreline creeping further inland every time:
+  // once a given edge column has had its taper computed, it's marked
+  // here and never reconsidered, even by a later scan — without that, a
+  // taper-created shallow cell would itself look like a new "edge" on
+  // the next pass and get tapered again, pushing the beach a little
+  // further inland each cycle forever.
+  const taperedWaterOrigins = new Set();
+  function taperWaterEdgesInArea(x0, x1, z0, z1) {
+    const y = SEA_LEVEL;
     const edgeCells = [];
-    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-        const x = x0+lx, z = z0+lz;
-        if (Math.abs(x-px) > 10 || Math.abs(z-pz) > 10) continue; // only within 10 blocks of the player right now
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const ck = x+','+z;
+        if (taperedWaterOrigins.has(ck)) continue;
         if (!waterBlocks.has(key(x,y,z))) continue;
         [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dz]) => {
-          if (!waterBlocks.has(key(x+dx,y,z+dz))) edgeCells.push({x,z,dx,dz});
+          if (!waterBlocks.has(key(x+dx,y,z+dz))) edgeCells.push({x,z,dx,dz,ck});
         });
       }
     }
-    edgeCells.forEach(({x,z,dx,dz}) => {
-      // How deep the water actually is at this particular edge column —
-      // counts the stack of full-height blocks straight down from the
-      // surface.
+    edgeCells.forEach(({x,z,dx,dz,ck}) => {
+      taperedWaterOrigins.add(ck); // marked BEFORE processing, unconditionally
       let depth = 0;
       while (waterBlocks.has(key(x, y-depth, z))) depth++;
       if (depth === 0) return;
-      // Fixed, predictable step count — exactly depth*4 - 1 (1 block
-      // deep steps 3 out, 2 deep steps 7 out, 3 deep steps 11 out, 4
-      // deep steps 15 out — each quarter-block shorter than the last),
-      // stopping EARLY only if it hits terrain/a protected area/the
-      // chunk edge first. This deliberately does NOT keep searching for
-      // "real ground" beyond that count any more — the open-ended
-      // version was the direct cause of two separate rounds of flooding
-      // (it could walk for dozens of blocks through open space, or even
-      // straight across a chunk boundary into ungenerated territory,
-      // before finding anything to stop it on). Bounded and predictable
-      // beats always finding the literal shoreline.
       const maxSteps = depth*4 - 1;
       let h = depth - 0.25, step = 0;
       while (step < maxSteps) {
         const sx = x + dx*step, sz = z + dz*step;
-        if (sx < x0 || sx >= x0+CHUNK_SIZE || sz < z0 || sz >= z0+CHUNK_SIZE) break; // never leave the chunk currently being generated
         const colH = columnHeight.get(sx+','+sz);
         if (colH === undefined) break; // unknown ground — never treat "we don't know" as "keep going"
-        if (!pubWaterAllowed(sx, sz)) break; // The Mill, minigames, and their surrounding buffer — never allowed to have water at all, regardless of local ground height
-        if (colH >= SEA_LEVEL) break; // this column's actual ground reaches at or above the waterline
-        if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.) occupying the water's own surface cell
+        if (!pubWaterAllowed(sx, sz)) break; // The Mill, minigames, and their surrounding buffer
+        if (colH >= SEA_LEVEL) break; // genuine dry land/shore
+        if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.)
         setWaterColumnHeight(sx, sz, h);
         h -= 0.25;
         step++;
       }
     });
-    if (edgeCells.length) anyWaterTouchedThisStream = true; // makes sure the rebuild this chunk's own streaming pass triggers actually picks up these new/adjusted cells
+    return edgeCells.length > 0;
+  }
+  let lastWaterTaperScan = 0;
+  // Called every frame alongside chunk streaming/fish/etc.'s own
+  // periodic updates — throttled internally, and skipped entirely while
+  // flying (fast, continuous flight streaming many chunks a second is
+  // what made the old version expensive; walking is naturally far
+  // slower and more localised).
+  function updateWaterTaperNearPlayer(dt) {
+    if (flying) return;
+    const now = performance.now();
+    if (now - lastWaterTaperScan < 3000) return;
+    lastWaterTaperScan = now;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const touched = taperWaterEdgesInArea(px-10, px+10, pz-10, pz+10);
+    if (touched) scheduleWaterRebuild();
+  }
+  // Stacks water blocks downward from the surface (y=SEA_LEVEL) to
+  // represent a total column height of h blocks — h=2.75 becomes 2 full
+  // blocks with a 3/4 block on top of them, since the only part of a
+  // real body of water that would ever be a fraction of a block is its
+  // surface; everything beneath that is still an ordinary full block of
+  // water.
+  function setWaterColumnHeight(x, z, h) {
+    const layers = Math.ceil(h);
+    let topFrac = h - Math.floor(h);
+    if (topFrac < 0.001) topFrac = 1; // h was a whole number — the top layer is full too, not a sliver
+    for (let i = 0; i < layers; i++) {
+      waterBlocks.set(key(x, SEA_LEVEL - i, z), i === 0 ? topFrac : 1);
+    }
   }
   // Stacks water blocks downward from the surface (y=SEA_LEVEL) to
   // represent a total column height of h blocks — h=2.75 becomes 2 full
@@ -14131,6 +14149,7 @@
     updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
     updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
     updateAmbientFish(dt); // periodically scans for deep water anywhere and spawns/wanders fish in it — see its own comments
+    updateWaterTaperNearPlayer(dt); // periodically shapes any water shoreline near the player into a sloped edge, walking only — see its own comments
     updateAmbientBirds(dt); // a small flock that orbits wherever the player currently is — see its own comments
     updateTVChannels(dt); // periodically swaps each placed TV's picture — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment

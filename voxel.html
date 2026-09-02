@@ -2143,13 +2143,25 @@
   // 0.25 blocks shorter than the last, until there's nothing left.
   // Runs once, at generation time, as part of building this chunk — not
   // a per-frame simulation, so it adds no ongoing cost regardless of how
-  // much water exists or how deep it is.
+  // much water exists or how deep it is. That said: fast/continuous
+  // flying streams many chunks through generation in quick succession,
+  // and each one's own taper work — however individually cheap — was
+  // still adding up to a real, repeated cost at exactly that moment.
+  // Now restricted to only where it actually matters for the player
+  // right now: skipped entirely while flying, and even while walking,
+  // only water within 10 blocks of the player's current position gets
+  // considered at all. This trades away tapering shorelines far from
+  // the player (they just keep whatever their natural generated depth
+  // was, untapered) for guaranteed low, local, on-the-ground-only cost.
   function taperChunkWaterEdges(cx, cz) {
+    if (flying) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE, y = SEA_LEVEL;
+    const px = player.pos.x, pz = player.pos.z;
     const edgeCells = [];
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
+        if (Math.abs(x-px) > 10 || Math.abs(z-pz) > 10) continue; // only within 10 blocks of the player right now
         if (!waterBlocks.has(key(x,y,z))) continue;
         [[1,0],[-1,0],[0,1],[0,-1]].forEach(([dx,dz]) => {
           if (!waterBlocks.has(key(x+dx,y,z+dz))) edgeCells.push({x,z,dx,dz});
@@ -9387,6 +9399,9 @@
     fixtures.forEach((f, fk) => {
       consider('fixture', fk, f.bx + 0.5 + f.nx*0.3, f.by + 0.5 + f.ny*0.3, f.bz + 0.5 + f.nz*0.3, 0.55);
     });
+    signs.forEach((s, sk) => {
+      consider('sign', sk, s.bx + 0.5 + s.nx*0.3, s.by + 0.5 + s.ny*0.3, s.bz + 0.5 + s.nz*0.3, 0.6);
+    });
     doors.forEach((d, dk) => {
       consider('door', dk, d.bx + 0.5, d.by + 1, d.bz + 0.5, 0.7);
     });
@@ -9469,11 +9484,12 @@
       // Same instant-delete idea for all three kinds now — furniture,
       // torches/fixtures, and doors — dispatched to whichever removeX
       // function actually owns that map.
-      const store = furnitureTarget.kind === 'fixture' ? fixtures : furnitureTarget.kind === 'door' ? doors : furniture;
+      const store = furnitureTarget.kind === 'fixture' ? fixtures : furnitureTarget.kind === 'door' ? doors : furnitureTarget.kind === 'sign' ? signs : furniture;
       const obj = store.get(furnitureTarget.fk);
       if (!obj || !canEditAt(obj.bx, obj.bz)) { mineHeld = false; return; } // same view-only guard as normal mining, checked against the object's own location
       if (furnitureTarget.kind === 'fixture') removeFixture(furnitureTarget.fk);
       else if (furnitureTarget.kind === 'door') removeDoor(furnitureTarget.fk);
+      else if (furnitureTarget.kind === 'sign') removeSign(furnitureTarget.fk);
       else removeFurniture(furnitureTarget.fk);
       furnitureOutline.visible = false;
       playThud(180);
@@ -13916,6 +13932,10 @@
           const d = doors.get(furnitureTarget.fk);
           furnitureOutline.position.set(d.bx + 0.5, d.by + 1, d.bz + 0.5);
           furnitureOutline.scale.set(0.9, 2, 0.9);
+        } else if (furnitureTarget.kind === 'sign') {
+          const s = signs.get(furnitureTarget.fk);
+          furnitureOutline.position.set(s.bx + 0.5 + s.nx*0.3, s.by + 0.5 + s.ny*0.3, s.bz + 0.5 + s.nz*0.3);
+          furnitureOutline.scale.set(0.9, 0.4, 0.9);
         } else {
           const f = furniture.get(furnitureTarget.fk);
           const type = FURNITURE_TYPES[f.typeIdx];

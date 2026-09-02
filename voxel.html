@@ -2165,12 +2165,20 @@
       // reach solid ground, and stopping on the depth-based countdown
       // alone left a gap between where the taper ended and where the
       // real shore actually was. Now it keeps laying a constant 1/4
-      // film outward for as long as it takes, and the ONLY thing that
-      // actually ends it is hitting solid ground.
+      // film outward for as long as it takes, and it stops for real
+      // ground OR a protected area OR an actual solid block — checking
+      // ONLY for a solid block sitting exactly at sea-level height was
+      // the bug that flooded The Mill and every minigame area: those
+      // are all deliberately graded flat well BELOW sea level, so
+      // "is there a block right at sea level" was never true there,
+      // and the taper just kept going with nothing to ever stop it.
       let h = depth - 0.25, step = 0;
-      while (step < 400) { // generous safety cap against a pathological case where solid ground is never found — this is a one-time generation cost, not a per-frame one, so this bound is only ever a safety net, not a real limit in practice
+      while (step < 60) { // real ground/protected-area checks below mean this should essentially never be reached in practice — kept small specifically so if something IS still wrong, it fails small instead of flooding the map again
         const sx = x + dx*step, sz = z + dz*step;
-        if (blocks.has(key(sx, y, sz))) break; // solid ground here — the taper has reached the actual shore, stop
+        const colH = columnHeight.get(sx+','+sz);
+        if (!pubWaterAllowed(sx, sz)) break; // The Mill, minigames, and their surrounding buffer — never allowed to have water at all, regardless of local ground height
+        if (colH !== undefined && colH >= SEA_LEVEL) break; // this column's actual ground reaches at or above the waterline — genuine dry land/shore, not just "no block happens to sit exactly at sea level"
+        if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.) occupying the water's own surface cell
         setWaterColumnHeight(sx, sz, Math.max(0.25, h));
         if (h > 0.25) h -= 0.25;
         step++;

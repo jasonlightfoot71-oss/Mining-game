@@ -772,7 +772,21 @@
   let playerUid = null;
   try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
   let isStandalone = false;
-  let lastSaveResult = 'no save attempted yet this session'; // declared here (not down near saveWorld itself) specifically because updateIdentityDebugNotice references it and gets called immediately below, before saveWorld has even been defined yet
+  // Persisted to sessionStorage, not just an in-memory variable — every
+  // "exit to menu" flow does a full location.reload(), which wipes all
+  // JS state including a plain variable. Without this, checking this
+  // debug line right after returning to the menu would ALWAYS say "no
+  // save attempted" regardless of whether the save that actually
+  // mattered (right before that reload) succeeded or failed — that's
+  // not a reflection of real save behaviour, just this diagnostic
+  // losing its own memory at exactly the moment someone would go check
+  // it. sessionStorage survives a reload within the same tab, so the
+  // result from the PREVIOUS page load is still readable on the new one.
+  let lastSaveResult = (() => { try { return sessionStorage.getItem('voxelLastSaveResult') || 'no save attempted yet this session'; } catch(e) { return 'no save attempted yet this session'; } })();
+  function setLastSaveResult(msg) {
+    lastSaveResult = msg;
+    try { sessionStorage.setItem('voxelLastSaveResult', msg); } catch(e) {}
+  }
   if (!playerUid) {
     // No TASKMILL login available (e.g. running as its own standalone
     // page/PWA rather than inside TASKMILL) — generate a persistent local
@@ -1118,7 +1132,7 @@
     if (!currentWorldId || !playerUid) {
       console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid);
       if (!playerUid) showSaveStatus('⚠ Not signed in — this won\'t be saved', true); // was silent before (console-only) — this is very likely what's actually happening on a device where the account identity never resolved, with nothing on screen ever telling the player their world wasn't going anywhere
-      lastSaveResult = new Date().toLocaleTimeString() + ' — skipped, no world/uid';
+      setLastSaveResult(new Date().toLocaleTimeString() + ' — skipped, no world/uid');
       updateIdentityDebugNotice();
       return;
     }
@@ -1132,7 +1146,7 @@
       if (!chunksOk) {
         console.error('[voxel] chunk save failed');
         showSaveStatus('⚠ Save failed (chunks)', true);
-        lastSaveResult = new Date().toLocaleTimeString() + ' — FAILED (chunk save)';
+        setLastSaveResult(new Date().toLocaleTimeString() + ' — FAILED (chunk save)');
         updateIdentityDebugNotice();
         return;
       }
@@ -1149,16 +1163,16 @@
         const body = await res.text().catch(() => '');
         console.error('[voxel] save failed', res.status, body);
         showSaveStatus('⚠ Save failed ('+res.status+')', true);
-        lastSaveResult = new Date().toLocaleTimeString() + ' — FAILED (HTTP '+res.status+': '+body.slice(0,80)+')';
+        setLastSaveResult(new Date().toLocaleTimeString() + ' — FAILED (HTTP '+res.status+': '+body.slice(0,80)+')');
       } else {
         showSaveStatus('💾 Saved', false);
-        lastSaveResult = new Date().toLocaleTimeString() + ' — OK (world: '+currentWorldName+')';
+        setLastSaveResult(new Date().toLocaleTimeString() + ' — OK (world: '+currentWorldName+')');
       }
       updateIdentityDebugNotice();
     } catch(e) {
       console.error('[voxel] save error', e);
       showSaveStatus('⚠ Save error', true);
-      lastSaveResult = new Date().toLocaleTimeString() + ' — ERROR: ' + (e && e.message ? e.message : String(e));
+      setLastSaveResult(new Date().toLocaleTimeString() + ' — ERROR: ' + (e && e.message ? e.message : String(e)));
       updateIdentityDebugNotice();
     }
   }
@@ -15504,7 +15518,7 @@
       await beginPlaying();
     } catch (err) {
       console.error('[voxel] creating a new world failed partway through', err);
-      lastSaveResult = new Date().toLocaleTimeString() + ' — world creation itself threw before saving: ' + (err && err.message ? err.message : String(err));
+      setLastSaveResult(new Date().toLocaleTimeString() + ' — world creation itself threw before saving: ' + (err && err.message ? err.message : String(err)));
       updateIdentityDebugNotice();
       showSaveStatus('⚠ Something went wrong creating the world', true);
     } finally {

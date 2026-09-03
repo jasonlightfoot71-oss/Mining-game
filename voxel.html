@@ -2051,7 +2051,7 @@
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
-        if (isPubColumn(x, z)) continue; // The Mill's own building lives here — never procedurally generate over it
+        if (isPubColumn(x, z) || (currentWorldId === PUB_WORLD_ID && isProtectedGameArea(x, z))) continue; // The Mill's own building AND its game structures (football pitch, tower, battleship arena, tennis court, golf course) all build their own ground at fixed heights — never procedurally generate over any of them, or the two independently-written grounds fight and leave gaps/mismatches exactly where they don't perfectly agree
         // Regional biome — two DECOUPLED low-frequency noise layers, not
         // just one. `elevation` drives height, `moisture` independently
         // governs how sandy, grassy, or forested an area is, so you get
@@ -4893,7 +4893,7 @@
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          for (let y = Math.max(0, plotY - 3); y < plotY; y++) blocks.set(key(x, y, z), 2);
+          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2); // extended down to plotY-6 (was plotY-3) — the clear above reaches plotY-6, so anything less left a 3-block gap cleared but never refilled, sitting directly under every plot's own floor. Exactly the "invisible blocks"/void reported around houses: walking into that buried gap from the side wherever nearby natural terrain was low enough to expose it.
           blocks.set(key(x, plotY, z), 0);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
@@ -9464,37 +9464,54 @@
   // as the door seats back into its frame.
   function playDoorOpen() {
     if (!audioCtx) return;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
+    // Filtered noise burst with a swept bandpass frequency, not a clean
+    // oscillator tone — the old version swept a sawtooth wave through a
+    // lowpass filter, which reads as a synth "whoosh" rather than an
+    // actual door. A real hinge creak is irregular and noisy, which is
+    // exactly what filtered noise gives for free that a pure tone can't.
+    const dur = 0.32;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 900;
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(170, audioCtx.currentTime);
-    o.frequency.exponentialRampToValueAtTime(260, audioCtx.currentTime+0.22);
-    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    g.gain.linearRampToValueAtTime(0.06, audioCtx.currentTime+0.03);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.24);
-    o.connect(filter).connect(g).connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime+0.25);
+    filter.type = 'bandpass';
+    filter.Q.value = 5;
+    filter.frequency.setValueAtTime(260, audioCtx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(700, audioCtx.currentTime + dur*0.55);
+    filter.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.11, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    src.connect(filter).connect(g).connect(audioCtx.destination);
+    src.start();
   }
   function playDoorClose() {
     if (!audioCtx) return;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
+    // Same noise-burst creak as opening (shorter, and settling DOWN in
+    // pitch rather than up, since it's swinging the other way), still
+    // followed by the same low thunk as it seats into the frame.
+    const dur = 0.22;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buffer;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 900;
-    o.type = 'sawtooth';
-    o.frequency.setValueAtTime(260, audioCtx.currentTime);
-    o.frequency.exponentialRampToValueAtTime(170, audioCtx.currentTime+0.16);
-    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
-    g.gain.linearRampToValueAtTime(0.055, audioCtx.currentTime+0.03);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.18);
-    o.connect(filter).connect(g).connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime+0.18);
+    filter.type = 'bandpass';
+    filter.Q.value = 5;
+    filter.frequency.setValueAtTime(550, audioCtx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(280, audioCtx.currentTime + dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.09, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+    src.connect(filter).connect(g).connect(audioCtx.destination);
+    src.start();
     // soft low thunk as the door seats into the frame
-    const t2 = audioCtx.currentTime + 0.15;
+    const t2 = audioCtx.currentTime + dur*0.85;
     const o2 = audioCtx.createOscillator();
     const g2 = audioCtx.createGain();
     o2.type = 'triangle';

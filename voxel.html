@@ -2202,6 +2202,7 @@
         if (colH >= y) break; // dry ground reaching at/above THIS water's own surface — not necessarily sea level, since this water might not be at sea level either
         if (blocks.has(key(sx, y, sz))) break; // an actual solid block (a wall, etc.)
         setWaterColumnHeight(sx, sz, y, h);
+        taperedWaterOrigins.add(sx+','+sz); // ALSO marks every cell the taper itself creates, not just the original edge — without this, the outermost tapered cell (the 1/4-height one) looked like a brand new untouched edge on the NEXT scan, since only the original block's own key was ever marked done, and it would taper again from there, extending further out every ~3 seconds forever
         h -= 0.25;
         step++;
       }
@@ -15517,7 +15518,7 @@
     updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
     spawnDefault();
     await beginPlaying();
-    saveWorld();
+    await saveWorld(); // was fire-and-forget before — awaited now so a failure here is guaranteed to actually run to completion and show its error toast, rather than possibly getting cut short by whatever happens next
   });
 
   if (playerUid) {

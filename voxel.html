@@ -2153,7 +2153,17 @@
         // woodland can happen on a hill OR a plain, sparse/none in dry
         // areas regardless of how high or low they are.
         const treeChance = blend < 1 ? 0 : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
-        const fillFrom = Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
+        // Fills all the way down to bedrock within the Mill's blend zone
+        // specifically (blend < 1), rather than the normal capped depth
+        // — this is a narrow, bounded area (only ever relevant inside
+        // the Mill world, within ~14 blocks of the pad's edge), so it
+        // costs nothing anywhere else. Without this, a partially-
+        // blended column could have its surface well above the normal
+        // 6-block fill depth, filling only its own top few blocks and
+        // leaving a real gap of empty space between that and the pad's
+        // y=0 ground level — the actual cause of open voids in the
+        // ground right around the building and the game areas.
+        const fillFrom = blend < 1 ? 0 : Math.max(0, h - CHUNK_FILL_DEPTH_CAP + 1);
         if (fillFrom < minY) minY = fillFrom;
         if (h > maxY) maxY = h;
         // Takes the max against whatever's already tracked for this
@@ -4471,7 +4481,7 @@
   // checked here as a sanity ceiling, same as manual placement gets.
   function placeShellLight(shell, doorSide, reg) {
     let bx, bz, nx, nz;
-    const by = shell.gy + 1;
+    const by = shell.gy + shell.h - 1; // moved from gy+1 (bottom wall row) to near the top, just below the trim/roofline — reads much more like a mounted lantern up near the eaves than a light sitting at ankle height
     if (doorSide === 'south') { bx = shell.midX; bz = shell.z0; nx = 0; nz = 1; }
     else if (doorSide === 'north') { bx = shell.midX; bz = shell.z1; nx = 0; nz = -1; }
     else if (doorSide === 'east') { bx = shell.x0; bz = shell.midZ; nx = 1; nz = 0; }

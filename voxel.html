@@ -15404,8 +15404,9 @@
       // whatever's already there, which for the Mill is nothing — it
       // would show an empty lot with decorations floating in it.
       const worlds = allWorlds.filter(w => w.id !== PUB_WORLD_ID);
+      console.log('[voxel] renderWorldList: after filtering out the Mill,', worlds.length, 'of', allWorlds.length, 'remain. Sample:', allWorlds.slice(0,3));
       if (!worlds.length) {
-        msg.textContent = 'No saved worlds yet — create one below.';
+        msg.textContent = 'No saved worlds yet — create one below.' + (allWorlds.length ? (' (debug: '+allWorlds.length+' fetched, all filtered out as the Mill — check console)') : '');
         list.innerHTML = '';
       } else {
         msg.textContent = 'Pick a world, or start a new one:';

@@ -3196,6 +3196,7 @@
     { name: 'Small Sign (1×1)', w: 1, h: 1, neon: false, cost: 20 },
     { name: 'Wide Sign (2×1)',  w: 2, h: 1, neon: false, cost: 32 },
     { name: 'Neon Sign (3×1)',  w: 3, h: 1, neon: true,  cost: 60 },
+    { name: 'Village Sign (2×2)', w: 2, h: 2, neon: false, cost: 40 },
   ];
   let signTypeIdx = 0;
   const signs = new Map(); // faceKey -> { mesh, bx,by,bz,nx,ny,nz, sizeIdx, text }
@@ -3261,9 +3262,15 @@
     // width, in its own LOCAL rightward direction (rotated to match
     // whichever way this particular wall faces, so it's correct
     // regardless of orientation) — for a 1-wide sign that's a shift of
-    // zero, unchanged from before.
+    // zero, unchanged from before. Height gets the same treatment now —
+    // a TALLER sign (like the new 2×2) had exactly the same problem
+    // vertically, spilling half a block below its anchor and only
+    // covering half a block above, since only width was ever accounted
+    // for. Height shifts in world Y directly (always "up", regardless
+    // of which way the wall faces, unlike width).
     const localOffset = new THREE.Vector3((type.w-1)/2, 0, 0).applyQuaternion(q);
-    mesh.position.set(px + localOffset.x, py + localOffset.y, pz + localOffset.z);
+    const heightOffset = (type.h-1)/2;
+    mesh.position.set(px + localOffset.x, py + localOffset.y + heightOffset, pz + localOffset.z);
     mesh.quaternion.copy(q);
     scene.add(mesh);
     signs.set(fk, { mesh, bx, by, bz, nx, ny, nz, sizeIdx, text: text || '' });
@@ -4442,7 +4449,16 @@
     else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; nx = 0; nz = -1; }
     else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; nx = 1; nz = 0; }
     else { bx = shell.x0; bz = shell.midZ; nx = -1; nz = 0; }
-    const sk = addSign(bx, shell.gy + 3, bz, nx, 0, nz, 1, text);
+    // Was sizeIdx 1 (Wide Sign, 2 wide × 1 tall) — now the dedicated 2×2
+    // village sign type, properly square rather than a short banner.
+    // Anchored right above the door same as before (the door itself
+    // occupies the 2 rows directly below this), which on a standard
+    // 3-tall house wall means the top of a genuinely 2-tall sign
+    // reaches right at the roofline — a sign standing a little proud of
+    // the wall like this is normal for real shopfronts/pub signs, and
+    // the alternative (shrinking it back down to fit strictly within
+    // the wall) would mean overlapping the door instead.
+    const sk = addSign(bx, shell.gy + 3, bz, nx, 0, nz, 3, text);
     if (sk) reg.signKeys.push(sk);
   }
   // Mounted on the wall OPPOSITE the door, at the lowest wall row (which
@@ -4490,7 +4506,7 @@
 
   // ── Building types ──────────────────────────────────────────────
   function buildVillageHouse(plot, gy, rng, palette, doorSide, reg) {
-    const variant = Math.floor(rng() * 4); // added a 4th variant — genuinely taller (h=6 instead of 3-4), for visual variety walking through a village. This is still one open interior height-wise, not a real separate floor with its own stairs and furniture — that's a much bigger feature than a height change, worth doing properly in its own pass rather than half-built here.
+    const variant = Math.floor(rng() * 4); // 4th variant is a genuine two-storey house now — a real dividing floor and a ladder up through it, not just a taller single room
     let w, d, h;
     if (variant === 0) { w = 6; d = 6; h = 3; }
     else if (variant === 1) { w = 8; d = 5; h = 3; }
@@ -4499,6 +4515,27 @@
     w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
+    if (variant === 3 && w >= 4 && d >= 4) {
+      // A real second floor: a solid dividing slab halfway up, a ladder
+      // mounted on the wall opposite the door reaching from the ground
+      // floor up through it, and an actual gap cut into the slab right
+      // in front of the ladder so climbing it leads somewhere rather
+      // than bumping your head on solid floor.
+      const floorY = gy + 3;
+      const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
+      for (let x = ix0; x <= ix1; x++) {
+        for (let z = iz0; z <= iz1; z++) {
+          blocks.set(key(x, floorY, z), palette.trim); // reuses the trim colour so the floor/ceiling band reads as a distinct structural feature, not just more wall
+          trackVillageHeight(x, z, floorY);
+        }
+      }
+      const backX = doorSide === 'west' ? shell.x1 : shell.x0; // wall opposite the door, same convention used elsewhere
+      const backNx = doorSide === 'west' ? -1 : 1; // points off the wall INTO the room, since this ladder is climbed from inside
+      const gapX = doorSide === 'west' ? ix1 : ix0; // interior column directly in front of the ladder
+      const ladderZ = shell.midZ;
+      for (let y = gy + 1; y <= gy + 4; y++) addLadder(backX, y, ladderZ, backNx, 0, 0);
+      blocks.delete(key(gapX, floorY, ladderZ)); // the actual way through — without this the slab above is just solid, unclimbable roof
+    }
     // Interior furniture removed again — still crashing with it in, so
     // back out entirely rather than half-measures while this gets
     // tracked down properly.
@@ -4671,42 +4708,6 @@
   }
 
   // ── Assembly ────────────────────────────────────────────────────
-  // Steps from (x0,y0) to (x1,y0-ish) at a fixed z, easing toward y1 by
-  // at most ~1 block of elevation per block of horizontal distance —
-  // a plain staircase rather than a straight ramp, so a bigger height
-  // difference between a building and the road just takes more steps
-  // instead of ever looking like a cliff or a floating path.
-  function carveConnectingPath(x0, x1, z, y0, y1, palette) {
-    const dir = x1 >= x0 ? 1 : -1;
-    const total = Math.abs(x1 - x0) || 1;
-    let curY = y0, step = 0;
-    for (let x = x0; x !== x1 + dir; x += dir) {
-      step++;
-      // The very first column — right outside the door — always stays
-      // at the door's own exact floor height, unchanged. Ramping toward
-      // the road only starts from the SECOND column onward. Before this
-      // fix, the ramp began adjusting on step 1 itself, meaning the
-      // path's height right at the threshold could already be offset
-      // from the door before it was even placed — clearing/placing
-      // blocks at the wrong height relative to the door specifically,
-      // which is exactly what "blocks above/below the door are missing
-      // or unwanted" looks like.
-      if (step > 1) {
-        const remaining = total - step + 1;
-        const diff = y1 - curY;
-        if (diff !== 0) curY += Math.sign(diff) * Math.min(Math.abs(diff), Math.ceil(Math.abs(diff) / Math.max(1, remaining)));
-      }
-      for (let y = curY - 4; y <= curY + 4; y++) {
-        const k = key(x, y, z);
-        blocks.delete(k); stepRotations.delete(k);
-        if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-      }
-      for (let y = Math.max(0, curY - 2); y < curY; y++) blocks.set(key(x, y, z), 2);
-      blocks.set(key(x, curY, z), palette.path);
-      trackVillageHeight(x, z, curY);
-      markVillageGround(x, z, curY);
-    }
-  }
   function buildVillageInChunk(cx, cz, rng) {
     // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
     // between plots along the road from 1 row to 3) specifically so
@@ -4897,21 +4898,6 @@
       else if (type === 'hotel') { shell = buildVillageHotel(plot, plotY, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
       else if (type === 'castle') { shell = buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
       built++;
-
-      // Connects to the building's own ACTUAL wall (shell.x1/x0), not the
-      // plot's outer edge — a real bug before: most buildings are
-      // narrower than their plot (a 9-wide pub in a 12-wide plot, say),
-      // so a path anchored to the plot edge started in empty yard space
-      // several blocks short of the real door, and for west-side plots
-      // it was even worse — plot.x1 there is literally the same
-      // coordinate the path's own "target" argument used, so the path
-      // ran backwards over a single block instead of actually crossing
-      // the gap to the road.
-      const pathZ = Math.max(plot.z0, Math.min(plot.z1, pcz));
-      if (shell) {
-        if (plot.side === 'west') carveConnectingPath(shell.x1 + 1, wx0 + 12, pathZ, plotY, roadY, palette);
-        else carveConnectingPath(shell.x0 - 1, wx0 + 17, pathZ, plotY, roadY, palette);
-      }
     });
 
     const ck = cx + '_' + cz;

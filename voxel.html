@@ -9781,14 +9781,19 @@
         const h = WATER_HEIGHTS[waterHeightIdx];
         waterBlocks.set(k, h);
         recordWaterEdit(x, y, z, h);
-        // Tapers around this exact spot immediately, rather than
-        // waiting on the next periodic scan (up to 3s away) — that
-        // delay makes sense for water discovered while wandering around
-        // generally, but not for a single block you just placed and are
-        // actively watching right now.
-        if (!flying) taperWaterEdgesInArea(x-10, x+10, z-10, z+10, y);
         rebuildWaterGeometry();
         playThud(280);
+        // Tapers around this exact spot immediately, rather than waiting
+        // on the next periodic scan (up to 3s away) — moved to AFTER the
+        // placement is already fully committed and visible, and
+        // wrapped so it can never take the placement down with it: this
+        // is a best-effort decorative touch-up, and it must never be
+        // able to block or undo the actual, core act of placing water,
+        // which is exactly what seems to have been happening.
+        if (!flying) {
+          try { if (taperWaterEdgesInArea(x-10, x+10, z-10, z+10, y)) rebuildWaterGeometry(); }
+          catch (err) { console.warn('water taper error (recovered):', err); }
+        }
       }
     } else if (replacingWater || !waterBlocks.has(k)) {
       const type = BLOCK_TYPES[selectedSlot];
@@ -14171,7 +14176,7 @@
     updateGolfFish(dt); // no-ops instantly unless the water-crossing hole was actually built
     updateGolfRotors(dt); // no-ops instantly unless the rotor hole was actually built
     updateAmbientFish(dt); // periodically scans for deep water anywhere and spawns/wanders fish in it — see its own comments
-    updateWaterTaperNearPlayer(dt); // periodically shapes any water shoreline near the player into a sloped edge, walking only — see its own comments
+    try { updateWaterTaperNearPlayer(dt); } catch (err) { console.warn('updateWaterTaperNearPlayer error (recovered):', err); } // guarded the same way the vehicle camera update is — a decorative touch-up must never be able to break the main loop
     updateAmbientBirds(dt); // a small flock that orbits wherever the player currently is — see its own comments
     updateTVChannels(dt); // periodically swaps each placed TV's picture — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment
@@ -15535,7 +15540,17 @@
     clearPubExtras(); // in case the last thing loaded was the community pub
     updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
     spawnDefault();
-    await beginPlaying();
+    try {
+      await beginPlaying();
+    } catch (err) {
+      // A brand new world's very first save must not depend on nothing
+      // else in startup ever throwing — if it did (multiplayer connect,
+      // anything else beginPlaying touches), the save below would simply
+      // never run, silently, with the world never actually landing in
+      // "Your Worlds" and no visible error at all. Logged so it's
+      // diagnosable, but never allowed to skip the save itself.
+      console.error('[voxel] beginPlaying failed while creating a new world', err);
+    }
     await saveWorld(); // was fire-and-forget before — awaited now so a failure here is guaranteed to actually run to completion and show its error toast, rather than possibly getting cut short by whatever happens next
   });
 

@@ -312,7 +312,6 @@
 <div id="worldSelect">
   <h1>⛏️ Mining World</h1>
   <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin:0 auto 10px;max-width:700px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
-  <div id="identityDebugNotice" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:6px 10px;font-size:11px;opacity:0.7;margin:0 auto 10px;max-width:700px;font-family:monospace;"></div>
   <div id="worldQuadrants">
     <div class="titleQuadrant" id="quadMill">
       <h3>🍺 The Mill</h3>
@@ -4721,6 +4720,34 @@
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
+
+    // Trees (and anything else terrain generation naturally scattered
+    // there) already exist across this whole area by the time a village
+    // gets built here — village generation runs strictly after the
+    // per-column terrain pass for this same chunk, terrain (including
+    // trees) is never generated afterward or on top. Without a pass
+    // like this, that meant leftover trunks/canopies and the odd puddle
+    // sitting untouched in the gaps between buildings and the road —
+    // each PLOT's own footprint got cleared for its own building, but
+    // nothing ever swept the space between them. This clears just tree
+    // material (trunk/leaves) and water specifically — by block TYPE,
+    // not by wiping every block in the area — so the actual ground
+    // itself (and its natural height/slope) is left completely alone;
+    // only what shouldn't still be standing here once a village exists
+    // is removed. Runs once, up front, before any road/plot/building
+    // work below.
+    for (let x = wx0; x <= wx1; x++) {
+      for (let z = wz0; z <= wz1; z++) {
+        const groundY = columnHeight.get(x + ',' + z);
+        if (groundY === undefined) continue;
+        for (let y = groundY - 1; y <= groundY + 12; y++) {
+          const k = key(x, y, z);
+          const t = blocks.get(k);
+          if (t === 3 || t === 4) { blocks.delete(k); stepRotations.delete(k); } // tree trunk (Wood) or leaves
+          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+        }
+      }
+    }
 
     const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
     let roadY = columnHeight.get(centerKey);

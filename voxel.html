@@ -772,6 +772,7 @@
   let playerUid = null;
   try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
   let isStandalone = false;
+  let lastSaveResult = 'no save attempted yet this session'; // declared here (not down near saveWorld itself) specifically because updateIdentityDebugNotice references it and gets called immediately below, before saveWorld has even been defined yet
   if (!playerUid) {
     // No TASKMILL login available (e.g. running as its own standalone
     // page/PWA rather than inside TASKMILL) — generate a persistent local
@@ -786,9 +787,29 @@
     try {
       let localId = localStorage.getItem('voxelStandaloneUid');
       if (!localId) {
-        localId = 'standalone-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now()+'-'+Math.random().toString(36).slice(2));
-        localStorage.setItem('voxelStandaloneUid', localId);
+        // Cookie as a second, independent storage mechanism — iOS
+        // Safari in particular has a history of treating "Add to Home
+        // Screen" launches and regular browser tabs as separate storage
+        // contexts for localStorage specifically, which can silently
+        // generate a brand new random identity on every single visit
+        // depending on exactly how the game happens to be opened, with
+        // no error or warning — it just looks like nothing ever saved,
+        // when really each visit saved fine under its own, immediately
+        // abandoned identity. A cookie is a genuinely different storage
+        // mechanism, so if localStorage isn't the one surviving between
+        // visits, this gives a second chance to recover the same
+        // identity instead of silently minting a new one every time.
+        const match = document.cookie.match(/(?:^|; )voxelStandaloneUid=([^;]+)/);
+        if (match) localId = decodeURIComponent(match[1]);
       }
+      if (!localId) {
+        localId = 'standalone-' + (crypto.randomUUID ? crypto.randomUUID() : Date.now()+'-'+Math.random().toString(36).slice(2));
+      }
+      // Written back to BOTH places every time, regardless of which one
+      // (if either) it was actually found in — maximises the chance at
+      // least one of them survives to the next visit.
+      localStorage.setItem('voxelStandaloneUid', localId);
+      document.cookie = 'voxelStandaloneUid=' + encodeURIComponent(localId) + '; max-age=' + (60*60*24*365*2) + '; path=/; SameSite=Lax';
       playerUid = localId;
       isStandalone = true;
     } catch(e) {}
@@ -841,7 +862,8 @@
     let storageState;
     try { localStorage.setItem('__voxelStorageTest', '1'); localStorage.removeItem('__voxelStorageTest'); storageState = 'available'; }
     catch(e) { storageState = 'unavailable/blocked'; }
-    el.textContent = `debug — mode: ${isStandalone ? 'STANDALONE (local device only)' : 'ACCOUNT'} · uid: ${shortUid} · parent: ${parentState} · localStorage: ${storageState}`;
+    const cookieState = /(?:^|; )voxelStandaloneUid=/.test(document.cookie) ? 'set' : 'not set';
+    el.textContent = `debug — mode: ${isStandalone ? 'STANDALONE (local device only)' : 'ACCOUNT'} · uid: ${shortUid} · parent: ${parentState} · localStorage: ${storageState} · cookie: ${cookieState} · last save: ${lastSaveResult}`;
   }
   updateIdentityDebugNotice();
   let currentWorldId = null, currentWorldName = null;
@@ -1096,6 +1118,8 @@
     if (!currentWorldId || !playerUid) {
       console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid);
       if (!playerUid) showSaveStatus('⚠ Not signed in — this won\'t be saved', true); // was silent before (console-only) — this is very likely what's actually happening on a device where the account identity never resolved, with nothing on screen ever telling the player their world wasn't going anywhere
+      lastSaveResult = new Date().toLocaleTimeString() + ' — skipped, no world/uid';
+      updateIdentityDebugNotice();
       return;
     }
     try {
@@ -1108,6 +1132,8 @@
       if (!chunksOk) {
         console.error('[voxel] chunk save failed');
         showSaveStatus('⚠ Save failed (chunks)', true);
+        lastSaveResult = new Date().toLocaleTimeString() + ' — FAILED (chunk save)';
+        updateIdentityDebugNotice();
         return;
       }
       const payload = [{
@@ -1123,12 +1149,17 @@
         const body = await res.text().catch(() => '');
         console.error('[voxel] save failed', res.status, body);
         showSaveStatus('⚠ Save failed ('+res.status+')', true);
+        lastSaveResult = new Date().toLocaleTimeString() + ' — FAILED (HTTP '+res.status+': '+body.slice(0,80)+')';
       } else {
         showSaveStatus('💾 Saved', false);
+        lastSaveResult = new Date().toLocaleTimeString() + ' — OK (world: '+currentWorldName+')';
       }
+      updateIdentityDebugNotice();
     } catch(e) {
       console.error('[voxel] save error', e);
       showSaveStatus('⚠ Save error', true);
+      lastSaveResult = new Date().toLocaleTimeString() + ' — ERROR: ' + (e && e.message ? e.message : String(e));
+      updateIdentityDebugNotice();
     }
   }
   function applyWorldData(data) {

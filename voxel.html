@@ -4491,11 +4491,12 @@
 
   // ── Building types ──────────────────────────────────────────────
   function buildVillageHouse(plot, gy, rng, palette, doorSide, reg) {
-    const variant = Math.floor(rng() * 3);
+    const variant = Math.floor(rng() * 4); // added a 4th variant — genuinely taller (h=6 instead of 3-4), for visual variety walking through a village. This is still one open interior height-wise, not a real separate floor with its own stairs and furniture — that's a much bigger feature than a height change, worth doing properly in its own pass rather than half-built here.
     let w, d, h;
     if (variant === 0) { w = 6; d = 6; h = 3; }
     else if (variant === 1) { w = 8; d = 5; h = 3; }
-    else { w = 5; d = 5; h = 4; }
+    else if (variant === 2) { w = 5; d = 5; h = 4; }
+    else { w = 6; d = 6; h = 6; }
     w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
@@ -4522,19 +4523,30 @@
     return shell;
   }
   function buildVillageFarm(plot, gy, rng, palette, doorSide, reg, name) {
-    const barnW = Math.min(5, plot.x1 - plot.x0 + 1), barnD = Math.min(5, plot.z1 - plot.z0 + 1), h = 3;
+    // Barn shrunk from 5x5 to 4x4 specifically to guarantee the field
+    // has real room — see the plot-depth comment above. Field now
+    // starts immediately after the barn (no wasted 1-row gap) and uses
+    // proper Dirt (tilled soil, not the grass/whatever was there
+    // naturally) as its base, with Leaves picked out as crop rows on
+    // top — reads as an actual ploughed field rather than a barn
+    // sitting on bare unmodified ground.
+    const barnW = Math.min(4, plot.x1 - plot.x0 + 1), barnD = Math.min(4, plot.z1 - plot.z0 + 1), h = 3;
     const bx0 = plot.x0, bz0 = plot.z0;
     const shell = buildShell(bx0, bz0, barnW, barnD, h, gy, palette, doorSide);
     placeShellDoor(shell, doorSide, reg, 0);
     placeShellSign(shell, doorSide, name, reg);
     placeShellLight(shell, doorSide, reg);
-    const fieldZ0 = bz0 + barnD + 1, fieldZ1 = plot.z1;
+    const fieldZ0 = bz0 + barnD, fieldZ1 = plot.z1;
     if (fieldZ1 >= fieldZ0) {
       for (let x = plot.x0; x <= plot.x1; x++) {
         for (let z = fieldZ0; z <= fieldZ1; z++) {
-          const isFencePost = (x === plot.x0 || x === plot.x1 || z === fieldZ0 || z === fieldZ1);
+          const isFencePost = (x === plot.x0 || x === plot.x1 || z === fieldZ1);
           if (isFencePost) { blocks.set(key(x, gy + 1, z), palette.trim); trackVillageHeight(x, z, gy + 1); }
-          else if ((x + z) % 2 === 0) { blocks.set(key(x, gy + 1, z), 4); trackVillageHeight(x, z, gy + 1); } // crop rows (leaves block)
+          else {
+            blocks.set(key(x, gy, z), 1); // tilled soil — Dirt, not whatever the natural terrain surface was
+            if ((x + z) % 3 !== 0) { blocks.set(key(x, gy + 1, z), 4); trackVillageHeight(x, z, gy + 1); } // crop rows
+            else trackVillageHeight(x, z, gy);
+          }
         }
       }
     }
@@ -4671,9 +4683,20 @@
     let curY = y0, step = 0;
     for (let x = x0; x !== x1 + dir; x += dir) {
       step++;
-      const remaining = total - step + 1;
-      const diff = y1 - curY;
-      if (diff !== 0) curY += Math.sign(diff) * Math.min(Math.abs(diff), Math.ceil(Math.abs(diff) / Math.max(1, remaining)));
+      // The very first column — right outside the door — always stays
+      // at the door's own exact floor height, unchanged. Ramping toward
+      // the road only starts from the SECOND column onward. Before this
+      // fix, the ramp began adjusting on step 1 itself, meaning the
+      // path's height right at the threshold could already be offset
+      // from the door before it was even placed — clearing/placing
+      // blocks at the wrong height relative to the door specifically,
+      // which is exactly what "blocks above/below the door are missing
+      // or unwanted" looks like.
+      if (step > 1) {
+        const remaining = total - step + 1;
+        const diff = y1 - curY;
+        if (diff !== 0) curY += Math.sign(diff) * Math.min(Math.abs(diff), Math.ceil(Math.abs(diff) / Math.max(1, remaining)));
+      }
       for (let y = curY - 4; y <= curY + 4; y++) {
         const k = key(x, y, z);
         blocks.delete(k); stepRotations.delete(k);
@@ -4763,7 +4786,30 @@
     // doors" and pieces embedded in walls). 5 keeps a proper 3-row
     // interior for everything the same size as it was before this gap
     // change.
-    const slices = [[6, 10], [20, 24]];
+    // Pushed back up to 3 slices (6 plots, was 2/4) with a moderate
+    // 4-row gap — a genuine architectural ceiling applies here that's
+    // worth being upfront about: everything has to fit inside ONE
+    // 32-block chunk (FS=30, 1-block margin each side), because a
+    // village that spilled into a neighbouring chunk would risk that
+    // chunk's own terrain generation later overwriting it when it
+    // streams in separately — a real class of bug, not just caution.
+    // Within that hard ceiling, 6 buildings with real (if not maximal)
+    // spacing is about as far as this can go without either cramming
+    // buildings edge-to-edge again or shrinking their footprint enough
+    // to visibly compress the larger types (pub/hotel/castle all want a
+    // proper 5-7 deep plot). 10 buildings would need villages that can
+    // genuinely span multiple chunks — a bigger, riskier change than
+    // this pass, given how much trouble this exact system has caused
+    // before.
+    // Depth bumped from 5 to 6 — partly for every building's own
+    // interior room, but mainly because the farm's field genuinely had
+    // nowhere to go: barnD(5) + a 1-row gap already equalled the whole
+    // plot depth(5), so fieldZ0 ended up past fieldZ1 and the "if
+    // (fieldZ1 >= fieldZ0)" guard silently skipped placing any field at
+    // all, every single time. Still a hard ceiling on how much land a
+    // farm can have — see the note above the slice/plot layout — but
+    // this at least guarantees real, visible field rather than none.
+    const slices = [[3, 8], [12, 17], [21, 26]];
     const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
@@ -4771,10 +4817,16 @@
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    let pool = ['house', 'pub', 'shop', 'farm'];
+    // house/pub/shop/farm are guaranteed one each now (was just a
+    // shuffled 4-item pool before with only 4 plots to fill) — the 2
+    // remaining plots are a second house each, one of which has its own
+    // chance to become a hotel or castle, same as before. Real variety
+    // per village without every single village needing a castle to feel
+    // different from the last one.
+    let pool = ['house', 'pub', 'shop', 'farm', 'house', 'house'];
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
-    if (rng() < 0.3) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
-    if (rng() < 0.18) { const idx = pool.findIndex(t => t === 'house' || t === 'pub' || t === 'shop'); if (idx >= 0) pool[idx] = 'castle'; }
+    if (rng() < 0.35) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
+    if (rng() < 0.22) { const idx = pool.findIndex(t => t === 'house' || t === 'pub' || t === 'shop'); if (idx >= 0) pool[idx] = 'castle'; }
 
     let built = 0;
     plots.forEach((plot, i) => {

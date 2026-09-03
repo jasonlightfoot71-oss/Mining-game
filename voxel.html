@@ -787,6 +787,8 @@
     lastSaveResult = msg;
     try { sessionStorage.setItem('voxelLastSaveResult', msg); } catch(e) {}
   }
+  let lastWorldListResult = 'not checked yet this session';
+  function setLastWorldListResult(msg) { lastWorldListResult = msg; }
   if (!playerUid) {
     // No TASKMILL login available (e.g. running as its own standalone
     // page/PWA rather than inside TASKMILL) — generate a persistent local
@@ -877,7 +879,7 @@
     try { localStorage.setItem('__voxelStorageTest', '1'); localStorage.removeItem('__voxelStorageTest'); storageState = 'available'; }
     catch(e) { storageState = 'unavailable/blocked'; }
     const cookieState = /(?:^|; )voxelStandaloneUid=/.test(document.cookie) ? 'set' : 'not set';
-    el.textContent = `debug — mode: ${isStandalone ? 'STANDALONE (local device only)' : 'ACCOUNT'} · uid: ${shortUid} · parent: ${parentState} · localStorage: ${storageState} · cookie: ${cookieState} · last save: ${lastSaveResult}`;
+    el.textContent = `debug — mode: ${isStandalone ? 'STANDALONE (local device only)' : 'ACCOUNT'} · uid: ${shortUid} · parent: ${parentState} · localStorage: ${storageState} · cookie: ${cookieState} · last save: ${lastSaveResult} · last list fetch: ${lastWorldListResult}`;
   }
   updateIdentityDebugNotice();
   let currentWorldId = null, currentWorldName = null;
@@ -915,13 +917,25 @@
   function payForRank(rankIdx) { return Math.round(2 * Math.pow(1.25, rankIdx)); } // base WORK_PAY of 2, +25% per rank
 
   async function fetchWorldList() {
-    const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?uid=eq.${encodeURIComponent(playerUid)}&select=id,name,updated_at&order=updated_at.desc`, { headers: SB_HEADERS });
+    const url = `${SB_URL}/rest/v1/taskmill_voxel_worlds?uid=eq.${encodeURIComponent(playerUid)}&select=id,name,updated_at&order=updated_at.desc`;
+    const res = await fetch(url, { headers: SB_HEADERS });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       console.error('[voxel] fetch world list failed', res.status, body);
+      setLastWorldListResult(new Date().toLocaleTimeString() + ' — FAILED (HTTP '+res.status+')');
       throw new Error('list fetch failed: '+res.status);
     }
-    return await res.json();
+    const rows = await res.json();
+    // Distinguishes a genuine fetch error from "the request succeeded
+    // but came back with zero rows" — the second one, right after a
+    // save that reported OK for the exact same uid, points specifically
+    // at a Supabase RLS policy that allows writing a row but doesn't
+    // allow reading it back, which is server-side configuration this
+    // file has no visibility into or ability to fix — logged here so
+    // it's provable rather than just suspected.
+    console.log('[voxel] fetchWorldList: got', rows.length, 'row(s) for uid', playerUid, url);
+    setLastWorldListResult(new Date().toLocaleTimeString() + ' — ' + rows.length + ' world(s) returned for this uid');
+    return rows;
   }
   // Every world NOT owned by the current player. Whether this actually
   // returns other people's rows depends on the Supabase table's RLS
@@ -15381,6 +15395,7 @@
     const list = document.getElementById('worldList');
     try {
       const allWorlds = await fetchWorldList();
+      updateIdentityDebugNotice(); // refreshed AGAIN here — fetchWorldList only knows its own row count after it's actually finished, so the first call above still shows the previous (or default) value
       document.getElementById('createPubBtn').style.display = allWorlds.some(w => w.id === PUB_WORLD_ID) ? 'none' : 'block';
       // The Mill is deliberately excluded from this list — its own
       // dedicated "Visit The Mill" button (visitPub()) is the only path

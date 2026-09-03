@@ -792,6 +792,37 @@
       isStandalone = true;
     } catch(e) {}
   }
+  // Retries reading window.parent.currentUser a few times over the next
+  // couple of seconds if it wasn't there on the very first check — a
+  // slower connection (much more likely on mobile than on a laptop) can
+  // mean the parent TASKMILL page simply hasn't finished setting its own
+  // currentUser yet at the exact instant this script's very first line
+  // ran, which reads as "not logged in" even though the player actually
+  // is, with no error or indication anything went wrong — just quietly
+  // falling back to a local-only identity whose worlds don't follow them
+  // to their account (or their other devices) at all. If a real account
+  // does show up on a later check, this upgrades the running session to
+  // it and lets the player know, rather than leaving them stuck in
+  // standalone mode for the rest of this visit for no reason.
+  if (isStandalone) {
+    let attempts = 0;
+    const retryIdentity = () => {
+      attempts++;
+      let realUid = null;
+      try { realUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
+      if (realUid) {
+        playerUid = realUid;
+        isStandalone = false;
+        console.log('[voxel] account identity became available after standalone fallback — upgraded');
+        showSaveStatus('✅ Signed in — worlds will now save to your account', false);
+        const notice = document.getElementById('standaloneNotice');
+        if (notice) notice.style.display = 'none';
+      } else if (attempts < 6) {
+        setTimeout(retryIdentity, attempts*500); // 500ms, 1s, 1.5s... spread out rather than hammering it
+      }
+    };
+    setTimeout(retryIdentity, 500);
+  }
   let currentWorldId = null, currentWorldName = null;
   // Visiting someone else's world — view only, never saved. Guarded at
   // saveWorld() itself (below) rather than at each of its call sites,
@@ -1041,7 +1072,11 @@
   }
   async function saveWorld() {
     if (visitMode) { console.log('[voxel] save skipped — visiting another world (read-only)'); return; }
-    if (!currentWorldId || !playerUid) { console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid); return; }
+    if (!currentWorldId || !playerUid) {
+      console.warn('[voxel] save skipped — no world/uid', currentWorldId, playerUid);
+      if (!playerUid) showSaveStatus('⚠ Not signed in — this won\'t be saved', true); // was silent before (console-only) — this is very likely what's actually happening on a device where the account identity never resolved, with nothing on screen ever telling the player their world wasn't going anywhere
+      return;
+    }
     try {
       await mergeFixturesBeforeSave(); // pulls in any fixtures/furniture another player has added since this session loaded, so this save doesn't silently erase them — see its own comment for what this does and doesn't cover
       // Chunks saved first, deliberately — the legacy row only ever gets

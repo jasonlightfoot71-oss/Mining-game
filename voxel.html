@@ -15473,34 +15473,43 @@
     const name = (input.value || 'My World').trim().slice(0,40) || 'My World';
     currentWorldId = newWorldId();
     currentWorldName = name;
-    visitMode = false; // guard against stale state left over from a previous visit this session
-    currentRole = null; // …and any role assigned from a previous Mill visit
-    lastSavedChunkPayloads = new Map(); // guard against stale chunk-tracking state left over from whatever world was open before this one this session — loadWorldData() never runs for a brand new world, so nothing else resets this
-    // New worlds always use the infinite-terrain system — see the
-    // INFINITE TERRAIN section. No fixed-size generateNewWorld() call any
-    // more; terrain streams in around the player instead, starting here
-    // with the chunks around spawn (0,0).
-    infiniteWorldActive = true;
-    terrainStreamingActive = true;
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
-    generatedChunks.clear(); lastStreamChunkKey = null;
-    blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
-    clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
-    clearPubExtras(); // in case the last thing loaded was the community pub
-    updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
-    spawnDefault();
+    // Everything from here down used to only have beginPlaying() itself
+    // guarded — but "last save: no save attempted yet this session" even
+    // after creating worlds means saveWorld() was never even reached at
+    // all, which can only happen if something EARLIER than beginPlaying
+    // threw first (terrain generation, mesh building, any of the
+    // clear()s below) — on weaker/mobile hardware specifically, that's
+    // a real possibility this never accounted for. The whole rest of
+    // this handler is wrapped now, with saveWorld() moved into a
+    // finally block so it's guaranteed to at least be ATTEMPTED no
+    // matter what fails above it, and any failure is both logged and
+    // shown on screen instead of silently killing the handler.
     try {
+      visitMode = false; // guard against stale state left over from a previous visit this session
+      currentRole = null; // …and any role assigned from a previous Mill visit
+      lastSavedChunkPayloads = new Map(); // guard against stale chunk-tracking state left over from whatever world was open before this one this session — loadWorldData() never runs for a brand new world, so nothing else resets this
+      // New worlds always use the infinite-terrain system — see the
+      // INFINITE TERRAIN section. No fixed-size generateNewWorld() call any
+      // more; terrain streams in around the player instead, starting here
+      // with the chunks around spawn (0,0).
+      infiniteWorldActive = true;
+      terrainStreamingActive = true;
+      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+      generatedChunks.clear(); lastStreamChunkKey = null;
+      blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
+      clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
+      clearPubExtras(); // in case the last thing loaded was the community pub
+      updateChunkStreaming(); // generate the starting chunks around spawn (0,0) before spawnDefault() looks for ground to stand on
+      spawnDefault();
       await beginPlaying();
     } catch (err) {
-      // A brand new world's very first save must not depend on nothing
-      // else in startup ever throwing — if it did (multiplayer connect,
-      // anything else beginPlaying touches), the save below would simply
-      // never run, silently, with the world never actually landing in
-      // "Your Worlds" and no visible error at all. Logged so it's
-      // diagnosable, but never allowed to skip the save itself.
-      console.error('[voxel] beginPlaying failed while creating a new world', err);
+      console.error('[voxel] creating a new world failed partway through', err);
+      lastSaveResult = new Date().toLocaleTimeString() + ' — world creation itself threw before saving: ' + (err && err.message ? err.message : String(err));
+      updateIdentityDebugNotice();
+      showSaveStatus('⚠ Something went wrong creating the world', true);
+    } finally {
+      await saveWorld(); // guaranteed to at least be attempted regardless of what happened above — was previously skippable entirely if anything earlier in this handler threw
     }
-    await saveWorld(); // was fire-and-forget before — awaited now so a failure here is guaranteed to actually run to completion and show its error toast, rather than possibly getting cut short by whatever happens next
   });
 
   if (playerUid) {

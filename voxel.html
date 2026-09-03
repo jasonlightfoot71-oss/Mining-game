@@ -303,6 +303,7 @@
 <div id="worldSelect">
   <h1>⛏️ Mining World</h1>
   <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin:0 auto 10px;max-width:700px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
+  <div id="identityDebugNotice" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:6px 10px;font-size:11px;opacity:0.7;margin:0 auto 10px;max-width:700px;font-family:monospace;"></div>
   <div id="worldQuadrants">
     <div class="titleQuadrant" id="quadMill">
       <h3>🍺 The Mill</h3>
@@ -817,12 +818,32 @@
         showSaveStatus('✅ Signed in — worlds will now save to your account', false);
         const notice = document.getElementById('standaloneNotice');
         if (notice) notice.style.display = 'none';
+        updateIdentityDebugNotice();
       } else if (attempts < 6) {
         setTimeout(retryIdentity, attempts*500); // 500ms, 1s, 1.5s... spread out rather than hammering it
       }
     };
     setTimeout(retryIdentity, 500);
   }
+  // Always-visible, plain-text diagnostic — not a toast that flashes and
+  // disappears, and not conditional on standalone mode like the notice
+  // above it. Shows exactly what identity state actually got resolved,
+  // so if saving still isn't working on a specific device, what this
+  // says (reported back) pins down the real cause instead of guessing
+  // further blind.
+  function updateIdentityDebugNotice() {
+    const el = document.getElementById('identityDebugNotice');
+    if (!el) return;
+    const shortUid = playerUid ? (playerUid.length > 14 ? playerUid.slice(0,8)+'…'+playerUid.slice(-4) : playerUid) : '(none)';
+    let parentState;
+    try { parentState = (window.parent && window.parent.currentUser) ? 'has currentUser' : (window.parent === window ? 'no parent frame (top-level page)' : 'parent reachable, no currentUser yet'); }
+    catch(e) { parentState = 'blocked (cross-origin)'; }
+    let storageState;
+    try { localStorage.setItem('__voxelStorageTest', '1'); localStorage.removeItem('__voxelStorageTest'); storageState = 'available'; }
+    catch(e) { storageState = 'unavailable/blocked'; }
+    el.textContent = `debug — mode: ${isStandalone ? 'STANDALONE (local device only)' : 'ACCOUNT'} · uid: ${shortUid} · parent: ${parentState} · localStorage: ${storageState}`;
+  }
+  updateIdentityDebugNotice();
   let currentWorldId = null, currentWorldName = null;
   // Visiting someone else's world — view only, never saved. Guarded at
   // saveWorld() itself (below) rather than at each of its call sites,
@@ -15310,6 +15331,7 @@
   }
 
   async function renderWorldList() {
+    updateIdentityDebugNotice(); // refreshed here too — every time the menu with "Your Worlds" is actually shown, not just once at page load
     const msg = document.getElementById('worldSelectMsg');
     const list = document.getElementById('worldList');
     try {

@@ -9270,18 +9270,19 @@
   }
   function playFootstep(material) {
     if (!audioCtx) return;
-    // Simplified back down to plain filtered noise for every material —
-    // an earlier version layered a small oscillator "tone" on top for
-    // wood and splash specifically (a resonant body pitch, a high
-    // "plip"), which read as synthetic/gamey rather than realistic.
-    // Noise alone, just varying the filter's frequency and the burst's
-    // duration per material, stays much closer to how the original
-    // (better-received) footstep sound actually worked.
+    // Softened across the board — an instant, full-volume onset with no
+    // attack ramp at all is exactly what makes a footstep read as a hard
+    // heel or clog striking a surface. A trainer's cushioned sole
+    // doesn't contact the ground instantaneously, so a short (12ms)
+    // linear ramp-up before the decay is what actually separates a soft
+    // "pat" from a sharp "clack" — arguably a bigger factor than the
+    // filter frequency itself. Frequencies also brought down somewhat
+    // across every material (less bright/clacky, more muffled/padded).
     let dur, freq, gain;
-    if (material === 'wood') { dur = 0.08; freq = 650; gain = 0.26; }
-    else if (material === 'stone') { dur = 0.055; freq = 900; gain = 0.24; }
-    else if (material === 'sand') { dur = 0.08; freq = 380 + Math.random()*220; gain = 0.12; } // same character as grass now, just noticeably quieter — was its own distinct (and apparently unconvincing) sound before
-    else { dur = 0.08; freq = 380 + Math.random()*220; gain = 0.32; } // grass/dirt/leaves — original, unchanged
+    if (material === 'wood') { dur = 0.07; freq = 500; gain = 0.20; }
+    else if (material === 'stone') { dur = 0.05; freq = 550; gain = 0.19; }
+    else if (material === 'sand') { dur = 0.08; freq = 300 + Math.random()*150; gain = 0.10; }
+    else { dur = 0.08; freq = 300 + Math.random()*150; gain = 0.24; } // grass/dirt/leaves
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -9292,8 +9293,10 @@
     filter.type = 'lowpass';
     filter.frequency.value = freq;
     const g = audioCtx.createGain();
-    g.gain.setValueAtTime(gain, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    const now = audioCtx.currentTime;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.linearRampToValueAtTime(gain, now + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, now + dur);
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();
   }

@@ -4888,12 +4888,29 @@
       plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
-          for (let y = Math.max(0, plotY - 6); y <= plotY + 12; y++) {
+          // Rebuilt around the real existing terrain height at THIS
+          // column, rather than blindly clearing a guessed vertical
+          // window and hoping a separately-guessed refill window happens
+          // to line back up with it — that approach had already caused
+          // one genuine buried-gap bug, and evidently still wasn't fully
+          // right. This is simpler and can't have that failure mode at
+          // all: read what's actually there, then either build UP from
+          // it (packing any gap with solid ground, contiguously, from
+          // wherever the real ground already is) or clear DOWN to the
+          // target from wherever the real excess terrain actually ends
+          // — never an arbitrary fixed-depth guess in either direction.
+          const existingH = columnHeight.get(x + ',' + z);
+          const clearTop = Math.max(plotY + 12, existingH !== undefined ? existingH : plotY);
+          for (let y = plotY + 1; y <= clearTop; y++) {
             const k = key(x, y, z);
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2); // extended down to plotY-6 (was plotY-3) — the clear above reaches plotY-6, so anything less left a 3-block gap cleared but never refilled, sitting directly under every plot's own floor. Exactly the "invisible blocks"/void reported around houses: walking into that buried gap from the side wherever nearby natural terrain was low enough to expose it.
+          if (existingH !== undefined && existingH < plotY) {
+            for (let y = Math.max(0, existingH); y < plotY; y++) blocks.set(key(x, y, z), 2); // pack the gap — contiguous from the REAL existing ground up to the floor, so there's no possible mismatched window left unfilled beneath it
+          } else if (existingH === undefined) {
+            for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2); // safety fallback for a column nothing ever generated for this late — shouldn't normally happen
+          }
           blocks.set(key(x, plotY, z), 0);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
@@ -8917,7 +8934,7 @@
     radius: 0.3, height: 1.7, onGround: false,
   };
   let flying = false;
-  let windActive = false; // set each frame movement is processed — whether the flying-wind sound should be audible right now
+  let windIntensity = 0; // 0..1 — how hard the player is actually pushing movement input right now while flying, set each frame movement is processed. Was a plain boolean (on/off) before; continuous now so the wind can genuinely fade in with speed rather than snapping straight to full volume the instant you nudge forward.
   function spawnDefault() {
     for (let y = WORLD_HEIGHT+5; y >= 0; y--) {
       if (blocks.has(key(0,y,0))) { player.pos.set(0.5, y+2, 0.5); break; }
@@ -9057,6 +9074,7 @@
   // here) — after that this just nudges its existing gain/filter each
   // frame rather than recreating nodes, which would click/pop constantly.
   let windNoiseNode = null, windGain = null, windFilter = null;
+  let windLowNode = null, windLowGain = null, windLowFilter = null;
   function ensureWindNoise() {
     if (windNoiseNode || !audioCtx) return;
     const dur = 2; // short buffer, looped — wind is steady enough that a seam every 2s is inaudible under the filtering below
@@ -9064,32 +9082,58 @@
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) data[i] = Math.random()*2-1;
+
     windNoiseNode = audioCtx.createBufferSource();
     windNoiseNode.buffer = buffer;
     windNoiseNode.loop = true;
     windFilter = audioCtx.createBiquadFilter();
     windFilter.type = 'bandpass';
     windFilter.frequency.value = 500;
-    windFilter.Q.value = 0.7;
+    windFilter.Q.value = 0.6;
     windGain = audioCtx.createGain();
     windGain.gain.value = 0; // silent until updateWindSound actually ramps it up
     windNoiseNode.connect(windFilter).connect(windGain).connect(audioCtx.destination);
     windNoiseNode.start();
+
+    // Second, LOWPASS layer underneath the bandpass one above — reusing
+    // the SAME noise buffer is fine (it's just source material; the two
+    // completely different filters shape it into two distinct
+    // textures). Rain also uses a bandpass sweep (see makeLoopingNoise
+    // below), just centred much higher/brighter — so the bandpass layer
+    // alone risked reading as "the same kind of hiss, only lower",
+    // which is very likely what "wind and rain sound the same" was
+    // actually about. A genuine low-end rumble is what actually reads
+    // as wind specifically, not shared texture with rain.
+    windLowNode = audioCtx.createBufferSource();
+    windLowNode.buffer = buffer;
+    windLowNode.loop = true;
+    windLowFilter = audioCtx.createBiquadFilter();
+    windLowFilter.type = 'lowpass';
+    windLowFilter.frequency.value = 220;
+    windLowFilter.Q.value = 0.5;
+    windLowGain = audioCtx.createGain();
+    windLowGain.gain.value = 0;
+    windLowNode.connect(windLowFilter).connect(windLowGain).connect(audioCtx.destination);
+    windLowNode.start();
   }
-  // Called every frame from animate() with whether the player is
-  // currently flying AND actually moving — smoothly ramps toward the
-  // target instead of snapping, so starting/stopping doesn't click, and
-  // brightens the filter a little at full speed so it reads as "rushing
-  // past" rather than a flat hiss.
-  function updateWindSound(dt, active) {
+  // Called every frame from animate() with the player's current movement
+  // intensity while flying (0..1, continuous — see windIntensity's own
+  // comment for how that's derived). Both layers scale together with
+  // it: faint and low at a gentle nudge, fuller and brighter at full
+  // speed — genuinely tracking how fast you're actually going now,
+  // rather than the old plain on/off that jumped straight to full
+  // volume the instant you started moving at all. Smoothly eased toward
+  // the target either way, so speeding up/slowing down never clicks or
+  // snaps.
+  function updateWindSound(dt, intensity) {
     if (!audioCtx) return;
     ensureWindNoise();
     if (!windGain) return;
-    const targetGain = active ? 0.002 : 0;
-    const targetFreq = active ? 900 : 500;
     const now = audioCtx.currentTime;
-    windGain.gain.setTargetAtTime(targetGain, now, 0.3);
-    windFilter.frequency.setTargetAtTime(targetFreq, now, 0.5);
+    windGain.gain.setTargetAtTime(intensity * 0.0022, now, 0.3);
+    windFilter.frequency.setTargetAtTime(500 + intensity * 500, now, 0.5);
+    windLowGain.gain.setTargetAtTime(intensity * 0.003, now, 0.3);
+    windLowFilter.frequency.setTargetAtTime(180 + intensity * 260, now, 0.5);
   }
 
   // Rain / snow ambience + occasional birdsong — all driven straight
@@ -13867,9 +13911,9 @@
     waterMat.uniforms.uTime.value = waterTime;
     updateWanderingCustomers(dt);
     updateVillageNPCs(dt);
-    updateWindSound(dt, windActive);
+    updateWindSound(dt, windIntensity);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
-    if (!locked) windActive = false; // menus/paused — fade the wind out rather than leaving it stuck on from before
+    if (!locked) windIntensity = 0; // menus/paused — fade the wind out rather than leaving it stuck on from before
 
     // While App Make/Bar/Bar Team Leader/Kitchen's automated scenes are
     // running, all of movement/look/mining/placing/camera below is
@@ -13930,8 +13974,15 @@
         if (keys['KeyA']) move.sub(right);
         if (move.lengthSq()>0) move.normalize();
       }
-      const wasMoving = move.lengthSq() > 0.0001;
-      windActive = flying && wasMoving;
+      // move.length() here is the RAW input magnitude, before the
+      // speed*dt scaling just below turns it into an actual world-space
+      // step — for touch it's genuinely analog (a gentle joystick nudge
+      // gives a small value, full deflection gives ~1), for keyboard
+      // it's binary (0 or 1, since WASD has no concept of "half
+      // pressed") but that's still a real improvement over the old
+      // plain on/off: the wind now actually tracks how hard movement is
+      // being pushed, not just whether it's happening at all.
+      windIntensity = flying ? Math.min(1, move.length()) : 0;
       move.multiplyScalar(speed*dt);
 
       if (flying) {

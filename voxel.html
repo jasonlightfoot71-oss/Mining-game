@@ -4751,6 +4751,24 @@
     const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
 
+    // Villages only spawn on relatively flat ground now. The old design
+    // sampled a single point (the plot's own centre) to decide the
+    // height an ENTIRE flattened building pad would use — fine when
+    // terrain was gentler, but terrain now varies a lot more over just
+    // a few blocks (see the terrain generation rewrite elsewhere), so
+    // that one sample could be wildly unrepresentative of the ground
+    // actually surrounding it. The result: a flattened pad ending up
+    // far lower (or higher) than the natural hillside around it, with
+    // a house sitting at the bottom of a steep-walled pit — structurally
+    // fine, but genuinely hard to reach and visually broken. Checking
+    // the spread across several points up front and simply skipping
+    // this chunk's village if it's too steep is far safer than trying
+    // to grade an entire hillside to smoothly blend with a flat pad,
+    // which risks its own new set of edge cases.
+    const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
+    if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
+    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 8) return; // too steep/uneven for a village this time
+
     // Trees (and anything else terrain generation naturally scattered
     // there) already exist across this whole area by the time a village
     // gets built here — village generation runs strictly after the

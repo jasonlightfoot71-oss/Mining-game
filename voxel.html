@@ -1983,7 +1983,7 @@
   // expensive fast for no visual benefit (you'd have to dig a long way
   // down to ever see it). A few layers below the visible surface is
   // already enough headroom for normal digging.
-  const CHUNK_FILL_DEPTH_CAP = 6;
+  const CHUNK_FILL_DEPTH_CAP = 9; // raised from 6 — terrain generation makes noticeably taller, more varied ground now than when this was originally tuned, so steep transitions between neighbouring columns are more common; each column only ever fills its own top N blocks, so a short cap made a tall column's fill more likely to fall short of reaching a much lower neighbour, leaving a real gap on the cliff face between them. Not a full guarantee at extreme height differences, but a meaningful margin without a large lag cost (still a small, capped depth per column, not filling all the way to bedrock everywhere).
   const generatedChunks = new Set(); // chunkKey -> currently populated in the live blocks/water maps
   // Player edits, global (not grouped by chunk) — the actual source of
   // truth for what gets saved. -1 in either map means "explicitly empty
@@ -4888,17 +4888,21 @@
       plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
-          // Rebuilt around the real existing terrain height at THIS
-          // column, rather than blindly clearing a guessed vertical
-          // window and hoping a separately-guessed refill window happens
-          // to line back up with it — that approach had already caused
-          // one genuine buried-gap bug, and evidently still wasn't fully
-          // right. This is simpler and can't have that failure mode at
-          // all: read what's actually there, then either build UP from
-          // it (packing any gap with solid ground, contiguously, from
-          // wherever the real ground already is) or clear DOWN to the
-          // target from wherever the real excess terrain actually ends
-          // — never an arbitrary fixed-depth guess in either direction.
+          // Everything above the floor is cleared based on the real
+          // existing terrain height at this column, same reasoning as
+          // before. Below the floor is different now: rather than only
+          // filling when the natural terrain was clearly BELOW plotY, a
+          // fixed-depth base is placed unconditionally, regardless of
+          // what the natural height here was. The gap in the previous
+          // version: when natural terrain was TALLER than plotY, nothing
+          // got filled at all, on the assumption the original terrain's
+          // own fill already reached down far enough — but that's not
+          // guaranteed. A tall column only ever fills CHUNK_FILL_DEPTH_
+          // CAP blocks deep from ITS OWN (taller) surface, which can
+          // fall well short of reaching all the way down to a much
+          // lower plotY, leaving exactly a gap directly under the new
+          // floor. This no longer depends on or trusts that assumption
+          // at all.
           const existingH = columnHeight.get(x + ',' + z);
           const clearTop = Math.max(plotY + 12, existingH !== undefined ? existingH : plotY);
           for (let y = plotY + 1; y <= clearTop; y++) {
@@ -4906,11 +4910,7 @@
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          if (existingH !== undefined && existingH < plotY) {
-            for (let y = Math.max(0, existingH); y < plotY; y++) blocks.set(key(x, y, z), 2); // pack the gap — contiguous from the REAL existing ground up to the floor, so there's no possible mismatched window left unfilled beneath it
-          } else if (existingH === undefined) {
-            for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2); // safety fallback for a column nothing ever generated for this late — shouldn't normally happen
-          }
+          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2);
           blocks.set(key(x, plotY, z), 0);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
@@ -9220,9 +9220,127 @@
   // a lowpass filter (softening it into a thud rather than harsh static)
   // with a fast decay envelope. The filter cutoff gets a small random
   // wobble per step so repeated footsteps don't sound identically robotic.
-  function playFootstep() {
+  // Which of a few broad footstep-sound categories a block reads as —
+  // grouped rather than one sound per block type, since the actual
+  // acoustic character only really varies a handful of ways (soft
+  // ground, hard masonry, hollow wood, loose grit), not per-texture.
+  function footstepMaterialAt(bx, by, bz) {
+    const t = blocks.get(key(bx, by, bz));
+    if (t === undefined) return 'grass';
+    if (t === 3 || t === 6) return 'wood'; // Wood, Planks
+    if (t === 5) return 'sand'; // Sand
+    if (t === 0 || t === 1 || t === 4) return 'grass'; // Grass, Dirt, Leaves
+    return 'stone'; // Stone, Brick, Glass, Concrete, Step, and every variant of those
+  }
+  // Counts the total depth of the water column at (x,z), independent of
+  // exactly where the player's feet currently sit within it — searches
+  // outward from the player's own current height first since that's by
+  // far the most likely place to find the relevant surface, rather than
+  // scanning from a fixed world height every time.
+  function waterDepthAt(x, z) {
+    const px = Math.floor(x), pz = Math.floor(z);
+    let topY = null;
+    const base = Math.floor(player.pos.y);
+    for (let dy = 3; dy >= -4; dy--) {
+      if (waterBlocks.has(key(px, base+dy, pz))) { topY = base+dy; break; }
+    }
+    if (topY === null) return 0;
+    let depth = 0;
+    while (waterBlocks.has(key(px, topY-depth, pz))) depth++;
+    return depth;
+  }
+  function playFootstep(material) {
     if (!audioCtx) return;
-    const dur = 0.08;
+    if (material === 'wood') {
+      // Hollow, resonant "clop" — a bandpass noise burst (the hollow
+      // body character) plus a short low triangle-wave tone underneath,
+      // reading as a wooden floor/planks rather than bare ground.
+      const dur = 0.09;
+      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 700 + Math.random()*200;
+      filter.Q.value = 2;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.22, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+      noise.connect(filter).connect(g).connect(audioCtx.destination);
+      noise.start();
+      const o = audioCtx.createOscillator();
+      const g2 = audioCtx.createGain();
+      o.type = 'triangle';
+      o.frequency.value = 180 + Math.random()*40;
+      g2.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.12);
+      o.connect(g2).connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime+0.13);
+    } else if (material === 'stone') {
+      // Harder, brighter, and noticeably shorter than the default —
+      // reads as a click on masonry rather than a soft thud.
+      const dur = 0.05;
+      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 700;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.26, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+      noise.connect(filter).connect(g).connect(audioCtx.destination);
+      noise.start();
+    } else if (material === 'sand') {
+      // Softer and longer — a grainy shuffle rather than a distinct
+      // thud or click.
+      const dur = 0.14;
+      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 1400 + Math.random()*300;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.16, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+      noise.connect(filter).connect(g).connect(audioCtx.destination);
+      noise.start();
+    } else {
+      // grass/dirt/leaves (default) — original soft thud, unchanged.
+      const dur = 0.08;
+      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 380 + Math.random()*220;
+      const g = audioCtx.createGain();
+      g.gain.setValueAtTime(0.32, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+      noise.connect(filter).connect(g).connect(audioCtx.destination);
+      noise.start();
+    }
+  }
+  // Bright, splashy step — shallow water (depth < 2), walking rather
+  // than swimming. A short bandpass burst plus a quick high "plip",
+  // distinct from both a dry footstep's soft thud and the sustained
+  // swim stroke below.
+  function playSplashStep() {
+    if (!audioCtx) return;
+    const dur = 0.12;
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -9230,10 +9348,44 @@
     const noise = audioCtx.createBufferSource();
     noise.buffer = buffer;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 380 + Math.random()*220;
+    filter.type = 'bandpass';
+    filter.frequency.value = 1400;
+    filter.Q.value = 0.8;
     const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.32, audioCtx.currentTime);
+    g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    noise.connect(filter).connect(g).connect(audioCtx.destination);
+    noise.start();
+    const o = audioCtx.createOscillator();
+    const g2 = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(900, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime+0.08);
+    g2.gain.setValueAtTime(0.08, audioCtx.currentTime);
+    g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.09);
+    o.connect(g2).connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime+0.1);
+  }
+  // Longer, sustained watery swoosh for genuinely swimming (depth >=
+  // 2) — a stroke through water, not a footstep-length splash. Filtered
+  // noise with a slow downward frequency sweep rather than a short
+  // percussive burst.
+  function playSwimStroke() {
+    if (!audioCtx) return;
+    const dur = 0.4;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 1;
+    filter.frequency.setValueAtTime(900, audioCtx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime+dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.13, audioCtx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();
@@ -14093,9 +14245,26 @@
         if (submerged !== window._voxelWasSubmerged) { playSplash(); }
         window._voxelWasSubmerged = submerged;
 
-        if (wasMoving && player.onGround && !submerged) {
+        // Depth-aware movement sound: genuinely swimming (2+ blocks of
+        // water) gets a sustained stroke rather than a footstep-length
+        // splash; shallow water (less than 2, walking on the bottom
+        // rather than floating) gets a bright splash instead of either
+        // a dry footstep or a swim stroke; dry ground gets a footstep
+        // whose character now depends on what's actually underfoot.
+        const waterDepthHere = flying ? 0 : waterDepthAt(player.pos.x, player.pos.z);
+        if (wasMoving && waterDepthHere >= 2) {
           footstepTimer -= dt;
-          if (footstepTimer <= 0) { playFootstep(); footstepTimer = 0.36; }
+          if (footstepTimer <= 0) { playSwimStroke(); footstepTimer = 0.55; }
+        } else if (wasMoving && waterDepthHere > 0 && player.onGround) {
+          footstepTimer -= dt;
+          if (footstepTimer <= 0) { playSplashStep(); footstepTimer = 0.36; }
+        } else if (wasMoving && player.onGround && waterDepthHere === 0) {
+          footstepTimer -= dt;
+          if (footstepTimer <= 0) {
+            const material = footstepMaterialAt(Math.floor(player.pos.x), Math.floor(player.pos.y) - 1, Math.floor(player.pos.z));
+            playFootstep(material);
+            footstepTimer = 0.36;
+          }
         } else {
           footstepTimer = 0;
         }

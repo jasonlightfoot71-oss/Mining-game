@@ -2337,8 +2337,26 @@
         const x = x0+lx, z = z0+lz;
         const colH = columnHeight.get(x+','+z);
         if (colH === undefined) continue;
-        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 2);
-        const yMax = colH + 3;
+        // Widened substantially (was colH-CHUNK_FILL_DEPTH_CAP-2 to
+        // colH+3) — that was tight enough that some village
+        // configurations could genuinely fall outside it: columnHeight
+        // tracks the TALLEST thing ever placed at a column, which for
+        // an interior column under a roof is the roof peak, not the
+        // floor several blocks below it; and a deep base-fill under a
+        // floor (see the plot regrade) reaches further down than the
+        // old margin allowed for. Blocks outside this range never get
+        // synced into the render mesh at all when a chunk first
+        // generates — they still exist in the data (so they're
+        // collidable), just invisible, until something else touches a
+        // neighbouring cell directly (mining/placing calls
+        // updateFullInstanceAt on the spot regardless of this range,
+        // which is exactly why mining a block nearby made others
+        // reappear, and why a fresh reload without any new edit made
+        // them vanish again). Generously wide now specifically to stop
+        // relying on getting this margin exactly right for every
+        // possible building height/roof/fill-depth combination.
+        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 20);
+        const yMax = colH + 20;
         for (let y = yMin; y <= yMax; y++) {
           updateFullInstanceAt(x, y, z);
         }

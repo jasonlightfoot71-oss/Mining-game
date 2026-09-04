@@ -13974,6 +13974,7 @@
         if (keys['KeyA']) move.sub(right);
         if (move.lengthSq()>0) move.normalize();
       }
+      const wasMoving = move.lengthSq() > 0.0001; // still used below for footstep sounds
       // move.length() here is the RAW input magnitude, before the
       // speed*dt scaling just below turns it into an actual world-space
       // step — for touch it's genuinely analog (a gentle joystick nudge

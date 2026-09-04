@@ -2337,26 +2337,27 @@
         const x = x0+lx, z = z0+lz;
         const colH = columnHeight.get(x+','+z);
         if (colH === undefined) continue;
-        // Widened substantially (was colH-CHUNK_FILL_DEPTH_CAP-2 to
-        // colH+3) — that was tight enough that some village
-        // configurations could genuinely fall outside it: columnHeight
-        // tracks the TALLEST thing ever placed at a column, which for
-        // an interior column under a roof is the roof peak, not the
-        // floor several blocks below it; and a deep base-fill under a
-        // floor (see the plot regrade) reaches further down than the
-        // old margin allowed for. Blocks outside this range never get
-        // synced into the render mesh at all when a chunk first
-        // generates — they still exist in the data (so they're
-        // collidable), just invisible, until something else touches a
-        // neighbouring cell directly (mining/placing calls
-        // updateFullInstanceAt on the spot regardless of this range,
-        // which is exactly why mining a block nearby made others
-        // reappear, and why a fresh reload without any new edit made
-        // them vanish again). Generously wide now specifically to stop
-        // relying on getting this margin exactly right for every
-        // possible building height/roof/fill-depth combination.
-        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 20);
-        const yMax = colH + 20;
+        // Reverted the blanket widening — that fixed villages but broke
+        // ordinary terrain everywhere else: MAX_INSTANCES (40000) is a
+        // single shared, fixed-size instance pool per block type across
+        // the WHOLE loaded world, and scanning ~8x more vertical space
+        // for every single column, everywhere, meant far more legitimate
+        // blocks got discovered and pushed into that pool than before —
+        // exhausting the cap much sooner, past which new instances fail
+        // silently (see addFullInstance's own "if count >= MAX_INSTANCES
+        // return" below), which is exactly what "normal terrain has
+        // see-through blocks too now" was. The actual fix only needed to
+        // apply where the underlying problem actually exists: village
+        // columns specifically (villageGroundHeight has an entry for
+        // any column that's part of a village's road/plot/floor — see
+        // markVillageGround) can have a big gap between columnHeight's
+        // tracked height (often a roof peak, for an interior column) and
+        // a floor/base-fill sitting several blocks below it. Ordinary
+        // terrain was never the problem, so it goes back to the original
+        // tight window that MAX_INSTANCES was actually sized around.
+        const isVillageColumn = villageGroundHeight.has(x+','+z);
+        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - (isVillageColumn ? 20 : 2));
+        const yMax = colH + (isVillageColumn ? 20 : 3);
         for (let y = yMin; y <= yMax; y++) {
           updateFullInstanceAt(x, y, z);
         }

@@ -4751,12 +4751,31 @@
       for (let z = wz0; z <= wz1; z++) {
         const groundY = columnHeight.get(x + ',' + z);
         if (groundY === undefined) continue;
-        for (let y = groundY - 1; y <= groundY + 12; y++) {
+        // Raised from +12 to +30 — leftover chopped-looking tree trunks
+        // and canopy fragments were still visible after a village
+        // replaced the ground beneath a tall tree, since anything above
+        // the old, shorter cap was never touched at all.
+        for (let y = groundY - 1; y <= groundY + 30; y++) {
           const k = key(x, y, z);
           const t = blocks.get(k);
           if (t === 3 || t === 4) { blocks.delete(k); stepRotations.delete(k); } // tree trunk (Wood) or leaves
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
+        // Same unconditional guaranteed-base-fill idea each plot's own
+        // floor now gets (see the plot loop further down), applied here
+        // too — this is the space BETWEEN buildings, road and gaps,
+        // which was still relying on the general terrain generator's
+        // own fill depth alone and could show the exact same invisible-
+        // block gap wherever that happened to fall short. Matches
+        // whatever's naturally on the surface at this column (sand
+        // stays sand-based, everything else gets Dirt) rather than
+        // switching it all to plain stone, so anywhere this IS ever
+        // exposed at an edge, it blends with what's actually around it
+        // instead of reading as a patch of quarry floor dropped into a
+        // field.
+        const surfaceType = blocks.get(key(x, groundY, z));
+        const fillType = (surfaceType === 5) ? 5 : 1; // Sand(5) stays sand-based; grass/dirt/anything else gets Dirt(1) — a natural, neutral base that blends under any of them
+        for (let y = Math.max(0, groundY - 8); y < groundY; y++) blocks.set(key(x, y, z), fillType);
       }
     }
 
@@ -4910,7 +4929,7 @@
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 2);
+          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 1); // Dirt, not Stone — matches the same natural-blend reasoning as the village-wide base fill above: anywhere this base is ever exposed at an edge, it reads as ground, not exposed quarry rock
           blocks.set(key(x, plotY, z), 0);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
@@ -9251,96 +9270,18 @@
   }
   function playFootstep(material) {
     if (!audioCtx) return;
-    if (material === 'wood') {
-      // Hollow, resonant "clop" — a bandpass noise burst (the hollow
-      // body character) plus a short low triangle-wave tone underneath,
-      // reading as a wooden floor/planks rather than bare ground.
-      const dur = 0.09;
-      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
-      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = buffer;
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'bandpass';
-      filter.frequency.value = 700 + Math.random()*200;
-      filter.Q.value = 2;
-      const g = audioCtx.createGain();
-      g.gain.setValueAtTime(0.22, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-      noise.connect(filter).connect(g).connect(audioCtx.destination);
-      noise.start();
-      const o = audioCtx.createOscillator();
-      const g2 = audioCtx.createGain();
-      o.type = 'triangle';
-      o.frequency.value = 180 + Math.random()*40;
-      g2.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.12);
-      o.connect(g2).connect(audioCtx.destination);
-      o.start(); o.stop(audioCtx.currentTime+0.13);
-    } else if (material === 'stone') {
-      // Harder, brighter, and noticeably shorter than the default —
-      // reads as a click on masonry rather than a soft thud.
-      const dur = 0.05;
-      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
-      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = buffer;
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'highpass';
-      filter.frequency.value = 700;
-      const g = audioCtx.createGain();
-      g.gain.setValueAtTime(0.26, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-      noise.connect(filter).connect(g).connect(audioCtx.destination);
-      noise.start();
-    } else if (material === 'sand') {
-      // Softer and longer — a grainy shuffle rather than a distinct
-      // thud or click.
-      const dur = 0.14;
-      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
-      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = buffer;
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 1400 + Math.random()*300;
-      const g = audioCtx.createGain();
-      g.gain.setValueAtTime(0.16, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-      noise.connect(filter).connect(g).connect(audioCtx.destination);
-      noise.start();
-    } else {
-      // grass/dirt/leaves (default) — original soft thud, unchanged.
-      const dur = 0.08;
-      const bufferSize = Math.floor(audioCtx.sampleRate * dur);
-      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-      const noise = audioCtx.createBufferSource();
-      noise.buffer = buffer;
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'lowpass';
-      filter.frequency.value = 380 + Math.random()*220;
-      const g = audioCtx.createGain();
-      g.gain.setValueAtTime(0.32, audioCtx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-      noise.connect(filter).connect(g).connect(audioCtx.destination);
-      noise.start();
-    }
-  }
-  // Bright, splashy step — shallow water (depth < 2), walking rather
-  // than swimming. A short bandpass burst plus a quick high "plip",
-  // distinct from both a dry footstep's soft thud and the sustained
-  // swim stroke below.
-  function playSplashStep() {
-    if (!audioCtx) return;
-    const dur = 0.12;
+    // Simplified back down to plain filtered noise for every material —
+    // an earlier version layered a small oscillator "tone" on top for
+    // wood and splash specifically (a resonant body pitch, a high
+    // "plip"), which read as synthetic/gamey rather than realistic.
+    // Noise alone, just varying the filter's frequency and the burst's
+    // duration per material, stays much closer to how the original
+    // (better-received) footstep sound actually worked.
+    let dur, freq, gain;
+    if (material === 'wood') { dur = 0.08; freq = 650; gain = 0.26; }
+    else if (material === 'stone') { dur = 0.055; freq = 900; gain = 0.24; }
+    else if (material === 'sand') { dur = 0.13; freq = 320; gain = 0.16; }
+    else { dur = 0.08; freq = 380 + Math.random()*220; gain = 0.32; } // grass/dirt/leaves — original, unchanged
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
@@ -9348,23 +9289,35 @@
     const noise = audioCtx.createBufferSource();
     noise.buffer = buffer;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 1400;
-    filter.Q.value = 0.8;
+    filter.type = 'lowpass';
+    filter.frequency.value = freq;
     const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    g.gain.setValueAtTime(gain, audioCtx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();
-    const o = audioCtx.createOscillator();
-    const g2 = audioCtx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(900, audioCtx.currentTime);
-    o.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime+0.08);
-    g2.gain.setValueAtTime(0.08, audioCtx.currentTime);
-    g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.09);
-    o.connect(g2).connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime+0.1);
+  }
+  // Bright, splashy step — shallow water (depth < 2), walking rather
+  // than swimming. Plain filtered noise, same approach as the footstep
+  // above (an earlier version added a high "plip" oscillator on top,
+  // which read as artificial rather than watery).
+  function playSplashStep() {
+    if (!audioCtx) return;
+    const dur = 0.11;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1100 + Math.random()*300;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.22, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
+    noise.connect(filter).connect(g).connect(audioCtx.destination);
+    noise.start();
   }
   // Longer, sustained watery swoosh for genuinely swimming (depth >=
   // 2) — a stroke through water, not a footstep-length splash. Filtered
@@ -9380,12 +9333,11 @@
     const noise = audioCtx.createBufferSource();
     noise.buffer = buffer;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.Q.value = 1;
-    filter.frequency.setValueAtTime(900, audioCtx.currentTime);
-    filter.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime+dur);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(700, audioCtx.currentTime);
+    filter.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime+dur);
     const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.13, audioCtx.currentTime);
+    g.gain.setValueAtTime(0.11, audioCtx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();

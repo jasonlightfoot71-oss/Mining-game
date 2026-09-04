@@ -9280,7 +9280,7 @@
     let dur, freq, gain;
     if (material === 'wood') { dur = 0.08; freq = 650; gain = 0.26; }
     else if (material === 'stone') { dur = 0.055; freq = 900; gain = 0.24; }
-    else if (material === 'sand') { dur = 0.13; freq = 320; gain = 0.16; }
+    else if (material === 'sand') { dur = 0.08; freq = 380 + Math.random()*220; gain = 0.12; } // same character as grass now, just noticeably quieter — was its own distinct (and apparently unconvincing) sound before
     else { dur = 0.08; freq = 380 + Math.random()*220; gain = 0.32; } // grass/dirt/leaves — original, unchanged
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
@@ -9297,50 +9297,56 @@
     noise.connect(filter).connect(g).connect(audioCtx.destination);
     noise.start();
   }
-  // Bright, splashy step — shallow water (depth < 2), walking rather
-  // than swimming. Plain filtered noise, same approach as the footstep
-  // above (an earlier version added a high "plip" oscillator on top,
-  // which read as artificial rather than watery).
-  function playSplashStep() {
-    if (!audioCtx) return;
-    const dur = 0.11;
+  // Continuous water-movement sound, not a discrete per-step hit — a
+  // real wade or swim doesn't sound like a series of separate
+  // percussive splashes at footstep cadence, it's a continuous,
+  // gently-surging wash of water that rises and falls with the actual
+  // movement of arms/legs through it. Same looping-noise-node approach
+  // as the wind system, kept running continuously and just faded
+  // in/out/reshaped based on what's actually happening, rather than
+  // fired fresh from scratch on a timer.
+  let waterMoveNode = null, waterMoveGain = null, waterMoveFilter = null;
+  function ensureWaterMoveNoise() {
+    if (waterMoveNode || !audioCtx) return;
+    const dur = 2;
     const bufferSize = Math.floor(audioCtx.sampleRate * dur);
     const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = buffer;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 1100 + Math.random()*300;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.22, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-    noise.connect(filter).connect(g).connect(audioCtx.destination);
-    noise.start();
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random()*2-1;
+    waterMoveNode = audioCtx.createBufferSource();
+    waterMoveNode.buffer = buffer;
+    waterMoveNode.loop = true;
+    waterMoveFilter = audioCtx.createBiquadFilter();
+    waterMoveFilter.type = 'lowpass';
+    waterMoveFilter.frequency.value = 500;
+    waterMoveGain = audioCtx.createGain();
+    waterMoveGain.gain.value = 0; // silent until updateWaterMoveSound ramps it up
+    waterMoveNode.connect(waterMoveFilter).connect(waterMoveGain).connect(audioCtx.destination);
+    waterMoveNode.start();
   }
-  // Longer, sustained watery swoosh for genuinely swimming (depth >=
-  // 2) — a stroke through water, not a footstep-length splash. Filtered
-  // noise with a slow downward frequency sweep rather than a short
-  // percussive burst.
-  function playSwimStroke() {
+  let waterMovePhase = 0;
+  // mode: 0 = dry/not moving through water, 1 = wading (shallow, depth
+  // < 2), 2 = swimming (depth >= 2). The gain is gently modulated by a
+  // slow sine wobble rather than held flat, reading as the natural
+  // surge/ease of an actual stroke or wading stride instead of a static
+  // hiss — swimming wobbles slower (a proper stroke rhythm), wading
+  // wobbles a bit quicker (choppier, splashier at the surface), and
+  // swimming sits lower/duller in tone (more of the sound is genuinely
+  // underwater) while wading stays brighter (mostly surface splash).
+  function updateWaterMoveSound(dt, mode) {
     if (!audioCtx) return;
-    const dur = 0.4;
-    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
-    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
-    const noise = audioCtx.createBufferSource();
-    noise.buffer = buffer;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(700, audioCtx.currentTime);
-    filter.frequency.exponentialRampToValueAtTime(220, audioCtx.currentTime+dur);
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.11, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+dur);
-    noise.connect(filter).connect(g).connect(audioCtx.destination);
-    noise.start();
+    ensureWaterMoveNoise();
+    if (!waterMoveGain) return;
+    const now = audioCtx.currentTime;
+    if (mode === 0) {
+      waterMoveGain.gain.setTargetAtTime(0, now, 0.25);
+      return;
+    }
+    waterMovePhase += dt * (mode === 2 ? 1.4 : 2.4);
+    const wobble = 0.45 + 0.55*Math.sin(waterMovePhase*Math.PI*2);
+    const baseGain = mode === 2 ? 0.05 : 0.032;
+    waterMoveGain.gain.setTargetAtTime(baseGain * (0.35 + 0.65*wobble), now, 0.1);
+    waterMoveFilter.frequency.setTargetAtTime(mode === 2 ? 320 : 750, now, 0.35);
   }
   // Synthesized crowd cheer — same noise-buffer approach as the footstep
   // above (there's no actual audio sample to play, everything in this
@@ -14198,27 +14204,33 @@
         window._voxelWasSubmerged = submerged;
 
         // Depth-aware movement sound: genuinely swimming (2+ blocks of
-        // water) gets a sustained stroke rather than a footstep-length
-        // splash; shallow water (less than 2, walking on the bottom
-        // rather than floating) gets a bright splash instead of either
-        // a dry footstep or a swim stroke; dry ground gets a footstep
-        // whose character now depends on what's actually underfoot.
+        // water) or wading (less than 2) both get the continuous water-
+        // movement sound below, shaped differently for each; dry ground
+        // gets a discrete footstep whose character depends on what's
+        // actually underfoot. Water movement is NOT step-timer-based —
+        // a real wade or swim isn't a series of separate footstep-paced
+        // hits, it's continuous, so it's driven every frame instead by
+        // updateWaterMoveSound (right below, mirroring how wind/rain are
+        // both handled as an ongoing sound rather than discrete events).
         const waterDepthHere = flying ? 0 : waterDepthAt(player.pos.x, player.pos.z);
         if (wasMoving && waterDepthHere >= 2) {
-          footstepTimer -= dt;
-          if (footstepTimer <= 0) { playSwimStroke(); footstepTimer = 0.55; }
-        } else if (wasMoving && waterDepthHere > 0 && player.onGround) {
-          footstepTimer -= dt;
-          if (footstepTimer <= 0) { playSplashStep(); footstepTimer = 0.36; }
-        } else if (wasMoving && player.onGround && waterDepthHere === 0) {
-          footstepTimer -= dt;
-          if (footstepTimer <= 0) {
-            const material = footstepMaterialAt(Math.floor(player.pos.x), Math.floor(player.pos.y) - 1, Math.floor(player.pos.z));
-            playFootstep(material);
-            footstepTimer = 0.36;
-          }
-        } else {
+          updateWaterMoveSound(dt, 2);
           footstepTimer = 0;
+        } else if (wasMoving && waterDepthHere > 0 && player.onGround) {
+          updateWaterMoveSound(dt, 1);
+          footstepTimer = 0;
+        } else {
+          updateWaterMoveSound(dt, 0);
+          if (wasMoving && player.onGround && waterDepthHere === 0) {
+            footstepTimer -= dt;
+            if (footstepTimer <= 0) {
+              const material = footstepMaterialAt(Math.floor(player.pos.x), Math.floor(player.pos.y) - 1, Math.floor(player.pos.z));
+              playFootstep(material);
+              footstepTimer = 0.36;
+            }
+          } else {
+            footstepTimer = 0;
+          }
         }
       }
 

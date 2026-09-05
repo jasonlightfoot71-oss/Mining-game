@@ -4752,7 +4752,31 @@
     const originLocal = 1;
     const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
-    const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
+    const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
+    // Checks the site's own underlying ELEVATION field first — the same
+    // slow-moving value the terrain generator itself uses to decide how
+    // rugged a given area is allowed to get (see the terrain gen's own
+    // "amp = 3 + elevation*11" — higher elevation directly means bigger,
+    // sharper local height swings). A handful of sampled points can
+    // easily miss a hidden ridge or spike between them (this terrain's
+    // own local noise has real texture over spans as short as ~20
+    // blocks, comparable to the gap between sample points), but this
+    // reads the actual PARAMETER that controls how much swing is even
+    // possible here at all, so it can't be fooled by unlucky sampling —
+    // only genuinely low-amplitude (lowland/plains-type) terrain passes,
+    // which is what actually keeps villages off mountainous ground
+    // regardless of exactly where the peaks happen to fall.
+    if (biomeStretch(fbm(vcx*0.008, vcz*0.008)) > 0.32) return;
+    // Denser grid than before (was just 4 corners + centre) as a second,
+    // belt-and-braces check — even within terrain the elevation gate
+    // above allows, this catches any remaining local spike the coarser
+    // sampling used to miss entirely.
+    const checkPts = [];
+    for (let gx = 0; gx <= 5; gx++) {
+      for (let gz = 0; gz <= 5; gz++) {
+        checkPts.push([wx0 + Math.round(gx * FS / 5), wz0 + Math.round(gz * FS / 5)]);
+      }
+    }
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
 
     // This used to require the whole village area be quite flat (a
@@ -10742,9 +10766,19 @@
   // exactly why only it was reading its true colour before). Unlit
   // materials render the colour itself directly, with no dependence on
   // light angle, so the vivid palette above actually shows up.
+  // NOT using InstancedMesh per-instance colour (setColorAt/instanceColor)
+  // — that API was only added to three.js in r131, and this game loads
+  // r128 (see the <script> tag near the top of this file). Every call
+  // to setColorAt has been silently doing nothing/throwing this whole
+  // time, which is the actual reason petals never took on any colour at
+  // all and only the plain single-colour centre sphere ever rendered
+  // correctly. Instead, each species gets one dedicated, plainly-
+  // coloured InstancedMesh PER FLOWER COLOUR — more meshes (5 species ×
+  // 7 colours), but each one just a flat MeshBasicMaterial with no
+  // dependency on a three.js feature this version doesn't have.
   const flowerStemMat = new THREE.MeshBasicMaterial({ color: 0x4a9d3f });
   const flowerCenterMat = new THREE.MeshBasicMaterial({ color: 0xffd94d });
-  const flowerPetalMat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
+  const FLOWER_MESH_CAP = 6000; // per (species, colour) pair — 5 × 7 = 35 of these, so the old single-mesh 40000 cap would be wasteful overkill repeated 35 times over
   FLOWER_TYPES.forEach(type => {
     const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, type.stemH, 5);
     type.stemMesh = new THREE.InstancedMesh(stemGeom, flowerStemMat, MAX_INSTANCES);
@@ -10756,14 +10790,17 @@
     scene.add(type.centerMesh);
     const petalGeom = new THREE.SphereGeometry(type.petalSize, 6, 5);
     petalGeom.scale(type.petalScale[0], type.petalScale[1], type.petalScale[2]);
-    type.petalMesh = new THREE.InstancedMesh(petalGeom, flowerPetalMat, MAX_INSTANCES);
-    type.petalMesh.count = 0;
-    scene.add(type.petalMesh);
+    type.petalMeshesByColor = FLOWER_COLORS.map(hex => {
+      const mat = new THREE.MeshBasicMaterial({ color: hex });
+      const mesh = new THREE.InstancedMesh(petalGeom, mat, FLOWER_MESH_CAP);
+      mesh.count = 0;
+      scene.add(mesh);
+      return mesh;
+    });
   });
   function rebuildFlowerOverlay() {
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
-    const col = new THREE.Color();
-    const counts = FLOWER_TYPES.map(() => ({ stem: 0, petal: 0 }));
+    const counts = FLOWER_TYPES.map(() => ({ stem: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
     let totalPlaced = 0;
     for (const [k, t] of blocks) {
       if (totalPlaced >= MAX_INSTANCES) break;
@@ -10801,8 +10838,13 @@
         const typeIdx = Math.floor(ht * FLOWER_TYPES.length);
         const type = FLOWER_TYPES[typeIdx];
         const c = counts[typeIdx];
+        // Another independent hash picks this flower's colour (and so
+        // which of its dedicated per-colour petal meshes it goes into)
+        // so colour doesn't correlate with which slots happen to bloom
+        // or which species grew there.
+        const colorIdx = Math.floor(flowerHash(x, z, 50+s) * FLOWER_COLORS.length);
         const ringTotal = type.rings.reduce((sum,r) => sum+r.count, 0);
-        if (c.stem >= MAX_INSTANCES || c.petal + ringTotal >= MAX_INSTANCES) continue;
+        if (c.stem >= MAX_INSTANCES || c.petalByColor[colorIdx] + ringTotal >= FLOWER_MESH_CAP) continue;
         // Small jitter within the slot so flowers don't look stamped
         // into an exact grid, kept well clear of the tile's own edges.
         const jx = (flowerHash(x, z, 30+s) - 0.5) * 0.14;
@@ -10818,11 +10860,7 @@
         }
         c.stem++;
         totalPlaced++;
-        // Another independent hash picks this flower's colour so it
-        // doesn't correlate with which slots happen to bloom or which
-        // species grew there.
-        const hc = flowerHash(x, z, 50+s);
-        col.setHex(FLOWER_COLORS[Math.floor(hc * FLOWER_COLORS.length)]);
+        const petalMesh = type.petalMeshesByColor[colorIdx];
         const baseAngle = ht * Math.PI * 2; // reuses the species hash so petals aren't all aligned the same way
         type.rings.forEach(ring => {
           for (let p = 0; p < ring.count; p++) {
@@ -10830,9 +10868,8 @@
             dummyPetal.position.set(fx + Math.cos(ang)*ring.radius, y+ring.height, fz + Math.sin(ang)*ring.radius);
             dummyPetal.rotation.set(ring.tilt, ang, 0);
             dummyPetal.updateMatrix();
-            type.petalMesh.setMatrixAt(c.petal, dummyPetal.matrix);
-            type.petalMesh.setColorAt(c.petal, col);
-            c.petal++;
+            petalMesh.setMatrixAt(c.petalByColor[colorIdx], dummyPetal.matrix);
+            c.petalByColor[colorIdx]++;
           }
         });
       }
@@ -10840,11 +10877,13 @@
     FLOWER_TYPES.forEach((type, i) => {
       type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
       type.centerMesh.count = type.centerSize > 0 ? counts[i].stem : 0; type.centerMesh.instanceMatrix.needsUpdate = true;
-      type.petalMesh.count = counts[i].petal; type.petalMesh.instanceMatrix.needsUpdate = true;
-      if (type.petalMesh.instanceColor) type.petalMesh.instanceColor.needsUpdate = true;
+      type.petalMeshesByColor.forEach((mesh, ci) => {
+        mesh.count = counts[i].petalByColor[ci];
+        mesh.instanceMatrix.needsUpdate = true;
+      });
     });
   }
-  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMesh.count = 0; }); }
+  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
 
   // One shared particle system for both rain and snow — same falling-box
   // technique either way (a cloud of points that always re-centres on the

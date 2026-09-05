@@ -1812,7 +1812,7 @@
         if (h < SEA_LEVEL) {
           for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1); // full-height block — see the water hotbar's partial-height entries for the only other values this now takes
         }
-        if (h > SEA_LEVEL && Math.random() < 0.025) {
+        if (h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && Math.random() < 0.025) {
           const trunkH = 3 + Math.floor(Math.random()*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -2202,7 +2202,11 @@
           waterBlocks.set(key(x, SEA_LEVEL, z), topFrac);
           anyWaterTouchedThisStream = true;
         }
-        if (treeChance && h > SEA_LEVEL && chunkTreeRoll(x,z,0) < treeChance) {
+        // Trees only take root in grass or mud — never on sand or bare
+        // stone, which the old check let through occasionally in dry
+        // biomes (low-moisture ground generates as sand, and treeChance
+        // was still nonzero there).
+        if (treeChance && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -7341,27 +7345,72 @@
   // 0.55-long cone), which read as out of proportion; it's a good bit
   // bigger now.
   const FISH_COLORS = [0x5a8ab8, 0xdd8a3a, 0xc0392b, 0xdaa520, 0x708090, 0x2e8b57, 0xb0306a];
+  // Rebuilt for a more realistic silhouette: a single smoothly-tapered
+  // body instead of a cone-plus-sphere join (which always read as "two
+  // shapes stuck together" no matter how the sizes were tuned), a pale
+  // countershaded belly (dark back/light underside is one of the most
+  // recognisable real-fish cues), a forked tail instead of one solid
+  // cone, and a dorsal + pair of pectoral fins for actual fish anatomy.
   function buildFishMesh(bodyColorHex) {
     const group = new THREE.Group();
-    const bodyMat = new THREE.MeshPhongMaterial({ color: bodyColorHex, shininess: 60 });
-    const finMat = new THREE.MeshPhongMaterial({ color: 0xdd8a3a, shininess: 40 });
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.55, 8), bodyMat);
-    body.rotation.z = Math.PI/2;
+    const bodyMat = new THREE.MeshPhongMaterial({ color: bodyColorHex, shininess: 70 });
+    const bellyMat = new THREE.MeshPhongMaterial({ color: 0xf0ead6, shininess: 25 });
+    const finMat = new THREE.MeshPhongMaterial({ color: bodyColorHex, shininess: 45, transparent: true, opacity: 0.85 });
+    // Body: one elongated, laterally-flattened sphere. Tapers naturally
+    // at both the nose and tail end (a real fish has no sharp point at
+    // either end, which the old cone-fronted design did), and is
+    // noticeably thinner side-to-side than it is tall, like an actual
+    // fish rather than a torpedo.
+    const bodyGeom = new THREE.SphereGeometry(0.16, 12, 8);
+    bodyGeom.scale(1.9, 1.05, 0.6);
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
     group.add(body);
-    const tail = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.22, 4), finMat);
-    tail.rotation.z = -Math.PI/2;
-    tail.position.x = -0.36;
-    group.add(tail);
-    // A rounded head at the nose end, plus a couple of small dark eyes —
-    // without it the whole thing just read as two cones stuck together.
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 9, 7), bodyMat); // was 0.11 — noticeably bigger now, closer to the body's own thickness instead of a small bump on the end
-    head.position.x = 0.19;
-    group.add(head);
+    // Pale belly stripe along the underside — countershading, the same
+    // dark-top/light-bottom pattern almost every real fish has.
+    const bellyGeom = new THREE.SphereGeometry(0.1, 8, 6);
+    bellyGeom.scale(1.55, 0.5, 0.56);
+    const belly = new THREE.Mesh(bellyGeom, bellyMat);
+    belly.position.set(0.01, -0.075, 0);
+    group.add(belly);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    [-0.08, 0.08].forEach(dz => {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.032, 6, 4), eyeMat);
-      eye.position.set(0.3, 0.03, dz);
+    [-0.09, 0.09].forEach(dz => {
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 4), eyeMat);
+      eye.position.set(0.26, 0.035, dz);
       group.add(eye);
+    });
+    // Forked tail fin — two thin flattened blades angled apart from a
+    // shared root, which is what actually reads as "a tail" rather than
+    // a fourth fin; a single solid cone here always looked more like a
+    // second head than a caudal fin.
+    const tail = new THREE.Group();
+    const tailFinGeom = new THREE.ConeGeometry(0.02, 0.26, 4);
+    tailFinGeom.scale(1, 1, 0.12);
+    [-1, 1].forEach(side => {
+      const lobe = new THREE.Mesh(tailFinGeom.clone(), finMat);
+      lobe.rotation.z = -Math.PI/2;
+      lobe.rotation.x = side * 0.5;
+      lobe.position.set(-0.03, 0, side * 0.05);
+      tail.add(lobe);
+    });
+    tail.position.x = -0.33;
+    group.add(tail);
+    // Dorsal fin along the back, plus a pair of small pectoral fins just
+    // behind the head — thin, near-transparent blades so they read as
+    // membrane rather than solid flesh.
+    const dorsalGeom = new THREE.ConeGeometry(0.02, 0.17, 3);
+    dorsalGeom.scale(1, 1, 0.1);
+    const dorsal = new THREE.Mesh(dorsalGeom, finMat);
+    dorsal.rotation.x = Math.PI/2;
+    dorsal.position.set(0, 0.15, 0);
+    group.add(dorsal);
+    const pecGeom = new THREE.ConeGeometry(0.016, 0.13, 3);
+    pecGeom.scale(1, 1, 0.1);
+    [-1, 1].forEach(side => {
+      const pec = new THREE.Mesh(pecGeom.clone(), finMat);
+      pec.rotation.z = side * 0.9;
+      pec.rotation.y = Math.PI/2;
+      pec.position.set(0.1, -0.03, side * 0.12);
+      group.add(pec);
     });
     // Starts visible — the golf course's own jumping fish hides it
     // explicitly at its own spawn point instead, since that's specific
@@ -10545,6 +10594,30 @@
     },
   ];
   const FLOWER_COLORS = [0xf07ec9, 0xf5f0e6, 0xf2c14e, 0xd66b8a, 0xc678e0, 0xe8703a];
+  // Flowers now grow in irregular, connected patches rather than a fine,
+  // uniform sprinkle across every stretch of grass — long flower-free
+  // gaps, then a blob of blooming ground roughly 5-10 blocks across.
+  // Reusing the same smooth value-noise the terrain itself is built
+  // from is what makes this "clumpy" rather than just sparser: unlike a
+  // per-block random roll, smoothNoise() interpolates between lattice
+  // points, so wherever it crosses the threshold forms one connected
+  // blob instead of scattered single blocks.
+  const FLOWER_PATCH_SCALE = 1/37; // ~37-block noise period -> blobs a handful of blocks wide with a long gap between them
+  const FLOWER_PATCH_THRESHOLD = 0.81; // only the noise field's top ~19% blooms, which at this scale reads as roughly 5-10 connected blocks per patch and ~30 blocks of nothing between patches
+  // Within a blooming block, flowers scatter across five fixed
+  // sub-positions — the tile's centre plus its four quadrants, each
+  // jittered a little — instead of one single bloom dead-centre, so a
+  // blooming tile's flowers actually cover its whole footprint rather
+  // than leaving most of it bare. Each slot independently rolls whether
+  // it blooms at all, so a tile doesn't look like a stamped grid.
+  const FLOWER_SLOTS = [
+    { dx: 0,     dz: 0     },
+    { dx: -0.28, dz: -0.28 },
+    { dx: 0.28,  dz: -0.28 },
+    { dx: -0.28, dz: 0.28  },
+    { dx: 0.28,  dz: 0.28  },
+  ];
+  function flowerHash(x, z, salt) { return Math.abs(Math.sin(x*127.1 + z*311.7 + salt*57.31) * 43758.5453) % 1; }
   // Each species gets its own dedicated stem/centre/petal instanced
   // meshes — InstancedMesh only supports one geometry per mesh, so five
   // genuinely different petal shapes need five separate petal meshes
@@ -10589,43 +10662,61 @@
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
       if (!isExposedToSky(x,y,z)) continue;
-      const h = Math.abs(Math.sin(x*127.1 + z*311.7) * 43758.5453) % 1;
-      if (h > 0.12) continue; // ~12% of eligible grass blooms
-      // A separate, independent hash picks which of the 5 species grows
-      // here, so species doesn't correlate with bloom chance or colour.
-      const ht = Math.abs(Math.sin(x*211.3 + z*17.9) * 98765.4321) % 1;
-      const typeIdx = Math.floor(ht * FLOWER_TYPES.length);
-      const type = FLOWER_TYPES[typeIdx];
-      const c = counts[typeIdx];
-      const ringTotal = type.rings.reduce((s,r) => s+r.count, 0);
-      if (c.stem >= MAX_INSTANCES || c.petal + ringTotal >= MAX_INSTANCES) continue;
+      // Patch gate: smooth blob noise, not a per-block coin flip — most
+      // of the map falls below the threshold and gets nothing at all
+      // (the ~30-block gap), and where it does cross, it crosses as one
+      // connected patch a handful of blocks wide, not scattered singles.
+      const patchNoise = smoothNoise(x*FLOWER_PATCH_SCALE + 5000, z*FLOWER_PATCH_SCALE + 5000);
+      if (patchNoise < FLOWER_PATCH_THRESHOLD) continue;
       const cx = x+0.5, cz = z+0.5;
-      dummyStem.position.set(cx, y+1 + type.stemH/2, cz);
-      dummyStem.updateMatrix();
-      type.stemMesh.setMatrixAt(c.stem, dummyStem.matrix);
-      if (type.centerSize > 0) {
-        dummyCenter.position.set(cx, y+type.centerY, cz);
-        dummyCenter.updateMatrix();
-        type.centerMesh.setMatrixAt(c.stem, dummyCenter.matrix);
-      }
-      c.stem++;
-      totalPlaced++;
-      // Second, independent hash picks this flower's colour so it doesn't
-      // correlate with which cells happen to bloom or which species grew.
-      const hc = Math.abs(Math.sin(x*54.7 + z*91.3) * 12345.6789) % 1;
-      col.setHex(FLOWER_COLORS[Math.floor(hc * FLOWER_COLORS.length)]);
-      const baseAngle = h * Math.PI * 2; // reuses the bloom hash so petals aren't all aligned the same way
-      type.rings.forEach(ring => {
-        for (let p = 0; p < ring.count; p++) {
-          const ang = baseAngle + (p / ring.count) * Math.PI * 2;
-          dummyPetal.position.set(cx + Math.cos(ang)*ring.radius, y+ring.height, cz + Math.sin(ang)*ring.radius);
-          dummyPetal.rotation.set(ring.tilt, ang, 0);
-          dummyPetal.updateMatrix();
-          type.petalMesh.setMatrixAt(c.petal, dummyPetal.matrix);
-          type.petalMesh.setColorAt(c.petal, col);
-          c.petal++;
+      for (let s = 0; s < FLOWER_SLOTS.length; s++) {
+        if (totalPlaced >= MAX_INSTANCES) break;
+        // Independent per-slot bloom chance so a blooming tile isn't a
+        // uniform stamped grid — most of its five slots fill, not all.
+        if (flowerHash(x, z, 10+s) > 0.72) continue;
+        // A separate, independent hash per slot picks which of the 5
+        // species grows there, so species doesn't correlate with bloom
+        // chance or colour, and neighbouring slots in the same tile can
+        // genuinely differ.
+        const ht = flowerHash(x, z, 20+s);
+        const typeIdx = Math.floor(ht * FLOWER_TYPES.length);
+        const type = FLOWER_TYPES[typeIdx];
+        const c = counts[typeIdx];
+        const ringTotal = type.rings.reduce((sum,r) => sum+r.count, 0);
+        if (c.stem >= MAX_INSTANCES || c.petal + ringTotal >= MAX_INSTANCES) continue;
+        // Small jitter within the slot so flowers don't look stamped
+        // into an exact grid, kept well clear of the tile's own edges.
+        const jx = (flowerHash(x, z, 30+s) - 0.5) * 0.14;
+        const jz = (flowerHash(x, z, 40+s) - 0.5) * 0.14;
+        const fx = cx + FLOWER_SLOTS[s].dx + jx, fz = cz + FLOWER_SLOTS[s].dz + jz;
+        dummyStem.position.set(fx, y+1 + type.stemH/2, fz);
+        dummyStem.updateMatrix();
+        type.stemMesh.setMatrixAt(c.stem, dummyStem.matrix);
+        if (type.centerSize > 0) {
+          dummyCenter.position.set(fx, y+type.centerY, fz);
+          dummyCenter.updateMatrix();
+          type.centerMesh.setMatrixAt(c.stem, dummyCenter.matrix);
         }
-      });
+        c.stem++;
+        totalPlaced++;
+        // Another independent hash picks this flower's colour so it
+        // doesn't correlate with which slots happen to bloom or which
+        // species grew there.
+        const hc = flowerHash(x, z, 50+s);
+        col.setHex(FLOWER_COLORS[Math.floor(hc * FLOWER_COLORS.length)]);
+        const baseAngle = ht * Math.PI * 2; // reuses the species hash so petals aren't all aligned the same way
+        type.rings.forEach(ring => {
+          for (let p = 0; p < ring.count; p++) {
+            const ang = baseAngle + (p / ring.count) * Math.PI * 2;
+            dummyPetal.position.set(fx + Math.cos(ang)*ring.radius, y+ring.height, fz + Math.sin(ang)*ring.radius);
+            dummyPetal.rotation.set(ring.tilt, ang, 0);
+            dummyPetal.updateMatrix();
+            type.petalMesh.setMatrixAt(c.petal, dummyPetal.matrix);
+            type.petalMesh.setColorAt(c.petal, col);
+            c.petal++;
+          }
+        });
+      }
     }
     FLOWER_TYPES.forEach((type, i) => {
       type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;

@@ -4948,22 +4948,23 @@
       const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
 
       // This plot grades to the HIGHEST natural point anywhere within
-      // its own footprint (the same padded area graded below), not a
-      // single centre sample. A centre sample could land in a genuine
-      // local dip while the rest of this exact footprint sat higher —
-      // the house then graded down to that one low point, leaving it
-      // sunk below ground that was already standing right next to it,
-      // inside its own plot. Grading to the footprint's own peak instead
-      // guarantees the floor is never lower than any natural terrain
-      // already inside the space it's being built on — nothing is left
-      // standing taller than the house to bury it. This is also what
-      // lets one house sit low and its neighbour sit high, since each
-      // plot's peak is still entirely its own.
+      // its own footprint, or slightly beyond it, rather than a single
+      // centre sample OR just its own exact boundary. Sampling only the
+      // plot's own tight footprint still left a real gap: terrain that
+      // kept climbing just past the plot's own edge (this game's terrain
+      // noise has real texture over spans as short as ~20 blocks) could
+      // still tower over a plateau that only ever looked at its own
+      // boundary, leaving the same "sunk in a pit" look at a smaller
+      // scale. Scanning a few blocks further out than what actually gets
+      // flattened (PEAK_SCAN_PAD) is what actually fixes that — the
+      // floor now sits above nearby rising ground too, not just the
+      // ground it's standing directly on.
+      const PEAK_SCAN_PAD = 3;
       let plotY, baseSurfaceType = 0;
       {
         let maxNatural;
-        for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
-          for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
+        for (let x = plot.x0 - PEAK_SCAN_PAD; x <= plot.x1 + PEAK_SCAN_PAD; x++) {
+          for (let z = plot.z0 - PEAK_SCAN_PAD; z <= plot.z1 + PEAK_SCAN_PAD; z++) {
             const eh = columnHeight.get(x + ',' + z);
             if (eh === undefined) continue;
             if (maxNatural === undefined || eh > maxNatural) {
@@ -5002,10 +5003,11 @@
           // fall well short of reaching all the way down to a much
           // lower plotY, leaving exactly a gap directly under the new
           // floor. This no longer depends on or trusts that assumption
-          // at all. Depth bumped 6 -> 8 now that plotY is graded to the
-          // footprint's own peak rather than a centre sample — the gap
-          // beneath a low corner of the plot can genuinely run deeper
-          // than it used to.
+          // at all. Depth bumped 6 -> 16 now that plotY can be graded
+          // considerably higher than this exact column's own natural
+          // terrain (see PEAK_SCAN_PAD above) — the gap beneath a low
+          // corner of the plot can genuinely run much deeper than it
+          // used to.
           const existingH = columnHeight.get(x + ',' + z);
           const clearTop = Math.max(plotY + 12, existingH !== undefined ? existingH : plotY);
           for (let y = plotY + 1; y <= clearTop; y++) {
@@ -5013,7 +5015,7 @@
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          for (let y = Math.max(0, plotY - 8); y < plotY; y++) blocks.set(key(x, y, z), subFillType);
+          for (let y = Math.max(0, plotY - 16); y < plotY; y++) blocks.set(key(x, y, z), subFillType);
           blocks.set(key(x, plotY, z), baseSurfaceType);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
@@ -7422,23 +7424,38 @@
       eye.position.set(0.26, 0.035, dz);
       group.add(eye);
     });
-    // Forked tail fin — two thin flattened blades angled apart from a
-    // shared root, which is what actually reads as "a tail" rather than
-    // a fourth fin; a single solid cone here always looked more like a
-    // second head than a caudal fin. Enlarged (0.26 long -> 0.42, wider
-    // spread) per feedback — it was reading as too small against the
-    // body.
+    // Forked tail fin — two thin blades that each tilt away from the
+    // body's own centreline as they extend backward, rather than a
+    // single solid cone (which always looked more like a second head
+    // than a caudal fin). The PREVIOUS version rotated each lobe's
+    // length onto -X first, then tried to tilt it up/down with a SECOND
+    // rotation around X — which does nothing at all to an axis already
+    // aligned with X, so the tail's actual height never changed no
+    // matter how that second angle was tuned. Doing it with a single
+    // rotation about Z, straight from the cone's default +Y axis, is
+    // what actually tilts each lobe's own length away from vertical —
+    // which is what gives the tail real height instead of just a longer
+    // flat sliver. Sized so the tail's own tip-to-tip span comes out a
+    // bit TALLER than the body itself (body height is roughly 0.16 *
+    // 1.05 * 2 = 0.336; 2 * 0.32 * sin(0.7) ≈ 0.41 here).
     const tail = new THREE.Group();
-    const tailFinGeom = new THREE.ConeGeometry(0.028, 0.42, 4);
-    tailFinGeom.scale(1, 1, 0.13);
+    const TAIL_LEN = 0.32;
+    const TAIL_SPREAD = 0.7; // radians each lobe's length tilts away from straight-back, toward vertical
+    const tailFinGeom = new THREE.ConeGeometry(0.055, TAIL_LEN, 3);
+    // scale(1,-1,z) both flattens the cone into a thin blade AND flips
+    // which end is the point vs the wide base — once rotated, local +Y
+    // maps to "away from the body", so the WIDE end has to sit at local
+    // +Y (not the cone's default apex-at-+Y) for the fin to actually
+    // flare outward at the tip instead of at the root.
+    tailFinGeom.scale(1, -1, 0.16);
+    tailFinGeom.translate(0, TAIL_LEN/2, 0); // shifts the (now-at-local -Y/2) point end to the geometry's own local origin, so each lobe extends purely away from wherever it's positioned
     [-1, 1].forEach(side => {
       const lobe = new THREE.Mesh(tailFinGeom.clone(), finMat);
-      lobe.rotation.z = -Math.PI/2;
-      lobe.rotation.x = side * 0.65;
-      lobe.position.set(-0.04, 0, side * 0.07);
+      lobe.rotation.z = Math.PI/2 + side * TAIL_SPREAD;
+      lobe.position.z = side * 0.02;
       tail.add(lobe);
     });
-    tail.position.x = -0.33;
+    tail.position.x = -0.30;
     group.add(tail);
     // Dorsal fin along the back, plus a pair of small pectoral fins just
     // behind the head — thin, near-transparent blades so they read as

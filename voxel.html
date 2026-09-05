@@ -1074,7 +1074,12 @@
   }
   // Returns true and deducts if affordable, false (and shows a warning) if not.
   function trySpendCoins(cost, itemLabel) {
-    if (currentWorldId === PUB_WORLD_ID && !visitMode) return true; // building in your own copy of The Mill is free — visiting it (everyone else) still costs normally
+    // Flipped from the old rule (free in your own Mill, costs everywhere
+    // else) — building is now free in any world you create yourself,
+    // and costs normally in The Mill specifically (your own copy or
+    // someone else's), since that's the shared social space where
+    // spending coins is meant to mean something.
+    if (currentWorldId !== PUB_WORLD_ID) return true;
     if (cost <= 0) return true;
     if (coins < cost) {
       showSaveStatus('⚠ Need 💰'+cost+' for '+itemLabel+' (have '+coins+')', true);
@@ -1532,6 +1537,7 @@
   const CELLAR_SLOT = KITCHEN_SLOT + 1; // "Cellar Furniture" hotbar entry — see FURNITURE_TYPES (category:'cellar')
   const BEDROOM_SLOT = CELLAR_SLOT + 1; // "Bedroom Furniture" hotbar entry — see FURNITURE_TYPES (category:'bedroom')
   const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
+  const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -2937,6 +2943,41 @@
     if (waterBlocks.has(nk)) return true;
     const t = blocks.get(nk);
     return t !== undefined && !(BLOCK_TYPES[t] && BLOCK_TYPES[t].half);
+  }
+  // Flood-fills outward from one water cell through every water cell
+  // connected to it (6-directionally) and removes them all in one go —
+  // the "Drain" tool's whole job, for clearing a sealed underwater
+  // build without mining each cell one quarter-block at a time. Capped
+  // (default 4000) so aiming it at a gap that actually opens onto open
+  // ocean can't hang the game trying to drain the entire sea — it just
+  // stops at the cap and reports back how many blocks it actually
+  // cleared, which is also the tell that the space isn't sealed
+  // properly (a genuinely enclosed room will always finish well under
+  // the cap; hitting the cap means water is still flooding back in
+  // from somewhere).
+  function drainConnectedWater(sx, sy, sz, cap) {
+    const startKey = key(sx, sy, sz);
+    if (!waterBlocks.has(startKey)) return 0;
+    const stack = [[sx, sy, sz]];
+    const seen = new Set([startKey]);
+    let drained = 0;
+    while (stack.length && drained < cap) {
+      const [x, y, z] = stack.pop();
+      const k = key(x, y, z);
+      if (waterBlocks.has(k)) {
+        waterBlocks.delete(k);
+        recordWaterEdit(x, y, z, -1);
+        drained++;
+      }
+      const neighbors = [[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
+      for (const [nx, ny, nz] of neighbors) {
+        const nk = key(nx, ny, nz);
+        if (seen.has(nk)) continue;
+        seen.add(nk);
+        if (waterBlocks.has(nk)) stack.push([nx, ny, nz]);
+      }
+    }
+    return drained;
   }
   function rebuildWaterGeometry() {
     const positions = [];
@@ -9209,6 +9250,7 @@
     if (e.key === '0') selectSlot(WATER_SLOT);
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
+    if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
@@ -9271,6 +9313,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x7a5a3a });
     } else if (i === VEHICLE_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: VEHICLE_TYPES[vehicleTypeIdx].swatch });
+    } else if (i === DRAIN_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x4fa8d6, transparent: true, opacity: 0.75 });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }
@@ -10265,6 +10309,18 @@
       if (!trySpendCoins(type.cost, type.name)) return;
       addVehicle(r.hit.x + 0.5, r.hit.y + 1, r.hit.z + 0.5, yaw, vehicleTypeIdx);
       playThud(400);
+      return;
+    }
+
+    if (selectedSlot === DRAIN_SLOT) {
+      if (!r.isWater) { showSaveStatus('⚠ Aim at water to drain it', true); return; }
+      const DRAIN_CAP = 4000;
+      const drained = drainConnectedWater(r.hit.x, r.hit.y, r.hit.z, DRAIN_CAP);
+      if (drained === 0) return;
+      rebuildWaterGeometry();
+      playThud(260);
+      if (drained >= DRAIN_CAP) showSaveStatus('Drained ' + drained + ' blocks and stopped — this space isn\u2019t fully sealed off', true);
+      else showSaveStatus('Drained ' + drained + ' block' + (drained === 1 ? '' : 's'));
       return;
     }
 
@@ -15170,6 +15226,25 @@
     slot.appendChild(c);
     slot.addEventListener('click', () => selectSlot(LADDER_SLOT));
     slotElByIndex[LADDER_SLOT] = slot;
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Drain — aim into a sealed body of water and tap to remove all of it in one go';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'U';
+    slot.appendChild(keyEl);
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#1a3a4a'; ctx.fillRect(0,0,34,34);
+    // A water droplet with a downward arrow through it — "drain it away".
+    ctx.fillStyle = '#4fa8d6';
+    ctx.beginPath(); ctx.moveTo(17,5); ctx.quadraticCurveTo(27,19,27,24); ctx.arc(17,24,10,0,Math.PI, false); ctx.quadraticCurveTo(7,19,17,5); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#e8f6ff'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(17,14); ctx.lineTo(17,26); ctx.moveTo(12,21); ctx.lineTo(17,27); ctx.lineTo(22,21); ctx.stroke();
+    slot.appendChild(c);
+    slot.addEventListener('click', () => selectSlot(DRAIN_SLOT));
+    slotElByIndex[DRAIN_SLOT] = slot;
     hotbar.appendChild(slot);
   }
   // Buy Terrain hotbar slot removed — infinite terrain (see the INFINITE

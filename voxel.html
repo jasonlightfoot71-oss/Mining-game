@@ -4761,15 +4761,19 @@
     // end up far below (or above) its own immediate surroundings. Each
     // plot now grades to the highest natural point anywhere within its
     // own footprint instead (see the max-height sampling further down),
-    // which handles real unevenness directly rather than needing the
-    // whole area pre-screened as flat. What's left here is just a much
-    // looser sanity cap — this still bails out of a genuine cliff/ravine
-    // spanning the village, since the shared road (which DOES stay one
-    // flat grade — see below) would otherwise have to span an
-    // unreasonable drop.
+    // which handles small everyday unevenness directly. But that only
+    // ever smooths things out at the scale of a single plot (a few
+    // blocks) — it was loosened too far to 24 at one point, which let
+    // villages spawn on genuinely mountainous terrain the shared road
+    // (which DOES stay one single flat grade — see below) then had to
+    // cut straight through, leaving the road itself sitting at the
+    // bottom of a real canyon with tall natural walls either side no
+    // amount of per-plot patching can hide. Back down to a much
+    // stricter cap — this is what actually keeps villages off terrain
+    // steep enough to need that.
     const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
     if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
-    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 24) return; // only bails on genuinely extreme terrain now (a real cliff/ravine), not everyday hills
+    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 10) return; // too steep/mountainous for a village this time
 
     // Trees (and anything else terrain generation naturally scattered
     // there) already exist across this whole area by the time a village
@@ -4851,7 +4855,15 @@
     // what makes it read as a road rather than just another gap.
     for (let x = wx0 + 13; x <= wx0 + 16; x++) {
       for (let z = wz0; z <= wz1; z++) {
-        for (let y = Math.max(0, roadY - 6); y <= roadY + 4; y++) {
+        // Clears all the way up to whatever natural terrain actually
+        // stood here, not a fixed +4 cap — a fixed cap left solid,
+        // completely untouched hillside directly overhanging the road
+        // wherever the real terrain ran taller than that, which is
+        // exactly what was reading as a wall/canyon cut into the
+        // landscape rather than an open street.
+        const existingH = columnHeight.get(x + ',' + z);
+        const clearTop = Math.max(roadY + 4, existingH !== undefined ? existingH : roadY);
+        for (let y = Math.max(0, roadY - 6); y <= clearTop; y++) {
           const k = key(x, y, z);
           blocks.delete(k); stepRotations.delete(k);
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }

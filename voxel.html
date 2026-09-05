@@ -7660,7 +7660,15 @@
     for (let i = ambientFish.length - 1; i >= 0; i--) {
       const f = ambientFish[i];
       const dx = f.mesh.position.x - px, dz = f.mesh.position.z - pz;
-      if (dx*dx + dz*dz > FISH_DESPAWN_RADIUS*FISH_DESPAWN_RADIUS) { scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1); }
+      if (dx*dx + dz*dz > FISH_DESPAWN_RADIUS*FISH_DESPAWN_RADIUS) { scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1); continue; }
+      // Dies (rather than just hanging in place) once the water it was
+      // actually swimming in is gone — draining a sealed pool (see the
+      // Drain tool) used to leave any fish that had been in it stranded,
+      // just floating in open air exactly where the water used to be.
+      const fx = Math.floor(f.mesh.position.x), fz = Math.floor(f.mesh.position.z), fy = Math.round(f.baseY);
+      if (!waterBlocks.has(key(fx, fy, fz)) && !waterBlocks.has(key(fx, fy-1, fz))) {
+        scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1);
+      }
     }
     if (now - lastAmbientFishScan > 3000) { lastAmbientFishScan = now; scanAndSpawnAmbientFish(); } // frequent — this is now a small, cheap, local scan rather than the whole loaded world
     ambientFish.forEach(f => {

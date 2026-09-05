@@ -2513,7 +2513,7 @@
   const stepLowerGeometry = new THREE.BoxGeometry(1, 0.5, 1);   // full footprint, half height
   const stepUpperGeometry = new THREE.BoxGeometry(0.5, 0.5, 1); // quarter footprint (rot=0 shape), half height
 
-  const MAX_INSTANCES = 40000; // raised from 30000 for extra headroom against the same cap — see CHUNK_LOAD_RADIUS's own comment above for why the cap matters now that terrain streams infinitely
+  const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
   const meshes = BLOCK_TYPES.map(entry => {
     const mat = buildMaterialArray(entry);
     const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : geometry, mat, MAX_INSTANCES);
@@ -4987,7 +4987,7 @@
     // terrain that was never actually natural — a second, subtler
     // version of the exact same "one bad sample" problem this whole
     // rework exists to fix.
-    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 4, SKIRT_STEP = 2;
+    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 2, SKIRT_STEP = 3;
     const plotInfo = plots.map(plot => {
       // Scans a few blocks further out than what actually gets
       // flattened below, so the floor sits above nearby rising ground

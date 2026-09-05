@@ -9945,7 +9945,7 @@
     });
     return bestKey ? { kind: bestKind, fk: bestKey, dist: bestDist } : null;
   }
-  function voxelRaycast(skipWater) {
+  function voxelRaycast(skipWater, skipPlayerOverlap) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
     const step = 0.06;
@@ -9953,6 +9953,15 @@
     for (let t=0; t<6; t+=step) {
       const p = origin.clone().addScaledVector(dir, t);
       const vx=Math.floor(p.x), vy=Math.floor(p.y), vz=Math.floor(p.z);
+      // A cell overlapping the player's own body can never actually be
+      // placed into anyway (see blockOverlapsPlayer's own safety check
+      // in doPlace) — while swimming the camera itself sits inside
+      // water, so without this, the very FIRST sampled cell always
+      // "hits" that same water right at the player's own position,
+      // which is never a useful target. Skipping straight past it here
+      // finds whatever the player is actually aiming at beyond their
+      // own body, water or not.
+      if (skipPlayerOverlap && blockOverlapsPlayer(vx,vy,vz)) { prev = {x:vx,y:vy,z:vz}; continue; }
       const k = key(vx,vy,vz);
       if (blocks.has(k)) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:false };
       if (waterBlocks.has(k)) {
@@ -10069,7 +10078,7 @@
   // per-frame continuous-place poll below, so both agree on what counts
   // as "a new spot" to place at.
   function currentPlaceTargetKey() {
-    const r = voxelRaycast();
+    const r = voxelRaycast(false, true);
     if (!r) return null;
     // Water hits never have a `before` cell (see doPlace's own note below
     // on why not) — the target IS the water cell itself in that case,
@@ -10113,7 +10122,17 @@
     // normal placement still works everywhere else as usual.
     if (tryKickFootball()) return;
     if (tryHitTennisBall()) return;
-    const r = voxelRaycast();
+    // Second argument skips any cell that overlaps the player's own
+    // body — without it, the very first thing this raycast ever sees
+    // while swimming is the water the player is themselves sitting in,
+    // which can never actually be placed into anyway (see
+    // blockOverlapsPlayer's own check further down): every attempt
+    // would immediately fail right there without ever reaching whatever
+    // the player was actually aiming at beyond their own position. This
+    // is what was still blocking underwater building even after fixing
+    // the `before`-is-null issue below — that fix let the water hit
+    // through, but the hit itself was still unusable.
+    const r = voxelRaycast(false, true);
     // Only requires `before` when the hit ISN'T water — a water hit
     // never has one. voxelRaycast records `before` as the last cell it
     // stepped through before the one it hit, but when the player's own

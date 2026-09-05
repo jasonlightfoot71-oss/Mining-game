@@ -4755,23 +4755,21 @@
     const checkPts = [[wx0, wz0], [wx1, wz0], [wx0, wz1], [wx1, wz1], [Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2)]];
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
 
-    // Villages only spawn on relatively flat ground now. The old design
-    // sampled a single point (the plot's own centre) to decide the
-    // height an ENTIRE flattened building pad would use — fine when
-    // terrain was gentler, but terrain now varies a lot more over just
-    // a few blocks (see the terrain generation rewrite elsewhere), so
-    // that one sample could be wildly unrepresentative of the ground
-    // actually surrounding it. The result: a flattened pad ending up
-    // far lower (or higher) than the natural hillside around it, with
-    // a house sitting at the bottom of a steep-walled pit — structurally
-    // fine, but genuinely hard to reach and visually broken. Checking
-    // the spread across several points up front and simply skipping
-    // this chunk's village if it's too steep is far safer than trying
-    // to grade an entire hillside to smoothly blend with a flat pad,
-    // which risks its own new set of edge cases.
+    // This used to require the whole village area be quite flat (a
+    // strict single-point steepness check), back when each plot graded
+    // to one centre sample of its own — a plot's floor could otherwise
+    // end up far below (or above) its own immediate surroundings. Each
+    // plot now grades to the highest natural point anywhere within its
+    // own footprint instead (see the max-height sampling further down),
+    // which handles real unevenness directly rather than needing the
+    // whole area pre-screened as flat. What's left here is just a much
+    // looser sanity cap — this still bails out of a genuine cliff/ravine
+    // spanning the village, since the shared road (which DOES stay one
+    // flat grade — see below) would otherwise have to span an
+    // unreasonable drop.
     const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
     if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
-    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 8) return; // too steep/uneven for a village this time
+    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 24) return; // only bails on genuinely extreme terrain now (a real cliff/ravine), not everyday hills
 
     // Trees (and anything else terrain generation naturally scattered
     // there) already exist across this whole area by the time a village
@@ -4802,6 +4800,19 @@
           if (t === 3 || t === 4) { blocks.delete(k); stepRotations.delete(k); } // tree trunk (Wood) or leaves
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
+        // columnHeight still reports whatever the TALLEST block here
+        // ever was — for a column that just had a tree stripped off it,
+        // that's the tree's own former canopy height, not the real
+        // ground underneath. Left uncorrected, that phantom height is
+        // exactly what could send a plot's own floor (see the
+        // footprint-max sampling further down) floating up to where a
+        // tree used to stand instead of the real terrain. Re-scanning
+        // down to the real topmost remaining block fixes it once, here,
+        // at the source, rather than every later system having to guess
+        // around it.
+        let realTop = groundY + 30;
+        while (realTop > 0 && !blocks.has(key(x, realTop, z))) realTop--;
+        columnHeight.set(x + ',' + z, realTop); // deliberately a direct set, not trackVillageHeight — this can and should LOWER the recorded height back down now that the tree is gone
         // Same unconditional guaranteed-base-fill idea each plot's own
         // floor now gets (see the plot loop further down), applied here
         // too — this is the space BETWEEN buildings, road and gaps,
@@ -4813,12 +4824,16 @@
         // switching it all to plain stone, so anywhere this IS ever
         // exposed at an edge, it blends with what's actually around it
         // instead of reading as a patch of quarry floor dropped into a
-        // field.
-        const surfaceType = blocks.get(key(x, groundY, z));
+        // field. Uses realTop now, not the old (possibly tree-inflated)
+        // groundY — filling relative to the phantom height was leaving a
+        // solid pillar of Dirt reaching up through where a tree used to
+        // be instead of stopping at the real ground.
+        const surfaceType = blocks.get(key(x, realTop, z));
         const fillType = (surfaceType === 5) ? 5 : 1; // Sand(5) stays sand-based; grass/dirt/anything else gets Dirt(1) — a natural, neutral base that blends under any of them
-        for (let y = Math.max(0, groundY - 8); y < groundY; y++) blocks.set(key(x, y, z), fillType);
+        for (let y = Math.max(0, realTop - 8); y < realTop; y++) blocks.set(key(x, y, z), fillType);
       }
     }
+
 
     const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
     let roadY = columnHeight.get(centerKey);
@@ -4932,20 +4947,45 @@
       const type = pool[i];
       const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
 
-      // This plot grades ONLY its own footprint, to ITS OWN sampled
-      // height — read from the natural terrain still sitting there
-      // right now, before this plot (and only this plot) gets levelled.
-      // This is what actually lets one house sit in a dip and its
-      // neighbour sit up on a rise, instead of the whole village being
-      // one dead-flat pad regardless of the real landscape.
-      const pcx = Math.floor((plot.x0 + plot.x1) / 2), pcz = Math.floor((plot.z0 + plot.z1) / 2);
-      let plotY = columnHeight.get(pcx + ',' + pcz);
-      if (plotY === undefined) plotY = roadY;
+      // This plot grades to the HIGHEST natural point anywhere within
+      // its own footprint (the same padded area graded below), not a
+      // single centre sample. A centre sample could land in a genuine
+      // local dip while the rest of this exact footprint sat higher —
+      // the house then graded down to that one low point, leaving it
+      // sunk below ground that was already standing right next to it,
+      // inside its own plot. Grading to the footprint's own peak instead
+      // guarantees the floor is never lower than any natural terrain
+      // already inside the space it's being built on — nothing is left
+      // standing taller than the house to bury it. This is also what
+      // lets one house sit low and its neighbour sit high, since each
+      // plot's peak is still entirely its own.
+      let plotY, baseSurfaceType = 0;
+      {
+        let maxNatural;
+        for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
+          for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
+            const eh = columnHeight.get(x + ',' + z);
+            if (eh === undefined) continue;
+            if (maxNatural === undefined || eh > maxNatural) {
+              maxNatural = eh;
+              const t = blocks.get(key(x, eh, z));
+              if (t !== undefined) baseSurfaceType = t; // whatever block the peak itself actually was — grass, sand, stone...
+            }
+          }
+        }
+        plotY = maxNatural !== undefined ? maxNatural : roadY;
+      }
       // Floored at SEA_LEVEL (was SEA_LEVEL-1, which let a building's own
       // ground floor sit a block BELOW the water table it was flooring
       // — every building now sits at or above sea level, never in a dip
       // low enough to look partially sunken next to nearby water.
       plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
+      // Fill/cap material matches whatever the peak block actually was,
+      // rather than always Dirt/Grass — a plot graded up out of a sandy
+      // beach gets a sandy yard, one graded on rocky high ground gets a
+      // rocky one, instead of every village plot forcing the same
+      // material regardless of the biome it landed in.
+      const subFillType = (baseSurfaceType === 5 || baseSurfaceType === 2) ? baseSurfaceType : 1; // Sand/Stone stay themselves; everything else (grass etc.) gets Dirt underneath, same reasoning as the village-wide base fill above
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
           // Everything above the floor is cleared based on the real
@@ -4962,7 +5002,10 @@
           // fall well short of reaching all the way down to a much
           // lower plotY, leaving exactly a gap directly under the new
           // floor. This no longer depends on or trusts that assumption
-          // at all.
+          // at all. Depth bumped 6 -> 8 now that plotY is graded to the
+          // footprint's own peak rather than a centre sample — the gap
+          // beneath a low corner of the plot can genuinely run deeper
+          // than it used to.
           const existingH = columnHeight.get(x + ',' + z);
           const clearTop = Math.max(plotY + 12, existingH !== undefined ? existingH : plotY);
           for (let y = plotY + 1; y <= clearTop; y++) {
@@ -4970,8 +5013,8 @@
             blocks.delete(k); stepRotations.delete(k);
             if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
           }
-          for (let y = Math.max(0, plotY - 6); y < plotY; y++) blocks.set(key(x, y, z), 1); // Dirt, not Stone — matches the same natural-blend reasoning as the village-wide base fill above: anywhere this base is ever exposed at an edge, it reads as ground, not exposed quarry rock
-          blocks.set(key(x, plotY, z), 0);
+          for (let y = Math.max(0, plotY - 8); y < plotY; y++) blocks.set(key(x, y, z), subFillType);
+          blocks.set(key(x, plotY, z), baseSurfaceType);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
         }
@@ -7360,20 +7403,21 @@
     // at both the nose and tail end (a real fish has no sharp point at
     // either end, which the old cone-fronted design did), and is
     // noticeably thinner side-to-side than it is tall, like an actual
-    // fish rather than a torpedo.
+    // fish rather than a torpedo. Flattened further (0.6 -> 0.42) per
+    // feedback — it was still reading as too round/chunky front-on.
     const bodyGeom = new THREE.SphereGeometry(0.16, 12, 8);
-    bodyGeom.scale(1.9, 1.05, 0.6);
+    bodyGeom.scale(1.9, 1.05, 0.42);
     const body = new THREE.Mesh(bodyGeom, bodyMat);
     group.add(body);
     // Pale belly stripe along the underside — countershading, the same
     // dark-top/light-bottom pattern almost every real fish has.
     const bellyGeom = new THREE.SphereGeometry(0.1, 8, 6);
-    bellyGeom.scale(1.55, 0.5, 0.56);
+    bellyGeom.scale(1.55, 0.5, 0.4);
     const belly = new THREE.Mesh(bellyGeom, bellyMat);
     belly.position.set(0.01, -0.075, 0);
     group.add(belly);
     const eyeMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
-    [-0.09, 0.09].forEach(dz => {
+    [-0.07, 0.07].forEach(dz => {
       const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 4), eyeMat);
       eye.position.set(0.26, 0.035, dz);
       group.add(eye);
@@ -7381,29 +7425,31 @@
     // Forked tail fin — two thin flattened blades angled apart from a
     // shared root, which is what actually reads as "a tail" rather than
     // a fourth fin; a single solid cone here always looked more like a
-    // second head than a caudal fin.
+    // second head than a caudal fin. Enlarged (0.26 long -> 0.42, wider
+    // spread) per feedback — it was reading as too small against the
+    // body.
     const tail = new THREE.Group();
-    const tailFinGeom = new THREE.ConeGeometry(0.02, 0.26, 4);
-    tailFinGeom.scale(1, 1, 0.12);
+    const tailFinGeom = new THREE.ConeGeometry(0.028, 0.42, 4);
+    tailFinGeom.scale(1, 1, 0.13);
     [-1, 1].forEach(side => {
       const lobe = new THREE.Mesh(tailFinGeom.clone(), finMat);
       lobe.rotation.z = -Math.PI/2;
-      lobe.rotation.x = side * 0.5;
-      lobe.position.set(-0.03, 0, side * 0.05);
+      lobe.rotation.x = side * 0.65;
+      lobe.position.set(-0.04, 0, side * 0.07);
       tail.add(lobe);
     });
     tail.position.x = -0.33;
     group.add(tail);
     // Dorsal fin along the back, plus a pair of small pectoral fins just
     // behind the head — thin, near-transparent blades so they read as
-    // membrane rather than solid flesh.
-    const dorsalGeom = new THREE.ConeGeometry(0.02, 0.17, 3);
+    // membrane rather than solid flesh. Both enlarged per feedback.
+    const dorsalGeom = new THREE.ConeGeometry(0.028, 0.26, 3);
     dorsalGeom.scale(1, 1, 0.1);
     const dorsal = new THREE.Mesh(dorsalGeom, finMat);
     dorsal.rotation.x = Math.PI/2;
-    dorsal.position.set(0, 0.15, 0);
+    dorsal.position.set(0, 0.16, 0);
     group.add(dorsal);
-    const pecGeom = new THREE.ConeGeometry(0.016, 0.13, 3);
+    const pecGeom = new THREE.ConeGeometry(0.022, 0.19, 3);
     pecGeom.scale(1, 1, 0.1);
     [-1, 1].forEach(side => {
       const pec = new THREE.Mesh(pecGeom.clone(), finMat);

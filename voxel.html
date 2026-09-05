@@ -4941,45 +4941,41 @@
     if (rng() < 0.35) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
     if (rng() < 0.22) { const idx = pool.findIndex(t => t === 'house' || t === 'pub' || t === 'shop'); if (idx >= 0) pool[idx] = 'castle'; }
 
-    let built = 0;
-    plots.forEach((plot, i) => {
-      if (rng() < 0.15) return; // some plots stay empty, so village size still varies
-      const type = pool[i];
-      const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
-
-      // This plot grades to the HIGHEST natural point anywhere within
-      // its own footprint, or slightly beyond it, rather than a single
-      // centre sample OR just its own exact boundary. Sampling only the
-      // plot's own tight footprint still left a real gap: terrain that
-      // kept climbing just past the plot's own edge (this game's terrain
-      // noise has real texture over spans as short as ~20 blocks) could
-      // still tower over a plateau that only ever looked at its own
-      // boundary, leaving the same "sunk in a pit" look at a smaller
-      // scale. Scanning a few blocks further out than what actually gets
-      // flattened (PEAK_SCAN_PAD) is what actually fixes that — the
-      // floor now sits above nearby rising ground too, not just the
-      // ground it's standing directly on.
-      const PEAK_SCAN_PAD = 3;
-      let plotY, baseSurfaceType = 0;
-      {
-        let maxNatural;
-        for (let x = plot.x0 - PEAK_SCAN_PAD; x <= plot.x1 + PEAK_SCAN_PAD; x++) {
-          for (let z = plot.z0 - PEAK_SCAN_PAD; z <= plot.z1 + PEAK_SCAN_PAD; z++) {
-            const eh = columnHeight.get(x + ',' + z);
-            if (eh === undefined) continue;
-            if (maxNatural === undefined || eh > maxNatural) {
-              maxNatural = eh;
-              const t = blocks.get(key(x, eh, z));
-              if (t !== undefined) baseSurfaceType = t; // whatever block the peak itself actually was — grass, sand, stone...
-            }
+    // Every plot's own floor height, and the material it's capped with,
+    // are computed for ALL plots FIRST — from nothing but the terrain
+    // as it stood before any of them started grading — rather than
+    // computing and flattening one plot at a time in a single pass.
+    // That single-pass approach could let a plot processed later read
+    // ground a NEIGHBOURING plot's own grading had already nudged up
+    // moments earlier, quietly inflating its own peak sample with
+    // terrain that was never actually natural — a second, subtler
+    // version of the exact same "one bad sample" problem this whole
+    // rework exists to fix.
+    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 4, SKIRT_STEP = 2;
+    const plotInfo = plots.map(plot => {
+      // Scans a few blocks further out than what actually gets
+      // flattened below, so the floor sits above nearby rising ground
+      // too, not just the ground the plot happens to be standing on —
+      // this game's terrain has real texture over spans as short as
+      // ~20 blocks, so a plot could otherwise still end up dwarfed by
+      // higher ground just past its own boundary.
+      let maxNatural, baseSurfaceType = 0;
+      for (let x = plot.x0 - PEAK_SCAN_PAD; x <= plot.x1 + PEAK_SCAN_PAD; x++) {
+        for (let z = plot.z0 - PEAK_SCAN_PAD; z <= plot.z1 + PEAK_SCAN_PAD; z++) {
+          const eh = columnHeight.get(x + ',' + z);
+          if (eh === undefined) continue;
+          if (maxNatural === undefined || eh > maxNatural) {
+            maxNatural = eh;
+            const t = blocks.get(key(x, eh, z));
+            if (t !== undefined) baseSurfaceType = t; // whatever block the peak itself actually was — grass, sand, stone...
           }
         }
-        plotY = maxNatural !== undefined ? maxNatural : roadY;
       }
       // Floored at SEA_LEVEL (was SEA_LEVEL-1, which let a building's own
       // ground floor sit a block BELOW the water table it was flooring
       // — every building now sits at or above sea level, never in a dip
       // low enough to look partially sunken next to nearby water.
+      let plotY = maxNatural !== undefined ? maxNatural : roadY;
       plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
       // Fill/cap material matches whatever the peak block actually was,
       // rather than always Dirt/Grass — a plot graded up out of a sandy
@@ -4987,6 +4983,16 @@
       // rocky one, instead of every village plot forcing the same
       // material regardless of the biome it landed in.
       const subFillType = (baseSurfaceType === 5 || baseSurfaceType === 2) ? baseSurfaceType : 1; // Sand/Stone stay themselves; everything else (grass etc.) gets Dirt underneath, same reasoning as the village-wide base fill above
+      return { plotY, baseSurfaceType, subFillType };
+    });
+
+    let built = 0;
+    plots.forEach((plot, i) => {
+      if (rng() < 0.15) return; // some plots stay empty, so village size still varies
+      const type = pool[i];
+      const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
+      const { plotY, baseSurfaceType, subFillType } = plotInfo[i];
+
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
           // Everything above the floor is cleared based on the real
@@ -5003,7 +5009,7 @@
           // fall well short of reaching all the way down to a much
           // lower plotY, leaving exactly a gap directly under the new
           // floor. This no longer depends on or trusts that assumption
-          // at all. Depth bumped 6 -> 16 now that plotY can be graded
+          // at all. Depth is 16 now that plotY can be graded
           // considerably higher than this exact column's own natural
           // terrain (see PEAK_SCAN_PAD above) — the gap beneath a low
           // corner of the plot can genuinely run much deeper than it
@@ -5019,6 +5025,34 @@
           blocks.set(key(x, plotY, z), baseSurfaceType);
           trackVillageHeight(x, z, plotY);
           markVillageGround(x, z, plotY);
+        }
+      }
+
+      // Terraced skirt: a pad graded straight to the footprint's own
+      // peak can still leave an abrupt little cliff wherever the
+      // natural ground just outside it was genuinely lower — the
+      // 1-block padding above only raises the immediate edge, nowhere
+      // near enough on a real slope. This steps the edge down gradually
+      // instead: a few rings further out, each one allowed to sit a bit
+      // lower than the last, but never lower than whatever was already
+      // standing there naturally — so it only ever fills in a low gap
+      // on the downhill side, and never touches ground that was already
+      // higher (which just keeps rising past the pad, exactly as it
+      // should).
+      for (let x = Math.max(wx0, plot.x0 - 1 - SKIRT_RINGS); x <= Math.min(wx1, plot.x1 + 1 + SKIRT_RINGS); x++) {
+        if (x >= wx0 + 13 && x <= wx0 + 16) continue; // never touches the shared road strip, which stays its own flat grade regardless
+        for (let z = Math.max(wz0, plot.z0 - 1 - SKIRT_RINGS); z <= Math.min(wz1, plot.z1 + 1 + SKIRT_RINGS); z++) {
+          const dx = x < plot.x0 - 1 ? (plot.x0 - 1 - x) : (x > plot.x1 + 1 ? x - (plot.x1 + 1) : 0);
+          const dz = z < plot.z0 - 1 ? (plot.z0 - 1 - z) : (z > plot.z1 + 1 ? z - (plot.z1 + 1) : 0);
+          const dist = Math.max(dx, dz);
+          if (dist === 0 || dist > SKIRT_RINGS) continue; // dist 0 is the already-graded core; beyond SKIRT_RINGS is past the skirt's own reach
+          const natural = columnHeight.get(x + ',' + z);
+          if (natural === undefined) continue;
+          const target = plotY - SKIRT_STEP * dist;
+          if (natural >= target) continue; // already at or above this ring's step — leave it alone, it's naturally rising past the pad
+          for (let y = natural + 1; y <= target; y++) blocks.set(key(x, y, z), subFillType);
+          trackVillageHeight(x, z, target);
+          markVillageGround(x, z, target);
         }
       }
 
@@ -10656,7 +10690,9 @@
       stemH: 0.25, centerSize: 0.065, centerY: 1.26,
     },
   ];
-  const FLOWER_COLORS = [0xf07ec9, 0xf5f0e6, 0xf2c14e, 0xd66b8a, 0xc678e0, 0xe8703a];
+  // Vivid, saturated palette per feedback (red/yellow/violet/blue etc)
+  // rather than the previous pastel-leaning set.
+  const FLOWER_COLORS = [0xe63946, 0xffd60a, 0x8e44ad, 0x2e86de, 0xff8c1a, 0xff5da2, 0xffffff];
   // Flowers now grow in irregular, connected patches rather than a fine,
   // uniform sprinkle across every stretch of grass — long flower-free
   // gaps, then a blob of blooming ground roughly 5-10 blocks across.
@@ -10686,9 +10722,17 @@
   // genuinely different petal shapes need five separate petal meshes
   // (same for stems/centres, since their height/size also differ per
   // species).
-  const flowerStemMat = new THREE.MeshPhongMaterial({ color: 0x3f7a3f, shininess: 0 });
-  const flowerCenterMat = new THREE.MeshPhongMaterial({ color: 0xf5c93f, shininess: 30 });
-  const flowerPetalMat = new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 25, vertexColors: true });
+  // Basic (unlit) materials, not Phong — a flower's petals are thin,
+  // tilted flat shapes, and under normal directional lighting a lot of
+  // those tilt angles barely catch any light at all, rendering nearly
+  // black regardless of the actual vertex colour underneath (the round
+  // centre sphere always catches SOME light from any angle, which is
+  // exactly why only it was reading its true colour before). Unlit
+  // materials render the colour itself directly, with no dependence on
+  // light angle, so the vivid palette above actually shows up.
+  const flowerStemMat = new THREE.MeshBasicMaterial({ color: 0x4a9d3f });
+  const flowerCenterMat = new THREE.MeshBasicMaterial({ color: 0xffd94d });
+  const flowerPetalMat = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true });
   FLOWER_TYPES.forEach(type => {
     const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, type.stemH, 5);
     type.stemMesh = new THREE.InstancedMesh(stemGeom, flowerStemMat, MAX_INSTANCES);

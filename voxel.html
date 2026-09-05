@@ -10070,7 +10070,12 @@
   // as "a new spot" to place at.
   function currentPlaceTargetKey() {
     const r = voxelRaycast();
-    if (!r || !r.before) return null;
+    if (!r) return null;
+    // Water hits never have a `before` cell (see doPlace's own note below
+    // on why not) — the target IS the water cell itself in that case,
+    // same as the actual placement logic uses.
+    if (r.isWater) return key(r.hit.x, r.hit.y, r.hit.z);
+    if (!r.before) return null;
     return key(r.before.x, r.before.y, r.before.z);
   }
   // Whether placing a block at bx,by,bz would intersect the player's own
@@ -10109,7 +10114,19 @@
     if (tryKickFootball()) return;
     if (tryHitTennisBall()) return;
     const r = voxelRaycast();
-    if (!r || !r.before) return;
+    // Only requires `before` when the hit ISN'T water — a water hit
+    // never has one. voxelRaycast records `before` as the last cell it
+    // stepped through before the one it hit, but when the player's own
+    // camera is already sitting inside water (which it always is while
+    // swimming), the very FIRST cell it samples is already that water —
+    // there's no earlier cell to have recorded as `before` yet, so it's
+    // null. Requiring it unconditionally meant placing anything while
+    // underwater always bailed out right here, before ever reaching the
+    // water-displacement logic further down that was specifically
+    // written to handle exactly this case using `r.hit` instead. This is
+    // the actual reason building underwater wasn't working at all.
+    if (!r) return;
+    if (!r.isWater && !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     // Ordinary building is blocked inside these three areas entirely,
     // not just mining — this is what actually stopped a stray block

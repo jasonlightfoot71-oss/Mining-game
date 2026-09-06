@@ -1510,6 +1510,13 @@
     9: [9, 43, 44, 45, 46], // Step (materials)
     10: [10, 31, 32, 33, 34], // Concrete (colours)
   };
+  // Every block type whose name contains "Glass" (the base pane plus its
+  // 4 colour variants) — used to route these types to the merged
+  // glassMeshes rendering system (see rebuildGlassGeometry) instead of
+  // the normal one-InstancedMesh-instance-per-cube path every other
+  // block type uses, so adjacent glass blocks merge into one seamless
+  // pane instead of showing each cube's own edge/border.
+  const GLASS_TYPE_SET = new Set(BLOCK_TYPES.map((e,i) => (e.name||'').includes('Glass') ? i : -1).filter(i => i >= 0));
   // Which family member is CURRENTLY assigned to each primary slot —
   // starts as the primary itself, changes when a variant is picked from
   // the popup. This is what selectSlot(primaryIdx) actually resolves to.
@@ -1970,18 +1977,19 @@
     return gameStructuralCells.has(x+','+y+','+z);
   }
   // Reduced from an earlier "medium" (radius 2) after testing revealed a
-  // real capacity problem: each block type's mesh has a fixed maximum of
-  // MAX_INSTANCES rendered instances at once (a fixed-size GPU buffer,
-  // allocated upfront for performance — it can't just grow on demand).
-  // At radius 2, the unload buffer below could keep up to 7x7=49 chunks
-  // resident at once — over 50,000 exposed grass/sand-surface blocks
-  // alone, comfortably past that cap. Once a type hits its cap, any
-  // further blocks of that type silently stop rendering at all — solid
-  // for collision, just invisible — which is exactly what was reported.
-  // Radius 1 keeps the worst case (7x7 becomes 5x5 = 25 chunks) safely
-  // under the increased cap below with real headroom, and in practice
-  // looks no different: the scene's own fog already fades everything out
-  // by ~70 blocks in clear weather, well within even this smaller radius.
+  // real capacity problem: each block type's mesh used to have a fixed
+  // maximum of MAX_INSTANCES rendered instances at once (a fixed-size GPU
+  // buffer, allocated upfront). At radius 2, the unload buffer below
+  // could keep up to 7x7=49 chunks resident at once — over 50,000 exposed
+  // grass/sand-surface blocks alone, comfortably past that cap. Once a
+  // type hit its cap, any further blocks of that type silently stopped
+  // rendering at all — solid for collision, just invisible — which is
+  // exactly what was reported. That per-type buffer now grows on demand
+  // instead of having a hard ceiling (see growBlockMesh), so this radius
+  // is no longer load-bearing for correctness the way it used to be —
+  // kept at 1 anyway purely for performance/GPU memory, since the scene's
+  // own fog already fades everything out by ~70 blocks in clear weather,
+  // well within even this smaller radius.
   const CHUNK_LOAD_RADIUS = 1;
   const CHUNK_UNLOAD_RADIUS = CHUNK_LOAD_RADIUS + 1;
   // Same reasoning as Buy Terrain's old TERRAIN_DEPTH_CAP — filling every
@@ -2466,6 +2474,11 @@
     // every single streaming update during continuous flight was exactly
     // what brought the grey flash back.
     if (changed && anyWaterTouchedThisStream) scheduleWaterRebuild();
+    // Glass has no cheap "did this chunk touch glass" flag like water's
+    // own anyWaterTouchedThisStream, so this just schedules unconditionally
+    // whenever anything streamed — debounced, so it's still cheap even if
+    // most of those calls end up finding no glass to redraw.
+    if (changed) scheduleGlassRebuild();
     // Keeps the flower/snow ground-cover overlay in sync with whatever
     // terrain just streamed in or out — without this, newly generated
     // grass never grows flowers/snow at all, and any that WAS on a tile
@@ -2520,9 +2533,14 @@
   const stepUpperGeometry = new THREE.BoxGeometry(0.5, 0.5, 1); // quarter footprint (rot=0 shape), half height
 
   const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
-  const meshes = BLOCK_TYPES.map(entry => {
+  const meshes = BLOCK_TYPES.map((entry, i) => {
     const mat = buildMaterialArray(entry);
-    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : geometry, mat, MAX_INSTANCES);
+    // Glass types never get a per-cube instance any more (see
+    // glassMeshes/rebuildGlassGeometry below) — this mesh for them stays
+    // permanently empty, so it only needs a minimal starting buffer
+    // rather than the full MAX_INSTANCES every real block type gets.
+    const cap = GLASS_TYPE_SET.has(i) ? 1 : MAX_INSTANCES;
+    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : geometry, mat, cap);
     m.castShadow = !entry.transparent; m.receiveShadow = true;
     m.count = 0;
     scene.add(m);
@@ -2540,6 +2558,42 @@
     scene.add(m);
     return m;
   });
+  // Growable per-type instance buffers ----------------------------------
+  // Each block type's InstancedMesh used to be a fixed-size buffer
+  // (MAX_INSTANCES) that silently capped out: once a type's count hit
+  // that ceiling, any further block of that type stopped rendering
+  // entirely while staying solid for collision — "still there but
+  // invisible". That cap had already been raised twice before (see this
+  // file's own history/comments) and kept reproducing the exact same
+  // failure, because leaving and re-entering a world re-generates every
+  // loaded chunk's worth of blocks in one eager pass (see
+  // eagerGenerateAroundPlayer + rebuildMeshes in beginPlaying), and a
+  // busy player build can push one popular block type (stone, wood,
+  // glass...) past whatever fixed number was chosen. Rather than guess at
+  // a bigger constant a third time, each type's buffer now grows on
+  // demand instead of having a ceiling at all: when it fills up, a new,
+  // larger InstancedMesh is allocated, the existing instance matrices are
+  // copied across, and the old mesh is swapped out for the new one in
+  // place (meshes[type] / stepUpperMeshes[type] always point at
+  // whichever is current). Doubling means this reallocates rarely — most
+  // sessions never grow past the starting size at all.
+  function growBlockMesh(type, isStepUpper) {
+    const arr = isStepUpper ? stepUpperMeshes : meshes;
+    const old = arr[type];
+    if (!old) return old;
+    const oldCap = old.instanceMatrix.count;
+    const newCap = oldCap * 2;
+    const newMesh = new THREE.InstancedMesh(old.geometry, old.material, newCap);
+    newMesh.castShadow = old.castShadow;
+    newMesh.receiveShadow = old.receiveShadow;
+    newMesh.instanceMatrix.array.set(old.instanceMatrix.array.subarray(0, old.count * 16));
+    newMesh.count = old.count;
+    newMesh.instanceMatrix.needsUpdate = true;
+    scene.remove(old);
+    scene.add(newMesh);
+    arr[type] = newMesh;
+    return newMesh;
+  }
   // Fresnel-based water shader: nearly transparent when you're looking
   // straight through it (top-down / swimming), but reads as a proper
   // reflective surface at grazing angles — like real water. A gentle
@@ -2614,6 +2668,161 @@
   waterMesh.frustumCulled = false; // one big merged surface spanning the world — a single bounding sphere isn't a reliable cull test
   scene.add(waterMesh);
 
+  // ================= MERGED GLASS PANES =================
+  // Same "one merged, hole-punched surface" idea as water above, applied
+  // to glass: each glass colour gets its own single Mesh (reusing that
+  // colour's existing textured material — same look as before, just not
+  // one InstancedMesh cube per block any more) built from every currently
+  // placed block of that colour, only emitting the faces that border
+  // something that ISN'T also glass. Faces between two touching glass
+  // blocks (any colour, so different colours joined together merge too)
+  // are skipped entirely, so a built wall or window comes out as one
+  // continuous pane with no per-cube border grid — only the true outer
+  // edge of the whole joined mass keeps its frame. Glass blocks stay in
+  // the normal `blocks` map exactly as before (mining, collision, saving
+  // all keep working unchanged) — this only replaces how they're drawn.
+  const glassMeshes = new Map(); // type -> merged Mesh
+  for (const t of GLASS_TYPE_SET) {
+    const gm = new THREE.Mesh(new THREE.BufferGeometry(), meshes[t].material); // reuse the exact material already built for this glass colour
+    gm.receiveShadow = true;
+    gm.frustumCulled = false; // spans the whole loaded world, same reasoning as waterMesh
+    scene.add(gm);
+    glassMeshes.set(t, gm);
+    // Lets rebuildGlassGeometry brighten a whole lit panel uniformly via a
+    // per-vertex colour multiplier (see below) without needing a separate
+    // material per panel — an unlit face just gets a plain white vertex
+    // colour, which leaves the texture's own look completely unchanged.
+    meshes[t].material.vertexColors = true;
+    meshes[t].material.needsUpdate = true;
+  }
+  // A glass face is hidden (not drawn) when the neighbouring cell is
+  // EITHER more glass (any colour — this is what makes joined panes
+  // seamless) OR any other solid, non-half block (that face would be
+  // invisible behind it either way, so there's no point drawing it).
+  function glassNeighborOccludes(nx, ny, nz) {
+    const nt = blocks.get(key(nx, ny, nz));
+    if (nt === undefined) return false;
+    const nEntry = BLOCK_TYPES[nt];
+    if (nEntry && (nEntry.name||'').includes('Glass')) return true;
+    return !(nEntry && nEntry.half);
+  }
+  // Unit-cube faces are axis-aligned, so the two in-plane coordinates of
+  // each corner (the ones NOT along the face's own normal) already run
+  // 0..1 exactly like a UV pair needs to — no lookup table required.
+  function glassFaceUV(dx, dy, dz, corner) {
+    if (dx !== 0) return [corner[1], corner[2]];
+    if (dy !== 0) return [corner[0], corner[2]];
+    return [corner[0], corner[1]];
+  }
+  const NEIGHBOR_DIRS6 = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  // Same real illumination distance as the torch/LED PointLight's own
+  // falloff (see addFixture's `new THREE.PointLight(..., 10, ...)`) — a
+  // panel only reads as lit when a fixture is genuinely within the range
+  // that would actually light something up, not the further "still
+  // rendered at all" radius (see LIGHT_ACTIVE_RADIUS/updateLightVisibility).
+  const GLASS_LIGHT_RANGE = 10;
+  const GLASS_LIT_COLOR = [1.8, 1.45, 1.0]; // warm brightening multiplier — >1 pushes the texture brighter than its own painted colour, faking a backlit glow
+  const GLASS_UNLIT_COLOR = [1, 1, 1]; // neutral multiplier — leaves the texture exactly as painted
+  function rebuildGlassGeometry() {
+    // Pass 1: collect every currently placed glass cell, keyed the same
+    // way `blocks` already keys them — panel flood-fill (pass 2) and the
+    // final per-cell face pass (pass 4) both look neighbours up in O(1)
+    // against this rather than re-scanning the whole `blocks` map twice.
+    const glassCells = new Map(); // key -> type
+    for (const [k, type] of blocks) { if (GLASS_TYPE_SET.has(type)) glassCells.set(k, type); }
+
+    // Pass 2: flood-fill connected panels — any two glass cells (any
+    // colour) that touch face-to-face belong to the same panel, matching
+    // the same "any colour merges together" rule glassNeighborOccludes
+    // above already uses for hiding seams.
+    const panelOf = new Map(); // key -> panel id
+    const panelCells = []; // panel id -> [[x,y,z], ...]
+    for (const k of glassCells.keys()) {
+      if (panelOf.has(k)) continue;
+      const panelId = panelCells.length;
+      const cells = [];
+      const stack = [k];
+      panelOf.set(k, panelId);
+      while (stack.length) {
+        const ck = stack.pop();
+        const [cx,cy,cz] = ck.split(',').map(Number);
+        cells.push([cx,cy,cz]);
+        for (const [dx,dy,dz] of NEIGHBOR_DIRS6) {
+          const nk = key(cx+dx, cy+dy, cz+dz);
+          if (glassCells.has(nk) && !panelOf.has(nk)) { panelOf.set(nk, panelId); stack.push(nk); }
+        }
+      }
+      panelCells.push(cells);
+    }
+
+    // Pass 3: which panels currently have an ACTIVE fixture (matching the
+    // same on/off rule updateLightVisibility already applies to torches —
+    // an out-of-range, switched-off torch shouldn't light a panel either)
+    // within real light range of any one of its cells — that panel reads
+    // as lit throughout, not just the faces nearest the fixture.
+    const litPanels = new Array(panelCells.length).fill(false);
+    if (fixtures.size && panelCells.length) {
+      const activeFixtures = Array.from(fixtures.values()).filter(f => f.light.visible);
+      if (activeFixtures.length) {
+        panelScan: for (let pid = 0; pid < panelCells.length; pid++) {
+          for (const [cx,cy,cz] of panelCells[pid]) {
+            for (const f of activeFixtures) {
+              const dx = (cx+0.5)-(f.bx+0.5), dy = (cy+0.5)-(f.by+0.5), dz = (cz+0.5)-(f.bz+0.5);
+              if (dx*dx+dy*dy+dz*dz < GLASS_LIGHT_RANGE*GLASS_LIGHT_RANGE) { litPanels[pid] = true; continue panelScan; }
+            }
+          }
+        }
+      }
+    }
+
+    // Pass 4: build the actual merged geometry per glass colour, same
+    // face culling as before, now also writing a per-vertex colour that
+    // brightens a lit panel's faces uniformly.
+    const buffers = new Map(); // type -> { positions, normals, uvs, colors }
+    for (const t of GLASS_TYPE_SET) buffers.set(t, { positions: [], normals: [], uvs: [], colors: [] });
+    for (const [k, type] of glassCells) {
+      const [x,y,z] = k.split(',').map(Number);
+      const lit = litPanels[panelOf.get(k)];
+      const tint = lit ? GLASS_LIT_COLOR : GLASS_UNLIT_COLOR;
+      const buf = buffers.get(type);
+      for (const face of WATER_FACES) { // same full-unit-cube corner layout works unchanged for glass
+        const [dx,dy,dz] = face.d;
+        if (glassNeighborOccludes(x+dx, y+dy, z+dz)) continue;
+        const [a,b,c,d] = face.c;
+        for (const corner of [a,b,c, a,c,d]) {
+          buf.positions.push(x+corner[0], y+corner[1], z+corner[2]);
+          buf.normals.push(dx, dy, dz);
+          const [u,v] = glassFaceUV(dx, dy, dz, corner);
+          buf.uvs.push(u, v);
+          buf.colors.push(tint[0], tint[1], tint[2]);
+        }
+      }
+    }
+    for (const t of GLASS_TYPE_SET) {
+      const buf = buffers.get(t);
+      const geom = glassMeshes.get(t).geometry;
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.positions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(buf.normals, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(buf.colors, 3));
+      geom.computeBoundingSphere();
+      geom.attributes.position.needsUpdate = true;
+      geom.attributes.normal.needsUpdate = true;
+      geom.attributes.uv.needsUpdate = true;
+      geom.attributes.color.needsUpdate = true;
+    }
+  }
+  // Debounced wrapper for chunk streaming's use, same reasoning as
+  // scheduleWaterRebuild — a direct mine/place, or a fixture's active
+  // state actually changing, still calls rebuildGlassGeometry() (or this,
+  // immediately-invoked-but-still-coalesced-via-the-timer-reset case)
+  // itself for a fast response.
+  let glassRebuildTimer = null;
+  function scheduleGlassRebuild() {
+    clearTimeout(glassRebuildTimer);
+    glassRebuildTimer = setTimeout(rebuildGlassGeometry, 1000);
+  }
+
   const dummy = new THREE.Object3D();
   let needsRebuild = true;
   // Per-block instance tracking — lets a single mine/place update just
@@ -2637,8 +2846,8 @@
   const reverseFullIndex = BLOCK_TYPES.map(() => []);
   const tempMatrix = new THREE.Matrix4();
   function addFullInstance(k, x, y, z, type) {
-    const mesh = meshes[type];
-    if (mesh.count >= MAX_INSTANCES) return; // silently skip, same cap the old bulk rebuild always had
+    let mesh = meshes[type];
+    if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
     dummy.rotation.set(0,0,0);
@@ -2681,8 +2890,9 @@
   const reverseStepIndex = BLOCK_TYPES.map(() => []);
   const reverseStepUpperIndex = BLOCK_TYPES.map(() => []);
   function addStepInstance(k, x, y, z, type, rot) {
-    const mesh = meshes[type];
-    if (mesh.count < MAX_INSTANCES) {
+    let mesh = meshes[type];
+    if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false);
+    {
       const idx = mesh.count;
       dummy.position.set(x+0.5, y+0.25, z+0.5);
       dummy.rotation.set(0,0,0);
@@ -2693,8 +2903,9 @@
       stepInstanceIndex.set(k, { type, idx });
       reverseStepIndex[type][idx] = k;
     }
-    const umesh = stepUpperMeshes[type];
-    if (umesh.count < MAX_INSTANCES) {
+    let umesh = stepUpperMeshes[type];
+    if (umesh.count >= umesh.instanceMatrix.count) umesh = growBlockMesh(type, true);
+    {
       const uidx = umesh.count;
       const theta = rot * Math.PI/2;
       const ox = -0.25*Math.cos(theta), oz = 0.25*Math.sin(theta);
@@ -2759,6 +2970,14 @@
       if (stepInstanceIndex.has(k) || stepUpperInstanceIndex.has(k)) removeStepInstance(k);
       return;
     }
+    if (GLASS_TYPE_SET.has(type)) {
+      // Glass renders via the merged glassMeshes system, not a per-cube
+      // instance — just make sure no stray normal-cube instance is left
+      // behind if this cell used to be a different, non-glass type.
+      if (instanceIndex.has(k)) removeFullInstance(k);
+      if (stepInstanceIndex.has(k) || stepUpperInstanceIndex.has(k)) removeStepInstance(k);
+      return;
+    }
     if (isHalfType) {
       if (instanceIndex.has(k)) removeFullInstance(k); // shouldn't normally coexist, but safe regardless
       const existing = stepInstanceIndex.get(k);
@@ -2789,6 +3008,7 @@
     const cells = [[x,y,z],[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
     for (const [cx,cy,cz] of cells) updateFullInstanceAt(cx,cy,cz);
     rebuildWaterGeometry(); // cheap relative to the block rebuild — keeps water's own occlusion in sync with whatever changed
+    rebuildGlassGeometry(); // same idea — keeps joined-glass seams in sync with whatever changed, instant feedback for a deliberate mine/place
     // Keeps flowers/snow in sync with whatever just changed — without
     // this, mining a grass block left its flower floating in place, and
     // newly-placed grass never grew any at all, since the overlay only
@@ -2859,6 +3079,7 @@
       // real scale this needs to hold up at, not just a few thousand).
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
+      if (GLASS_TYPE_SET.has(type)) continue; // glass renders via the merged glassMeshes system (see rebuildGlassGeometry), never as a per-cube instance
       const isHalf = BLOCK_TYPES[type] && BLOCK_TYPES[type].half;
       if (!isHalf && neighborsAllSolid(x,y,z)) continue;
       if (isHalf) {
@@ -2868,11 +3089,10 @@
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
         const li = rebuildCounts[type]++;
-        if (li < MAX_INSTANCES) {
-          meshes[type].setMatrixAt(li, dummy.matrix);
-          stepInstanceIndex.set(k, { type, idx: li });
-          reverseStepIndex[type][li] = k;
-        }
+        if (li >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
+        meshes[type].setMatrixAt(li, dummy.matrix);
+        stepInstanceIndex.set(k, { type, idx: li });
+        reverseStepIndex[type][li] = k;
 
         // Upper quarter — its position offset from the cell centre AND
         // its own orientation both need to rotate together by the same
@@ -2887,21 +3107,19 @@
         dummy.rotation.set(0, theta, 0);
         dummy.updateMatrix();
         const ui = rebuildStepUpperCounts[type]++;
-        if (ui < MAX_INSTANCES) {
-          stepUpperMeshes[type].setMatrixAt(ui, dummy.matrix);
-          stepUpperInstanceIndex.set(k, { type, idx: ui });
-          reverseStepUpperIndex[type][ui] = k;
-        }
+        if (ui >= stepUpperMeshes[type].instanceMatrix.count) growBlockMesh(type, true);
+        stepUpperMeshes[type].setMatrixAt(ui, dummy.matrix);
+        stepUpperInstanceIndex.set(k, { type, idx: ui });
+        reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
         dummy.rotation.set(0,0,0);
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
-        if (idx < MAX_INSTANCES) {
-          meshes[type].setMatrixAt(idx, dummy.matrix);
-          instanceIndex.set(k, { type, idx });
-          reverseFullIndex[type][idx] = k;
-        }
+        if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
+        meshes[type].setMatrixAt(idx, dummy.matrix);
+        instanceIndex.set(k, { type, idx });
+        reverseFullIndex[type][idx] = k;
       }
     }
     // Pushed to the GPU after every chunk, not just at the very end — so
@@ -2920,6 +3138,7 @@
       rebuildInProgress = false;
       rebuildQueue = null;
       rebuildWaterGeometry();
+      rebuildGlassGeometry();
     }
   }
 
@@ -3134,13 +3353,23 @@
     const now = performance.now();
     if (now - lastLightVisibilityCheck < 400) return;
     lastLightVisibilityCheck = now;
+    let anyChanged = false;
     fixtures.forEach(f => {
       const dx = player.pos.x - (f.bx+0.5), dz = player.pos.z - (f.bz+0.5);
       const within = (dx*dx + dz*dz) < LIGHT_ACTIVE_RADIUS*LIGHT_ACTIVE_RADIUS;
+      if (f.light.visible !== within) anyChanged = true;
       f.light.visible = within;
       f.stick.visible = within;
       f.flame.visible = within;
     });
+    // A fixture turning on/off is exactly the condition that can change
+    // whether a glass panel should read as lit (see rebuildGlassGeometry),
+    // so keep it in sync — but only actually rebuild when something real
+    // changed, not on every one of this function's own (already-throttled)
+    // 400ms ticks, or scheduleGlassRebuild's debounce would just keep
+    // getting reset by a player standing still near the activation
+    // boundary and never actually fire.
+    if (anyChanged) scheduleGlassRebuild();
   }
 
   // ================= LADDERS =================
@@ -10220,10 +10449,11 @@
       else if (Math.abs(ny) >= Math.abs(nx) && Math.abs(ny) >= Math.abs(nz)) { nx=0; nz=0; ny = ny<0?-1:1; }
       else { nx=0; ny=0; nz = nz<0?-1:1; }
       const fk = faceKeyFor(r.hit.x, r.hit.y, r.hit.z, nx, ny, nz);
-      if (fixtures.has(fk)) { removeFixture(fk); playThud(200); return; }
+      if (fixtures.has(fk)) { removeFixture(fk); playThud(200); rebuildGlassGeometry(); return; } // instant feedback — a nearby glass panel may lose its lit look now this fixture is gone
       if (fixtures.size >= MAX_LIGHTS) { showSaveStatus('⚠ Max '+MAX_LIGHTS+' spotlights placed', true); return; }
       if (!trySpendCoins(LIGHT_COST, 'a spotlight')) return;
       addFixture(r.hit.x, r.hit.y, r.hit.z, nx, ny, nz);
+      rebuildGlassGeometry(); // instant feedback — same reasoning, for a panel now newly in range
       playThud(520);
       return;
     }

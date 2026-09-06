@@ -4882,7 +4882,6 @@
   // furnished living room. Get this one right before anything else
   // (shop/pub/farm/hotel/castle) comes back into rotation.
   const HOUSE_SIDE_ROT = { south: 0, east: 1, north: 2, west: 3 };
-  const HOUSE_OPPOSITE = { south: 'north', north: 'south', east: 'west', west: 'east' };
   // A 3×3 opening centred on (cx,cz): glass at the four corners, and a
   // plus-shaped TRIM frame (the centre row + the centre column) dividing
   // them into four separate panes — an actual block-built mullion
@@ -4943,34 +4942,38 @@
 
     placeShellLight(shell, doorSide, reg);
 
-    // Furniture: a couch + coffee table backed against the wall
-    // opposite the door, a cabinet against one side wall, an armchair
-    // against the other. Positions are all at least 2 blocks in from
-    // the door wall and off the window walls' centre column, so
-    // nothing ends up blocking the doorway or sitting inside a window.
-    const backSide = HOUSE_OPPOSITE[doorSide];
-    const backRot = HOUSE_SIDE_ROT[backSide];
-    if (backSide === 'north') {
-      addFurnitureTracked(midX, gy, z0 + 1, backRot, 0, reg); // Couch
-      addFurnitureTracked(midX, gy, z0 + 2, backRot, 2, reg); // Coffee Table
-      addFurnitureTracked(x0 + 1, gy, midZ, HOUSE_SIDE_ROT.west, 3, reg); // Cabinet
-      addFurnitureTracked(x1 - 1, gy, midZ - 2, HOUSE_SIDE_ROT.east, 4, reg); // Armchair
-    } else if (backSide === 'south') {
-      addFurnitureTracked(midX, gy, z1 - 1, backRot, 0, reg);
-      addFurnitureTracked(midX, gy, z1 - 2, backRot, 2, reg);
-      addFurnitureTracked(x0 + 1, gy, midZ, HOUSE_SIDE_ROT.west, 3, reg);
-      addFurnitureTracked(x1 - 1, gy, midZ + 2, HOUSE_SIDE_ROT.east, 4, reg);
-    } else if (backSide === 'west') {
-      addFurnitureTracked(x0 + 1, gy, midZ, backRot, 0, reg);
-      addFurnitureTracked(x0 + 2, gy, midZ, backRot, 2, reg);
-      addFurnitureTracked(midX, gy, z0 + 1, HOUSE_SIDE_ROT.north, 3, reg);
-      addFurnitureTracked(midX - 2, gy, z1 - 1, HOUSE_SIDE_ROT.south, 4, reg);
-    } else { // east
-      addFurnitureTracked(x1 - 1, gy, midZ, backRot, 0, reg);
-      addFurnitureTracked(x1 - 2, gy, midZ, backRot, 2, reg);
-      addFurnitureTracked(midX, gy, z0 + 1, HOUSE_SIDE_ROT.north, 3, reg);
-      addFurnitureTracked(midX + 2, gy, z1 - 1, HOUSE_SIDE_ROT.south, 4, reg);
+    // Split the single room into four: living room, kitchen, bathroom,
+    // bedroom. Two full-height dividers cross through the middle (one
+    // along X at midX, one along Z at midZ), each with a gap near both
+    // of its own ends so every room connects to its neighbours — and,
+    // just as importantly, so the front door is never walking straight
+    // into a dead-end wall. The door is always centred on its own wall,
+    // which always lines up with one of these two dividers; an end gap
+    // sits close enough to that entrance on every orientation to walk
+    // straight in regardless of which side doorSide put it on.
+    const vGapA = z0 + 2, vGapB = z1 - 2; // gaps in the vertical (X=midX) divider
+    for (let z = z0 + 1; z <= z1 - 1; z++) {
+      if (z === vGapA || z === vGapB) continue;
+      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(midX, y, z), palette.trim); trackVillageHeight(midX, z, y); }
     }
+    const hGapA = x0 + 2, hGapB = x1 - 2; // gaps in the horizontal (Z=midZ) divider
+    for (let x = x0 + 1; x <= x1 - 1; x++) {
+      if (x === hGapA || x === hGapB) continue;
+      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(x, y, midZ), palette.trim); trackVillageHeight(x, midZ, y); }
+    }
+
+    // NW — Living Room (couch + coffee table against the north wall)
+    addFurnitureTracked(x0 + 2, gy, z0 + 2, HOUSE_SIDE_ROT.north, 0, reg); // Couch
+    addFurnitureTracked(x0 + 2, gy, z0 + 3, HOUSE_SIDE_ROT.north, 2, reg); // Coffee Table
+    // NE — Kitchen (sink + oven along the north wall)
+    addFurnitureTracked(x0 + 7, gy, z0 + 2, HOUSE_SIDE_ROT.north, 19, reg); // Kitchen Sink
+    addFurnitureTracked(x0 + 8, gy, z0 + 2, HOUSE_SIDE_ROT.north, 21, reg); // Oven
+    // SW — Bathroom (toilet + sink along the south wall)
+    addFurnitureTracked(x0 + 2, gy, z1 - 2, HOUSE_SIDE_ROT.south, 6, reg); // Toilet
+    addFurnitureTracked(x0 + 3, gy, z1 - 2, HOUSE_SIDE_ROT.south, 7, reg); // Sink
+    // SE — Bedroom (bed against the south wall, wardrobe against the east wall)
+    addFurnitureTracked(x0 + 7, gy, z1 - 3, HOUSE_SIDE_ROT.south, 28, reg); // Single Bed (2×2 footprint)
+    addFurnitureTracked(x1 - 1, gy, z1 - 2, HOUSE_SIDE_ROT.east, 30, reg); // Wardrobe
 
     return shell;
   }
@@ -5144,11 +5147,17 @@
     // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
     // between plots along the road from 1 row to 3) specifically so
     // buildings have real breathing room around them instead of nearly
-    // touching their neighbours — origin is fixed rather than jittered
-    // now since 30 leaves only 1 block of margin against the 32-block
-    // chunk it has to fit inside.
-    const FS = 30;
-    const originLocal = 1;
+    // touching their neighbours — origin is fixed rather than jittered.
+    // FS is pushed to the full 32-block chunk width now (was 30, with a
+    // 1-block margin each side) specifically to make room for a bigger
+    // gap between the two houses — see westX0/eastX1 below. This is
+    // the hard ceiling: a village literally cannot be wider than the
+    // one chunk it generates in without risking a neighbouring chunk's
+    // own terrain generation overwriting whatever spills into it later
+    // (see the comment on westX0/eastX1) — 32 is as far as that
+    // ceiling allows.
+    const FS = 32;
+    const originLocal = 0;
     const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
@@ -5276,7 +5285,7 @@
     // as one whole pad any more (see each plot's own grading further
     // down), but the street itself staying level and predictable is
     // what makes it read as a road rather than just another gap.
-    for (let x = wx0 + 13; x <= wx0 + 16; x++) {
+    for (let x = wx0 + 14; x <= wx0 + 17; x++) {
       for (let z = wz0; z <= wz1; z++) {
         // Clears all the way up to whatever natural terrain actually
         // stood here, not a fixed +4 cap — a fixed cap left solid,
@@ -5298,9 +5307,14 @@
       }
     }
 
+    // Support widened from a single 1×2 post to a proper 2×2 — the sign
+    // itself (sizeIdx 1, "Wide Sign") is 2 blocks wide, so a single
+    // column underneath was only ever holding up half of it.
     const postX = wx0 + 14, postZ = wz0;
-    blocks.set(key(postX, roadY + 1, postZ), palette.trim); trackVillageHeight(postX, postZ, roadY + 1);
-    blocks.set(key(postX, roadY + 2, postZ), palette.trim); trackVillageHeight(postX, postZ, roadY + 2);
+    [postX, postX + 1].forEach(px => {
+      blocks.set(key(px, roadY + 1, postZ), palette.trim); trackVillageHeight(px, postZ, roadY + 1);
+      blocks.set(key(px, roadY + 2, postZ), palette.trim); trackVillageHeight(px, postZ, roadY + 2);
+    });
     const sk0 = addSign(postX, roadY + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
     if (sk0) reg.signKeys.push(sk0);
 
@@ -5364,7 +5378,18 @@
     // this one is confirmed solid. Only room for a single slice (one
     // house west, one east) at this depth within the FS=30 site.
     const slices = [[9, 19]];
-    const westX0 = wx0, westX1 = wx0 + 10, eastX0 = wx0 + 19, eastX1 = wx0 + 29; // pushed flush to the site's own 1-block chunk-boundary margin (baked into wx0/wx1 already via originLocal) — this is what makes room for a full 8-block gap between two 11-wide houses inside the FS=30 site: 11 + 8 + 11 = 30 exactly
+    // Widened from an 8-block gap toward the requested 15 — 10 is as
+    // far as this can go while both houses still fit inside the single
+    // 32-block chunk this village generates in (11 + 10 + 11 = 32,
+    // using the FULL chunk width now, zero margin either side). Getting
+    // all the way to 15 needs 11 + 15 + 11 = 37 blocks, which doesn't
+    // fit in one chunk at all — that would mean the village spilling
+    // into a second, neighbouring chunk, which risks that chunk's own
+    // terrain generation later overwriting whatever spilled into it
+    // (a real bug class this file has hit before, not just caution).
+    // Doable properly, just a bigger change than this pass — say if you
+    // want it and I'll build the cross-chunk-safe version.
+    const westX0 = wx0, westX1 = wx0 + 10, eastX0 = wx0 + 21, eastX1 = wx0 + 31;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
       plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
@@ -5383,12 +5408,12 @@
     // terrain that was never actually natural — a second, subtler
     // version of the exact same "one bad sample" problem this whole
     // rework exists to fix.
-    // Widened and shallowed — 2 rings stepping down 3 at a time was
-    // still reading as a sheer little cliff around a raised plot on
-    // sloped terrain. 4 rings at 2 per ring spreads the same total drop
-    // over twice the distance, which is what actually reads as a
-    // gradual slope rather than a stepped wall.
-    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 4, SKIRT_STEP = 2;
+    // Each ring now steps down just 1 block at a time (was 2) — the
+    // player can't jump higher than a single block, so anything steeper
+    // than that isn't a gradual slope, it's a wall you have to find
+    // stairs around. Rings doubled from 4 to 8 to cover roughly the
+    // same total drop as before, just spread over twice the distance.
+    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 8, SKIRT_STEP = 1;
     const plotInfo = plots.map(plot => {
       // Scans a few blocks further out than what actually gets
       // flattened below, so the floor sits above nearby rising ground
@@ -5478,7 +5503,7 @@
       // higher (which just keeps rising past the pad, exactly as it
       // should).
       for (let x = Math.max(wx0, plot.x0 - 1 - SKIRT_RINGS); x <= Math.min(wx1, plot.x1 + 1 + SKIRT_RINGS); x++) {
-        if (x >= wx0 + 13 && x <= wx0 + 16) continue; // never touches the shared road strip, which stays its own flat grade regardless
+        if (x >= wx0 + 14 && x <= wx0 + 17) continue; // never touches the shared road strip, which stays its own flat grade regardless
         for (let z = Math.max(wz0, plot.z0 - 1 - SKIRT_RINGS); z <= Math.min(wz1, plot.z1 + 1 + SKIRT_RINGS); z++) {
           const dx = x < plot.x0 - 1 ? (plot.x0 - 1 - x) : (x > plot.x1 + 1 ? x - (plot.x1 + 1) : 0);
           const dz = z < plot.z0 - 1 ? (plot.z0 - 1 - z) : (z > plot.z1 + 1 ? z - (plot.z1 + 1) : 0);

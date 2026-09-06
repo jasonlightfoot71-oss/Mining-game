@@ -4861,41 +4861,105 @@
   }
 
   // ── Building types ──────────────────────────────────────────────
+  // House — RESET. Village generation is being rebuilt one building
+  // type at a time, starting here, so this replaces the old 4-variant
+  // randomised house entirely: no more random sizes, no second floor,
+  // no ladder. One fixed, deterministic design — fixed 11×11 footprint,
+  // walls 7 blocks high, a pyramid roof, one door, a "4-pane" block-
+  // divided window on every wall that isn't the door wall, and a small
+  // furnished living room. Get this one right before anything else
+  // (shop/pub/farm/hotel/castle) comes back into rotation.
+  const HOUSE_SIDE_ROT = { south: 0, east: 1, north: 2, west: 3 };
+  const HOUSE_OPPOSITE = { south: 'north', north: 'south', east: 'west', west: 'east' };
+  // A 3×3 opening centred on (cx,cz): glass at the four corners, and a
+  // plus-shaped TRIM frame (the centre row + the centre column) dividing
+  // them into four separate panes — an actual block-built mullion
+  // rather than one solid pane, which is what "block divided" means
+  // here. alongX picks which axis the 3-wide span runs along: true for
+  // the north/south walls (which run along X), false for east/west
+  // (which run along Z).
+  function buildVillageHouseWindow(cx, yBase, cz, alongX, palette) {
+    for (let i = -1; i <= 1; i++) {
+      for (let r = 0; r <= 2; r++) {
+        const wx = alongX ? cx + i : cx;
+        const wz = alongX ? cz : cz + i;
+        const y = yBase + r;
+        const isFrame = (i === 0 || r === 1);
+        blocks.set(key(wx, y, wz), isFrame ? palette.trim : palette.glass);
+        trackVillageHeight(wx, wz, y);
+      }
+    }
+  }
   function buildVillageHouse(plot, gy, rng, palette, doorSide, reg) {
-    const variant = Math.floor(rng() * 4); // 4th variant is a genuine two-storey house now — a real dividing floor and a ladder up through it, not just a taller single room
-    let w, d, h;
-    if (variant === 0) { w = 6; d = 6; h = 3; }
-    else if (variant === 1) { w = 8; d = 5; h = 3; }
-    else if (variant === 2) { w = 5; d = 5; h = 4; }
-    else { w = 6; d = 6; h = 6; }
-    w = Math.min(w, plot.x1 - plot.x0 + 1); d = Math.min(d, plot.z1 - plot.z0 + 1);
-    const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
-    placeShellDoor(shell, doorSide, reg, 0);
-    if (variant === 3 && w >= 4 && d >= 4) {
-      // A real second floor: a solid dividing slab halfway up, a ladder
-      // mounted on the wall opposite the door reaching from the ground
-      // floor up through it, and an actual gap cut into the slab right
-      // in front of the ladder so climbing it leads somewhere rather
-      // than bumping your head on solid floor.
-      const floorY = gy + 3;
-      const ix0 = shell.x0 + 1, ix1 = shell.x1 - 1, iz0 = shell.z0 + 1, iz1 = shell.z1 - 1;
-      for (let x = ix0; x <= ix1; x++) {
-        for (let z = iz0; z <= iz1; z++) {
-          blocks.set(key(x, floorY, z), palette.trim); // reuses the trim colour so the floor/ceiling band reads as a distinct structural feature, not just more wall
-          trackVillageHeight(x, z, floorY);
+    const w = 11, d = 11, h = 7;
+    const x0 = plot.x0, z0 = plot.z0, x1 = x0 + w - 1, z1 = z0 + d - 1;
+    const midX = x0 + 5, midZ = z0 + 5;
+
+    // Floor
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+      blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+    }
+
+    // Walls: corners and the top row are trim, everything else plain
+    // wall. Windows get stamped on top of this afterward, once the
+    // solid wall is fully in place.
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const edge = (x === x0 || x === x1 || z === z0 || z === z1);
+        if (!edge) continue;
+        const isCorner = (x === x0 || x === x1) && (z === z0 || z === z1);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          blocks.set(key(x, y, z), (isCorner || y === gy + h) ? palette.trim : palette.wall);
+          trackVillageHeight(x, z, y);
         }
       }
-      const backX = doorSide === 'west' ? shell.x1 : shell.x0; // wall opposite the door, same convention used elsewhere
-      const backNx = doorSide === 'west' ? -1 : 1; // points off the wall INTO the room, since this ladder is climbed from inside
-      const gapX = doorSide === 'west' ? ix1 : ix0; // interior column directly in front of the ladder
-      const ladderZ = shell.midZ;
-      for (let y = gy + 1; y <= gy + 4; y++) addLadder(backX, y, ladderZ, backNx, 0, 0);
-      blocks.delete(key(gapX, floorY, ladderZ)); // the actual way through — without this the slab above is just solid, unclimbable roof
     }
-    // Interior furniture removed again — still crashing with it in, so
-    // back out entirely rather than half-measures while this gets
-    // tracked down properly.
+
+    addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 4);
+
+    const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
+    placeShellDoor(shell, doorSide, reg, 0);
+
+    // One window centred on each wall that ISN'T the door wall, rows
+    // gy+3..gy+5 — leaves two solid wall rows below and one above
+    // before the trim cap at gy+7.
+    const winY = gy + 3;
+    if (doorSide !== 'south') buildVillageHouseWindow(midX, winY, z1, true, palette);
+    if (doorSide !== 'north') buildVillageHouseWindow(midX, winY, z0, true, palette);
+    if (doorSide !== 'east')  buildVillageHouseWindow(x1, winY, midZ, false, palette);
+    if (doorSide !== 'west')  buildVillageHouseWindow(x0, winY, midZ, false, palette);
+
     placeShellLight(shell, doorSide, reg);
+
+    // Furniture: a couch + coffee table backed against the wall
+    // opposite the door, a cabinet against one side wall, an armchair
+    // against the other. Positions are all at least 2 blocks in from
+    // the door wall and off the window walls' centre column, so
+    // nothing ends up blocking the doorway or sitting inside a window.
+    const backSide = HOUSE_OPPOSITE[doorSide];
+    const backRot = HOUSE_SIDE_ROT[backSide];
+    if (backSide === 'north') {
+      addFurnitureTracked(midX, gy, z0 + 1, backRot, 0, reg); // Couch
+      addFurnitureTracked(midX, gy, z0 + 2, backRot, 2, reg); // Coffee Table
+      addFurnitureTracked(x0 + 1, gy, midZ, HOUSE_SIDE_ROT.west, 3, reg); // Cabinet
+      addFurnitureTracked(x1 - 1, gy, midZ - 2, HOUSE_SIDE_ROT.east, 4, reg); // Armchair
+    } else if (backSide === 'south') {
+      addFurnitureTracked(midX, gy, z1 - 1, backRot, 0, reg);
+      addFurnitureTracked(midX, gy, z1 - 2, backRot, 2, reg);
+      addFurnitureTracked(x0 + 1, gy, midZ, HOUSE_SIDE_ROT.west, 3, reg);
+      addFurnitureTracked(x1 - 1, gy, midZ + 2, HOUSE_SIDE_ROT.east, 4, reg);
+    } else if (backSide === 'west') {
+      addFurnitureTracked(x0 + 1, gy, midZ, backRot, 0, reg);
+      addFurnitureTracked(x0 + 2, gy, midZ, backRot, 2, reg);
+      addFurnitureTracked(midX, gy, z0 + 1, HOUSE_SIDE_ROT.north, 3, reg);
+      addFurnitureTracked(midX - 2, gy, z1 - 1, HOUSE_SIDE_ROT.south, 4, reg);
+    } else { // east
+      addFurnitureTracked(x1 - 1, gy, midZ, backRot, 0, reg);
+      addFurnitureTracked(x1 - 2, gy, midZ, backRot, 2, reg);
+      addFurnitureTracked(midX, gy, z0 + 1, HOUSE_SIDE_ROT.north, 3, reg);
+      addFurnitureTracked(midX + 2, gy, z1 - 1, HOUSE_SIDE_ROT.south, 4, reg);
+    }
+
     return shell;
   }
   function buildVillageShop(plot, gy, rng, palette, doorSide, reg, name) {
@@ -5281,24 +5345,21 @@
     // all, every single time. Still a hard ceiling on how much land a
     // farm can have — see the note above the slice/plot layout — but
     // this at least guarantees real, visible field rather than none.
-    const slices = [[3, 8], [12, 17], [21, 26]];
-    const westX0 = wx0 + 1, westX1 = wx0 + 12, eastX0 = wx0 + 17, eastX1 = wx0 + 28;
+    // RESET — villages are being rebuilt one building type at a time
+    // (see buildVillageHouse). While the house design is being tested
+    // on its own, every plot is sized for its fixed 11×11 footprint and
+    // the pool is house-only; shop/pub/farm/hotel/castle come back once
+    // this one is confirmed solid. Only room for a single slice (one
+    // house west, one east) at this depth within the FS=30 site.
+    const slices = [[9, 19]];
+    const westX0 = wx0 + 1, westX1 = wx0 + 11, eastX0 = wx0 + 18, eastX1 = wx0 + 28;
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
       plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
       plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
     });
 
-    // house/pub/shop/farm are guaranteed one each now (was just a
-    // shuffled 4-item pool before with only 4 plots to fill) — the 2
-    // remaining plots are a second house each, one of which has its own
-    // chance to become a hotel or castle, same as before. Real variety
-    // per village without every single village needing a castle to feel
-    // different from the last one.
-    let pool = ['house', 'pub', 'shop', 'farm', 'house', 'house'];
-    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); const tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp; }
-    if (rng() < 0.35) { const idx = pool.findIndex(t => t === 'house'); if (idx >= 0) pool[idx] = 'hotel'; }
-    if (rng() < 0.22) { const idx = pool.findIndex(t => t === 'house' || t === 'pub' || t === 'shop'); if (idx >= 0) pool[idx] = 'castle'; }
+    let pool = ['house', 'house'];
 
     // Every plot's own floor height, and the material it's capped with,
     // are computed for ALL plots FIRST — from nothing but the terrain
@@ -5347,7 +5408,8 @@
 
     let built = 0;
     plots.forEach((plot, i) => {
-      if (rng() < 0.15) return; // some plots stay empty, so village size still varies
+      // Empty-plot chance disabled for now — while there's only one
+      // building type, always build it so it's reliable to find and test.
       const type = pool[i];
       const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
       const { plotY, baseSurfaceType, subFillType } = plotInfo[i];

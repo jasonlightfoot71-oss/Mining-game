@@ -1994,21 +1994,28 @@
   function isProtectedStructuralBlock(x, y, z) {
     return gameStructuralCells.has(x+','+y+','+z);
   }
-  // Reduced from an earlier "medium" (radius 2) after testing revealed a
-  // real capacity problem: each block type's mesh used to have a fixed
-  // maximum of MAX_INSTANCES rendered instances at once (a fixed-size GPU
-  // buffer, allocated upfront). At radius 2, the unload buffer below
-  // could keep up to 7x7=49 chunks resident at once — over 50,000 exposed
-  // grass/sand-surface blocks alone, comfortably past that cap. Once a
-  // type hit its cap, any further blocks of that type silently stopped
-  // rendering at all — solid for collision, just invisible — which is
-  // exactly what was reported. That per-type buffer now grows on demand
+  // Originally reduced from "medium" (radius 2) to 1, back when each
+  // block type's mesh had a fixed maximum of MAX_INSTANCES rendered
+  // instances at once (a fixed-size GPU buffer). At radius 2 the unload
+  // buffer below could keep up to 7x7=49 chunks resident — over 50,000
+  // exposed grass/sand-surface blocks alone, comfortably past that cap,
+  // silently leaving further blocks of that type invisible (solid for
+  // collision, just not drawn). That per-type buffer now grows on demand
   // instead of having a hard ceiling (see growBlockMesh), so this radius
-  // is no longer load-bearing for correctness the way it used to be —
-  // kept at 1 anyway purely for performance/GPU memory, since the scene's
-  // own fog already fades everything out by ~70 blocks in clear weather,
-  // well within even this smaller radius.
-  const CHUNK_LOAD_RADIUS = 1;
+  // is no longer load-bearing for that correctness issue.
+  // Restored to 2 anyway: radius 1 also meant only a single, fixed
+  // 32-block-wide row of chunks was ever generated around a straight
+  // flight path, and since a village's jittered home chunk can only land
+  // on offset 1/2/3 of its 5-chunk grid cell (never 0 or 4 — see
+  // villageGridHomeChunk), some rows could never show a village at all,
+  // however far you flew along them. Radius 2 widens the generated
+  // corridor to 96 blocks, reliably wide enough to catch a village
+  // regardless of which exact row you're on. The extra GPU/memory cost
+  // is worth keeping an eye on (this is the main other real cost of a
+  // bigger radius, now that the instance cap can't be hit), but the
+  // scene's own fog already fades everything out by ~70 blocks in clear
+  // weather, so it's not a big jump in what's actually rendered.
+  const CHUNK_LOAD_RADIUS = 2;
   const CHUNK_UNLOAD_RADIUS = CHUNK_LOAD_RADIUS + 1;
   // Same reasoning as Buy Terrain's old TERRAIN_DEPTH_CAP — filling every
   // column all the way down to y=0 across a wide streamed area gets

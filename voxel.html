@@ -5143,7 +5143,7 @@
   }
 
   // ── Assembly ────────────────────────────────────────────────────
-  function buildVillageInChunk(cx, cz, rng) {
+  function buildVillageInChunk(cx, cz, rng, relaxed) {
     // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
     // between plots along the road from 1 row to 3) specifically so
     // buildings have real breathing room around them instead of nearly
@@ -5174,7 +5174,23 @@
     // only genuinely low-amplitude (lowland/plains-type) terrain passes,
     // which is what actually keeps villages off mountainous ground
     // regardless of exactly where the peaks happen to fall.
-    if (biomeStretch(fbm(vcx*0.008, vcz*0.008)) > 0.32) return;
+    // This gate alone rejects roughly 4 out of 5 chunks along a typical
+    // path — the underlying noise is smooth, not per-chunk random, so
+    // rejections cluster into long stretches (a straight flight can sit
+    // inside one "too rugged" zone for many hundreds of blocks). That's
+    // fine for the normal stride-grid candidate below, which can just
+    // wait for its next cycle — but the force-distance backstop in
+    // maybeBuildVillage exists specifically to GUARANTEE a village
+    // within a bounded distance, and a gate this strict was quietly
+    // defeating it: it kept retrying on every new chunk exactly as
+    // designed, but almost everything it tried still failed here first.
+    // `relaxed` (set only by that backstop, never by a normal grid
+    // candidate) raises the ceiling a long way — the terracing/skirt
+    // system below is what actually keeps a village on rougher ground
+    // from looking bad, not this gate, so it can afford to let a lot
+    // more terrain through when something's actually guaranteeing a
+    // result rather than just taking whatever the grid offers.
+    if (biomeStretch(fbm(vcx*0.008, vcz*0.008)) > (relaxed ? 0.85 : 0.32)) return;
     // Denser grid than before (was just 4 corners + centre) as a second,
     // belt-and-braces check — even within terrain the elevation gate
     // above allows, this catches any remaining local spike the coarser
@@ -5218,7 +5234,7 @@
     // steep enough to need that.
     const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
     if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
-    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > 10) return; // too steep/mountainous for a village this time
+    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > (relaxed ? 24 : 10)) return; // too steep/mountainous for a village this time
 
     // Trees (and anything else terrain generation naturally scattered
     // there) already exist across this whole area by the time a village
@@ -5619,7 +5635,7 @@
     const dx = wcx - lastVillageWorldPos.x, dz = wcz - lastVillageWorldPos.z;
     if (Math.sqrt(dx * dx + dz * dz) < VILLAGE_FORCE_DISTANCE) return;
     const rng = mulberry32(seedFromHash(cx * 5303 + cz * 9127 + 401, cz * 2917 + cx * 6551 + 233));
-    buildVillageInChunk(cx, cz, rng);
+    buildVillageInChunk(cx, cz, rng, true);
   }
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);

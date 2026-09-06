@@ -1358,6 +1358,19 @@
       ctx.fillStyle = 'rgba(200,230,255,0.35)'; ctx.fillRect(0,0,s,s);
       ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.strokeRect(0.5,0.5,s-1,s-1);
     }),
+    // Borderless counterpart of the texture above — used only by the
+    // merged glassMeshes rendering (see rebuildGlassGeometry), never by
+    // the per-cube hotbar/hand-held preview. The bordered version's
+    // strokeRect frame is drawn once per UNIT FACE, so even after
+    // merging hides the seams BETWEEN adjacent glass blocks, each
+    // block's own outward-facing pane (the side touching air, e.g. the
+    // front of a flat window) still got its own separate frame — that
+    // per-block grid was the actual "cube edges" being reported, not a
+    // geometry-merging problem at all. A flat, frameless fill tiles
+    // edge-to-edge with no visible seam regardless of how many separate
+    // unit quads it's actually drawn as, which is what makes a wall of
+    // these read as one continuous pane.
+    glassPlain: makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle = 'rgba(200,230,255,0.35)'; ctx.fillRect(0,0,s,s); }),
     snow: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#f2f6fa',['#e6edf5','#ffffff'],0.3)),
 
     // ── Variant textures — 4 alternates per family, same techniques as
@@ -1411,6 +1424,11 @@
     glassGreen:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(90,220,110,0.35)'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.strokeRect(0.5,0.5,s-1,s-1); }),
     glassYellow: makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(240,220,80,0.35)'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(255,255,255,0.6)'; ctx.strokeRect(0.5,0.5,s-1,s-1); }),
     glassBlack:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(40,40,45,0.55)'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(255,255,255,0.5)'; ctx.strokeRect(0.5,0.5,s-1,s-1); }),
+    // Borderless counterparts, same reasoning as glassPlain above.
+    glassRedPlain:    makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(230,80,80,0.35)'; ctx.fillRect(0,0,s,s); }),
+    glassGreenPlain:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(90,220,110,0.35)'; ctx.fillRect(0,0,s,s); }),
+    glassYellowPlain: makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(240,220,80,0.35)'; ctx.fillRect(0,0,s,s); }),
+    glassBlackPlain:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(40,40,45,0.55)'; ctx.fillRect(0,0,s,s); }),
 
     // Tree wood variants — each a top+side pair (bark pattern on the
     // side, ring pattern on the cut top), same technique as the base
@@ -2670,30 +2688,37 @@
 
   // ================= MERGED GLASS PANES =================
   // Same "one merged, hole-punched surface" idea as water above, applied
-  // to glass: each glass colour gets its own single Mesh (reusing that
-  // colour's existing textured material — same look as before, just not
-  // one InstancedMesh cube per block any more) built from every currently
-  // placed block of that colour, only emitting the faces that border
-  // something that ISN'T also glass. Faces between two touching glass
-  // blocks (any colour, so different colours joined together merge too)
-  // are skipped entirely, so a built wall or window comes out as one
-  // continuous pane with no per-cube border grid — only the true outer
-  // edge of the whole joined mass keeps its frame. Glass blocks stay in
-  // the normal `blocks` map exactly as before (mining, collision, saving
-  // all keep working unchanged) — this only replaces how they're drawn.
+  // to glass: each glass colour gets its own single Mesh, built from
+  // every currently placed block of that colour, only emitting the faces
+  // that border something that ISN'T also glass. Faces between two
+  // touching glass blocks (any colour, so different colours joined
+  // together merge too) are skipped entirely — but that alone isn't
+  // enough to look like one continuous pane, since each block's OWN
+  // outward-facing side (the one touching air, e.g. the front of a flat
+  // window) still gets drawn regardless of merging, and the normal glass
+  // texture has its border frame baked right into it, repeating on every
+  // one of those unit faces. So this uses a separate borderless texture
+  // (TEX.glassPlain and friends — see their own comment) purely for this
+  // merged rendering, distinct from the framed textures still used for
+  // the hotbar icon/held item; a flat, frameless fill tiles seamlessly
+  // across adjacent unit quads with no visible line between them, which
+  // is what actually makes a wall of these read as one continuous pane.
+  // Glass blocks stay in the normal `blocks` map exactly as before
+  // (mining, collision, saving all keep working unchanged) — this only
+  // replaces how they're drawn.
+  const GLASS_PLAIN_TEX = { 8: TEX.glassPlain, 35: TEX.glassRedPlain, 36: TEX.glassGreenPlain, 37: TEX.glassYellowPlain, 38: TEX.glassBlackPlain };
   const glassMeshes = new Map(); // type -> merged Mesh
   for (const t of GLASS_TYPE_SET) {
-    const gm = new THREE.Mesh(new THREE.BufferGeometry(), meshes[t].material); // reuse the exact material already built for this glass colour
+    // A material of its own (not shared with meshes[t].material) — same
+    // opacity/shininess as buildMaterialArray gives every other glass
+    // material, just the plain map and vertexColors enabled (see the
+    // GLASS_LIT_COLOR/GLASS_UNLIT_COLOR tint written per-vertex below).
+    const mat = new THREE.MeshPhongMaterial({ map: GLASS_PLAIN_TEX[t], transparent: true, opacity: 0.55, shininess: 0, vertexColors: true });
+    const gm = new THREE.Mesh(new THREE.BufferGeometry(), mat);
     gm.receiveShadow = true;
     gm.frustumCulled = false; // spans the whole loaded world, same reasoning as waterMesh
     scene.add(gm);
     glassMeshes.set(t, gm);
-    // Lets rebuildGlassGeometry brighten a whole lit panel uniformly via a
-    // per-vertex colour multiplier (see below) without needing a separate
-    // material per panel — an unlit face just gets a plain white vertex
-    // colour, which leaves the texture's own look completely unchanged.
-    meshes[t].material.vertexColors = true;
-    meshes[t].material.needsUpdate = true;
   }
   // A glass face is hidden (not drawn) when the neighbouring cell is
   // EITHER more glass (any colour — this is what makes joined panes
@@ -2755,14 +2780,23 @@
       panelCells.push(cells);
     }
 
-    // Pass 3: which panels currently have an ACTIVE fixture (matching the
-    // same on/off rule updateLightVisibility already applies to torches —
-    // an out-of-range, switched-off torch shouldn't light a panel either)
-    // within real light range of any one of its cells — that panel reads
-    // as lit throughout, not just the faces nearest the fixture.
+    // Pass 3: which panels have ANY fixture (torch/LED) within real
+    // light range of one of their cells — that panel reads as lit
+    // throughout, not just the faces nearest the fixture. Deliberately
+    // NOT gated on the fixture's own `.light.visible` (the flag
+    // updateLightVisibility toggles based on the PLAYER's distance to
+    // the fixture, purely to skip drawing far-off lights cheaply) —
+    // gating on that too made this depend on where the player currently
+    // stood relative to the TORCH, not just the fixed, real distance
+    // between the torch and the glass, so a panel could stay stuck
+    // un-lit (or lit) until the player happened to cross that unrelated
+    // 40-block boundary. Fixture and glass positions alone decide this,
+    // so it only needs recomputing when one of those actually changes —
+    // see the direct rebuildGlassGeometry() calls at every block/fixture
+    // edit site, rather than anything player-position-driven.
     const litPanels = new Array(panelCells.length).fill(false);
     if (fixtures.size && panelCells.length) {
-      const activeFixtures = Array.from(fixtures.values()).filter(f => f.light.visible);
+      const activeFixtures = Array.from(fixtures.values());
       if (activeFixtures.length) {
         panelScan: for (let pid = 0; pid < panelCells.length; pid++) {
           for (const [cx,cy,cz] of panelCells[pid]) {
@@ -3353,23 +3387,13 @@
     const now = performance.now();
     if (now - lastLightVisibilityCheck < 400) return;
     lastLightVisibilityCheck = now;
-    let anyChanged = false;
     fixtures.forEach(f => {
       const dx = player.pos.x - (f.bx+0.5), dz = player.pos.z - (f.bz+0.5);
       const within = (dx*dx + dz*dz) < LIGHT_ACTIVE_RADIUS*LIGHT_ACTIVE_RADIUS;
-      if (f.light.visible !== within) anyChanged = true;
       f.light.visible = within;
       f.stick.visible = within;
       f.flame.visible = within;
     });
-    // A fixture turning on/off is exactly the condition that can change
-    // whether a glass panel should read as lit (see rebuildGlassGeometry),
-    // so keep it in sync — but only actually rebuild when something real
-    // changed, not on every one of this function's own (already-throttled)
-    // 400ms ticks, or scheduleGlassRebuild's debounce would just keep
-    // getting reset by a player standing still near the activation
-    // boundary and never actually fire.
-    if (anyChanged) scheduleGlassRebuild();
   }
 
   // ================= LADDERS =================

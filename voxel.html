@@ -2709,17 +2709,39 @@
   const GLASS_PLAIN_TEX = { 8: TEX.glassPlain, 35: TEX.glassRedPlain, 36: TEX.glassGreenPlain, 37: TEX.glassYellowPlain, 38: TEX.glassBlackPlain };
   const glassMeshes = new Map(); // type -> merged Mesh
   for (const t of GLASS_TYPE_SET) {
-    // A material of its own (not shared with meshes[t].material) — same
-    // opacity/shininess as buildMaterialArray gives every other glass
-    // material, just the plain map and vertexColors enabled (see the
-    // GLASS_LIT_COLOR/GLASS_UNLIT_COLOR tint written per-vertex below).
-    const mat = new THREE.MeshPhongMaterial({ map: GLASS_PLAIN_TEX[t], transparent: true, opacity: 0.55, shininess: 0, vertexColors: true });
+    // Same opacity/shininess as buildMaterialArray gives every other
+    // glass material, just the plain (borderless) map.
+    const mat = new THREE.MeshPhongMaterial({ map: GLASS_PLAIN_TEX[t], transparent: true, opacity: 0.55, shininess: 0 });
     const gm = new THREE.Mesh(new THREE.BufferGeometry(), mat);
     gm.receiveShadow = true;
     gm.frustumCulled = false; // spans the whole loaded world, same reasoning as waterMesh
     scene.add(gm);
     glassMeshes.set(t, gm);
   }
+  // A separate additive "glow" overlay, drawn on top of whichever glass
+  // faces belong to a currently-lit panel (see rebuildGlassGeometry's own
+  // panel/lit computation below) — one single mesh shared across every
+  // glass colour, since the glow itself is just a warm wash, not a
+  // texture. This is deliberately NOT done by tinting the base glass
+  // mesh's own vertex colours: a plain multiply-the-diffuse-texture tint
+  // only brightens whatever light is already reaching that vertex, so
+  // anywhere the run of glass got far enough from the torch that real
+  // ambient/scene light was already dim, the "brightened" result was
+  // still dim — a 50-block run only ever looked lit near the actual
+  // torch, exactly the "light isn't travelling through it" problem
+  // reported. MeshBasicMaterial with additive blending ignores scene
+  // lighting entirely and always draws its own colour at full strength,
+  // so a panel that's "lit" glows uniformly along its whole length
+  // regardless of how dim or bright the actual scene around it is.
+  const glassGlowMat = new THREE.MeshBasicMaterial({
+    color: 0xffb066, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1, // sits exactly on the same faces as the base glass mesh — this avoids z-fighting flicker between the two coplanar surfaces
+  });
+  const glassGlowMesh = new THREE.Mesh(new THREE.BufferGeometry(), glassGlowMat);
+  glassGlowMesh.frustumCulled = false;
+  glassGlowMesh.renderOrder = 1; // after the base glass meshes (renderOrder 0, the default), so the glow always composites on top of them
+  scene.add(glassGlowMesh);
   // A glass face is hidden (not drawn) when the neighbouring cell is
   // EITHER more glass (any colour — this is what makes joined panes
   // seamless) OR any other solid, non-half block (that face would be
@@ -2746,8 +2768,6 @@
   // that would actually light something up, not the further "still
   // rendered at all" radius (see LIGHT_ACTIVE_RADIUS/updateLightVisibility).
   const GLASS_LIGHT_RANGE = 10;
-  const GLASS_LIT_COLOR = [1.8, 1.45, 1.0]; // warm brightening multiplier — >1 pushes the texture brighter than its own painted colour, faking a backlit glow
-  const GLASS_UNLIT_COLOR = [1, 1, 1]; // neutral multiplier — leaves the texture exactly as painted
   function rebuildGlassGeometry() {
     // Pass 1: collect every currently placed glass cell, keyed the same
     // way `blocks` already keys them — panel flood-fill (pass 2) and the
@@ -2781,8 +2801,8 @@
     }
 
     // Pass 3: which panels have ANY fixture (torch/LED) within real
-    // light range of one of their cells — that panel reads as lit
-    // throughout, not just the faces nearest the fixture. Deliberately
+    // light range of one of their cells — that panel glows along its
+    // WHOLE length, not just the faces nearest the fixture. Deliberately
     // NOT gated on the fixture's own `.light.visible` (the flag
     // updateLightVisibility toggles based on the PLAYER's distance to
     // the fixture, purely to skip drawing far-off lights cheaply) —
@@ -2797,27 +2817,25 @@
     const litPanels = new Array(panelCells.length).fill(false);
     if (fixtures.size && panelCells.length) {
       const activeFixtures = Array.from(fixtures.values());
-      if (activeFixtures.length) {
-        panelScan: for (let pid = 0; pid < panelCells.length; pid++) {
-          for (const [cx,cy,cz] of panelCells[pid]) {
-            for (const f of activeFixtures) {
-              const dx = (cx+0.5)-(f.bx+0.5), dy = (cy+0.5)-(f.by+0.5), dz = (cz+0.5)-(f.bz+0.5);
-              if (dx*dx+dy*dy+dz*dz < GLASS_LIGHT_RANGE*GLASS_LIGHT_RANGE) { litPanels[pid] = true; continue panelScan; }
-            }
+      panelScan: for (let pid = 0; pid < panelCells.length; pid++) {
+        for (const [cx,cy,cz] of panelCells[pid]) {
+          for (const f of activeFixtures) {
+            const dx = (cx+0.5)-(f.bx+0.5), dy = (cy+0.5)-(f.by+0.5), dz = (cz+0.5)-(f.bz+0.5);
+            if (dx*dx+dy*dy+dz*dz < GLASS_LIGHT_RANGE*GLASS_LIGHT_RANGE) { litPanels[pid] = true; continue panelScan; }
           }
         }
       }
     }
 
-    // Pass 4: build the actual merged geometry per glass colour, same
-    // face culling as before, now also writing a per-vertex colour that
-    // brightens a lit panel's faces uniformly.
-    const buffers = new Map(); // type -> { positions, normals, uvs, colors }
-    for (const t of GLASS_TYPE_SET) buffers.set(t, { positions: [], normals: [], uvs: [], colors: [] });
+    // Pass 4: build the actual merged geometry per glass colour (same
+    // face culling as before), plus one shared glow overlay covering
+    // every face that belongs to a lit panel, regardless of colour.
+    const buffers = new Map(); // type -> { positions, normals, uvs }
+    for (const t of GLASS_TYPE_SET) buffers.set(t, { positions: [], normals: [], uvs: [] });
+    const glowPositions = [], glowNormals = [];
     for (const [k, type] of glassCells) {
       const [x,y,z] = k.split(',').map(Number);
       const lit = litPanels[panelOf.get(k)];
-      const tint = lit ? GLASS_LIT_COLOR : GLASS_UNLIT_COLOR;
       const buf = buffers.get(type);
       for (const face of WATER_FACES) { // same full-unit-cube corner layout works unchanged for glass
         const [dx,dy,dz] = face.d;
@@ -2828,7 +2846,7 @@
           buf.normals.push(dx, dy, dz);
           const [u,v] = glassFaceUV(dx, dy, dz, corner);
           buf.uvs.push(u, v);
-          buf.colors.push(tint[0], tint[1], tint[2]);
+          if (lit) { glowPositions.push(x+corner[0], y+corner[1], z+corner[2]); glowNormals.push(dx, dy, dz); }
         }
       }
     }
@@ -2838,13 +2856,17 @@
       geom.setAttribute('position', new THREE.Float32BufferAttribute(buf.positions, 3));
       geom.setAttribute('normal', new THREE.Float32BufferAttribute(buf.normals, 3));
       geom.setAttribute('uv', new THREE.Float32BufferAttribute(buf.uvs, 2));
-      geom.setAttribute('color', new THREE.Float32BufferAttribute(buf.colors, 3));
       geom.computeBoundingSphere();
       geom.attributes.position.needsUpdate = true;
       geom.attributes.normal.needsUpdate = true;
       geom.attributes.uv.needsUpdate = true;
-      geom.attributes.color.needsUpdate = true;
     }
+    const glowGeom = glassGlowMesh.geometry;
+    glowGeom.setAttribute('position', new THREE.Float32BufferAttribute(glowPositions, 3));
+    glowGeom.setAttribute('normal', new THREE.Float32BufferAttribute(glowNormals, 3));
+    glowGeom.computeBoundingSphere();
+    glowGeom.attributes.position.needsUpdate = true;
+    glowGeom.attributes.normal.needsUpdate = true;
   }
   // Debounced wrapper for chunk streaming's use, same reasoning as
   // scheduleWaterRebuild — a direct mine/place, or a fixture's active

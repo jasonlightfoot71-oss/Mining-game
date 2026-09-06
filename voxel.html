@@ -4672,6 +4672,18 @@
   const VILLAGE_CHUNK_STRIDE = 5; // 5 chunks * 32 blocks = 160 — roughly every 160 blocks, closer together and easier to stumble across
   const VILLAGE_SKIP_CHANCE = 0.05; // rarely skipped now, so they show up close to as often as the grid allows
   const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
+  // Distance-based backstop on top of the stride grid above. The grid
+  // alone can go quiet for a long stretch — its candidate chunk still
+  // has to pass the ruggedness/protected-area checks in
+  // buildVillageInChunk, and a run of mountainous or blocked terrain
+  // can fail every candidate in a row with nothing to catch it. This
+  // tracks the world position of whichever village was actually built
+  // most recently (starts at spawn, ~(0,0), before the first one), and
+  // maybeBuildVillage uses it to force a one-off attempt on ANY chunk
+  // that streams in once it's got this far from that without a new one
+  // landing — see the fallback in maybeBuildVillage.
+  let lastVillageWorldPos = { x: 0, z: 0 };
+  const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
   // Exactly one candidate chunk per VILLAGE_CHUNK_STRIDE x STRIDE grid
@@ -5497,6 +5509,7 @@
 
     villageRegistry.set(ck, reg);
     recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
+    lastVillageWorldPos = { x: vcx, z: vcz }; // resets the force-distance backstop's countdown from here
   }
   // Re-enabled — a brand new world ran fine with the exact same code,
   // which confirms this was never a village/furniture/water code bug at
@@ -5508,8 +5521,25 @@
   function maybeBuildVillage(cx, cz) {
     if (!VILLAGES_ENABLED) return;
     const info = villageInfoForChunk(cx, cz);
-    if (!info) return;
-    buildVillageInChunk(cx, cz, info.rng);
+    if (info) { buildVillageInChunk(cx, cz, info.rng); return; }
+    // Fallback — this chunk wasn't the stride grid's own candidate for
+    // its cell (or it was and got skip-rolled), so the grid alone isn't
+    // going to build anything here. If it's also been more than
+    // VILLAGE_FORCE_DISTANCE since the last village that actually got
+    // built anywhere, force a one-off attempt on this chunk regardless
+    // of the grid — chunks only ever generate within a small radius of
+    // the player (see CHUNK_LOAD_RADIUS), so "whatever chunk is
+    // currently streaming in" is always close to wherever the player
+    // is heading. buildVillageInChunk's own site checks (ruggedness,
+    // protected areas) still apply, so this can still fail quietly on
+    // a bad site — it just tries again on the next chunk that streams
+    // in, rather than waiting for the grid's own next candidate, which
+    // could be another 160+ blocks away.
+    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const dx = wcx - lastVillageWorldPos.x, dz = wcz - lastVillageWorldPos.z;
+    if (Math.sqrt(dx * dx + dz * dz) < VILLAGE_FORCE_DISTANCE) return;
+    const rng = mulberry32(seedFromHash(cx * 5303 + cz * 9127 + 401, cz * 2917 + cx * 6551 + 233));
+    buildVillageInChunk(cx, cz, rng);
   }
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);

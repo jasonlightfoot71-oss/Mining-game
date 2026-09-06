@@ -5364,7 +5364,7 @@
     // this one is confirmed solid. Only room for a single slice (one
     // house west, one east) at this depth within the FS=30 site.
     const slices = [[9, 19]];
-    const westX0 = wx0 + 1, westX1 = wx0 + 11, eastX0 = wx0 + 18, eastX1 = wx0 + 28;
+    const westX0 = wx0, westX1 = wx0 + 10, eastX0 = wx0 + 19, eastX1 = wx0 + 29; // pushed flush to the site's own 1-block chunk-boundary margin (baked into wx0/wx1 already via originLocal) — this is what makes room for a full 8-block gap between two 11-wide houses inside the FS=30 site: 11 + 8 + 11 = 30 exactly
     const plots = [];
     slices.forEach(([zl0, zl1]) => {
       plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
@@ -5383,7 +5383,12 @@
     // terrain that was never actually natural — a second, subtler
     // version of the exact same "one bad sample" problem this whole
     // rework exists to fix.
-    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 2, SKIRT_STEP = 3;
+    // Widened and shallowed — 2 rings stepping down 3 at a time was
+    // still reading as a sheer little cliff around a raised plot on
+    // sloped terrain. 4 rings at 2 per ring spreads the same total drop
+    // over twice the distance, which is what actually reads as a
+    // gradual slope rather than a stepped wall.
+    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 4, SKIRT_STEP = 2;
     const plotInfo = plots.map(plot => {
       // Scans a few blocks further out than what actually gets
       // flattened below, so the floor sits above nearby rising ground
@@ -5499,8 +5504,45 @@
       built++;
     });
 
+    // Retaining wall against any water still standing right outside the
+    // site. The very first pass in this function strips ALL water out
+    // of this whole 30×30 footprint (see the tree/water cleanup loop up
+    // top) — if that footprint used to overlap the edge of a lake or
+    // the coast, the water just outside the site now stops dead in a
+    // straight line at the boundary with nothing holding it back, which
+    // is exactly the "sheer wall of water" bug: real standing water
+    // can't just stop at a vertical face with nothing behind it. This
+    // walks the site's own outer edge and, only where a column is
+    // actually touching water within a few blocks outside it, builds an
+    // actual wall up to that water's own real surface height — nowhere
+    // else, and never taller than the water it's holding back.
+    const WATER_WALL_SCAN = 4;
+    function siteEdgeGround(x, z) {
+      const ck2 = x + ',' + z;
+      const g = villageGroundHeight.get(ck2);
+      return g !== undefined ? g : columnHeight.get(ck2);
+    }
+    function siteWaterTop(x, z, dx, dz, aroundY) {
+      for (let d = 1; d <= WATER_WALL_SCAN; d++) {
+        const cx2 = x + dx * d, cz2 = z + dz * d;
+        for (let y = aroundY + 8; y >= aroundY - 15; y--) {
+          if (waterBlocks.has(key(cx2, y, cz2))) return y;
+        }
+      }
+      return null;
+    }
+    function siteWaterWallColumn(x, z, dx, dz) {
+      const gy2 = siteEdgeGround(x, z);
+      if (gy2 === undefined) return;
+      const wTop = siteWaterTop(x, z, dx, dz, gy2);
+      if (wTop === null || wTop <= gy2) return; // not touching water, or water's no higher than this column already is — nothing to hold back
+      for (let y = gy2 + 1; y <= wTop; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
+    }
+    for (let z = wz0; z <= wz1; z++) { siteWaterWallColumn(wx0, z, -1, 0); siteWaterWallColumn(wx1, z, 1, 0); }
+    for (let x = wx0; x <= wx1; x++) { siteWaterWallColumn(x, wz0, 0, -1); siteWaterWallColumn(x, wz1, 0, 1); }
+
     const ck = cx + '_' + cz;
-    const npcCount = Math.min(5, 3 + built + Math.floor(rng() * 3)); // restored to 5 — a fresh world proved the crashing was stale save data, not villages/NPCs themselves
+    const npcCount = Math.min(3, 2 + Math.floor(rng() * 2)); // cut down from a 5-7 cap — villages are generating much more often now (see the force-distance backstop), so each one's own ongoing per-frame cost (wander AI, animation) needed to come down to compensate
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.

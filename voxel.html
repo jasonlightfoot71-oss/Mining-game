@@ -5179,10 +5179,23 @@
     // belt-and-braces check — even within terrain the elevation gate
     // above allows, this catches any remaining local spike the coarser
     // sampling used to miss entirely.
+    // Divides by FS-1, not FS — gx/gz run 0..5 so the LAST sample
+    // should land exactly on the site's own far edge (wx1/wz1, i.e.
+    // offset FS-1 from wx0/wz0), not one column past it. That extra
+    // column used to be harmless because it still fell on this same
+    // chunk's own already-generated ground (the old FS=30 with a
+    // 1-block margin meant "one past the site" was still comfortably
+    // inside the chunk) — widening the site to the FULL chunk width
+    // (see FS above) pushed that same off-by-one into the NEXT chunk's
+    // own territory instead, which very often hasn't generated yet,
+    // silently failing the "hasn't generated" check below and killing
+    // village generation outright. Sampling the site's own real bounds
+    // instead of one column beyond them fixes this at the source,
+    // regardless of how wide FS ever ends up being.
     const checkPts = [];
     for (let gx = 0; gx <= 5; gx++) {
       for (let gz = 0; gz <= 5; gz++) {
-        checkPts.push([wx0 + Math.round(gx * FS / 5), wz0 + Math.round(gz * FS / 5)]);
+        checkPts.push([wx0 + Math.round(gx * (FS - 1) / 5), wz0 + Math.round(gz * (FS - 1) / 5)]);
       }
     }
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
@@ -5351,7 +5364,7 @@
     // Pushed back up to 3 slices (6 plots, was 2/4) with a moderate
     // 4-row gap — a genuine architectural ceiling applies here that's
     // worth being upfront about: everything has to fit inside ONE
-    // 32-block chunk (FS=30, 1-block margin each side), because a
+    // 32-block chunk (FS=32, using the full chunk width now), because a
     // village that spilled into a neighbouring chunk would risk that
     // chunk's own terrain generation later overwriting it when it
     // streams in separately — a real class of bug, not just caution.
@@ -5376,7 +5389,7 @@
     // on its own, every plot is sized for its fixed 11×11 footprint and
     // the pool is house-only; shop/pub/farm/hotel/castle come back once
     // this one is confirmed solid. Only room for a single slice (one
-    // house west, one east) at this depth within the FS=30 site.
+    // house west, one east) at this depth within the FS=32 site.
     const slices = [[9, 19]];
     // Widened from an 8-block gap toward the requested 15 — 10 is as
     // far as this can go while both houses still fit inside the single

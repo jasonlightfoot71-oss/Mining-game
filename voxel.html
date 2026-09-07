@@ -4018,6 +4018,22 @@
       return true;
     });
   }
+  // Church altars — proximity-triggered rather than needing a hit like
+  // the bell, since walking up to one is the whole point. Each one
+  // resets once the player's moved far enough away, so walking up to
+  // it again later plays the tune again rather than only ever once per
+  // session.
+  let churchAltars = [];
+  const ALTAR_TRIGGER_DIST = 2.5, ALTAR_RESET_DIST = 5;
+  function updateChurchAltars() {
+    if (!churchAltars.length) return;
+    churchAltars.forEach(a => {
+      const dx = player.pos.x - a.x, dy = player.pos.y - a.y, dz = player.pos.z - a.z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (!a.triggered && dist < ALTAR_TRIGGER_DIST) { a.triggered = true; playOrganTune(); }
+      else if (a.triggered && dist > ALTAR_RESET_DIST) { a.triggered = false; }
+    });
+  }
   // Open-on-approach — each door tracks a 0 (closed) to 1 (open) progress
   // value, animated smoothly toward whichever it should be based on
   // distance to the player, rather than snapping instantly. Distance is
@@ -4918,7 +4934,7 @@
   const HOTEL_NAMES  = ['Grand Hotel',"The Traveller's Rest",'Riverside Hotel','The Golden Lodge'];
   const CASTLE_NAMES = ['Stonewatch Castle','Ravenhold Castle','Ironkeep','Thornwall Castle'];
 
-  const VILLAGE_CHUNK_STRIDE = 5; // 5 chunks * 32 blocks = 160 — roughly every 160 blocks, closer together and easier to stumble across
+  const VILLAGE_CHUNK_STRIDE = 10; // 10 chunks * 32 blocks = 320 — widened from 5 (160) specifically to bring the grid's own spacing up to the requested "at least 300 blocks apart" too, not just the force-distance backstop below
   const VILLAGE_SKIP_CHANCE = 0.05; // rarely skipped now, so they show up close to as often as the grid allows
   const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
   // Distance-based backstop on top of the stride grid above. The grid
@@ -4932,7 +4948,7 @@
   // that streams in once it's got this far from that without a new one
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
-  const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
+  const VILLAGE_FORCE_DISTANCE = 300; // widened from 275 — villages were generating too often
   // Every building's footprint — but keyed by every ACTUAL chunk its own
   // reach (its pad, wall, and escape stair, ±20 to be safe) can touch,
   // not by whichever chunk its village originated in. That distinction
@@ -5142,6 +5158,18 @@
     const gx = Math.floor(cx / VILLAGE_CHUNK_STRIDE), gz = Math.floor(cz / VILLAGE_CHUNK_STRIDE);
     const [hx, hz] = villageGridHomeChunk(gx, gz);
     if (hx !== cx || hz !== cz) return null;
+    // Also respects the same minimum spacing as the force-distance
+    // backstop, not just its own grid spacing — two adjacent grid
+    // cells can still land their own candidates as little as a few
+    // chunks apart in the worst case (one near the far edge of its own
+    // cell, the next near the near edge of its neighbour), which on its
+    // own could still come in well under the requested 300. Checking
+    // against whatever was actually built last, the same way the
+    // backstop does, closes that gap without needing a second, separate
+    // distance system.
+    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const ddx = wcx - lastVillageWorldPos.x, ddz = wcz - lastVillageWorldPos.z;
+    if (Math.sqrt(ddx * ddx + ddz * ddz) < VILLAGE_FORCE_DISTANCE) return null;
     // Actual overlap with The Mill / minigame zones is checked precisely
     // against the real footprint in buildVillageInChunk (see checkPts) —
     // that's a tight, accurate check, so there's no need for a coarse
@@ -5532,7 +5560,7 @@
       }
     }
   }
-  function buildVillageChurch(bx0, bz0, gy, palette, reg) {
+  function buildVillageChurch(bx0, bz0, gy, palette, reg, ck) {
     const h = 10; // noticeably taller than the house/shop's 7
     // Nave (the long north-south arm, entrance at the north end) is 7
     // wide, centred in the 15-wide bounding box. Transept (the shorter
@@ -5589,6 +5617,16 @@
       for (let y = gy + 4; y <= gy + 6; y++) { blocks.set(key(wx, y, navez0), 50); trackVillageHeight(wx, navez0, y); }
     });
 
+    // Altar — a simple raised stone block near the chancel wall, 2
+    // blocks in from the back so there's room to stand in front of it.
+    // Registered into churchAltars for the proximity-triggered organ
+    // tune (see updateChurchAltars) — walking up to it is enough, no
+    // interaction needed the way the bell requires actually hitting it.
+    const altarX = midX, altarZ = navez1 - 2;
+    blocks.set(key(altarX, gy + 1, altarZ), palette.trim); trackVillageHeight(altarX, altarZ, gy + 1);
+    blocks.set(key(altarX, gy + 2, altarZ), 12); trackVillageHeight(altarX, altarZ, gy + 2); // Mossy Stone top — a plain solid altar block, distinct from the walls around it
+    churchAltars.push({ x: altarX + 0.5, y: gy + 3, z: altarZ + 0.5, triggered: false, ck });
+
     return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h, shapeFn: inChurch };
   }
   // Water well — a low stone curb ring around a single water source,
@@ -5606,10 +5644,10 @@
     const ropeMat = new THREE.MeshBasicMaterial({ color: 0x3a2a18 });
     const bucketMat = new THREE.MeshPhongMaterial({ color: 0x8a8a8a, shininess: 20, flatShading: true });
     const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.6, 6), ropeMat);
-    rope.position.set(0, 1.6, 0); // spans up toward the crossbeam, down toward the water
+    rope.position.set(0, 2.6, 0); // lifted a block higher — was hanging a block too low in the shaft
     g.add(rope);
     const bucket = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.13, 0.26, 8), bucketMat);
-    bucket.position.set(0, 0.15, 0); // sits just above the water surface
+    bucket.position.set(0, 1.15, 0); // lifted to match
     g.add(bucket);
     return g;
   }
@@ -5721,9 +5759,23 @@
     placeShellDoor(shell, 'south', reg, 0);
     placeShellLight(shell, 'south', reg);
     const winY = gy + 2;
-    buildVillageHouseWindowGeneric(midX, winY, z0, true, palette); // north (back) wall
-    buildVillageHouseWindowGeneric(x1, winY, midZ, false, palette); // east wall, facing the cabbage field
-    buildVillageHouseWindowGeneric(x0, winY, midZ, false, palette); // west wall, facing the wheat field
+    // Solid 3×3 blocks rather than an actual window — a plain trim-
+    // coloured panel, no glass, no cross-mullion. Simpler and reads
+    // fine on a working farm building.
+    function solidWindowPanel(cx, yBase, cz, alongX) {
+      for (let i = -1; i <= 1; i++) {
+        for (let r = 0; r <= 2; r++) {
+          const wx = alongX ? cx + i : cx;
+          const wz = alongX ? cz : cz + i;
+          const y = yBase + r;
+          blocks.set(key(wx, y, wz), palette.trim);
+          trackVillageHeight(wx, wz, y);
+        }
+      }
+    }
+    solidWindowPanel(midX, winY, z0, true); // north (back) wall
+    solidWindowPanel(x1, winY, midZ, false); // east wall, facing the cabbage field
+    solidWindowPanel(x0, winY, midZ, false); // west wall, facing the wheat field
     return shell;
   }
   function buildWheatStalk() {
@@ -6664,24 +6716,31 @@
       const { plotY: churchY, baseSurfaceType: churchBase, subFillType: churchSub } = computePlotGrade(cbx0, cbx1, cbz0, cbz1, roadY);
       clearSkyAroundHouse(cbx0, cbx1, cbz0, cbz1, churchY, churchBase, churchSub);
       buildHouseEdgeWall(cbx0, cbx1, cbz0, cbz1, churchY, palette, 'north');
-      const churchShell = buildVillageChurch(cbx0, cbz0, churchY, palette, reg);
+      const churchShell = buildVillageChurch(cbx0, cbz0, churchY, palette, reg, ck);
       newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north', shapeFn: churchShell.shapeFn }); // shapeFn is what lets the reactive override (generateChunkTerrain) tell the cross's real shape apart from its own bounding box's corners — see there
       churchPlaced = true;
     }
     // One small village landmark, chosen at random per village: a well,
     // a statue, or the town bell. Same freestanding placement idea as
     // the shop and church, just with a much smaller footprint (3×3) and
-    // gap requirement (8, not 10-20) — these are little decorative
-    // touches, not full buildings, and don't need nearly as much room
-    // around them to read fine on their own.
-    const LANDMARK_MIN_GAP = 8;
+    // gap requirement — these are little decorative touches, not full
+    // buildings, and don't need nearly as much room around them to read
+    // fine on their own.
+    const LANDMARK_MIN_GAP = 10;
     const landmarkKind = ['well', 'statue', 'bell'][Math.floor(rng() * 3)];
-    for (let attempt = 0; attempt < 14; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 16 + rng() * 10;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      // Widened from 16-26 to 18-32 specifically so a genuinely clear
+      // spot is available often enough that the fallback below never
+      // needs to fire — that fallback (skipping the overlap check on
+      // the last few attempts, to guarantee SOMETHING got placed) was
+      // the actual cause of landmarks turning up inside houses: it
+      // guaranteed a landmark every time, at the cost of occasionally
+      // guaranteeing an overlap instead. No landmark this village is a
+      // far smaller loss than one sitting inside someone's house.
+      const angle = rng() * Math.PI * 2, dist = 18 + rng() * 14;
       const lcx = Math.round(houseCx + Math.cos(angle) * dist), lcz = Math.round(houseCz + Math.sin(angle) * dist);
       const lx0 = lcx - 1, lx1 = lcx + 1, lz0 = lcz - 1, lz1 = lcz + 1; // 3×3
-      const skipOwnCheck = attempt >= 11;
-      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+      const tooCloseToOwn = newHouseFootprints.some(hf => {
         const dx = Math.max(0, lx0 - hf.x1, hf.x0 - lx1), dz = Math.max(0, lz0 - hf.z1, hf.z0 - lz1);
         return Math.sqrt(dx * dx + dz * dz) < LANDMARK_MIN_GAP;
       });
@@ -6733,11 +6792,11 @@
     // than the last one" — checked here exactly the same way as
     // everything else (the registry, edge-to-edge, excluding this
     // village's own siblings not yet registered), just with a much
-    // bigger number behind it. Also the only one of these extras that
-    // doesn't attempt every single time — a castle this size showing up
-    // in every village made them feel routine rather than a genuine
-    // rare find, so this only even tries in about 1 in 7.
-    if (rng() < 0.15) {
+    // bigger number behind it. Attempts in roughly every 2nd village now
+    // (was 1 in 7) — villages themselves are much rarer since the
+    // spacing widened to 300+, so a castle needing to be a genuine rare
+    // find on top of that made them turn up far too seldom overall.
+    if (rng() < 0.5) {
     const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
     let castlePlaced = false;
     for (let attempt = 0; attempt < 16 && !castlePlaced; attempt++) {
@@ -6890,6 +6949,7 @@
     v.npcs.forEach(n => { scene.remove(n.mesh); disposeObject3D(n.mesh); });
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageAnimals = villageAnimals.filter(w => w.ck !== ck);
+    churchAltars = churchAltars.filter(a => a.ck !== ck);
     villageRegistry.delete(ck);
     // Removes this village's own entries from every actual chunk key
     // they were registered under (see registerBuildingFootprint) — not
@@ -11730,6 +11790,35 @@
     noiseGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
     noise.connect(noiseFilter).connect(noiseGain).connect(audioCtx.destination);
     noise.start(now);
+  }
+  // A short organ phrase — three sustained chords in sequence, each
+  // built from a stack of square-wave oscillators (square, not sine,
+  // for the reedy organ-pipe character) with a slow attack rather than
+  // a sharp pluck, since a real organ swells in rather than strikes.
+  function playOrganTune() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const chords = [
+      [261.63, 329.63, 392.00], // C major
+      [293.66, 349.23, 440.00], // F major (2nd inversion feel)
+      [261.63, 329.63, 392.00, 523.25], // back to C, with the octave added on top
+    ];
+    const chordDur = 1.1, gap = 0.05;
+    chords.forEach((chord, ci) => {
+      const start = now + ci * (chordDur + gap);
+      chord.forEach(freq => {
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'square';
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0, start);
+        g.gain.linearRampToValueAtTime(0.05, start + 0.25); // slow swell, not a pluck
+        g.gain.setValueAtTime(0.05, start + chordDur - 0.2);
+        g.gain.linearRampToValueAtTime(0.001, start + chordDur);
+        o.connect(g).connect(audioCtx.destination);
+        o.start(start); o.stop(start + chordDur + 0.02);
+      });
+    });
   }
   window._voxelWasSubmerged = false;
 
@@ -16659,6 +16748,7 @@
     updateGolfTriggers();
     updateDoors(dt);
     updateBellSwings();
+    updateChurchAltars();
     updateWork(dt);
 
     updateSky(dt);

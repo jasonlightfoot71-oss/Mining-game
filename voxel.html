@@ -4707,33 +4707,69 @@
   }
   // Clears a big box of open sky around a house BEFORE it's built — 10
   // blocks out past its own footprint on every side, 50 blocks up from
-  // its own floor. With the terrain gate gone, houses can now land
-  // anywhere, including inside a mountainside — without this, that
-  // meant rock clipping straight through the walls and roof, or an
-  // overhang burying the whole thing. This only ever deletes blocks
-  // FROM the floor level UPWARD, never below it, so a genuinely lower
-  // natural slope just off to one side (the normal case the terracing
-  // skirt is built to handle) is left completely alone — this is only
-  // for clearing away whatever was in the airspace the house itself
-  // needs, not re-grading the ground around it.
-  function clearSkyAroundHouse(x0, x1, z0, z1, gy) {
+  // its own floor — and fills the floor level itself solid across that
+  // whole pad, in the same material the house's own floor sits on.
+  // With the terrain gate gone, houses can land anywhere, including
+  // inside a mountainside: without the clearing, rock clipped straight
+  // through the walls and roof; without the floor fill, the ground
+  // right outside the walls sat exactly one block lower than the house
+  // itself (clearing empties the floor row too, but only the house's
+  // own footprint ever got a floor block put back), leaving a step down
+  // all the way round it. Filling it flush also guarantees solid ground
+  // under that whole apron regardless of what was there before — an
+  // overhang, a hollow, open air over a cliff, any of it. Only ever
+  // touches the floor row and above; a genuinely lower natural slope
+  // further out (past the pad) is still left to the terracing skirt.
+  // Cheaper than it looks despite the wider box: skips the read-before-
+  // write on every single cell (delete()'s own return value already
+  // says whether there was anything there, so there's no need to ask
+  // twice with has()) — the previous version was paying for 4 map
+  // lookups per cell, this is 2.
+  function clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType) {
     const pad = 10, topY = gy + 50;
     for (let x = x0 - pad; x <= x1 + pad; x++) {
       for (let z = z0 - pad; z <= z1 + pad; z++) {
-        for (let y = gy; y <= topY; y++) {
-          const k = key(x, y, z);
-          if (blocks.has(k)) { blocks.delete(k); stepRotations.delete(k); }
-          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-        }
-        // Only ever lowers a column's recorded height, and only when
-        // that column's old top actually fell inside the range just
-        // cleared — a peak taller than the full 50-block clearance
-        // (rare, but possible near real mountains) still has genuine
-        // surviving blocks above topY, so its recorded height is left
-        // exactly as it was rather than guessed at.
         const ck2 = x + ',' + z;
         const oldH = columnHeight.get(ck2);
-        if (oldH !== undefined && oldH >= gy && oldH <= topY) columnHeight.set(ck2, gy - 1);
+        // Most of this pad is nowhere near 50 blocks of anything —
+        // stopping at this column's own actual recorded top (capped to
+        // topY) instead of always walking the full range skips a LOT of
+        // iterations over air that was never going to have anything in
+        // it. Water isn't tracked in columnHeight, so it can sit above
+        // a low column's recorded top — but this whole 32-wide site
+        // already had every water block stripped out of it in the very
+        // first pass of this function, before any of this ever runs, so
+        // there's nothing left here to miss except the rare case where
+        // the pad's own 10-block reach spills past the site's edge into
+        // a neighbouring chunk that still has some.
+        const clearUpTo = Math.min(topY, oldH !== undefined ? oldH : gy);
+        for (let y = gy + 1; y <= clearUpTo; y++) {
+          const k = key(x, y, z);
+          blocks.delete(k); stepRotations.delete(k);
+          if (waterBlocks.delete(k)) anyWaterTouchedThisStream = true;
+        }
+        const floorKey = key(x, gy, z);
+        blocks.delete(floorKey); stepRotations.delete(floorKey); // clear whatever was there (rock, tree base, anything) before laying the flush floor below
+        if (waterBlocks.delete(floorKey)) anyWaterTouchedThisStream = true;
+        blocks.set(floorKey, baseSurfaceType);
+        // Solid fill BELOW the floor too, same as the old per-plot
+        // padding loop used to do — this was the one thing skipping
+        // that loop for houses lost. Without it, a house built where
+        // the natural ground underneath was hollow (a cave, an
+        // overhang) would have nothing solid holding its own floor up.
+        for (let y = Math.max(0, gy - 16); y < gy; y++) blocks.set(key(x, y, z), subFillType);
+        // A direct set, not trackVillageHeight — that one only ever
+        // RAISES the recorded height, which is right for incrementally
+        // adding to a column but wrong here: a mountain peak that
+        // stood at, say, gy+30 just got deleted along with everything
+        // else in range, so the record needs to come DOWN to gy, not
+        // stay stuck at its old value. The one exception is a peak
+        // tall enough to survive above the full 50-block clearance
+        // (topY) — genuine remaining blocks up there, so the recorded
+        // height stays exactly what it was instead of being overwritten
+        // with a floor level that's now sitting underneath them.
+        columnHeight.set(ck2, (oldH !== undefined && oldH > topY) ? oldH : gy);
+        markVillageGround(x, z, gy);
       }
     }
   }
@@ -5507,10 +5543,18 @@
       if (type === 'house') {
         const fx0 = plot.x0, fx1 = plot.x0 + 10, fz0 = plot.z0, fz1 = plot.z0 + 10;
         if (houseTooCloseToExisting(fx0, fx1, fz0, fz1, ck)) return; // too close to an already-built house — leave this plot empty rather than overlap it
-        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY);
+        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
         newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1 });
       }
 
+      // Both grading passes below are now skipped entirely for houses —
+      // clearSkyAroundHouse above already covers a wider area (10 blocks
+      // out vs. this padding's 1, and past the skirt's own 8-ring reach)
+      // with one flat, guaranteed-solid fill, so running this on top of
+      // it for a house would be pure wasted work. Left in place for
+      // shop/pub/farm/hotel/castle, which don't get the sky-clear/flush-
+      // fill treatment and still need it once they're back in rotation.
+      if (type !== 'house') {
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
           // Everything above the floor is cleared based on the real
@@ -5572,6 +5616,7 @@
           trackVillageHeight(x, z, target);
           markVillageGround(x, z, target);
         }
+      }
       }
 
       let shell = null;

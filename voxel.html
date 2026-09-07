@@ -5817,6 +5817,150 @@
     spawnPenAnimals(ck, bounds, 6, rng, fenceKeys, reg);
   }
 
+  // Castle — the last and by far the biggest of these. Old, weathered
+  // stone throughout (Cracked/Mossy Stone, not the village's own
+  // palette — a castle reads as its own much older thing sitting apart
+  // from the village, not built from the same fresh materials), a
+  // keep split into four rooms, a tower with a real climbable spiral
+  // staircase, and a moat with a bridge at the entrance. Fixed
+  // orientation like the church and farm — door always south, tower
+  // always attached on the west side — for the same reason: "moat
+  // surrounds it, bridge at the entrance, tower on one side" only
+  // stays true if the whole thing doesn't randomly rotate.
+  const CASTLE_STONE = 13, CASTLE_TRIM = 12, CASTLE_FLOOR = 11; // Cracked Stone, Mossy Stone, Cobblestone
+  function buildSpiralStaircase(cx, cz, gy, steps, material) {
+    // Walks the 8 cells ringing a 1-wide central shaft, one step higher
+    // each time it visits the next one — by the time it's gone round
+    // the full ring it's climbed 8 blocks, same idea as every other
+    // gradual slope/step in this village, just wrapped around a shaft
+    // instead of running in a straight line.
+    const ring = [[-1,-1],[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0]];
+    for (let i = 0; i < steps; i++) {
+      const [dx, dz] = ring[i % 8];
+      const sx = cx + dx, sz = cz + dz, sy = gy + 1 + i;
+      blocks.set(key(sx, sy, sz), material);
+      trackVillageHeight(sx, sz, sy);
+      blocks.delete(key(sx, sy + 1, sz)); // headroom to actually climb it
+      blocks.delete(key(sx, sy + 2, sz));
+    }
+  }
+  function buildCastleTower(tx0, tz0, gy) {
+    const tx1 = tx0 + 4, tz1 = tz0 + 4, topH = 24;
+    const tcx = tx0 + 2, tcz = tz0 + 2;
+    for (let x = tx0; x <= tx1; x++) for (let z = tz0; z <= tz1; z++) {
+      blocks.set(key(x, gy, z), CASTLE_FLOOR); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+    }
+    for (let x = tx0; x <= tx1; x++) {
+      for (let z = tz0; z <= tz1; z++) {
+        const edge = (x === tx0 || x === tx1 || z === tz0 || z === tz1);
+        if (!edge) continue;
+        const isCorner = (x === tx0 || x === tx1) && (z === tz0 || z === tz1);
+        for (let y = gy + 1; y <= gy + topH; y++) {
+          blocks.set(key(x, y, z), isCorner ? CASTLE_TRIM : CASTLE_STONE);
+          trackVillageHeight(x, z, y);
+        }
+      }
+    }
+    // Crenellations — alternating raised merlons around the top, the
+    // one clear visual signal (along with the stone itself) that this
+    // is a castle and not just another tall building.
+    for (let x = tx0; x <= tx1; x++) {
+      if ((x - tx0) % 2 === 0) {
+        blocks.set(key(x, gy + topH + 1, tz0), CASTLE_TRIM); trackVillageHeight(x, tz0, gy + topH + 1);
+        blocks.set(key(x, gy + topH + 1, tz1), CASTLE_TRIM); trackVillageHeight(x, tz1, gy + topH + 1);
+      }
+    }
+    for (let z = tz0; z <= tz1; z++) {
+      if ((z - tz0) % 2 === 0) {
+        blocks.set(key(tx0, gy + topH + 1, z), CASTLE_TRIM); trackVillageHeight(tx0, z, gy + topH + 1);
+        blocks.set(key(tx1, gy + topH + 1, z), CASTLE_TRIM); trackVillageHeight(tx1, z, gy + topH + 1);
+      }
+    }
+    buildSpiralStaircase(tcx, tcz, gy, topH - 2, CASTLE_STONE);
+    // A couple of small windows partway up and near the top, for light
+    // on the way up rather than climbing it in the dark.
+    blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
+    blocks.set(key(tx1, gy + 16, tcz), 8); trackVillageHeight(tx1, tcz, gy + 16);
+    return { x0: tx0, x1: tx1, z0: tz0, z1: tz1, gy, h: topH };
+  }
+  function buildCastleKeep(kx0, kz0, gy, reg) {
+    const w = 19, d = 15, h = 9;
+    const kx1 = kx0 + w - 1, kz1 = kz0 + d - 1;
+    const midX = kx0 + 9, midZ = kz0 + 7;
+    for (let x = kx0; x <= kx1; x++) for (let z = kz0; z <= kz1; z++) {
+      blocks.set(key(x, gy, z), CASTLE_FLOOR); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+    }
+    for (let x = kx0; x <= kx1; x++) {
+      for (let z = kz0; z <= kz1; z++) {
+        const edge = (x === kx0 || x === kx1 || z === kz0 || z === kz1);
+        if (!edge) continue;
+        const isCorner = (x === kx0 || x === kx1) && (z === kz0 || z === kz1);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          blocks.set(key(x, y, z), isCorner ? CASTLE_TRIM : CASTLE_STONE);
+          trackVillageHeight(x, z, y);
+        }
+      }
+    }
+    for (let x = kx0; x <= kx1; x++) {
+      if ((x - kx0) % 2 === 0) {
+        blocks.set(key(x, gy + h + 1, kz0), CASTLE_TRIM); trackVillageHeight(x, kz0, gy + h + 1);
+        blocks.set(key(x, gy + h + 1, kz1), CASTLE_TRIM); trackVillageHeight(x, kz1, gy + h + 1);
+      }
+    }
+    for (let z = kz0; z <= kz1; z++) {
+      if ((z - kz0) % 2 === 0) {
+        blocks.set(key(kx0, gy + h + 1, z), CASTLE_TRIM); trackVillageHeight(kx0, z, gy + h + 1);
+        blocks.set(key(kx1, gy + h + 1, z), CASTLE_TRIM); trackVillageHeight(kx1, z, gy + h + 1);
+      }
+    }
+    const shell = { x0: kx0, x1: kx1, z0: kz0, z1: kz1, gy, h, midX, midZ };
+    placeShellDoor(shell, 'south', reg, 0);
+    placeShellLight(shell, 'south', reg);
+    // Four rooms — same cross-divider-with-end-gaps idea as the house,
+    // just on a plain rectangle instead of a cross-shaped one.
+    const vGapA = kz0 + 2, vGapB = kz1 - 2;
+    for (let z = kz0 + 1; z <= kz1 - 1; z++) {
+      if (z === vGapA || z === vGapB) continue;
+      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(midX, y, z), CASTLE_STONE); trackVillageHeight(midX, z, y); }
+    }
+    const hGapA = kx0 + 2, hGapB = kx1 - 2;
+    for (let x = kx0 + 1; x <= kx1 - 1; x++) {
+      if (x === hGapA || x === hGapB) continue;
+      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(x, y, midZ), CASTLE_STONE); trackVillageHeight(x, midZ, y); }
+    }
+    const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
+    buildVillageHouseWindowGeneric(midX, gy + 3, kz0, true, stonePalette); // north wall
+    buildVillageHouseWindowGeneric(kx1, gy + 3, midZ, false, stonePalette); // east wall
+    // Doorway through to the tower, carved on both sides of the shared
+    // boundary — the tower sits immediately west of the keep, touching
+    // it, so this is the one gap in an otherwise solid wall on that side.
+    const towerZ = kz0 + 2;
+    for (let y = gy + 1; y <= gy + 2; y++) { blocks.delete(key(kx0, y, towerZ)); blocks.delete(key(kx0 - 1, y, towerZ)); }
+    return shell;
+  }
+  function buildCastleMoat(sx0, sx1, sz0, sz1, gy, bridgeMidX) {
+    for (let x = sx0 - 5; x <= sx1 + 5; x++) {
+      for (let z = sz0 - 5; z <= sz1 + 5; z++) {
+        const dxOut = Math.max(sx0 - x, x - sx1, 0);
+        const dzOut = Math.max(sz0 - z, z - sz1, 0);
+        const dist = Math.max(dxOut, dzOut);
+        if (dist === 0) continue; // inside the keep/tower footprint itself — already handled
+        const onBridge = (z > sz1) && (x >= bridgeMidX - 2 && x <= bridgeMidX + 2);
+        if (onBridge) {
+          blocks.set(key(x, gy, z), CASTLE_FLOOR); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+          if (x === bridgeMidX - 2 || x === bridgeMidX + 2) { blocks.set(key(x, gy + 1, z), CASTLE_TRIM); trackVillageHeight(x, z, gy + 1); }
+          continue;
+        }
+        if (dist >= 3 && dist <= 5) {
+          blocks.delete(key(x, gy, z));
+          waterBlocks.set(key(x, gy, z), 1);
+          trackVillageHeight(x, z, gy);
+        }
+        // dist 1-2 is the dry buffer between keep and moat — already
+        // flattened by the general clearing pass, nothing more to do.
+      }
+    }
+  }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
@@ -6510,7 +6654,36 @@
       newHouseFootprints.push({ x0: bx0, x1: bx1, z0: bz0, z1: bz1, gy: farmY, baseSurfaceType: farmBase, subFillType: farmSub, trim: palette.trim, doorSide: 'south' });
       farmPlaced = true;
     }
-    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, landmark, and farm, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
+    // Castle — the last one, and the only one with its own minimum gap
+    // measured from ANY existing building, not just "a bit further out
+    // than the last one" — checked here exactly the same way as
+    // everything else (the registry, edge-to-edge, excluding this
+    // village's own siblings not yet registered), just with a much
+    // bigger number behind it.
+    const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
+    let castlePlaced = false;
+    for (let attempt = 0; attempt < 16 && !castlePlaced; attempt++) {
+      const angle = rng() * Math.PI * 2, dist = 100 + rng() * 40;
+      const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
+      const kx0 = ccx - 9, kx1 = kx0 + 18, kz0 = ccz - 7, kz1 = kz0 + 14; // keep, 19×15
+      const tx0 = kx0 - 5, tx1 = kx0 - 1, tz0 = kz0, tz1 = kz0 + 4; // tower, attached west, 5×5
+      const sx0 = tx0, sx1 = kx1, sz0 = kz0, sz1 = kz1; // combined keep+tower footprint
+      const skipOwnCheck = attempt >= 13;
+      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+        const dx = Math.max(0, sx0 - hf.x1, hf.x0 - sx1), dz = Math.max(0, sz0 - hf.z1, hf.z0 - sz1);
+        return Math.sqrt(dx * dx + dz * dz) < CASTLE_MIN_GAP;
+      });
+      if (tooCloseToOwn || houseTooCloseToExisting(sx0, sx1, sz0, sz1, ck)) continue;
+      const { plotY: castleY, baseSurfaceType: castleBase, subFillType: castleSub } = computePlotGrade(sx0, sx1, sz0, sz1, roadY);
+      clearSkyAroundHouse(sx0, sx1, sz0, sz1, castleY, castleBase, castleSub);
+      buildHouseEdgeWall(sx0, sx1, sz0, sz1, castleY, palette, 'south');
+      buildCastleTower(tx0, tz0, castleY);
+      buildCastleKeep(kx0, kz0, castleY, reg);
+      buildCastleMoat(sx0, sx1, sz0, sz1, castleY, kx0 + 9); // bridge centred on the keep's own door
+      newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south' });
+      castlePlaced = true;
+    }
+    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, landmark, farm, and castle, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
     // Forces a visual resync of every ALREADY-generated chunk this
     // village actually wrote into. This is the real, root cause behind

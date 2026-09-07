@@ -2204,11 +2204,36 @@
           let handled = false;
           for (const house of nearbyHouses) {
             const padX0 = house.x0 - 10, padX1 = house.x1 + 10, padZ0 = house.z0 - 10, padZ1 = house.z1 + 10;
+            // The escape staircase (see carveHouseEscapeStair) cuts
+            // through the wall on the side directly opposite the door,
+            // reaching up to 10 blocks PAST the pad's own edge — outside
+            // the normal pad bounds entirely. Checked as its own ray
+            // before the general pad-bounds check below, so this same
+            // reactive override reproduces that staircase too when the
+            // chunk it's cutting through generates after the house does,
+            // exactly like the wall and floor already do.
+            const backSide = HOUSE_BACK_SIDE[house.doorSide];
+            const escapeAt = (backSide === 'west' || backSide === 'east') ? Math.round((house.z0 + house.z1) / 2) : Math.round((house.x0 + house.x1) / 2);
+            let escapeDist = 0;
+            if (backSide === 'west' && z === escapeAt && x < padX0) escapeDist = padX0 - x;
+            else if (backSide === 'east' && z === escapeAt && x > padX1) escapeDist = x - padX1;
+            else if (backSide === 'north' && x === escapeAt && z < padZ0) escapeDist = padZ0 - z;
+            else if (backSide === 'south' && x === escapeAt && z > padZ1) escapeDist = z - padZ1;
+            if (escapeDist > 0 && escapeDist <= 10 && h > house.gy) {
+              const stepY = Math.min(house.gy + escapeDist, h); // never climbs above this column's own real ground
+              blocks.set(key(x, stepY, z), house.trim);
+              blocks.delete(key(x, stepY + 1, z)); blocks.delete(key(x, stepY + 2, z)); // headroom to actually walk up it
+              columnHeight.set(x + ',' + z, Math.max(stepY, h));
+              markVillageGround(x, z, stepY);
+              handled = true;
+              break;
+            }
             if (x < padX0 || x > padX1 || z < padZ0 || z > padZ1) continue;
             const onEdge = (x === padX0 || x === padX1 || z === padZ0 || z === padZ1);
             const onDoorSide = (house.doorSide === 'west' && x === padX0) || (house.doorSide === 'east' && x === padX1) ||
                                 (house.doorSide === 'north' && z === padZ0) || (house.doorSide === 'south' && z === padZ1);
-            if (onEdge && !onDoorSide && h > house.gy) {
+            const onEscapeEdge = onEdge && backSide === (x === padX0 ? 'west' : x === padX1 ? 'east' : z === padZ0 ? 'north' : 'south') && (x === escapeAt || z === escapeAt);
+            if (onEdge && !onDoorSide && !onEscapeEdge && h > house.gy) {
               for (let y = house.gy + 1; y <= h; y++) blocks.set(key(x, y, z), house.trim);
               columnHeight.set(x + ',' + z, h);
             } else {
@@ -4857,6 +4882,31 @@
   // built, misreading it as a mountainside and walling the door shut.
   // Skipped outright rather than special-cased, since a road corridor
   // never needs a retaining wall regardless of what's sitting past it.
+  const HOUSE_BACK_SIDE = { south: 'north', north: 'south', east: 'west', west: 'east' };
+  // One single point on the wall directly opposite the door gets left
+  // out of the sheer-wall treatment and carved into a proper staircase
+  // instead — one block up, one block out, per step, all the way up to
+  // the natural terrain height. Every OTHER wall stays a flat retaining
+  // face; this is the one deliberate gap in it, so a house cut into a
+  // slope always has at least one way back out onto the surrounding
+  // terrain without needing to place a single block.
+  function carveHouseEscapeStair(gy, palette, backSide, escapeAt, padX0, padX1, padZ0, padZ1) {
+    let px, pz, dx, dz;
+    if (backSide === 'west') { px = padX0; pz = escapeAt; dx = -1; dz = 0; }
+    else if (backSide === 'east') { px = padX1; pz = escapeAt; dx = 1; dz = 0; }
+    else if (backSide === 'north') { px = escapeAt; pz = padZ0; dx = 0; dz = -1; }
+    else { px = escapeAt; pz = padZ1; dx = 0; dz = 1; }
+    const naturalH = columnHeight.get((px + dx) + ',' + (pz + dz));
+    if (naturalH === undefined || naturalH <= gy) return; // flat ground here anyway, or this side's neighbour hasn't generated yet (its own generation runs the same wall/floor check once it does — see the village-pad override in generateChunkTerrain — just not this staircase, which only ever gets cut by the house's own build step)
+    const steps = naturalH - gy;
+    for (let i = 1; i <= steps; i++) {
+      const sx = px + dx * i, sz = pz + dz * i, stepY = gy + i;
+      blocks.set(key(sx, stepY, sz), palette.trim);
+      trackVillageHeight(sx, sz, stepY);
+      blocks.delete(key(sx, stepY + 1, sz)); // headroom to actually walk up it
+      blocks.delete(key(sx, stepY + 2, sz));
+    }
+  }
   function buildHouseEdgeWall(x0, x1, z0, z1, gy, palette, doorSide) {
     const pad = 10;
     const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
@@ -4872,10 +4922,13 @@
       if (naturalH === undefined || naturalH <= gy) return; // also covers "outside is at or below the pad's own level — nothing to hold back"
       for (let y = gy + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
     }
-    if (doorSide !== 'west') for (let z = padZ0; z <= padZ1; z++) wallColumn(padX0, z, -1, 0);
-    if (doorSide !== 'east') for (let z = padZ0; z <= padZ1; z++) wallColumn(padX1, z, 1, 0);
-    if (doorSide !== 'north') for (let x = padX0; x <= padX1; x++) wallColumn(x, padZ0, 0, -1);
-    if (doorSide !== 'south') for (let x = padX0; x <= padX1; x++) wallColumn(x, padZ1, 0, 1);
+    const backSide = HOUSE_BACK_SIDE[doorSide];
+    const escapeAt = (backSide === 'west' || backSide === 'east') ? Math.round((z0 + z1) / 2) : Math.round((x0 + x1) / 2);
+    if (doorSide !== 'west') for (let z = padZ0; z <= padZ1; z++) { if (backSide === 'west' && z === escapeAt) continue; wallColumn(padX0, z, -1, 0); }
+    if (doorSide !== 'east') for (let z = padZ0; z <= padZ1; z++) { if (backSide === 'east' && z === escapeAt) continue; wallColumn(padX1, z, 1, 0); }
+    if (doorSide !== 'north') for (let x = padX0; x <= padX1; x++) { if (backSide === 'north' && x === escapeAt) continue; wallColumn(x, padZ0, 0, -1); }
+    if (doorSide !== 'south') for (let x = padX0; x <= padX1; x++) { if (backSide === 'south' && x === escapeAt) continue; wallColumn(x, padZ1, 0, 1); }
+    carveHouseEscapeStair(gy, palette, backSide, escapeAt, padX0, padX1, padZ0, padZ1);
   }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
@@ -5650,6 +5703,22 @@
         clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
         buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette, doorSide);
         newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1, gy: plotY, baseSurfaceType, subFillType, trim: palette.trim, doorSide });
+        // Forces the ONE neighbouring chunk this house's back-side pad
+        // can reach into to generate right now, rather than waiting for
+        // the player to wander close enough for it to stream in
+        // naturally. Without this, a village viewed for the first time
+        // from any kind of distance — which is basically always, that's
+        // usually how you spot one — shows the back of whichever house
+        // faces away from you still sitting in raw, unmodified terrain
+        // until that side's own chunk eventually loads on its own. The
+        // village-pad override in generateChunkTerrain still does the
+        // real work here; this just makes sure it runs immediately
+        // instead of on a delay.
+        const backSide = HOUSE_BACK_SIDE[doorSide];
+        const neighborCx = backSide === 'west' ? cx - 1 : backSide === 'east' ? cx + 1 : cx;
+        const neighborCz = backSide === 'north' ? cz - 1 : backSide === 'south' ? cz + 1 : cz;
+        const neighborCk = neighborCx + '_' + neighborCz;
+        if (!generatedChunks.has(neighborCk)) { generateChunkTerrain(neighborCx, neighborCz); syncChunkInstances(neighborCx, neighborCz); }
       }
 
       // Both grading passes below are now skipped entirely for houses —

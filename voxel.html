@@ -2091,6 +2091,7 @@
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z) || (currentWorldId === PUB_WORLD_ID && isProtectedGameArea(x, z))) continue; // The Mill's own building AND its game structures (football pitch, tower, battleship arena, tennis court, golf course) all build their own ground at fixed heights — never procedurally generate over any of them, or the two independently-written grounds fight and leave gaps/mismatches exactly where they don't perfectly agree
+        if (villageClaimedColumns.has(x + ',' + z)) continue; // a house's own sky-clear/floor-fill pad can reach past its own chunk's edge into this one — if that already happened before this chunk got here, this column's already exactly what it should be (floor + open air), and normal generation would just bury it again
         // Regional biome — two DECOUPLED low-frequency noise layers, not
         // just one. `elevation` drives height, `moisture` independently
         // governs how sandy, grassy, or forested an area is, so you get
@@ -4693,6 +4694,27 @@
   // per-village-chunk rather than one flat list so teardownVillage can
   // free a village's own reservation when it unloads (see there).
   const villageHouseFootprints = new Map(); // ck -> [{x0,x1,z0,z1}, ...]
+  // Every column a house's own sky-clear/floor-fill has touched, flat
+  // set for the fast per-column check in generateChunkTerrain, plus the
+  // same thing again grouped by village chunk key so teardownVillage
+  // can release its share when it unloads. A house's own pad can
+  // legitimately reach past its own chunk's edge into the next one —
+  // see clearSkyAroundHouse — and that neighbouring chunk might not
+  // have generated yet when this one does. Without this, whichever one
+  // generates SECOND just unconditionally overwrites whatever the first
+  // one already put there: exactly the "not clearing/no wall at the
+  // back" bug, and in the other order, the real risk this whole
+  // approach exists to avoid — a neighbouring chunk's own ordinary
+  // terrain burying a house that already finished being built.
+  const villageClaimedColumns = new Set();
+  const villageClaimedColumnsByCk = new Map(); // ck -> ["x,z", ...]
+  function claimVillageColumn(ck, x, z) {
+    const k = x + ',' + z;
+    villageClaimedColumns.add(k);
+    let list = villageClaimedColumnsByCk.get(ck);
+    if (!list) { list = []; villageClaimedColumnsByCk.set(ck, list); }
+    list.push(k);
+  }
   const HOUSE_MIN_GAP = 15;
   function houseTooCloseToExisting(fx0, fx1, fz0, fz1, excludeCk) {
     for (const [k, list] of villageHouseFootprints) {
@@ -4725,7 +4747,7 @@
   // says whether there was anything there, so there's no need to ask
   // twice with has()) — the previous version was paying for 4 map
   // lookups per cell, this is 2.
-  function clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType) {
+  function clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType, ck) {
     const pad = 10, topY = gy + 50;
     for (let x = x0 - pad; x <= x1 + pad; x++) {
       for (let z = z0 - pad; z <= z1 + pad; z++) {
@@ -4770,6 +4792,7 @@
         // with a floor level that's now sitting underneath them.
         columnHeight.set(ck2, (oldH !== undefined && oldH > topY) ? oldH : gy);
         markVillageGround(x, z, gy);
+        claimVillageColumn(ck, x, z);
       }
     }
   }
@@ -4787,7 +4810,14 @@
   // only ever fires where the clearing is genuinely touching higher
   // ground right at its own edge, not terrain that happens to rise
   // again a few blocks further out with a natural slope in between.
-  function buildHouseEdgeWall(x0, x1, z0, z1, gy, palette) {
+  // The side the door faces (doorSide) is always the shared road/gap
+  // toward this village's other house, never natural terrain — checking
+  // it anyway was the actual bug: the ONE column it peeks past its own
+  // pad edge lands exactly on the sibling house's own wall once that's
+  // built, misreading it as a mountainside and walling the door shut.
+  // Skipped outright rather than special-cased, since a road corridor
+  // never needs a retaining wall regardless of what's sitting past it.
+  function buildHouseEdgeWall(x0, x1, z0, z1, gy, palette, doorSide) {
     const pad = 10;
     const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
     function wallColumn(x, z, dx, dz) {
@@ -4795,8 +4825,10 @@
       if (naturalH === undefined || naturalH <= gy) return; // outside is at or below the pad's own level — nothing to hold back
       for (let y = gy + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
     }
-    for (let z = padZ0; z <= padZ1; z++) { wallColumn(padX0, z, -1, 0); wallColumn(padX1, z, 1, 0); }
-    for (let x = padX0; x <= padX1; x++) { wallColumn(x, padZ0, 0, -1); wallColumn(x, padZ1, 0, 1); }
+    if (doorSide !== 'west') for (let z = padZ0; z <= padZ1; z++) wallColumn(padX0, z, -1, 0);
+    if (doorSide !== 'east') for (let z = padZ0; z <= padZ1; z++) wallColumn(padX1, z, 1, 0);
+    if (doorSide !== 'north') for (let x = padX0; x <= padX1; x++) wallColumn(x, padZ0, 0, -1);
+    if (doorSide !== 'south') for (let x = padX0; x <= padX1; x++) wallColumn(x, padZ1, 0, 1);
   }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
@@ -5568,8 +5600,8 @@
       if (type === 'house') {
         const fx0 = plot.x0, fx1 = plot.x0 + 10, fz0 = plot.z0, fz1 = plot.z0 + 10;
         if (houseTooCloseToExisting(fx0, fx1, fz0, fz1, ck)) return; // too close to an already-built house — leave this plot empty rather than overlap it
-        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
-        buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette);
+        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType, ck);
+        buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette, doorSide);
         newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1 });
       }
 
@@ -5754,6 +5786,8 @@
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageRegistry.delete(ck);
     villageHouseFootprints.delete(ck); // frees this village's reserved footprint so the SAME deterministic village can rebuild here later without the overlap guard mistaking its own old spot for someone else's house
+    const claimed = villageClaimedColumnsByCk.get(ck);
+    if (claimed) { claimed.forEach(k => villageClaimedColumns.delete(k)); villageClaimedColumnsByCk.delete(ck); }
   }
 
   // ── Village map (discovered villages, saved locally) ──────────────

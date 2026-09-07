@@ -7512,6 +7512,57 @@
   let ridingVehicle = null;
   let vehiclePrevFlying = false;
   let vehicleCamBlend = 0, vehicleCamWasActive = false;
+  // Continuous engine sound while riding — two slightly detuned
+  // oscillators through a low-pass filter, the same "two close
+  // frequencies beating against each other" trick real engine drones
+  // use, rather than one clean tone. Waveform/base pitch/filter cutoff
+  // differ per vehicle type so a boat's motor, a helicopter's rotor,
+  // and a hot air balloon's burner don't all sound like the same hum
+  // in a different key. Pitch and volume both track the player's own
+  // current speed each frame (see updateVehicleEngineSound) rather than
+  // staying fixed the whole ride.
+  let vehicleEngine = null; // { osc1, osc2, gain, filter, baseFreq, detune }
+  function startVehicleEngineSound(typeIdx) {
+    if (!audioCtx) return;
+    stopVehicleEngineSound();
+    const type = VEHICLE_TYPES[typeIdx] || VEHICLE_TYPES[0];
+    let waveform = 'triangle', baseFreq = 110, detune = 6, filterFreq = 700; // default — Electric Scooter's own electric whine
+    if (type.boat) { waveform = 'sawtooth'; baseFreq = 55; detune = 5; filterFreq = 350; } // Boat — low choppy motor putter
+    else if (type.name === 'Helicopter') { waveform = 'square'; baseFreq = 45; detune = 3; filterFreq = 260; } // deep, buzzy rotor thrum
+    else if (type.name === 'Hot Air Balloon') { waveform = 'sine'; baseFreq = 90; detune = 2; filterFreq = 800; } // quiet, gentle burner hiss rather than an engine at all
+    else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 90; detune = 5; filterFreq = 600; } // brighter, more "engine" than the scooter
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.001;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = filterFreq;
+    const osc1 = audioCtx.createOscillator(), osc2 = audioCtx.createOscillator();
+    osc1.type = waveform; osc1.frequency.value = baseFreq;
+    osc2.type = waveform; osc2.frequency.value = baseFreq + detune;
+    osc1.connect(filter); osc2.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    osc1.start(); osc2.start();
+    vehicleEngine = { osc1, osc2, gain, filter, baseFreq, detune };
+  }
+  function stopVehicleEngineSound() {
+    if (!vehicleEngine || !audioCtx) { vehicleEngine = null; return; }
+    const now = audioCtx.currentTime;
+    const g = vehicleEngine.gain, o1 = vehicleEngine.osc1, o2 = vehicleEngine.osc2;
+    g.gain.cancelScheduledValues(now);
+    g.gain.setValueAtTime(g.gain.value, now);
+    g.gain.linearRampToValueAtTime(0.0001, now + 0.15); // fades out rather than cutting off mid-note
+    setTimeout(() => { try { o1.stop(); o2.stop(); } catch (e) {} }, 200);
+    vehicleEngine = null;
+  }
+  function updateVehicleEngineSound() {
+    if (!vehicleEngine || !ridingVehicle || !audioCtx) return;
+    const speed = Math.sqrt(player.vel.x*player.vel.x + player.vel.y*player.vel.y + player.vel.z*player.vel.z);
+    const t = Math.min(1, speed / 8); // normalised against a reasonable top speed — exact value doesn't need to be precise, just enough range to hear the engine "rev"
+    const now = audioCtx.currentTime;
+    vehicleEngine.gain.gain.setTargetAtTime(0.05 + t * 0.09, now, 0.15);
+    const freqMul = 1 + t * 0.6;
+    vehicleEngine.osc1.frequency.setTargetAtTime(vehicleEngine.baseFreq * freqMul, now, 0.15);
+    vehicleEngine.osc2.frequency.setTargetAtTime((vehicleEngine.baseFreq + vehicleEngine.detune) * freqMul, now, 0.15);
+  }
   function enterVehicle(v) {
     if (ridingVehicle || !v) return;
     ridingVehicle = v;
@@ -7523,12 +7574,14 @@
     document.getElementById('vehicleEnterBtn').style.display = 'none';
     document.getElementById('vehicleExitBtn').style.display = 'block';
     ensureAudio();
+    startVehicleEngineSound(v.typeIdx);
   }
   function exitVehicle() {
     if (!ridingVehicle) return;
     const v = ridingVehicle;
     flying = vehiclePrevFlying;
     ridingVehicle = null;
+    stopVehicleEngineSound();
     document.getElementById('vehicleExitBtn').style.display = 'none';
     // Cleans itself up rather than staying parked wherever you happened
     // to get out — vehicles can be driven a long way from where they
@@ -16834,7 +16887,8 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; stopVehicleEngineSound(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      updateVehicleEngineSound();
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;

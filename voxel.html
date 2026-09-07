@@ -1315,6 +1315,29 @@
       ctx.fillRect(x,y,1,1);
     }
   }
+  // A proper leaded mosaic rather than the plain glass colours' flat
+  // single tint — several small coloured panes in a 4×4 grid, separated
+  // by dark "leading" lines, the way real stained glass actually looks.
+  // Shared by all the stainedGlass* textures below, each just passing a
+  // different jewel-tone palette.
+  function drawStainedGlassMosaic(ctx, size, colors) {
+    ctx.clearRect(0, 0, size, size);
+    const cells = 4, cs = size / cells;
+    for (let gx = 0; gx < cells; gx++) {
+      for (let gy = 0; gy < cells; gy++) {
+        ctx.fillStyle = colors[(gx + gy * 3) % colors.length];
+        ctx.fillRect(gx * cs, gy * cs, cs, cs);
+      }
+    }
+    ctx.strokeStyle = 'rgba(15,15,20,0.9)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= cells; i++) {
+      ctx.beginPath(); ctx.moveTo(i * cs, 0); ctx.lineTo(i * cs, size); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i * cs); ctx.lineTo(size, i * cs); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
+  }
 
   const TEX = {
     grassTop: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#5aa845',['#6fc25a','#4f9a3d','#79cf63'],0.55)),
@@ -1429,6 +1452,15 @@
     glassGreenPlain:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(90,220,110,0.35)'; ctx.fillRect(0,0,s,s); }),
     glassYellowPlain: makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(240,220,80,0.35)'; ctx.fillRect(0,0,s,s); }),
     glassBlackPlain:  makeCanvasTexture((ctx,s) => { ctx.clearRect(0,0,s,s); ctx.fillStyle='rgba(40,40,45,0.55)'; ctx.fillRect(0,0,s,s); }),
+    // Proper leaded stained glass — a mosaic of several small coloured
+    // panes rather than one flat tint (see drawStainedGlassMosaic
+    // above), the way a real church window actually looks. A jewel-tone
+    // palette per colour rather than a single hue, since real stained
+    // glass windows are never just one flat colour either.
+    stainedGlassRuby:     makeCanvasTexture((ctx,s) => drawStainedGlassMosaic(ctx,s,['rgba(200,40,55,0.6)','rgba(230,95,75,0.55)','rgba(150,25,55,0.65)','rgba(225,150,60,0.5)'])),
+    stainedGlassSapphire: makeCanvasTexture((ctx,s) => drawStainedGlassMosaic(ctx,s,['rgba(35,90,205,0.6)','rgba(75,145,230,0.55)','rgba(25,55,150,0.65)','rgba(130,195,230,0.5)'])),
+    stainedGlassEmerald:  makeCanvasTexture((ctx,s) => drawStainedGlassMosaic(ctx,s,['rgba(35,160,90,0.6)','rgba(95,205,125,0.55)','rgba(15,105,60,0.65)','rgba(205,220,85,0.5)'])),
+    stainedGlassAmber:    makeCanvasTexture((ctx,s) => drawStainedGlassMosaic(ctx,s,['rgba(220,150,40,0.6)','rgba(235,195,85,0.55)','rgba(175,95,20,0.65)','rgba(240,220,145,0.5)'])),
 
     // Tree wood variants — each a top+side pair (bark pattern on the
     // side, ring pattern on the cut top), same technique as the base
@@ -1514,9 +1546,24 @@
     { name: 'Brick Step',  mats: TEX.brick,   half: true, cost: 4, isVariant: true },
     { name: 'Wood Step',   mats: TEX.planks,  half: true, cost: 4, isVariant: true },
     { name: 'Sand Step',   mats: TEX.sand,    half: true, cost: 4, isVariant: true },
+    // Stained glass — deliberately kept OUT of the merged seamless-pane
+    // glass system (that's the whole reason these are named "Pane" and
+    // not "Glass": GLASS_TYPE_SET/glassNeighborOccludes/GLASS_PLAIN_TEX
+    // all key off the literal word "Glass" in a block's name, and none
+    // of them know about this mosaic texture). Real leaded stained glass
+    // is made of lots of small individual panes anyway, each with its
+    // own visible border — that's the correct look here, not a seamless
+    // merged sheet.
+    { name: 'Stained Pane Ruby',     mats: TEX.stainedGlassRuby,     transparent: true, cost: 4, isVariant: true },
+    { name: 'Stained Pane Sapphire', mats: TEX.stainedGlassSapphire, transparent: true, cost: 4, isVariant: true },
+    { name: 'Stained Pane Emerald',  mats: TEX.stainedGlassEmerald,  transparent: true, cost: 4, isVariant: true },
+    { name: 'Stained Pane Amber',    mats: TEX.stainedGlassAmber,    transparent: true, cost: 4, isVariant: true },
   ];
-  // Primary hotbar index -> its 5 family members (itself first, then its
-  // 4 variants), in the order the popup lists them.
+  // Primary hotbar index -> its family members (itself first, then its
+  // variants), in the order the popup lists them. Glass's list is 4
+  // longer than the others now — the popup itself already renders
+  // whatever length this array happens to be, so the 4 new stained pane
+  // colours just needed adding here, nothing else.
   const BLOCK_FAMILIES = {
     1: [1, 23, 24, 25, 26], // Dirt
     2: [2, 11, 12, 13, 14], // Stone
@@ -1524,7 +1571,7 @@
     5: [5, 27, 28, 29, 30], // Sand
     6: [6, 19, 20, 21, 22], // Planks
     7: [7, 15, 16, 17, 18], // Brick
-    8: [8, 35, 36, 37, 38], // Glass (colours)
+    8: [8, 35, 36, 37, 38, 47, 48, 49, 50], // Glass (colours + stained)
     9: [9, 43, 44, 45, 46], // Step (materials)
     10: [10, 31, 32, 33, 34], // Concrete (colours)
   };
@@ -5332,6 +5379,80 @@
 
     return shell;
   }
+  // Church — a cross-shaped floor plan (nave + transept), the way a
+  // church is traditionally laid out to read as a cross from directly
+  // above, taller than every other building here, and finished in the
+  // new stained-glass panes rather than the house/shop's plain glass.
+  // Built as the union of two overlapping rectangles rather than one
+  // simple box — every wall column is found generically (any floor
+  // cell inside the cross that's adjacent to a cell outside it), which
+  // handles the shape's reentrant corners (where nave meets transept)
+  // without needing to hand-place each wall segment.
+  function buildChurchWindow(cx, yBase, cz, alongX, width, height, palette, colors) {
+    const half = Math.floor(width / 2);
+    for (let i = -half; i <= half; i++) {
+      const paneType = Array.isArray(colors) ? colors[i + half] : colors;
+      for (let r = 0; r < height; r++) {
+        const wx = alongX ? cx + i : cx;
+        const wz = alongX ? cz : cz + i;
+        const y = yBase + r;
+        const isFrame = (i === -half || i === half || r === 0 || r === height - 1);
+        blocks.set(key(wx, y, wz), isFrame ? palette.trim : paneType);
+        trackVillageHeight(wx, wz, y);
+      }
+    }
+  }
+  function buildVillageChurch(bx0, bz0, gy, palette, reg) {
+    const h = 10; // noticeably taller than the house/shop's 7
+    // Nave (the long north-south arm, entrance at the north end) is 7
+    // wide, centred in the 15-wide bounding box. Transept (the shorter
+    // east-west arm) is 7 deep, crossing the nave nearer the far end
+    // than the entrance — a longer nave before the crossing than the
+    // chancel beyond it, the traditional proportions of a Latin cross
+    // rather than a symmetric plus sign.
+    const navex0 = bx0 + 4, navex1 = bx0 + 10, navez0 = bz0, navez1 = bz0 + 20;
+    const transx0 = bx0, transx1 = bx0 + 14, transz0 = bz0 + 12, transz1 = bz0 + 18;
+    function inChurch(x, z) {
+      return (x >= navex0 && x <= navex1 && z >= navez0 && z <= navez1) ||
+             (x >= transx0 && x <= transx1 && z >= transz0 && z <= transz1);
+    }
+    for (let x = transx0; x <= transx1; x++) {
+      for (let z = navez0; z <= navez1; z++) {
+        if (!inChurch(x, z)) continue;
+        blocks.set(key(x, gy, z), 6); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); // wood floor throughout, same reasoning as the shop
+        const isEdge = !inChurch(x - 1, z) || !inChurch(x + 1, z) || !inChurch(x, z - 1) || !inChurch(x, z + 1);
+        if (isEdge) {
+          for (let y = gy + 1; y <= gy + h; y++) {
+            blocks.set(key(x, y, z), (y === gy + h) ? palette.trim : palette.wall);
+            trackVillageHeight(x, z, y);
+          }
+        }
+      }
+    }
+    // Roof — the pyramid roof applied separately to each arm's own
+    // rectangle, overlapping where they cross, reads reasonably as a
+    // ridged cross-shaped roofline rather than one shape trying to cover
+    // both arms at once.
+    addPyramidRoof(navex0, navex1, navez0, navez1, gy + h + 1, palette, 4);
+    addPyramidRoof(transx0, transx1, transz0, transz1, gy + h + 1, palette, 4);
+
+    const midX = Math.round((navex0 + navex1) / 2), midZ = Math.round((navez0 + navez1) / 2);
+    const shell = { x0: navex0, x1: navex1, z0: navez0, z1: navez1, gy, h, midX, midZ };
+    placeShellDoor(shell, 'north', reg, 0); // entrance fixed at the nave's own front wall
+    placeShellLight(shell, 'north', reg);
+
+    // Stained glass — one bold colour on each transept end (the two
+    // "sides" of the cross), and a bigger, multi-coloured window on the
+    // chancel wall (the far end, opposite the door) — traditionally the
+    // most decorated wall in the building, behind where the altar would
+    // be.
+    const winY = gy + 2;
+    buildChurchWindow(transx0, winY, transz0 + 3, false, 3, 6, palette, 48); // west transept — Sapphire
+    buildChurchWindow(transx1, winY, transz0 + 3, false, 3, 6, palette, 49); // east transept — Emerald
+    buildChurchWindow(midX, winY, navez1, true, 5, 6, palette, [47, 50, 48, 50, 47]); // chancel — Ruby/Amber/Sapphire/Amber/Ruby
+
+    return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h };
+  }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
@@ -5928,7 +6049,34 @@
       newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: shopY, baseSurfaceType: shopBase, subFillType: shopSub, trim: palette.trim, doorSide: shopDoorSide });
       break;
     }
-    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (both houses, and the shop if one was placed) is done, so nothing here was ever checked against a sibling still being built
+    // Church — same freestanding approach as the shop, checked against
+    // EVERY building already placed in this village so far (house(s)
+    // AND the shop, whichever of them actually exist), not just the
+    // house — a smaller requested gap (10, vs the shop's 15-20) since
+    // this is about not overlapping anything, not a deliberate spacing
+    // choice the way the shop's distance was. Its own bounding box (the
+    // cross's overall footprint, 15×21) is what gets checked/cleared/
+    // walled — a bit more generous than the cross shape's actual solid
+    // area, which just means a slightly larger, perfectly reasonable
+    // cleared yard around it.
+    const CHURCH_MIN_GAP = 10;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = rng() * Math.PI * 2, dist = 27 + rng() * 8; // clears both buildings' own half-widths plus the requested gap, for most angles with room to spare
+      const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
+      const cbx0 = ccx - 7, cbx1 = ccx + 7, cbz0 = ccz - 10, cbz1 = ccz + 10;
+      const tooCloseToOwn = newHouseFootprints.some(hf => {
+        const dx = Math.max(0, cbx0 - hf.x1, hf.x0 - cbx1), dz = Math.max(0, cbz0 - hf.z1, hf.z0 - cbz1);
+        return Math.sqrt(dx * dx + dz * dz) < CHURCH_MIN_GAP;
+      });
+      if (tooCloseToOwn || houseTooCloseToExisting(cbx0, cbx1, cbz0, cbz1, ck)) continue;
+      const { plotY: churchY, baseSurfaceType: churchBase, subFillType: churchSub } = computePlotGrade(cbx0, cbx1, cbz0, cbz1, roadY);
+      clearSkyAroundHouse(cbx0, cbx1, cbz0, cbz1, churchY, churchBase, churchSub);
+      buildHouseEdgeWall(cbx0, cbx1, cbz0, cbz1, churchY, palette, 'north');
+      buildVillageChurch(cbx0, cbz0, churchY, palette, reg);
+      newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north' });
+      break;
+    }
+    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, and church, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
     // Forces a visual resync of every ALREADY-generated chunk this
     // village actually wrote into. This is the real, root cause behind
@@ -11635,7 +11783,7 @@
     for (const [k, t] of blocks) {
       if (count >= MAX_INSTANCES) break;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || (type.name||'').includes('Glass')) continue;
+      if (!type || type.half || type.transparent) continue;
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as

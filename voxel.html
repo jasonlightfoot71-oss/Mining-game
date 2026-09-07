@@ -2293,6 +2293,18 @@
               handled = true;
               break;
             }
+            // Same reasoning again, for the castle's moat specifically —
+            // buildCastleMoat's own direct writes only happen at build
+            // time; if part of the moat/bridge falls in a chunk that
+            // hadn't generated yet then, this reproduces the exact same
+            // water/wall/bridge using the identical column logic
+            // (applyCastleMoatColumn), rather than the moat silently
+            // getting paved over by the generic flat pad-fill further
+            // down, which doesn't know a moat is even there.
+            if (house.moat && applyCastleMoatColumn(x, z, house.x0, house.x1, house.z0, house.z1, house.gy, house.moat.bridgeMidX)) {
+              handled = true;
+              break;
+            }
             // The escape staircase (see carveHouseEscapeStair) cuts
             // through the wall on the side directly opposite the door,
             // reaching up to 10 blocks PAST the pad's own edge — outside
@@ -5981,12 +5993,15 @@
       }
     }
     buildSpiralStaircase(tcx, tcz, gy, topH - 2, CASTLE_STONE);
-    // A proper landing at the top — the staircase itself ends on a
-    // single last step with nothing beside it to actually stand on;
-    // this fills the whole shaft it's been spiralling around with a
-    // solid floor one block above that final step, so there's
-    // somewhere to arrive at rather than just running out of stairs.
-    const landingY = gy + topH - 1;
+    // A proper landing at the top — was one block ABOVE the final
+    // step, which put a solid floor block exactly where the player's
+    // own head needed to be while standing on that last step at all,
+    // blocking the staircase off from ever reaching it. Matches the
+    // final step's own height instead (same level, not one higher) —
+    // walking off the last step onto the landing is then a level step
+    // sideways, not a climb, which is correct: the climbing already
+    // happened over the preceding steps.
+    const landingY = gy + topH - 2;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
         blocks.set(key(tcx + dx, landingY, tcz + dz), CASTLE_STONE);
@@ -6064,26 +6079,48 @@
     for (let y = gy + 1; y <= gy + 2; y++) { blocks.delete(key(kx0, y, towerZ)); blocks.delete(key(kx0 - 1, y, towerZ)); }
     return { ...shell, doorX };
   }
+  // Shared between the direct build below AND the reactive village-pad
+  // override in generateChunkTerrain — same reasoning as everywhere
+  // else this pattern shows up: whichever of the castle or a
+  // neighbouring chunk generates SECOND needs to reproduce the exact
+  // same moat, not just guess at it. Returns true if this column was
+  // the moat/bridge's own business at all (so the caller knows not to
+  // fall through to generic pad-fill).
+  const CASTLE_MOAT_DEPTH = 3;
+  function applyCastleMoatColumn(x, z, sx0, sx1, sz0, sz1, gy, bridgeMidX) {
+    const dxOut = Math.max(sx0 - x, x - sx1, 0);
+    const dzOut = Math.max(sz0 - z, z - sz1, 0);
+    const dist = Math.max(dxOut, dzOut);
+    if (dist === 0 || dist > 6) return false; // inside the keep/tower itself, or past the moat's own reach entirely
+    const moatFloorY = gy - CASTLE_MOAT_DEPTH;
+    const onBridge = (z > sz1) && (x >= bridgeMidX - 2 && x <= bridgeMidX + 2);
+    if (onBridge) {
+      blocks.set(key(x, gy, z), CASTLE_FLOOR); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+      if (x === bridgeMidX - 2 || x === bridgeMidX + 2) { blocks.set(key(x, gy + 1, z), CASTLE_TRIM); trackVillageHeight(x, z, gy + 1); }
+      // Support underneath the deck — without this the bridge would be
+      // floating over open water now that the moat actually has depth.
+      for (let y = moatFloorY + 1; y < gy; y++) { blocks.set(key(x, y, z), CASTLE_STONE); trackVillageHeight(x, z, y); }
+      return true;
+    }
+    if (dist === 2 || dist === 6) {
+      // Retaining wall on both sides of the excavation — inner face
+      // (dist 2, facing the castle) and outer face (dist 6, facing the
+      // surrounding cleared ground) — containing the dug-out pit rather
+      // than just leaving an exposed drop where flat ground meets it.
+      for (let y = moatFloorY + 1; y <= gy; y++) { blocks.set(key(x, y, z), CASTLE_STONE); trackVillageHeight(x, z, y); }
+      return true;
+    }
+    if (dist >= 3 && dist <= 5) {
+      for (let y = gy; y >= moatFloorY + 1; y--) { blocks.delete(key(x, y, z)); waterBlocks.set(key(x, y, z), 1); trackVillageHeight(x, z, y); }
+      blocks.set(key(x, moatFloorY, z), CASTLE_STONE); trackVillageHeight(x, z, moatFloorY); // solid floor at the bottom of the excavation
+      return true;
+    }
+    return false; // dist 1 — dry buffer, left to the generic pad-fill
+  }
   function buildCastleMoat(sx0, sx1, sz0, sz1, gy, bridgeMidX) {
-    for (let x = sx0 - 5; x <= sx1 + 5; x++) {
-      for (let z = sz0 - 5; z <= sz1 + 5; z++) {
-        const dxOut = Math.max(sx0 - x, x - sx1, 0);
-        const dzOut = Math.max(sz0 - z, z - sz1, 0);
-        const dist = Math.max(dxOut, dzOut);
-        if (dist === 0) continue; // inside the keep/tower footprint itself — already handled
-        const onBridge = (z > sz1) && (x >= bridgeMidX - 2 && x <= bridgeMidX + 2);
-        if (onBridge) {
-          blocks.set(key(x, gy, z), CASTLE_FLOOR); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
-          if (x === bridgeMidX - 2 || x === bridgeMidX + 2) { blocks.set(key(x, gy + 1, z), CASTLE_TRIM); trackVillageHeight(x, z, gy + 1); }
-          continue;
-        }
-        if (dist >= 3 && dist <= 5) {
-          blocks.delete(key(x, gy, z));
-          waterBlocks.set(key(x, gy, z), 1);
-          trackVillageHeight(x, z, gy);
-        }
-        // dist 1-2 is the dry buffer between keep and moat — already
-        // flattened by the general clearing pass, nothing more to do.
+    for (let x = sx0 - 6; x <= sx1 + 6; x++) {
+      for (let z = sz0 - 6; z <= sz1 + 6; z++) {
+        applyCastleMoatColumn(x, z, sx0, sx1, sz0, sz1, gy, bridgeMidX);
       }
     }
   }
@@ -6817,7 +6854,17 @@
       buildCastleTower(tx0, tz0, castleY);
       const keepShell = buildCastleKeep(kx0, kz0, castleY, reg);
       buildCastleMoat(sx0, sx1, sz0, sz1, castleY, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
-      newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south' });
+      // shapeFn (same reasoning as the church) — the keep+tower's real
+      // shape isn't the same as its bounding box either (the notch
+      // where neither one reaches), so the reactive override needs to
+      // be told the difference the same way. moat carries what's needed
+      // to reproduce the moat/bridge too, for the exact same reason —
+      // both are what actually fixes "ground generation doing what the
+      // church did", not just the shapeFn alone.
+      function inCastle(x, z) {
+        return (x >= kx0 && x <= kx1 && z >= kz0 && z <= kz1) || (x >= tx0 && x <= tx1 && z >= tz0 && z <= tz1);
+      }
+      newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south', shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } });
       castlePlaced = true;
     }
     }
@@ -12730,8 +12777,20 @@
     },
   ];
   // Vivid, saturated palette per feedback (red/yellow/violet/blue etc)
-  // rather than the previous pastel-leaning set.
-  const FLOWER_COLORS = [0xe63946, 0xffd60a, 0x8e44ad, 0x2e86de, 0xff8c1a, 0xff5da2, 0xffffff];
+  // rather than the previous pastel-leaning set. Dimmed about 28% from
+  // that original set, though — full-saturation colours on an unlit
+  // (MeshBasicMaterial) surface render at a flat, fixed brightness
+  // completely untouched by the scene's own lighting, so next to
+  // everything else (which DOES darken normally at dusk, in shade,
+  // etc.) they read as if they're emitting their own light rather than
+  // just being colourful. This keeps the same hues and the same unlit
+  // material (a real fix — respecting scene lighting properly — would
+  // mean Lambert/Phong materials instead, which is a bigger, riskier
+  // change given how many flower instances exist across a loaded world
+  // at once), just pulls the raw brightness down enough that they sit
+  // alongside normally-lit terrain instead of visually popping out
+  // ahead of it.
+  const FLOWER_COLORS = [0xa62932, 0xb89a07, 0x66317d, 0x2160a0, 0xb86513, 0xb84375, 0xb8b8b8];
   // Flowers now grow in irregular, connected patches rather than a fine,
   // uniform sprinkle across every stretch of grass — long flower-free
   // gaps, then a blob of blooming ground roughly 5-10 blocks across.
@@ -12780,7 +12839,7 @@
   // 7 colours), but each one just a flat MeshBasicMaterial with no
   // dependency on a three.js feature this version doesn't have.
   const flowerStemMat = new THREE.MeshBasicMaterial({ color: 0x4a9d3f });
-  const flowerCenterMat = new THREE.MeshBasicMaterial({ color: 0xffd94d });
+  const flowerCenterMat = new THREE.MeshBasicMaterial({ color: 0xb89c37 }); // dimmed to match the petals above, same reasoning
   const FLOWER_MESH_CAP = 6000; // per (species, colour) pair — 5 × 7 = 35 of these, so the old single-mesh 40000 cap would be wasteful overkill repeated 35 times over
   FLOWER_TYPES.forEach(type => {
     const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, type.stemH, 5);

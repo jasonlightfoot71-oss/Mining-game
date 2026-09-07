@@ -4706,6 +4706,37 @@
   // back" bug, and in the other order, the real risk this whole
   // approach exists to avoid — a neighbouring chunk's own ordinary
   // terrain burying a house that already finished being built.
+  // The actual, root-cause fix for the "back of the second house" case:
+  // this recomputes the same deterministic formula generateChunkTerrain
+  // itself uses (elevation → amp/baseline → n → h, plus the ocean-basin
+  // clamp and the Mill blend), rather than reading columnHeight, which
+  // only has an answer once that column's own chunk has actually
+  // generated. A house's pad can reach past its own chunk's edge into a
+  // neighbour that hasn't loaded yet — which one, home or neighbour,
+  // happens to generate first is essentially down to which direction
+  // the player approached from, so anything relying on "has it
+  // generated yet" is going to work for one side and quietly fail for
+  // the other depending on travel direction, exactly what was reported.
+  // The terrain height was always knowable regardless — it's a pure
+  // function of x,z, not something that only exists once some chunk
+  // object gets built — so computing it directly sidesteps the timing
+  // question entirely instead of trying to out-guess it.
+  function naturalTerrainHeightAt(x, z) {
+    const elevation = biomeStretch(fbm(x * 0.008, z * 0.008));
+    const n = fbm(x * 0.045, z * 0.045) - 0.5;
+    const amp = 3 + elevation * 11;
+    const baseline = SEA_LEVEL - 6 + elevation * 22;
+    const oceanField = fbm(x * 0.0018 + 4000, z * 0.0018 + 4000);
+    let h = Math.round(baseline + n * amp);
+    if (oceanField > 0.985) {
+      const oceanStrength = (oceanField - 0.985) / 0.015;
+      h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength * 10));
+    }
+    h = Math.max(1, Math.min(WORLD_HEIGHT - 2, h));
+    const blend = pubBlendFactor(x, z);
+    if (blend < 1) h = Math.max(0, Math.round(h * blend));
+    return h;
+  }
   const villageClaimedColumns = new Set();
   const villageClaimedColumnsByCk = new Map(); // ck -> ["x,z", ...]
   function claimVillageColumn(ck, x, z) {
@@ -4753,9 +4784,17 @@
       for (let z = z0 - pad; z <= z1 + pad; z++) {
         const ck2 = x + ',' + z;
         const oldH = columnHeight.get(ck2);
+        // Falls back to computing the real natural height directly
+        // (see naturalTerrainHeightAt) rather than assuming "nothing
+        // there" whenever this column's own chunk hasn't generated yet
+        // — the pad on one side of a house routinely reaches past its
+        // own chunk's edge into a neighbour that may or may not exist
+        // yet, and guessing "nothing there" was exactly why the far
+        // side used to silently skip its clearing.
+        const effectiveH = oldH !== undefined ? oldH : naturalTerrainHeightAt(x, z);
         // Most of this pad is nowhere near 50 blocks of anything —
-        // stopping at this column's own actual recorded top (capped to
-        // topY) instead of always walking the full range skips a LOT of
+        // stopping at this column's own actual height (capped to topY)
+        // instead of always walking the full range skips a LOT of
         // iterations over air that was never going to have anything in
         // it. Water isn't tracked in columnHeight, so it can sit above
         // a low column's recorded top — but this whole 32-wide site
@@ -4764,7 +4803,7 @@
         // there's nothing left here to miss except the rare case where
         // the pad's own 10-block reach spills past the site's edge into
         // a neighbouring chunk that still has some.
-        const clearUpTo = Math.min(topY, oldH !== undefined ? oldH : gy);
+        const clearUpTo = Math.min(topY, effectiveH);
         for (let y = gy + 1; y <= clearUpTo; y++) {
           const k = key(x, y, z);
           blocks.delete(k); stepRotations.delete(k);
@@ -4790,7 +4829,7 @@
         // (topY) — genuine remaining blocks up there, so the recorded
         // height stays exactly what it was instead of being overwritten
         // with a floor level that's now sitting underneath them.
-        columnHeight.set(ck2, (oldH !== undefined && oldH > topY) ? oldH : gy);
+        columnHeight.set(ck2, effectiveH > topY ? effectiveH : gy);
         markVillageGround(x, z, gy);
         claimVillageColumn(ck, x, z);
       }
@@ -4821,8 +4860,16 @@
     const pad = 10;
     const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
     function wallColumn(x, z, dx, dz) {
-      const naturalH = columnHeight.get((x + dx) + ',' + (z + dz));
-      if (naturalH === undefined || naturalH <= gy) return; // outside is at or below the pad's own level — nothing to hold back
+      const nx = x + dx, nz = z + dz;
+      const recorded = columnHeight.get(nx + ',' + nz);
+      // Same fallback as clearSkyAroundHouse, and for the same reason —
+      // this neighbouring column may belong to a chunk that hasn't
+      // generated yet, so its real height has to be computed directly
+      // rather than assumed absent. This also means the wall's height
+      // is guaranteed to match whatever that chunk generates to later,
+      // since both come from the exact same formula.
+      const naturalH = recorded !== undefined ? recorded : naturalTerrainHeightAt(nx, nz);
+      if (naturalH <= gy) return; // outside is at or below the pad's own level — nothing to hold back
       for (let y = gy + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
     }
     if (doorSide !== 'west') for (let z = padZ0; z <= padZ1; z++) wallColumn(padX0, z, -1, 0);

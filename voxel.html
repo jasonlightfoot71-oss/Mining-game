@@ -4684,6 +4684,59 @@
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
   const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
+  // Every house's footprint, keyed by the chunk that built it — checked
+  // before placing a new one so two villages (or a grid one and a
+  // forced one) can never land close enough to overlap. Removing the
+  // terrain gate made this a real risk for the first time: villages
+  // used to be rare enough, and restricted enough to open ground, that
+  // two of them landing near each other basically never happened. Kept
+  // per-village-chunk rather than one flat list so teardownVillage can
+  // free a village's own reservation when it unloads (see there).
+  const villageHouseFootprints = new Map(); // ck -> [{x0,x1,z0,z1}, ...]
+  const HOUSE_MIN_GAP = 15;
+  function houseTooCloseToExisting(fx0, fx1, fz0, fz1, excludeCk) {
+    for (const [k, list] of villageHouseFootprints) {
+      if (k === excludeCk) continue;
+      for (const h of list) {
+        const dx = Math.max(0, fx0 - h.x1, h.x0 - fx1);
+        const dz = Math.max(0, fz0 - h.z1, h.z0 - fz1);
+        if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
+      }
+    }
+    return false;
+  }
+  // Clears a big box of open sky around a house BEFORE it's built — 10
+  // blocks out past its own footprint on every side, 50 blocks up from
+  // its own floor. With the terrain gate gone, houses can now land
+  // anywhere, including inside a mountainside — without this, that
+  // meant rock clipping straight through the walls and roof, or an
+  // overhang burying the whole thing. This only ever deletes blocks
+  // FROM the floor level UPWARD, never below it, so a genuinely lower
+  // natural slope just off to one side (the normal case the terracing
+  // skirt is built to handle) is left completely alone — this is only
+  // for clearing away whatever was in the airspace the house itself
+  // needs, not re-grading the ground around it.
+  function clearSkyAroundHouse(x0, x1, z0, z1, gy) {
+    const pad = 10, topY = gy + 50;
+    for (let x = x0 - pad; x <= x1 + pad; x++) {
+      for (let z = z0 - pad; z <= z1 + pad; z++) {
+        for (let y = gy; y <= topY; y++) {
+          const k = key(x, y, z);
+          if (blocks.has(k)) { blocks.delete(k); stepRotations.delete(k); }
+          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+        }
+        // Only ever lowers a column's recorded height, and only when
+        // that column's old top actually fell inside the range just
+        // cleared — a peak taller than the full 50-block clearance
+        // (rare, but possible near real mountains) still has genuine
+        // surviving blocks above topY, so its recorded height is left
+        // exactly as it was rather than guessed at.
+        const ck2 = x + ',' + z;
+        const oldH = columnHeight.get(ck2);
+        if (oldH !== undefined && oldH >= gy && oldH <= topY) columnHeight.set(ck2, gy - 1);
+      }
+    }
+  }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
   // Exactly one candidate chunk per VILLAGE_CHUNK_STRIDE x STRIDE grid
@@ -5167,6 +5220,7 @@
     const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
+    const ck = cx + '_' + cz;
     // Terrain-suitability gating removed entirely — villages are now
     // allowed on any terrain: mountains, beaches, lake edges, forests,
     // all of it. Two rounds of tuning this threshold (first 0.32, then
@@ -5433,12 +5487,29 @@
     });
 
     let built = 0;
+    const newHouseFootprints = [];
     plots.forEach((plot, i) => {
       // Empty-plot chance disabled for now — while there's only one
       // building type, always build it so it's reliable to find and test.
       const type = pool[i];
       const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
       const { plotY, baseSurfaceType, subFillType } = plotInfo[i];
+
+      // Overlap guard — plot.x0/z0 here always line up with the house's
+      // own footprint (buildVillageHouse anchors its 11×11 exactly on
+      // plot.x0/z0), so this can check the real footprint directly
+      // without waiting for the house itself to be built. Checked
+      // against every OTHER village's houses only (excludeCk is this
+      // village's own key, which has nothing registered yet at this
+      // point) — the two houses in this same village are meant to sit
+      // exactly HOUSE_MIN_GAP-ish apart on purpose, not 15, so they're
+      // never compared against each other here.
+      if (type === 'house') {
+        const fx0 = plot.x0, fx1 = plot.x0 + 10, fz0 = plot.z0, fz1 = plot.z0 + 10;
+        if (houseTooCloseToExisting(fx0, fx1, fz0, fz1, ck)) return; // too close to an already-built house — leave this plot empty rather than overlap it
+        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY);
+        newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1 });
+      }
 
       for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
         for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
@@ -5512,6 +5583,7 @@
       else if (type === 'castle') { shell = buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
       built++;
     });
+    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village is done, so its own two houses were never checked against each other above
 
     // Retaining wall against any water still standing right outside the
     // site. The very first pass in this function strips ALL water out
@@ -5550,7 +5622,6 @@
     for (let z = wz0; z <= wz1; z++) { siteWaterWallColumn(wx0, z, -1, 0); siteWaterWallColumn(wx1, z, 1, 0); }
     for (let x = wx0; x <= wx1; x++) { siteWaterWallColumn(x, wz0, 0, -1); siteWaterWallColumn(x, wz1, 0, 1); }
 
-    const ck = cx + '_' + cz;
     const npcCount = Math.min(3, 2 + Math.floor(rng() * 2)); // cut down from a 5-7 cap — villages are generating much more often now (see the force-distance backstop), so each one's own ongoing per-frame cost (wander AI, animation) needed to come down to compensate
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
@@ -5611,6 +5682,7 @@
     v.npcs.forEach(n => { scene.remove(n.mesh); disposeObject3D(n.mesh); });
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageRegistry.delete(ck);
+    villageHouseFootprints.delete(ck); // frees this village's reserved footprint so the SAME deterministic village can rebuild here later without the overlap guard mistaking its own old spot for someone else's house
   }
 
   // ── Village map (discovered villages, saved locally) ──────────────

@@ -1233,7 +1233,19 @@
     });
     (data.water||[]).forEach(([x,y,z,lvl]) => waterBlocks.set(key(x,y,z), lvl || 1)); // lvl||1 — older saves store a flow-level integer (or nothing) here, not a height fraction; both fall back to a full block, same as rebuildWaterGeometry's own fallback
     applyFixtureData(data);
-    if (data.player) player.pos.set(data.player.x, data.player.y, data.player.z);
+    if (data.player) {
+      // +25 vertical safety margin, same fix as spawnDefault() and for
+      // the same reason: villages and other structures have changed
+      // shape and layout repeatedly this session, so a position saved
+      // under an older version of that generation code can land
+      // squarely inside a wall that didn't used to be there once the
+      // world regenerates under the current code. X/Z are still
+      // exactly where they left off — only the height gets a margin,
+      // falling the rest of the way down onto whatever's actually there
+      // now rather than being placed directly inside it.
+      player.pos.set(data.player.x, data.player.y + 25, data.player.z);
+      player.vel.set(0,0,0);
+    }
     if (typeof data.yaw === 'number') yaw = data.yaw;
     if (typeof data.pitch === 'number') pitch = data.pitch;
     if (typeof data.flying === 'boolean') flying = data.flying;
@@ -7524,13 +7536,18 @@
   let vehicleEngine = null; // { osc1, osc2, gain, filter, baseFreq, detune }
   function startVehicleEngineSound(typeIdx) {
     if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume(); // defensive — ensureAudio() already runs on Start, but a context that somehow never got resumed would otherwise fail completely silently here, with nothing to show anything went wrong
     stopVehicleEngineSound();
     const type = VEHICLE_TYPES[typeIdx] || VEHICLE_TYPES[0];
-    let waveform = 'triangle', baseFreq = 110, detune = 6, filterFreq = 700; // default — Electric Scooter's own electric whine
-    if (type.boat) { waveform = 'sawtooth'; baseFreq = 55; detune = 5; filterFreq = 350; } // Boat — low choppy motor putter
-    else if (type.name === 'Helicopter') { waveform = 'square'; baseFreq = 45; detune = 3; filterFreq = 260; } // deep, buzzy rotor thrum
-    else if (type.name === 'Hot Air Balloon') { waveform = 'sine'; baseFreq = 90; detune = 2; filterFreq = 800; } // quiet, gentle burner hiss rather than an engine at all
-    else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 90; detune = 5; filterFreq = 600; } // brighter, more "engine" than the scooter
+    // Base frequencies raised from the first pass (45-110Hz) — that
+    // range sits right where small phone speakers reproduce bass
+    // poorly, so the whole thing was quiet to the point of sounding
+    // like nothing was playing at all even though it technically was.
+    let waveform = 'triangle', baseFreq = 170, detune = 8, filterFreq = 900; // default — Electric Scooter's own electric whine
+    if (type.boat) { waveform = 'sawtooth'; baseFreq = 90; detune = 6; filterFreq = 500; } // Boat — low choppy motor putter
+    else if (type.name === 'Helicopter') { waveform = 'square'; baseFreq = 75; detune = 4; filterFreq = 380; } // deep, buzzy rotor thrum
+    else if (type.name === 'Hot Air Balloon') { waveform = 'sine'; baseFreq = 140; detune = 3; filterFreq = 1000; } // quiet, gentle burner hiss rather than an engine at all
+    else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 140; detune = 6; filterFreq = 800; } // brighter, more "engine" than the scooter
     const gain = audioCtx.createGain();
     gain.gain.value = 0.001;
     const filter = audioCtx.createBiquadFilter();
@@ -7558,10 +7575,34 @@
     const speed = Math.sqrt(player.vel.x*player.vel.x + player.vel.y*player.vel.y + player.vel.z*player.vel.z);
     const t = Math.min(1, speed / 8); // normalised against a reasonable top speed — exact value doesn't need to be precise, just enough range to hear the engine "rev"
     const now = audioCtx.currentTime;
-    vehicleEngine.gain.gain.setTargetAtTime(0.05 + t * 0.09, now, 0.15);
+    vehicleEngine.gain.gain.setTargetAtTime(0.12 + t * 0.16, now, 0.15); // raised from 0.05+0.09 — same reasoning as the frequency change above, this was too quiet to reliably notice
     const freqMul = 1 + t * 0.6;
     vehicleEngine.osc1.frequency.setTargetAtTime(vehicleEngine.baseFreq * freqMul, now, 0.15);
     vehicleEngine.osc2.frequency.setTargetAtTime((vehicleEngine.baseFreq + vehicleEngine.detune) * freqMul, now, 0.15);
+  }
+  // The rider — the local player has no first-person body mesh at all
+  // normally (never needed one, being a first-person view), but the
+  // vehicle camera pulls back to third-person while riding, and an
+  // empty seat looking back at yourself driving reads as obviously
+  // wrong the moment you actually see it. Built once per ride, using
+  // the same figure/colours a remote player would see you as, and
+  // parented directly to the vehicle's own group so it moves and turns
+  // with it automatically rather than needing its own position update
+  // every frame.
+  let riderMesh = null;
+  function addRiderToVehicle(v) {
+    removeRiderFromVehicle();
+    const figure = buildCustomerFigure(true, getMyAvatarColors());
+    figure.position.set(0, 0.5, 0); // roughly seat height above the vehicle's own origin — not tuned per vehicle type, so it may sit a little high/low on some of them
+    figure.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    v.group.add(figure);
+    riderMesh = figure;
+  }
+  function removeRiderFromVehicle() {
+    if (!riderMesh) return;
+    if (riderMesh.parent) riderMesh.parent.remove(riderMesh);
+    disposeObject3D(riderMesh);
+    riderMesh = null;
   }
   function enterVehicle(v) {
     if (ridingVehicle || !v) return;
@@ -7575,6 +7616,7 @@
     document.getElementById('vehicleExitBtn').style.display = 'block';
     ensureAudio();
     startVehicleEngineSound(v.typeIdx);
+    addRiderToVehicle(v);
   }
   function exitVehicle() {
     if (!ridingVehicle) return;
@@ -7582,6 +7624,7 @@
     flying = vehiclePrevFlying;
     ridingVehicle = null;
     stopVehicleEngineSound();
+    removeRiderFromVehicle();
     document.getElementById('vehicleExitBtn').style.display = 'none';
     // Cleans itself up rather than staying parked wherever you happened
     // to get out — vehicles can be driven a long way from where they
@@ -16887,7 +16930,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; stopVehicleEngineSound(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       updateVehicleEngineSound();
 
       // bob held item slightly with movement

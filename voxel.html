@@ -4045,15 +4045,20 @@
     const group = new THREE.Group();
     const bladeMat = new THREE.MeshPhongMaterial({ color: 0xcbb892, flatShading: true, shininess: 0 });
     const hubMat = new THREE.MeshPhongMaterial({ color: 0x4a3320, flatShading: true, shininess: 0 });
+    // Scaled up to match the windmill's own size (was 2.6 long, barely a
+    // third of the tower's own 7-wide footprint) — each blade now
+    // reaches 5.2 out from the hub, so tip-to-tip the whole sail spans
+    // about 10.4, comparable to the building itself rather than a small
+    // decorative accent on the front of it.
     for (let i = 0; i < 4; i++) {
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.6, 0.08), bladeMat);
-      blade.position.y = 1.3; // offset from the pivot so it reads as a blade sweeping out, not a box centred on the hub
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.8, 5.2, 0.15), bladeMat);
+      blade.position.y = 2.6; // offset from the pivot so it reads as a blade sweeping out, not a box centred on the hub
       const holder = new THREE.Group();
       holder.add(blade);
       holder.rotation.z = (i / 4) * Math.PI * 2;
       group.add(holder);
     }
-    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.3, 8), hubMat);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.5, 8), hubMat);
     hub.rotation.x = Math.PI / 2;
     group.add(hub);
     group.position.set(x, y, z);
@@ -6233,17 +6238,28 @@
         }
       }
     }
-    addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 5);
+    // Roof — flat on the north side (where the sails mount) instead of
+    // the usual symmetric pyramid: that side's edge (z0) stays fixed
+    // every layer while the other three recede as normal, so it reads
+    // as a proper flat mounting face for the sails rather than the roof
+    // sloping down into them.
+    let rx0 = x0 - 1, rx1 = x1 + 1, rz1 = z1 + 1, ry = gy + h + 1, rlayer = 0;
+    while (rx0 <= rx1 && rz1 >= z0 && rlayer < 5) {
+      for (let x = rx0; x <= rx1; x++) for (let z = z0; z <= rz1; z++) { blocks.set(key(x, ry, z), palette.roof); trackVillageHeight(x, z, ry); }
+      rx0++; rx1--; rz1--; ry++; rlayer++;
+    }
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [] };
     const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
     placeShellDoor(shell, 'south', reg, 0);
     placeShellLight(shell, 'south', reg);
     buildVillageHouseWindowGeneric(x0, gy + 3, midZ, false, palette); // west wall
     buildVillageHouseWindowGeneric(x1, gy + 3, midZ, false, palette); // east wall
-    // Sails mounted on the north wall (opposite the door), on their own
-    // pivot at roughly the height of the wall's own midpoint — see
-    // addWindmillSails/updateWindmillSails for the actual rotation.
-    addWindmillSails(midX + 0.5, gy + h - 1, z0 - 0.05, ck);
+    // Sails mounted on the flat north face, roughly centred on the
+    // wall's own height — big enough now (see addWindmillSails) that
+    // centring on the walls rather than tucked right under the roof
+    // gives them room top and bottom without clipping into the ground
+    // or the roofline.
+    addWindmillSails(midX + 0.5, gy + h / 2, z0 - 0.1, ck);
     return { shell, reg };
   }
   const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
@@ -7001,11 +7017,9 @@
     // than the last one" — checked here exactly the same way as
     // everything else (the registry, edge-to-edge, excluding this
     // village's own siblings not yet registered), just with a much
-    // bigger number behind it. Attempts in roughly every 2nd village now
-    // (was 1 in 7) — villages themselves are much rarer since the
-    // spacing widened to 300+, so a castle needing to be a genuine rare
-    // find on top of that made them turn up far too seldom overall.
-    if (rng() < 0.5) {
+    // bigger number behind it. Back to attempting in every village —
+    // the 50% gate on top of villages already being 300+ blocks apart
+    // made it too rare to actually find in practice.
     const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
     let castlePlaced = false;
     // 40 attempts, not 16 — removing the overlap-skip fallback (see
@@ -7050,7 +7064,6 @@
       }
       newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south', shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } });
       castlePlaced = true;
-    }
     }
     newHouseFootprints.forEach(entry => registerBuildingFootprint(entry, ck)); // registered only now, after the whole village (houses, shop, church, landmark, farm, and castle, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 

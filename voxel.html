@@ -4929,7 +4929,13 @@
     addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 4);
 
     const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
-    placeShellDoor(shell, doorSide, reg, 0);
+    // Door shifted 2 blocks off-centre — dead centre is exactly where
+    // the interior divider walls below cross (they're built along
+    // midX/midZ, same as a centred door would be), so a centred door
+    // opened directly into the divider with no way through. Off by 2,
+    // it lines up with open floor inside one specific room instead.
+    const doorShell = Object.assign({}, shell, { midX: midX - 2, midZ: midZ - 2 });
+    placeShellDoor(doorShell, doorSide, reg, 0);
 
     // One window centred on each wall that ISN'T the door wall, rows
     // gy+3..gy+5 — leaves two solid wall rows below and one above
@@ -5143,7 +5149,7 @@
   }
 
   // ── Assembly ────────────────────────────────────────────────────
-  function buildVillageInChunk(cx, cz, rng, relaxed) {
+  function buildVillageInChunk(cx, cz, rng) {
     // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
     // between plots along the road from 1 row to 3) specifically so
     // buildings have real breathing room around them instead of nearly
@@ -5161,53 +5167,18 @@
     const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
-    // Checks the site's own underlying ELEVATION field first — the same
-    // slow-moving value the terrain generator itself uses to decide how
-    // rugged a given area is allowed to get (see the terrain gen's own
-    // "amp = 3 + elevation*11" — higher elevation directly means bigger,
-    // sharper local height swings). A handful of sampled points can
-    // easily miss a hidden ridge or spike between them (this terrain's
-    // own local noise has real texture over spans as short as ~20
-    // blocks, comparable to the gap between sample points), but this
-    // reads the actual PARAMETER that controls how much swing is even
-    // possible here at all, so it can't be fooled by unlucky sampling —
-    // only genuinely low-amplitude (lowland/plains-type) terrain passes,
-    // which is what actually keeps villages off mountainous ground
-    // regardless of exactly where the peaks happen to fall.
-    // This gate alone rejects roughly 4 out of 5 chunks along a typical
-    // path — the underlying noise is smooth, not per-chunk random, so
-    // rejections cluster into long stretches (a straight flight can sit
-    // inside one "too rugged" zone for many hundreds of blocks). That's
-    // fine for the normal stride-grid candidate below, which can just
-    // wait for its next cycle — but the force-distance backstop in
-    // maybeBuildVillage exists specifically to GUARANTEE a village
-    // within a bounded distance, and a gate this strict was quietly
-    // defeating it: it kept retrying on every new chunk exactly as
-    // designed, but almost everything it tried still failed here first.
-    // `relaxed` (set only by that backstop, never by a normal grid
-    // candidate) raises the ceiling a long way — the terracing/skirt
-    // system below is what actually keeps a village on rougher ground
-    // from looking bad, not this gate, so it can afford to let a lot
-    // more terrain through when something's actually guaranteeing a
-    // result rather than just taking whatever the grid offers.
-    if (biomeStretch(fbm(vcx*0.008, vcz*0.008)) > (relaxed ? 0.85 : 0.32)) return;
-    // Denser grid than before (was just 4 corners + centre) as a second,
-    // belt-and-braces check — even within terrain the elevation gate
-    // above allows, this catches any remaining local spike the coarser
-    // sampling used to miss entirely.
-    // Divides by FS-1, not FS — gx/gz run 0..5 so the LAST sample
-    // should land exactly on the site's own far edge (wx1/wz1, i.e.
-    // offset FS-1 from wx0/wz0), not one column past it. That extra
-    // column used to be harmless because it still fell on this same
-    // chunk's own already-generated ground (the old FS=30 with a
-    // 1-block margin meant "one past the site" was still comfortably
-    // inside the chunk) — widening the site to the FULL chunk width
-    // (see FS above) pushed that same off-by-one into the NEXT chunk's
-    // own territory instead, which very often hasn't generated yet,
-    // silently failing the "hasn't generated" check below and killing
-    // village generation outright. Sampling the site's own real bounds
-    // instead of one column beyond them fixes this at the source,
-    // regardless of how wide FS ever ends up being.
+    // Terrain-suitability gating removed entirely — villages are now
+    // allowed on any terrain: mountains, beaches, lake edges, forests,
+    // all of it. Two rounds of tuning this threshold (first 0.32, then
+    // a "relaxed" 0.85 for the force-distance backstop) still weren't
+    // enough — the underlying noise is smooth rather than per-chunk
+    // random, so failures cluster into long unbroken stretches, and no
+    // single cutoff reliably avoided that. The grading/terracing system
+    // further down (per-plot floor height, the gradual 1-block-step
+    // skirt, and the water retaining wall) is what actually keeps a
+    // village looking reasonable on rough ground — that's the real
+    // fix, not a gate that quietly stops anything from being built at
+    // all whenever the map doesn't cooperate.
     const checkPts = [];
     for (let gx = 0; gx <= 5; gx++) {
       for (let gz = 0; gz <= 5; gz++) {
@@ -5216,25 +5187,9 @@
     }
     for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
 
-    // This used to require the whole village area be quite flat (a
-    // strict single-point steepness check), back when each plot graded
-    // to one centre sample of its own — a plot's floor could otherwise
-    // end up far below (or above) its own immediate surroundings. Each
-    // plot now grades to the highest natural point anywhere within its
-    // own footprint instead (see the max-height sampling further down),
-    // which handles small everyday unevenness directly. But that only
-    // ever smooths things out at the scale of a single plot (a few
-    // blocks) — it was loosened too far to 24 at one point, which let
-    // villages spawn on genuinely mountainous terrain the shared road
-    // (which DOES stay one single flat grade — see below) then had to
-    // cut straight through, leaving the road itself sitting at the
-    // bottom of a real canyon with tall natural walls either side no
-    // amount of per-plot patching can hide. Back down to a much
-    // stricter cap — this is what actually keeps villages off terrain
-    // steep enough to need that.
     const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
     if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
-    if (Math.max(...cornerHeights) - Math.min(...cornerHeights) > (relaxed ? 24 : 10)) return; // too steep/mountainous for a village this time
+
 
     // Trees (and anything else terrain generation naturally scattered
     // there) already exist across this whole area by the time a village
@@ -5635,7 +5590,7 @@
     const dx = wcx - lastVillageWorldPos.x, dz = wcz - lastVillageWorldPos.z;
     if (Math.sqrt(dx * dx + dz * dz) < VILLAGE_FORCE_DISTANCE) return;
     const rng = mulberry32(seedFromHash(cx * 5303 + cz * 9127 + 401, cz * 2917 + cx * 6551 + 233));
-    buildVillageInChunk(cx, cz, rng, true);
+    buildVillageInChunk(cx, cz, rng);
   }
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);

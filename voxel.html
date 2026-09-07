@@ -2208,6 +2208,22 @@
           let handled = false;
           for (const house of nearbyHouses) {
             const padX0 = house.x0 - 10, padX1 = house.x1 + 10, padZ0 = house.z0 - 10, padZ1 = house.z1 + 10;
+            // A building's own actual footprint (as opposed to the pad
+            // around it) is already built directly, chunk-boundary-
+            // agnostic, the moment it's placed — that's how a single
+            // building can even span two chunks in the first place (see
+            // where the shop gets positioned). If this check ever sees
+            // a building in its list at all, that building has ALREADY
+            // been fully constructed — so any column inside its actual
+            // footprint is already exactly right, and this only needs
+            // to stop ordinary generation from burying it. Skipping
+            // straight to that, with no floor/wall logic re-applied
+            // here, is what was missing: without it, a footprint column
+            // still fell into the pad-shaped floor/wall check below
+            // (its bounds comfortably contain the footprint too) and
+            // got overwritten with plain natural-terrain material
+            // instead of the building's own proper floor.
+            if (x >= house.x0 && x <= house.x1 && z >= house.z0 && z <= house.z1) { handled = true; break; }
             // The escape staircase (see carveHouseEscapeStair) cuts
             // through the wall on the side directly opposite the door,
             // reaching up to 10 blocks PAST the pad's own edge — outside
@@ -5257,9 +5273,15 @@
     const x1 = x0 + w - 1, z1 = z0 + d - 1;
     const midX = x0 + 5, midZ = z0 + 5;
 
-    // Floor
+    // Floor — always wood plank, regardless of the village's own
+    // palette. Every other palette's own floor material (stone for
+    // Cobblestone Hamlet, sand for Desert Outpost, etc.) is right for
+    // the house, matching whatever the village is built from, but a
+    // shop reads as a shop partly BECAUSE of a proper wooden floor
+    // underfoot — matching the palette here would just make an interior
+    // that looks the same material as bare stone/sand ground outside.
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
-      blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+      blocks.set(key(x, gy, z), 6); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
     }
     // Walls — same corner/cap trim pattern as the house
     for (let x = x0; x <= x1; x++) {

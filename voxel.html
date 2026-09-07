@@ -2270,7 +2270,33 @@
             // (its bounds comfortably contain the footprint too) and
             // got overwritten with plain natural-terrain material
             // instead of the building's own proper floor.
-            if (x >= house.x0 && x <= house.x1 && z >= house.z0 && z <= house.z1) { handled = true; break; }
+            //
+            // The church broke the assumption this was originally built
+            // on: its bounding box isn't the same as its actual built
+            // shape (the cross has "notch" corners — bounding box, but
+            // outside the cross — that the building's own construction
+            // never touches at all, only clearSkyAroundHouse's generic
+            // flat fill does). Skipping the WHOLE bounding box outright
+            // was fine for a plain rectangle, where the two are the same
+            // thing, but for the church those notches would get treated
+            // as "already built" and left with nothing in them at all —
+            // no wall/floor logic AND no ordinary generation either —
+            // exactly the fall-through hole reported. shapeFn (only set
+            // for non-rectangular buildings — see the church) lets this
+            // tell the difference: inside the real shape, skip as
+            // before; inside the box but outside the shape, fall through
+            // to the same flat floor treatment the pad gets, rather than
+            // silently doing nothing.
+            const inBox = x >= house.x0 && x <= house.x1 && z >= house.z0 && z <= house.z1;
+            if (inBox && (!house.shapeFn || house.shapeFn(x, z))) { handled = true; break; }
+            if (inBox) {
+              blocks.set(key(x, house.gy, z), house.baseSurfaceType);
+              for (let y = Math.max(0, house.gy - 16); y < house.gy; y++) blocks.set(key(x, y, z), house.subFillType);
+              columnHeight.set(x + ',' + z, house.gy);
+              markVillageGround(x, z, house.gy);
+              handled = true;
+              break;
+            }
             // The escape staircase (see carveHouseEscapeStair) cuts
             // through the wall on the side directly opposite the door,
             // reaching up to 10 blocks PAST the pad's own edge — outside
@@ -3944,6 +3970,58 @@
       if (d.bx===bx && d.by===by && d.bz===bz) removeDoor(dk);
     }
   }
+  // Town bell — a standalone scene object like a door or sign rather
+  // than a voxel block, precisely so hitting it can play a sound
+  // instead of mining it away (see doMine's own bell case). Just the
+  // bell body itself here — the surrounding frame it hangs from is
+  // ordinary voxel blocks, built separately (see buildVillageBell), so
+  // it looks like part of the same village architecture and stays
+  // normally minable.
+  const bells = new Map(); // "bx,by,bz" -> { group, bx, by, bz }
+  function addBell(bx, by, bz) {
+    const bk = key(bx, by, bz);
+    if (bells.has(bk)) return bk;
+    const group = new THREE.Group();
+    const bellMat = new THREE.MeshPhongMaterial({ color: 0xcda434, shininess: 40, flatShading: true });
+    const bell = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.4, 0.55, 10), bellMat);
+    bell.position.set(0, 0, 0);
+    bell.name = 'bellBody';
+    group.add(bell);
+    const lip = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.06, 10), bellMat);
+    lip.position.set(0, -0.27, 0);
+    group.add(lip);
+    group.position.set(bx + 0.5, by + 1, bz + 0.5);
+    scene.add(group);
+    bells.set(bk, { group, bx, by, bz });
+    return bk;
+  }
+  function removeBell(bk) {
+    const b = bells.get(bk);
+    if (!b) return;
+    scene.remove(b.group);
+    disposeObject3D(b.group);
+    bells.delete(bk);
+  }
+  // A quick visual "clang" — the bell body rocks briefly on its own
+  // hinge point rather than just relying on the sound alone, so hitting
+  // it reads as an actual physical hit even with the sound off.
+  let bellSwings = []; // { group, start }
+  function ringBell(bk) {
+    const b = bells.get(bk);
+    if (!b) return;
+    playBellRing();
+    bellSwings.push({ group: b.group, start: performance.now() });
+  }
+  function updateBellSwings() {
+    if (!bellSwings.length) return;
+    const now = performance.now();
+    bellSwings = bellSwings.filter(s => {
+      const t = (now - s.start) / 500; // half a second, matches the sound's own initial punch
+      if (t >= 1) { s.group.rotation.z = 0; return false; }
+      s.group.rotation.z = Math.sin(t * Math.PI * 3) * 0.18 * (1 - t);
+      return true;
+    });
+  }
   // Open-on-approach — each door tracks a 0 (closed) to 1 (open) progress
   // value, animated smoothly toward whichever it should be based on
   // distance to the player, rather than snapping instantly. Distance is
@@ -5450,8 +5528,87 @@
     buildChurchWindow(transx0, winY, transz0 + 3, false, 3, 6, palette, 48); // west transept — Sapphire
     buildChurchWindow(transx1, winY, transz0 + 3, false, 3, 6, palette, 49); // east transept — Emerald
     buildChurchWindow(midX, winY, navez1, true, 5, 6, palette, [47, 50, 48, 50, 47]); // chancel — Ruby/Amber/Sapphire/Amber/Ruby
+    // Two small single-block accent windows either side of the door,
+    // one row above its top (the door itself occupies gy+1 and gy+2, so
+    // this sits at gy+3) — placed directly rather than through
+    // buildChurchWindow, since a 1×1 window is too small for that
+    // helper's frame-plus-glass logic to make sense of (at width 1 it
+    // would render as solid frame with no glass at all).
+    blocks.set(key(midX - 1, gy + 3, navez0), 50); trackVillageHeight(midX - 1, navez0, gy + 3);
+    blocks.set(key(midX + 1, gy + 3, navez0), 50); trackVillageHeight(midX + 1, navez0, gy + 3);
 
-    return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h };
+    return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h, shapeFn: inChurch };
+  }
+  // Water well — a low stone curb ring around a single water source,
+  // with a simple wooden A-frame and crossbeam over the top. 3×3
+  // footprint, small enough that "same exterior rules as the others"
+  // barely matters, but it still gets the same clearing/wall treatment
+  // for consistency with everything else in the village.
+  function buildVillageWell(x0, z0, gy, palette) {
+    const cx = x0 + 1, cz = z0 + 1;
+    for (let x = x0; x <= x0 + 2; x++) {
+      for (let z = z0; z <= z0 + 2; z++) {
+        if (x === cx && z === cz) {
+          blocks.delete(key(x, gy, z)); // the well shaft itself — water, not floor
+          waterBlocks.set(key(x, gy, z), 1);
+          trackVillageHeight(x, z, gy);
+        } else {
+          blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+          blocks.set(key(x, gy + 1, z), palette.trim); trackVillageHeight(x, z, gy + 1); // low curb ring, one block tall
+        }
+      }
+    }
+    // Two corner posts and a crossbeam, framing the well like a real
+    // wishing-well roof — post material is always wood regardless of
+    // the village's own wall palette, since a stone village's own trim
+    // colour wouldn't necessarily read as a wooden frame.
+    [[x0, z0], [x0 + 2, z0 + 2]].forEach(([px, pz]) => {
+      for (let y = gy + 2; y <= gy + 4; y++) { blocks.set(key(px, y, pz), 6); trackVillageHeight(px, pz, y); }
+    });
+    for (let i = -1; i <= 1; i++) {
+      blocks.set(key(cx + i, gy + 5, cz + i), 6); trackVillageHeight(cx + i, cz + i, gy + 5); // diagonal beam, corner post to corner post
+    }
+    return { x0, x1: x0 + 2, z0, z1: z0 + 2, gy, h: 5 };
+  }
+  // Statue — a stone pedestal topped with a simple blocky standing
+  // figure. No attempt at anything sculptural (this is a voxel game); a
+  // recognisable standing silhouette — legs, torso, arms out, a head —
+  // reads as a statue well enough at this scale.
+  function buildVillageStatue(x0, z0, gy, palette) {
+    const cx = x0 + 1, cz = z0 + 1;
+    for (let x = x0; x <= x0 + 2; x++) {
+      for (let z = z0; z <= z0 + 2; z++) {
+        blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+        blocks.set(key(x, gy + 1, z), 2); trackVillageHeight(x, z, gy + 1); // Stone pedestal, always the same material regardless of village palette — a statue's plinth reads as carved stone specifically
+        blocks.set(key(x, gy + 2, z), 2); trackVillageHeight(x, z, gy + 2);
+      }
+    }
+    const base = gy + 2;
+    for (let y = base + 1; y <= base + 3; y++) { blocks.set(key(cx, y, cz), 2); trackVillageHeight(cx, cz, y); } // legs+torso, one column
+    blocks.set(key(cx - 1, base + 3, cz), 2); trackVillageHeight(cx - 1, cz, base + 3); // arms, out to each side at shoulder height
+    blocks.set(key(cx + 1, base + 3, cz), 2); trackVillageHeight(cx + 1, cz, base + 3);
+    blocks.set(key(cx, base + 4, cz), 2); trackVillageHeight(cx, cz, base + 4); // head
+    return { x0, x1: x0 + 2, z0, z1: z0 + 2, gy, h: 7 };
+  }
+  // Town bell — a small wooden frame (voxel blocks, minable/normal) with
+  // the bell itself (see addBell) hanging from the crossbeam as a
+  // separate, non-block scene object — that's what makes hitting it
+  // play a sound instead of just mining it away.
+  function buildVillageBell(x0, z0, gy, palette, reg) {
+    const cx = x0 + 1, cz = z0 + 1;
+    for (let x = x0; x <= x0 + 2; x++) {
+      for (let z = z0; z <= z0 + 2; z++) {
+        blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+      }
+    }
+    [[x0, z0], [x0 + 2, z0], [x0, z0 + 2], [x0 + 2, z0 + 2]].forEach(([px, pz]) => {
+      for (let y = gy + 1; y <= gy + 3; y++) { blocks.set(key(px, y, pz), 6); trackVillageHeight(px, pz, y); }
+    });
+    for (let x = x0; x <= x0 + 2; x++) { blocks.set(key(x, gy + 4, z0), 6); trackVillageHeight(x, z0, gy + 4); blocks.set(key(x, gy + 4, z0 + 2), 6); trackVillageHeight(x, z0 + 2, gy + 4); }
+    for (let z = z0; z <= z0 + 2; z++) { blocks.set(key(x0, gy + 4, z), 6); trackVillageHeight(x0, z, gy + 4); blocks.set(key(x0 + 2, gy + 4, z), 6); trackVillageHeight(x0 + 2, z, gy + 4); }
+    const bk = addBell(cx, gy + 2, cz); // hangs at gy+2 to gy+4, roughly centred under the frame's own crossbeam
+    if (bk) reg.bellKeys.push(bk);
+    return { x0, x1: x0 + 2, z0, z1: z0 + 2, gy, h: 5 };
   }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
@@ -5745,7 +5902,7 @@
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], npcs: [] };
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [] };
 
     // The road is the one part of the village that DOES stay a single
     // flat grade — everything else below is deliberately NOT flattened
@@ -6082,11 +6239,38 @@
       const { plotY: churchY, baseSurfaceType: churchBase, subFillType: churchSub } = computePlotGrade(cbx0, cbx1, cbz0, cbz1, roadY);
       clearSkyAroundHouse(cbx0, cbx1, cbz0, cbz1, churchY, churchBase, churchSub);
       buildHouseEdgeWall(cbx0, cbx1, cbz0, cbz1, churchY, palette, 'north');
-      buildVillageChurch(cbx0, cbz0, churchY, palette, reg);
-      newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north' });
+      const churchShell = buildVillageChurch(cbx0, cbz0, churchY, palette, reg);
+      newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north', shapeFn: churchShell.shapeFn }); // shapeFn is what lets the reactive override (generateChunkTerrain) tell the cross's real shape apart from its own bounding box's corners — see there
       churchPlaced = true;
     }
-    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, and church, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
+    // One small village landmark, chosen at random per village: a well,
+    // a statue, or the town bell. Same freestanding placement idea as
+    // the shop and church, just with a much smaller footprint (3×3) and
+    // gap requirement (8, not 10-20) — these are little decorative
+    // touches, not full buildings, and don't need nearly as much room
+    // around them to read fine on their own.
+    const LANDMARK_MIN_GAP = 8;
+    const landmarkKind = ['well', 'statue', 'bell'][Math.floor(rng() * 3)];
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const angle = rng() * Math.PI * 2, dist = 16 + rng() * 10;
+      const lcx = Math.round(houseCx + Math.cos(angle) * dist), lcz = Math.round(houseCz + Math.sin(angle) * dist);
+      const lx0 = lcx - 1, lx1 = lcx + 1, lz0 = lcz - 1, lz1 = lcz + 1; // 3×3
+      const skipOwnCheck = attempt >= 11;
+      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+        const dx = Math.max(0, lx0 - hf.x1, hf.x0 - lx1), dz = Math.max(0, lz0 - hf.z1, hf.z0 - lz1);
+        return Math.sqrt(dx * dx + dz * dz) < LANDMARK_MIN_GAP;
+      });
+      if (tooCloseToOwn || houseTooCloseToExisting(lx0, lx1, lz0, lz1, ck)) continue;
+      const { plotY: lY, baseSurfaceType: lBase, subFillType: lSub } = computePlotGrade(lx0, lx1, lz0, lz1, roadY);
+      clearSkyAroundHouse(lx0, lx1, lz0, lz1, lY, lBase, lSub);
+      buildHouseEdgeWall(lx0, lx1, lz0, lz1, lY, palette, 'north'); // doorSide is meaningless for these (no door), 'north' just picks a consistent side for the escape stair if one's needed
+      if (landmarkKind === 'well') buildVillageWell(lx0, lz0, lY, palette);
+      else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, lY, palette);
+      else buildVillageBell(lx0, lz0, lY, palette, reg);
+      newHouseFootprints.push({ x0: lx0, x1: lx1, z0: lz0, z1: lz1, gy: lY, baseSurfaceType: lBase, subFillType: lSub, trim: palette.trim, doorSide: 'north' });
+      break;
+    }
+    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, and landmark, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
     // Forces a visual resync of every ALREADY-generated chunk this
     // village actually wrote into. This is the real, root cause behind
@@ -6201,6 +6385,7 @@
     v.doorKeys.forEach(dk => removeDoor(dk));
     v.signKeys.forEach(sk => removeSign(sk));
     if (v.fixtureKeys) v.fixtureKeys.forEach(fk => removeFixture(fk));
+    if (v.bellKeys) v.bellKeys.forEach(bk => removeBell(bk));
     // NPC figures and decorative props (the bar counter etc. — see
     // placeVillageProp) are the biggest single source of what was
     // actually leaking here: each NPC alone is a whole buildCustomerFigure
@@ -10977,6 +11162,49 @@
     o2.connect(g2).connect(audioCtx.destination);
     o2.start(t2); o2.stop(t2+0.1);
   }
+  // A struck bell: a short filtered-noise "clang" transient (the strike
+  // itself) under a handful of sine partials at bell-like — deliberately
+  // NOT perfectly harmonic — ratios, each decaying at a slightly
+  // different rate so the chord thins out into just the fundamental as
+  // it fades, the way a real bell's overtones actually die away at
+  // different speeds rather than the whole tone dropping out at once.
+  function playBellRing() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const fundamental = 523.25; // C5 — bright and clear rather than a dull low toll
+    const partials = [1, 2.0, 2.4, 3.0, 4.2];
+    const gains =    [0.22, 0.14, 0.1, 0.07, 0.04];
+    const decay = 2.2;
+    partials.forEach((ratio, i) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'sine';
+      o.frequency.value = fundamental * ratio;
+      const d = decay - i * 0.35; // higher partials fade first, same reasoning as the comment above
+      g.gain.setValueAtTime(gains[i], now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + d);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(now); o.stop(now + d);
+    });
+    // The strike itself — a very short burst of high-passed noise, so
+    // the hit reads as metal-on-metal rather than the tone just fading
+    // in from nothing.
+    const dur = 0.05;
+    const bufferSize = Math.floor(audioCtx.sampleRate * dur);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = buffer;
+    const noiseFilter = audioCtx.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.value = 2200;
+    const noiseGain = audioCtx.createGain();
+    noiseGain.gain.setValueAtTime(0.3, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    noise.connect(noiseFilter).connect(noiseGain).connect(audioCtx.destination);
+    noise.start(now);
+  }
   window._voxelWasSubmerged = false;
 
   // ================= RAYCAST (voxel step) =================
@@ -11022,6 +11250,9 @@
     });
     doors.forEach((d, dk) => {
       consider('door', dk, d.bx + 0.5, d.by + 1, d.bz + 0.5, 0.7);
+    });
+    bells.forEach((b, bk) => {
+      consider('bell', bk, b.bx + 0.5, b.by + 1, b.bz + 0.5, 0.55);
     });
     return bestKey ? { kind: bestKind, fk: bestKey, dist: bestDist } : null;
   }
@@ -11107,6 +11338,17 @@
       blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5));
     }
     const furnitureTarget = raycastFurniture(6);
+    // The bell rings rather than being deleted — same targeting as
+    // every other non-block object here, but it's a permanent village
+    // fixture, not something a single hit removes the way furniture or
+    // a fixture/torch does.
+    if (furnitureTarget && furnitureTarget.kind === 'bell' && furnitureTarget.dist < blockDist) {
+      const b = bells.get(furnitureTarget.fk);
+      if (!b || !canEditAt(b.bx, b.bz)) { mineHeld = false; return; }
+      ringBell(furnitureTarget.fk);
+      mineHeld = false;
+      return;
+    }
     if (furnitureTarget && furnitureTarget.dist < blockDist) {
       // Same instant-delete idea for all three kinds now — furniture,
       // torches/fixtures, and doors — dispatched to whichever removeX
@@ -15707,6 +15949,10 @@
           const d = doors.get(furnitureTarget.fk);
           furnitureOutline.position.set(d.bx + 0.5, d.by + 1, d.bz + 0.5);
           furnitureOutline.scale.set(0.9, 2, 0.9);
+        } else if (furnitureTarget.kind === 'bell') {
+          const b = bells.get(furnitureTarget.fk);
+          furnitureOutline.position.set(b.bx + 0.5, b.by + 1, b.bz + 0.5);
+          furnitureOutline.scale.set(0.8, 0.8, 0.8);
         } else if (furnitureTarget.kind === 'sign') {
           const s = signs.get(furnitureTarget.fk);
           furnitureOutline.position.set(s.bx + 0.5 + s.nx*0.3, s.by + 0.5 + s.ny*0.3, s.bz + 0.5 + s.nz*0.3);
@@ -15868,6 +16114,7 @@
     updateFootballTriggers();
     updateGolfTriggers();
     updateDoors(dt);
+    updateBellSwings();
     updateWork(dt);
 
     updateSky(dt);

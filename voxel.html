@@ -4754,6 +4754,7 @@
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
   const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
+  let generatingVillageNeighbor = false; // hard recursion cap — see the guard around the forced-neighbour-generation call further down
   // Every house's footprint, keyed by the chunk that built it — checked
   // before placing a new one so two villages (or a grid one and a
   // forced one) can never land close enough to overlap. Removing the
@@ -5414,6 +5415,26 @@
     const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
     const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
     const ck = cx + '_' + cz;
+    // Set EARLY, not after this village finishes building — this is the
+    // actual cause of the freeze. Building a house now immediately
+    // force-generates its own back-side neighbouring chunk (see the
+    // call further down), which runs that neighbour's own
+    // maybeBuildVillage as part of its normal generation — and until
+    // this line moved up here, that ran while lastVillageWorldPos still
+    // held the PREVIOUS village's position. If this village only exists
+    // because the force-distance backstop had already tripped, that
+    // stale value was ALSO still far enough away to trip the backstop
+    // AGAIN for the neighbour being generated right now — which forces
+    // ITS OWN back-side neighbour, which does the same thing again, and
+    // so on: a fully synchronous chain of villages one chunk apart,
+    // each one triggering the next before any of them return, all
+    // inside a single call stack with nothing to stop it. Updating this
+    // the moment a village is actually committed to — before any of its
+    // houses or their neighbour-forcing ever run — means every one of
+    // those nested checks sees this village's real, current position
+    // immediately, correctly reporting "too close, don't build" instead
+    // of cascading.
+    lastVillageWorldPos = { x: vcx, z: vcz };
     // Terrain-suitability gating removed entirely — villages are now
     // allowed on any terrain: mountains, beaches, lake edges, forests,
     // all of it. Two rounds of tuning this threshold (first 0.32, then
@@ -5718,7 +5739,24 @@
         const neighborCx = backSide === 'west' ? cx - 1 : backSide === 'east' ? cx + 1 : cx;
         const neighborCz = backSide === 'north' ? cz - 1 : backSide === 'south' ? cz + 1 : cz;
         const neighborCk = neighborCx + '_' + neighborCz;
-        if (!generatedChunks.has(neighborCk)) { generateChunkTerrain(neighborCx, neighborCz); syncChunkInstances(neighborCx, neighborCz); }
+        // Hard cap on top of the lastVillageWorldPos fix above, not
+        // instead of it — that fix addresses the actual cause, but
+        // forcing a chunk to generate immediately, synchronously, from
+        // inside another chunk's own generation is exactly the shape of
+        // bug that freezes the whole page if anything else ever turns
+        // out to trigger a village here too, for any reason at all.
+        // This guarantees it can only ever nest one level deep no
+        // matter what: while a forced neighbour is being generated, ANY
+        // village that neighbour's own generation might trigger is
+        // still free to build normally, it just can't ALSO force one of
+        // its own neighbours into existence early — that one just
+        // streams in later the normal way, same as before this feature
+        // existed.
+        if (!generatingVillageNeighbor && !generatedChunks.has(neighborCk)) {
+          generatingVillageNeighbor = true;
+          try { generateChunkTerrain(neighborCx, neighborCz); syncChunkInstances(neighborCx, neighborCz); }
+          finally { generatingVillageNeighbor = false; }
+        }
       }
 
       // Both grading passes below are now skipped entirely for houses —
@@ -5850,7 +5888,6 @@
 
     villageRegistry.set(ck, reg);
     recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
-    lastVillageWorldPos = { x: vcx, z: vcz }; // resets the force-distance backstop's countdown from here
   }
   // Re-enabled — a brand new world ran fine with the exact same code,
   // which confirms this was never a village/furniture/water code bug at

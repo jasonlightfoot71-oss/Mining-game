@@ -6732,20 +6732,21 @@
     // cleared yard around it.
     const CHURCH_MIN_GAP = 10;
     let churchPlaced = false;
-    for (let attempt = 0; attempt < 14 && !churchPlaced; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 27 + rng() * 8; // clears both buildings' own half-widths plus the requested gap, for most angles with room to spare
+    for (let attempt = 0; attempt < 20 && !churchPlaced; attempt++) {
+      // Widened from 27-35 — that range only just cleared the required
+      // gap in the worst-case direction (the cross's own 21-long axis),
+      // which meant it was landing right at the edge often enough to
+      // still occasionally need the fallback below.
+      const angle = rng() * Math.PI * 2, dist = 32 + rng() * 16;
       const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
       const cbx0 = ccx - 7, cbx1 = ccx + 7, cbz0 = ccz - 10, cbz1 = ccz + 10;
-      // Last few attempts drop the check against this village's OWN
-      // other buildings (never the check against other villages,
-      // further down — that one guards against real overlap corruption
-      // and always applies) — 14 random tries failing to find 10 clear
-      // blocks in EVERY direction around two much smaller buildings
-      // would be extremely unlikely, but this exists so the church
-      // reliably shows up rather than depending on that being rare
-      // enough in practice.
-      const skipOwnCheck = attempt >= 11;
-      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+      // No fallback that skips this check any more — that was the
+      // actual cause of the church eating into other buildings: it
+      // guaranteed a church every time, at the cost of occasionally
+      // guaranteeing an overlap instead when every attempt failed. No
+      // church this village is a far smaller loss than one landing on
+      // top of a house.
+      const tooCloseToOwn = newHouseFootprints.some(hf => {
         const dx = Math.max(0, cbx0 - hf.x1, hf.x0 - cbx1), dz = Math.max(0, cbz0 - hf.z1, hf.z0 - cbz1);
         return Math.sqrt(dx * dx + dz * dz) < CHURCH_MIN_GAP;
       });
@@ -6800,7 +6801,7 @@
     // tilled dirt, grass — straight over that same flattened pad).
     const FARM_MIN_GAP = 12;
     let farmPlaced = false;
-    for (let attempt = 0; attempt < 14 && !farmPlaced; attempt++) {
+    for (let attempt = 0; attempt < 20 && !farmPlaced; attempt++) {
       const angle = rng() * Math.PI * 2, dist = 40 + rng() * 15;
       const fcx = Math.round(houseCx + Math.cos(angle) * dist), fcz = Math.round(houseCz + Math.sin(angle) * dist);
       const fx0 = fcx - 5, fx1 = fx0 + 10, fz0 = fcz - 4, fz1 = fz0 + 8; // farmhouse, 11×9
@@ -6808,8 +6809,11 @@
       const gx0 = fx1 + 1, gx1 = gx0 + 6, gz0 = fz0, gz1 = fz1; // cabbage, east, 7 wide
       const pz1 = fz0 - 1, pz0 = pz1 - 6, px0 = wx0, px1 = gx1; // pen, north (behind), 7 deep
       const bx0 = wx0, bx1 = gx1, bz0 = pz0, bz1 = fz1; // overall bounding box
-      const skipOwnCheck = attempt >= 11;
-      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+      // No fallback that skips this check — same fix as the church and
+      // castle below, and the landmarks before that. Guaranteeing a
+      // farm every time by occasionally guaranteeing an overlap instead
+      // was never actually worth it.
+      const tooCloseToOwn = newHouseFootprints.some(hf => {
         const dx = Math.max(0, bx0 - hf.x1, hf.x0 - bx1), dz = Math.max(0, bz0 - hf.z1, hf.z0 - bz1);
         return Math.sqrt(dx * dx + dz * dz) < FARM_MIN_GAP;
       });
@@ -6842,8 +6846,12 @@
       const kx0 = ccx - 9, kx1 = kx0 + 18, kz0 = ccz - 7, kz1 = kz0 + 14; // keep, 19×15
       const tx0 = kx0 - 5, tx1 = kx0 - 1, tz0 = kz0, tz1 = kz0 + 4; // tower, attached west, 5×5
       const sx0 = tx0, sx1 = kx1, sz0 = kz0, sz1 = kz1; // combined keep+tower footprint
-      const skipOwnCheck = attempt >= 13;
-      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+      // No fallback that skips this check — same fix as the church and
+      // farm above. The castle's own minimum gap is huge (75-100)
+      // precisely so it never lands anywhere near another building in
+      // the first place; skipping the check on a late attempt would
+      // have defeated that entirely.
+      const tooCloseToOwn = newHouseFootprints.some(hf => {
         const dx = Math.max(0, sx0 - hf.x1, hf.x0 - sx1), dz = Math.max(0, sz0 - hf.z1, hf.z0 - sz1);
         return Math.sqrt(dx * dx + dz * dz) < CASTLE_MIN_GAP;
       });
@@ -12708,34 +12716,59 @@
   snowMesh.receiveShadow = true;
   snowMesh.count = 0;
   scene.add(snowMesh);
+  // Spreads an expensive full-`blocks`-map pass across several frames
+  // instead of blocking on one giant synchronous loop — `blocks` can
+  // hold hundreds of thousands of entries across a big loaded world,
+  // and both the snow and flower overlay rebuilds below used to walk
+  // every single one of them in one go on every season change. That
+  // synchronous pass was the actual freeze being reported, not snow
+  // itself — the same rebuild for flowers was doing the same thing,
+  // just with more work per block, so it's fixed here too rather than
+  // leaving it to cause the same complaint at the next winter-to-
+  // spring change instead.
+  let backgroundMapScan = null; // { iterator, perItem, onComplete, budget }
+  function startBackgroundMapScan(mapRef, perItem, onComplete, budget) {
+    backgroundMapScan = { iterator: mapRef.entries(), perItem, onComplete, budget: budget || 20000 };
+  }
+  function stepBackgroundMapScan() {
+    if (!backgroundMapScan) return;
+    const { iterator, perItem, onComplete, budget } = backgroundMapScan;
+    for (let i = 0; i < budget; i++) {
+      const r = iterator.next();
+      if (r.done) { backgroundMapScan = null; onComplete(); return; }
+      if (perItem(r.value[0], r.value[1]) === true) { backgroundMapScan = null; onComplete(); return; } // perItem returns true to signal an early stop (MAX_INSTANCES hit)
+    }
+  }
   function rebuildSnowOverlay() {
     const dummy = new THREE.Object3D();
     let count = 0;
-    for (const [k, t] of blocks) {
-      if (count >= MAX_INSTANCES) break;
+    startBackgroundMapScan(blocks, (k, t) => {
+      if (count >= MAX_INSTANCES) return true;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || type.transparent) continue;
+      if (!type || type.half || type.transparent) return false;
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as
       // the flower overlay's own exclusion.
-      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
+      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) return false;
       // Excludes the tennis court too — a hard court dusted with snow
       // looked exactly as wrong as the pitch did. Matches buildTennisCourt's
       // own footprint (x:-55..-33, z:36..76) with the same small margin.
-      if (x >= -56 && x <= -32 && z >= 35 && z <= 77) continue;
+      if (x >= -56 && x <= -32 && z >= 35 && z <= 77) return false;
       // Excludes the crazy golf course — same reasoning, matches its own
       // apron footprint from buildGolfCourse.
-      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) continue;
+      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) return false;
       const aboveKey = key(x,y+1,z);
-      if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
-      if (!isExposedToSky(x,y,z)) continue; // skip anything under a roof
+      if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) return false;
+      if (!isExposedToSky(x,y,z)) return false; // skip anything under a roof
       dummy.position.set(x+0.5, y+1.03, z+0.5);
       dummy.updateMatrix();
       snowMesh.setMatrixAt(count++, dummy.matrix);
-    }
-    snowMesh.count = count;
-    snowMesh.instanceMatrix.needsUpdate = true;
+      return false;
+    }, () => {
+      snowMesh.count = count;
+      snowMesh.instanceMatrix.needsUpdate = true;
+    }, 20000);
   }
   function clearSnowOverlay() { snowMesh.count = 0; }
 
@@ -12864,31 +12897,31 @@
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
     const counts = FLOWER_TYPES.map(() => ({ stem: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
     let totalPlaced = 0;
-    for (const [k, t] of blocks) {
-      if (totalPlaced >= MAX_INSTANCES) break;
-      if (t !== 0) continue; // Grass only
+    startBackgroundMapScan(blocks, (k, t) => {
+      if (totalPlaced >= MAX_INSTANCES) return true;
+      if (t !== 0) return false; // Grass only
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch's own grass — flowers scattered
       // across the playing surface looked wrong on a marked-out pitch.
       // Matches buildFootballPitch's own footprint (x:-2..30, z:36..76)
       // with a small margin either side.
-      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) continue;
+      if (x >= -3 && x <= 31 && z >= 35 && z <= 77) return false;
       // Excludes the crazy golf course's own fairways for the same
       // reason — matches its apron footprint from buildGolfCourse.
-      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) continue;
+      if (x >= -85 && x <= -56 && z >= 34 && z <= 78) return false;
       const aboveKey = key(x,y+1,z);
-      if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) continue;
-      if (!isExposedToSky(x,y,z)) continue;
+      if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) return false;
+      if (!isExposedToSky(x,y,z)) return false;
       // Patch gate: smooth blob noise, not a per-block coin flip — most
       // of the map falls below the threshold and gets nothing at all
       // (the ~30-block gap), and where it does cross, it crosses as one
       // connected patch a handful of blocks wide, not scattered singles.
       const patchNoise = smoothNoise(x*FLOWER_PATCH_SCALE + 5000, z*FLOWER_PATCH_SCALE + 5000);
-      if (patchNoise < FLOWER_PATCH_THRESHOLD) continue;
+      if (patchNoise < FLOWER_PATCH_THRESHOLD) return false;
       const cx = x+0.5, cz = z+0.5;
       for (let s = 0; s < FLOWER_SLOTS.length; s++) {
-        if (totalPlaced >= MAX_INSTANCES) break;
+        if (totalPlaced >= MAX_INSTANCES) return true;
         // Independent per-slot bloom chance so a blooming tile isn't a
         // uniform stamped grid — most of its five slots fill, not all.
         if (flowerHash(x, z, 10+s) > 0.72) continue;
@@ -12935,15 +12968,17 @@
           }
         });
       }
-    }
-    FLOWER_TYPES.forEach((type, i) => {
-      type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
-      type.centerMesh.count = type.centerSize > 0 ? counts[i].stem : 0; type.centerMesh.instanceMatrix.needsUpdate = true;
-      type.petalMeshesByColor.forEach((mesh, ci) => {
-        mesh.count = counts[i].petalByColor[ci];
-        mesh.instanceMatrix.needsUpdate = true;
+      return false;
+    }, () => {
+      FLOWER_TYPES.forEach((type, i) => {
+        type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
+        type.centerMesh.count = type.centerSize > 0 ? counts[i].stem : 0; type.centerMesh.instanceMatrix.needsUpdate = true;
+        type.petalMeshesByColor.forEach((mesh, ci) => {
+          mesh.count = counts[i].petalByColor[ci];
+          mesh.instanceMatrix.needsUpdate = true;
+        });
       });
-    });
+    }, 5000); // smaller batch than snow's — each block here can do a whole extra loop over FLOWER_SLOTS plus several hash calls, so it costs more per item
   }
   function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
 
@@ -16808,6 +16843,7 @@
     updateDoors(dt);
     updateBellSwings();
     updateChurchAltars();
+    stepBackgroundMapScan(); // snow/flower overlay rebuilds — see there for why this needs to be incremental rather than one blocking pass
     updateWork(dt);
 
     updateSky(dt);

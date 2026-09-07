@@ -5712,7 +5712,7 @@
     head.position.set(0, 0.6, 0.62); g.add(head);
     [[-0.22, -0.35], [0.22, -0.35], [-0.22, 0.35], [0.22, 0.35]].forEach(([x, z]) => {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.5, 0.14), mat);
-      leg.position.set(x, 0.25, z); g.add(leg);
+      leg.position.set(x, 0.25, z); leg.name = 'animalLeg'; g.add(leg);
     });
     return g;
   }
@@ -5726,34 +5726,95 @@
     head.position.set(0, 0.48, 0.5); g.add(head);
     [[-0.16, -0.28], [0.16, -0.28], [-0.16, 0.28], [0.16, 0.28]].forEach(([x, z]) => {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.1), dark);
-      leg.position.set(x, 0.2, z); g.add(leg);
+      leg.position.set(x, 0.2, z); leg.name = 'animalLeg'; g.add(leg);
     });
     return g;
   }
   // Fenced pen — a plain wood-post perimeter (a post every column along
   // each edge, one block tall) rather than an actual see-through fence
   // mesh, which this game doesn't have a block for. Reads as a field
-  // boundary well enough at this scale. A handful of cows and sheep
-  // scattered inside, static rather than wandering — the existing NPC
-  // wander system is built specifically around two-legged villager
-  // figures pathing between named spots, not a generic animal-wander
-  // behaviour, so giving these the same treatment would have been a
-  // much bigger feature on its own rather than part of this one.
-  function buildAnimalPen(x0, x1, z0, z1, gy, rng, reg) {
+  // boundary well enough at this scale.
+  //
+  // Animals wander within the pen using the same wander-target/blocked-
+  // check machinery the villager NPCs already use (pickVillageWanderTarget/
+  // villageNpcBlocked work on any bounds box, not just NPC-shaped
+  // things), just with a separate update loop and simpler leg animation
+  // (quadruped, not a two-legged walk cycle). Each animal remembers
+  // every fence-post key from its OWN pen; periodically (once a second,
+  // not every frame — this is the one part of them that's actually
+  // somewhat expensive) it checks whether they're all still standing.
+  // The moment even one is gone, `escaped` flips permanently true and
+  // its wander bounds quietly swap to a much wider box — it doesn't
+  // path specifically THROUGH the gap, it just isn't confined to the
+  // pen any more, which reads as "got out" well enough without needing
+  // real pathfinding around the remaining fence posts.
+  let villageAnimals = []; // let, not const — teardownVillage reassigns via filter, same as villageNPCs
+  function spawnPenAnimals(ck, bounds, count, rng, fenceKeys, reg) {
+    for (let i = 0; i < count; i++) {
+      const spot = pickVillageWanderTarget(bounds);
+      const mesh = (i % 2 === 0 ? buildCowModel : buildSheepModel)();
+      mesh.position.set(spot.x, villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1, spot.z);
+      mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      scene.add(mesh);
+      reg.props = reg.props || []; reg.props.push(mesh); // reuses the same village-teardown disposal path as any other decorative prop
+      villageAnimals.push({ mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck, fenceKeys, escaped: false, fenceCheckTimer: Math.random() });
+    }
+  }
+  function updateVillageAnimals(dt) {
+    if (villageAnimals.length === 0) return;
+    const t = performance.now() * 0.004;
+    villageAnimals.forEach(w => {
+      if (!w.escaped) {
+        w.fenceCheckTimer -= dt;
+        if (w.fenceCheckTimer <= 0) {
+          w.fenceCheckTimer = 1;
+          if (w.fenceKeys.some(k => !blocks.has(k))) w.escaped = true;
+        }
+      }
+      const effBounds = w.escaped ? { xMin: w.bounds.xMin - 20, xMax: w.bounds.xMax + 20, zMin: w.bounds.zMin - 20, zMax: w.bounds.zMax + 20, y: w.bounds.y } : w.bounds;
+      if (w.waitTimer > 0) {
+        w.waitTimer -= dt;
+        w.mesh.traverse(o => { if (o.name === 'animalLeg') o.rotation.x = 0; });
+        return;
+      }
+      const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 0.15) {
+        w.target = pickVillageWanderTarget(effBounds);
+        w.waitTimer = 1 + Math.random() * 3;
+        return;
+      }
+      const speed = 0.5; // slower than the villager NPCs' 0.9 — grazing animals, not people with somewhere to be
+      const nx = w.mesh.position.x + (dx / dist) * speed * dt;
+      const nz = w.mesh.position.z + (dz / dist) * speed * dt;
+      if (villageNpcBlocked(nx, nz, effBounds)) {
+        w.target = pickVillageWanderTarget(effBounds);
+        w.waitTimer = 0.4;
+        return;
+      }
+      w.mesh.position.x = nx;
+      w.mesh.position.z = nz;
+      w.mesh.position.y = villageSurfaceY(nx, nz, effBounds.y - 1) + 1;
+      w.mesh.rotation.y = Math.atan2(dx, dz);
+      const swing = Math.sin(t * 4) * 0.35;
+      w.mesh.traverse(o => { if (o.name === 'animalLeg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1); });
+    });
+  }
+  function buildAnimalPen(x0, x1, z0, z1, gy, rng, reg, ck) {
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), 0); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); }
+    const fenceKeys = [];
     for (let x = x0; x <= x1; x++) {
-      blocks.set(key(x, gy + 1, z0), 6); trackVillageHeight(x, z0, gy + 1);
-      blocks.set(key(x, gy + 1, z1), 6); trackVillageHeight(x, z1, gy + 1);
+      const kN = key(x, gy + 1, z0), kS = key(x, gy + 1, z1);
+      blocks.set(kN, 6); trackVillageHeight(x, z0, gy + 1); fenceKeys.push(kN);
+      blocks.set(kS, 6); trackVillageHeight(x, z1, gy + 1); fenceKeys.push(kS);
     }
     for (let z = z0; z <= z1; z++) {
-      blocks.set(key(x0, gy + 1, z), 6); trackVillageHeight(x0, z, gy + 1);
-      blocks.set(key(x1, gy + 1, z), 6); trackVillageHeight(x1, z, gy + 1);
+      const kW = key(x0, gy + 1, z), kE = key(x1, gy + 1, z);
+      blocks.set(kW, 6); trackVillageHeight(x0, z, gy + 1); fenceKeys.push(kW);
+      blocks.set(kE, 6); trackVillageHeight(x1, z, gy + 1); fenceKeys.push(kE);
     }
-    for (let i = 0; i < 6; i++) {
-      const ax = x0 + 1 + Math.floor(rng() * Math.max(1, x1 - x0 - 1));
-      const az = z0 + 1 + Math.floor(rng() * Math.max(1, z1 - z0 - 1));
-      placeVillageProp(i % 2 === 0 ? buildCowModel : buildSheepModel, ax, gy, az, Math.floor(rng() * 4), reg);
-    }
+    const bounds = { xMin: x0 + 1, xMax: x1 - 1, zMin: z0 + 1, zMax: z1 - 1, y: gy };
+    spawnPenAnimals(ck, bounds, 6, rng, fenceKeys, reg);
   }
 
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
@@ -6445,7 +6506,7 @@
       buildFarmhouse(fx0, fz0, farmY, palette, reg);
       buildCropField(wx0, wx1, wz0, wz1, farmY, buildWheatStalk, reg);
       buildCropField(gx0, gx1, gz0, gz1, farmY, buildCabbageHead, reg);
-      buildAnimalPen(px0, px1, pz0, pz1, farmY, rng, reg);
+      buildAnimalPen(px0, px1, pz0, pz1, farmY, rng, reg, ck);
       newHouseFootprints.push({ x0: bx0, x1: bx1, z0: bz0, z1: bz1, gy: farmY, baseSurfaceType: farmBase, subFillType: farmSub, trim: palette.trim, doorSide: 'south' });
       farmPlaced = true;
     }
@@ -6576,6 +6637,7 @@
     if (v.props) v.props.forEach(p => { scene.remove(p); disposeObject3D(p); });
     v.npcs.forEach(n => { scene.remove(n.mesh); disposeObject3D(n.mesh); });
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
+    villageAnimals = villageAnimals.filter(w => w.ck !== ck);
     villageRegistry.delete(ck);
     villageHouseFootprints.delete(ck); // frees this village's reserved footprint so the SAME deterministic village can rebuild here later without the overlap guard mistaking its own old spot for someone else's house — also removes it from the generateChunkTerrain village-pad override, see nearbyHouses there
   }
@@ -10615,9 +10677,21 @@
   let flying = false;
   let windIntensity = 0; // 0..1 — how hard the player is actually pushing movement input right now while flying, set each frame movement is processed. Was a plain boolean (on/off) before; continuous now so the wind can genuinely fade in with speed rather than snapping straight to full volume the instant you nudge forward.
   function spawnDefault() {
+    let topY = 0;
     for (let y = WORLD_HEIGHT+5; y >= 0; y--) {
-      if (blocks.has(key(0,y,0))) { player.pos.set(0.5, y+2, 0.5); break; }
+      if (blocks.has(key(0,y,0))) { topY = y; break; }
     }
+    // Spawns well clear of the ground and falls the rest of the way,
+    // rather than trying to land exactly 2 blocks above whatever the
+    // topmost block scan found — that was the actual bug: a tree, an
+    // overhang, or just an unlucky column here meant "2 above the
+    // topmost block" could itself still be inside something (another
+    // branch, a second layer of canopy), spawning the player wedged
+    // in solid rock with no way out except mining themselves free.
+    // Falling from a genuine height can't have that problem regardless
+    // of what's directly above the ground at this spot.
+    player.pos.set(0.5, topY + 25, 0.5);
+    player.vel.set(0,0,0);
   }
 
   const keys = {};
@@ -15860,6 +15934,7 @@
     waterMat.uniforms.uTime.value = waterTime;
     updateWanderingCustomers(dt);
     updateVillageNPCs(dt);
+    updateVillageAnimals(dt);
     updateWindSound(dt, windIntensity);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
     if (!locked) windIntensity = 0; // menus/paused — fade the wind out rather than leaving it stuck on from before

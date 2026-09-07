@@ -5930,6 +5930,34 @@
     }
     if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (both houses, and the shop if one was placed) is done, so nothing here was ever checked against a sibling still being built
 
+    // Forces a visual resync of every ALREADY-generated chunk this
+    // village actually wrote into. This is the real, root cause behind
+    // several things that looked like separate bugs: syncChunkInstances
+    // only ever runs automatically when a chunk is first generated —
+    // modifying an already-generated chunk's blocks directly (which the
+    // clearing, the retaining wall, the escape stair, the water wall,
+    // and now the freely-placed shop can all do to a NEIGHBOURING
+    // chunk) changes the actual world data correctly, but nothing ever
+    // tells that chunk's already-built visuals to catch up. It stays
+    // invisible until something else forces a resync — leaving and
+    // re-entering the world, or wandering far enough away to unload and
+    // reload it — which is exactly the pattern that kept getting
+    // reported. Newly-generated chunks don't need this (the normal
+    // streaming path already syncs those the moment they're built); this
+    // only ever does anything for a chunk that turns out to have already
+    // existed before this village did.
+    function resyncChunksIn(rx0, rx1, rz0, rz1) {
+      const ccx0 = Math.floor(rx0 / CHUNK_SIZE), ccx1 = Math.floor(rx1 / CHUNK_SIZE);
+      const ccz0 = Math.floor(rz0 / CHUNK_SIZE), ccz1 = Math.floor(rz1 / CHUNK_SIZE);
+      for (let tcx = ccx0; tcx <= ccx1; tcx++) {
+        for (let tcz = ccz0; tcz <= ccz1; tcz++) {
+          if (generatedChunks.has(tcx + '_' + tcz)) syncChunkInstances(tcx, tcz);
+        }
+      }
+    }
+    resyncChunksIn(wx0 - 14, wx1 + 14, wz0 - 14, wz1 + 14); // the whole site, plus the water wall's own reach past its edge
+    for (const h of newHouseFootprints) resyncChunksIn(h.x0 - 10, h.x1 + 10, h.z0 - 10, h.z1 + 10); // each building's own pad — covers the shop wherever it actually landed
+
 
     // Retaining wall against any water still standing right outside the
     // site. The very first pass in this function strips ALL water out

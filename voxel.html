@@ -4773,6 +4773,31 @@
       }
     }
   }
+  // Where the cleared pad's own outer edge butts up against untouched
+  // terrain that's actually taller than the floor — a real hillside or
+  // mountain face the clearing just cut straight into — this builds an
+  // actual retaining wall right at that edge, up to whatever height the
+  // surrounding terrain genuinely is there. Exactly the same idea as
+  // the site-wide water wall above, just checking the neighbouring
+  // column's recorded terrain height instead of water: a house cut into
+  // a slope shouldn't just leave a bare exposed dirt cliff (or worse,
+  // a gap) right at the point where the flattened pad meets whatever
+  // wasn't touched — there should be a proper wall holding it back.
+  // Only ever checks the ONE column immediately outside the pad, so it
+  // only ever fires where the clearing is genuinely touching higher
+  // ground right at its own edge, not terrain that happens to rise
+  // again a few blocks further out with a natural slope in between.
+  function buildHouseEdgeWall(x0, x1, z0, z1, gy, palette) {
+    const pad = 10;
+    const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
+    function wallColumn(x, z, dx, dz) {
+      const naturalH = columnHeight.get((x + dx) + ',' + (z + dz));
+      if (naturalH === undefined || naturalH <= gy) return; // outside is at or below the pad's own level — nothing to hold back
+      for (let y = gy + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
+    }
+    for (let z = padZ0; z <= padZ1; z++) { wallColumn(padX0, z, -1, 0); wallColumn(padX1, z, 1, 0); }
+    for (let x = padX0; x <= padX1; x++) { wallColumn(x, padZ0, 0, -1); wallColumn(x, padZ1, 0, 1); }
+  }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
 
   // Exactly one candidate chunk per VILLAGE_CHUNK_STRIDE x STRIDE grid
@@ -5544,6 +5569,7 @@
         const fx0 = plot.x0, fx1 = plot.x0 + 10, fz0 = plot.z0, fz1 = plot.z0 + 10;
         if (houseTooCloseToExisting(fx0, fx1, fz0, fz1, ck)) return; // too close to an already-built house — leave this plot empty rather than overlap it
         clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
+        buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette);
         newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1 });
       }
 

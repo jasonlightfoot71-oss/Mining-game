@@ -2471,6 +2471,7 @@
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
     maybeBuildVillage(cx, cz);
+    maybeBuildWindmill(cx, cz);
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -2480,6 +2481,7 @@
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
     teardownVillage(ck);
+    teardownWindmill(ck);
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
@@ -4030,6 +4032,45 @@
       return true;
     });
   }
+  // Windmill sails — a standalone scene object like the bell, for the
+  // same reason: something that needs to keep animating on its own
+  // every frame rather than just sitting there like a normal voxel
+  // structure. One pivot group per windmill (the sails' own cross,
+  // rotating continuously around its own centre), independent of
+  // whatever village/landmark system a building came from — windmills
+  // aren't part of a village at all, so this is its own small registry.
+  const windmillSails = new Map(); // "cx_cz" -> { group, speed }
+  const windmillRegs = new Map(); // "cx_cz" -> { doorKeys, fixtureKeys } — so teardownWindmill can actually remove its door/light on unload, the same way teardownVillage does for a village's own
+  function addWindmillSails(x, y, z, ck) {
+    const group = new THREE.Group();
+    const bladeMat = new THREE.MeshPhongMaterial({ color: 0xcbb892, flatShading: true, shininess: 0 });
+    const hubMat = new THREE.MeshPhongMaterial({ color: 0x4a3320, flatShading: true, shininess: 0 });
+    for (let i = 0; i < 4; i++) {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.5, 2.6, 0.08), bladeMat);
+      blade.position.y = 1.3; // offset from the pivot so it reads as a blade sweeping out, not a box centred on the hub
+      const holder = new THREE.Group();
+      holder.add(blade);
+      holder.rotation.z = (i / 4) * Math.PI * 2;
+      group.add(holder);
+    }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.3, 8), hubMat);
+    hub.rotation.x = Math.PI / 2;
+    group.add(hub);
+    group.position.set(x, y, z);
+    scene.add(group);
+    windmillSails.set(ck, { group, speed: 0.6 });
+  }
+  function removeWindmillSails(ck) {
+    const w = windmillSails.get(ck);
+    if (!w) return;
+    scene.remove(w.group);
+    disposeObject3D(w.group);
+    windmillSails.delete(ck);
+  }
+  function updateWindmillSails(dt) {
+    if (!windmillSails.size) return;
+    windmillSails.forEach(w => { w.group.rotation.z += dt * w.speed; });
+  }
   // Church altars — proximity-triggered rather than needing a hit like
   // the bell, since walking up to one is the whole point. Each one
   // resets once the player's moved far enough away, so walking up to
@@ -4993,6 +5034,24 @@
         if (!list) { list = []; villageHouseFootprints.set(tck, list); }
         list.push(entry);
         touched.push(tck);
+      }
+    }
+  }
+  // Forces a visual resync of every ALREADY-generated chunk touched by
+  // a range — moved to top level (was nested inside buildVillageInChunk
+  // only) so the windmill's own independent placement can use the exact
+  // same fix, not a separate copy of it. See buildVillageInChunk's own
+  // call sites for the full reasoning: syncChunkInstances only ever
+  // runs automatically when a chunk is first generated, so modifying an
+  // already-generated NEIGHBOURING chunk's blocks directly (which
+  // clearing/walls/etc. can all do) changes the real data but never
+  // tells that chunk's already-built visuals to catch up on its own.
+  function resyncChunksInRange(rx0, rx1, rz0, rz1) {
+    const ccx0 = Math.floor(rx0 / CHUNK_SIZE), ccx1 = Math.floor(rx1 / CHUNK_SIZE);
+    const ccz0 = Math.floor(rz0 / CHUNK_SIZE), ccz1 = Math.floor(rz1 / CHUNK_SIZE);
+    for (let tcx = ccx0; tcx <= ccx1; tcx++) {
+      for (let tcz = ccz0; tcz <= ccz1; tcz++) {
+        if (generatedChunks.has(tcx + '_' + tcz)) syncChunkInstances(tcx, tcz);
       }
     }
   }
@@ -6124,6 +6183,115 @@
       }
     }
   }
+  // ── Windmill ──────────────────────────────────────────────────────
+  // A standalone structure scattered across mountain tops, entirely
+  // separate from village generation — its own placement grid, its own
+  // fixed palette (not tied to a village's own), but the exact same
+  // exterior treatment as every building above: independently graded
+  // floor height, sky-clearing, retaining wall/escape stair if it lands
+  // on a genuinely steep peak, wood floor, and the same footprint
+  // registration (so the reactive village-pad override in
+  // generateChunkTerrain protects it too, regardless of how far its own
+  // chunk turns out to be from wherever it was actually built — it
+  // reuses that exact system, not a separate one).
+  const WINDMILL_PALETTE = { wall: 7, trim: 6, floor: 6, roof: 6, glass: 8, path: 2 }; // Brick walls, wood trim/floor/roof/cap, own fixed look regardless of any village palette
+  const WINDMILL_PEAK_SCAN_PAD = 3;
+  function computeWindmillGrade(px0, px1, pz0, pz1, fallbackY) {
+    let maxNatural, baseSurfaceType = 0;
+    for (let x = px0 - WINDMILL_PEAK_SCAN_PAD; x <= px1 + WINDMILL_PEAK_SCAN_PAD; x++) {
+      for (let z = pz0 - WINDMILL_PEAK_SCAN_PAD; z <= pz1 + WINDMILL_PEAK_SCAN_PAD; z++) {
+        const eh = columnHeight.get(x + ',' + z);
+        if (eh === undefined) continue;
+        if (maxNatural === undefined || eh > maxNatural) {
+          maxNatural = eh;
+          const t = blocks.get(key(x, eh, z));
+          if (t !== undefined) baseSurfaceType = t;
+        }
+      }
+    }
+    let plotY = maxNatural !== undefined ? maxNatural : fallbackY;
+    plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
+    const subFillType = (baseSurfaceType === 5 || baseSurfaceType === 2) ? baseSurfaceType : 1;
+    return { plotY, baseSurfaceType, subFillType };
+  }
+  function buildWindmillStructure(x0, z0, gy, ck) {
+    const w = 7, d = 7, h = 9;
+    const x1 = x0 + w - 1, z1 = z0 + d - 1;
+    const midX = x0 + 3, midZ = z0 + 3;
+    const palette = WINDMILL_PALETTE;
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+      blocks.set(key(x, gy, z), palette.floor); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+    }
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const edge = (x === x0 || x === x1 || z === z0 || z === z1);
+        if (!edge) continue;
+        const isCorner = (x === x0 || x === x1) && (z === z0 || z === z1);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          blocks.set(key(x, y, z), (isCorner || y === gy + h) ? palette.trim : palette.wall);
+          trackVillageHeight(x, z, y);
+        }
+      }
+    }
+    addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 5);
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [] };
+    const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
+    placeShellDoor(shell, 'south', reg, 0);
+    placeShellLight(shell, 'south', reg);
+    buildVillageHouseWindowGeneric(x0, gy + 3, midZ, false, palette); // west wall
+    buildVillageHouseWindowGeneric(x1, gy + 3, midZ, false, palette); // east wall
+    // Sails mounted on the north wall (opposite the door), on their own
+    // pivot at roughly the height of the wall's own midpoint — see
+    // addWindmillSails/updateWindmillSails for the actual rotation.
+    addWindmillSails(midX + 0.5, gy + h - 1, z0 - 0.05, ck);
+    return { shell, reg };
+  }
+  const WINDMILL_CHUNK_STRIDE = 30; // 30*32 = 960 blocks apart, jittered — genuinely rare, entirely separate from the village grid
+  function windmillGridHomeChunk(gx, gz) {
+    const r = mulberry32(seedFromHash(gx * 5303 + 911, gz * 7919 + 433));
+    const ox = 1 + Math.floor(r() * Math.max(1, WINDMILL_CHUNK_STRIDE - 2));
+    const oz = 1 + Math.floor(r() * Math.max(1, WINDMILL_CHUNK_STRIDE - 2));
+    return [gx * WINDMILL_CHUNK_STRIDE + ox, gz * WINDMILL_CHUNK_STRIDE + oz];
+  }
+  function maybeBuildWindmill(cx, cz) {
+    const gx = Math.floor(cx / WINDMILL_CHUNK_STRIDE), gz = Math.floor(cz / WINDMILL_CHUNK_STRIDE);
+    const [hx, hz] = windmillGridHomeChunk(gx, gz);
+    if (hx !== cx || hz !== cz) return;
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
+    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const elevation = biomeStretch(fbm(wcx * 0.008, wcz * 0.008));
+    if (elevation < 0.6) return; // not mountainous enough here — skip silently, the next candidate (960 blocks away) gets its own roll
+    const x0 = wcx - 3, x1 = x0 + 6, z0 = wcz - 3, z1 = z0 + 6;
+    if (houseTooCloseToExisting(x0, x1, z0, z1, ck)) return; // real, if unlikely, chance of landing too close to a village building
+    const { plotY: gy, baseSurfaceType, subFillType } = computeWindmillGrade(x0, x1, z0, z1, wcz);
+    clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType);
+    buildHouseEdgeWall(x0, x1, z0, z1, gy, WINDMILL_PALETTE, 'south');
+    const { reg: windmillReg } = buildWindmillStructure(x0, z0, gy, ck);
+    windmillRegs.set(ck, windmillReg);
+    const entry = { x0, x1, z0, z1, gy, baseSurfaceType, subFillType, trim: WINDMILL_PALETTE.trim, doorSide: 'south' };
+    registerBuildingFootprint(entry, ck);
+    resyncChunksInRange(x0 - 10, x1 + 10, z0 - 10, z1 + 10);
+  }
+  function teardownWindmill(ck) {
+    removeWindmillSails(ck);
+    const reg = windmillRegs.get(ck);
+    if (reg) {
+      reg.doorKeys.forEach(dk => removeDoor(dk));
+      reg.fixtureKeys.forEach(fk => removeFixture(fk));
+      windmillRegs.delete(ck);
+    }
+    const touchedKeys = villageFootprintChunkKeys.get(ck);
+    if (touchedKeys) {
+      new Set(touchedKeys).forEach(tck => {
+        const list = villageHouseFootprints.get(tck);
+        if (!list) return;
+        const filtered = list.filter(e => e.__ck !== ck);
+        if (filtered.length) villageHouseFootprints.set(tck, filtered); else villageHouseFootprints.delete(tck);
+      });
+      villageFootprintChunkKeys.delete(ck);
+    }
+  }
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
@@ -6840,8 +7008,16 @@
     if (rng() < 0.5) {
     const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
     let castlePlaced = false;
-    for (let attempt = 0; attempt < 16 && !castlePlaced; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 100 + rng() * 40;
+    // 40 attempts, not 16 — removing the overlap-skip fallback (see
+    // above) means a failed search now genuinely produces no castle
+    // rather than a guaranteed-but-overlapping one, so the search
+    // itself needs to actually succeed reliably instead of leaning on
+    // that fallback to paper over a low hit rate. With up to 6 other
+    // buildings potentially already scattered around the house, each
+    // one only blocking a narrow angular slice at this distance, more
+    // tries is what closes the gap the fallback used to cover.
+    for (let attempt = 0; attempt < 40 && !castlePlaced; attempt++) {
+      const angle = rng() * Math.PI * 2, dist = 100 + rng() * 60;
       const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
       const kx0 = ccx - 9, kx1 = kx0 + 18, kz0 = ccz - 7, kz1 = kz0 + 14; // keep, 19×15
       const tx0 = kx0 - 5, tx1 = kx0 - 1, tz0 = kz0, tz1 = kz0 + 4; // tower, attached west, 5×5
@@ -6894,17 +7070,8 @@
     // streaming path already syncs those the moment they're built); this
     // only ever does anything for a chunk that turns out to have already
     // existed before this village did.
-    function resyncChunksIn(rx0, rx1, rz0, rz1) {
-      const ccx0 = Math.floor(rx0 / CHUNK_SIZE), ccx1 = Math.floor(rx1 / CHUNK_SIZE);
-      const ccz0 = Math.floor(rz0 / CHUNK_SIZE), ccz1 = Math.floor(rz1 / CHUNK_SIZE);
-      for (let tcx = ccx0; tcx <= ccx1; tcx++) {
-        for (let tcz = ccz0; tcz <= ccz1; tcz++) {
-          if (generatedChunks.has(tcx + '_' + tcz)) syncChunkInstances(tcx, tcz);
-        }
-      }
-    }
-    resyncChunksIn(wx0 - 14, wx1 + 14, wz0 - 14, wz1 + 14); // the whole site, plus the water wall's own reach past its edge
-    for (const h of newHouseFootprints) resyncChunksIn(h.x0 - 10, h.x1 + 10, h.z0 - 10, h.z1 + 10); // each building's own pad — covers the shop wherever it actually landed
+    resyncChunksInRange(wx0 - 14, wx1 + 14, wz0 - 14, wz1 + 14); // the whole site, plus the water wall's own reach past its edge
+    for (const h of newHouseFootprints) resyncChunksInRange(h.x0 - 10, h.x1 + 10, h.z0 - 10, h.z1 + 10); // each building's own pad — covers the shop wherever it actually landed
 
 
     // Retaining wall against any water still standing right outside the
@@ -16842,6 +17009,7 @@
     updateGolfTriggers();
     updateDoors(dt);
     updateBellSwings();
+    updateWindmillSails(dt);
     updateChurchAltars();
     stepBackgroundMapScan(); // snow/flower overlay rebuilds — see there for why this needs to be incremental rather than one blocking pass
     updateWork(dt);

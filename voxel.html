@@ -6246,7 +6246,7 @@
     addWindmillSails(midX + 0.5, gy + h - 1, z0 - 0.05, ck);
     return { shell, reg };
   }
-  const WINDMILL_CHUNK_STRIDE = 30; // 30*32 = 960 blocks apart, jittered — genuinely rare, entirely separate from the village grid
+  const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
   function windmillGridHomeChunk(gx, gz) {
     const r = mulberry32(seedFromHash(gx * 5303 + 911, gz * 7919 + 433));
     const ox = 1 + Math.floor(r() * Math.max(1, WINDMILL_CHUNK_STRIDE - 2));
@@ -6261,7 +6261,7 @@
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
     const elevation = biomeStretch(fbm(wcx * 0.008, wcz * 0.008));
-    if (elevation < 0.6) return; // not mountainous enough here — skip silently, the next candidate (960 blocks away) gets its own roll
+    if (elevation < 0.5) return; // not mountainous enough here — skip silently, the next candidate gets its own roll. Was 0.6 — combined with the stride above, simulating the actual real-world gap this produced (not just eyeballing the threshold in isolation) is what caught both of these needing to change together
     const x0 = wcx - 3, x1 = x0 + 6, z0 = wcz - 3, z1 = z0 + 6;
     if (houseTooCloseToExisting(x0, x1, z0, z1, ck)) return; // real, if unlikely, chance of landing too close to a village building
     const { plotY: gy, baseSurfaceType, subFillType } = computeWindmillGrade(x0, x1, z0, z1, wcz);

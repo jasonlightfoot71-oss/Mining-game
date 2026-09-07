@@ -1610,6 +1610,7 @@
   const BEDROOM_SLOT = CELLAR_SLOT + 1; // "Bedroom Furniture" hotbar entry — see FURNITURE_TYPES (category:'bedroom')
   const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
   const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
+  const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -2134,22 +2135,17 @@
     if (generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     let minY = WORLD_HEIGHT, maxY = -1;
-    // Buildings whose own pad (or, for the shop, its pad AND its
-    // distance from the house) can reach into THIS chunk — always empty
-    // for the vast majority of chunks, so this is a handful of Map
-    // lookups per chunk, not per column, and the per-column check below
-    // short-circuits instantly whenever it's empty. Radius 2, not 1: a
-    // house's own pad only ever reaches one chunk over (10 < CHUNK_SIZE
-    // easily), but the shop can land up to ~30 blocks from the house
-    // plus its own pad on top of that, which can clear a second chunk
-    // boundary in the least favourable direction. See the check itself,
-    // further down, for why this needs to happen here rather than back
-    // in the building's own build step.
-    const nearbyHouses = [];
-    for (let dcx = -2; dcx <= 2; dcx++) for (let dcz = -2; dcz <= 2; dcz++) {
-      const list = villageHouseFootprints.get((cx+dcx) + '_' + (cz+dcz));
-      if (list) nearbyHouses.push(...list);
-    }
+    // Buildings whose reach touches THIS chunk — an exact, direct lookup
+    // now (see registerBuildingFootprint), not a fixed-radius guess
+    // around wherever the owning village happened to originate. That's
+    // what makes this correct regardless of how far a building like the
+    // castle ends up from its own village: it was registered directly
+    // under every chunk it actually reaches, however far that is, so
+    // there's nothing to search for here — just ask this one chunk what
+    // touches it. Always empty for the vast majority of chunks, so this
+    // is one Map lookup, not per column, and the per-column check below
+    // short-circuits instantly whenever it's empty.
+    const nearbyHouses = villageHouseFootprints.get(cx + '_' + cz) || [];
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
@@ -4239,6 +4235,43 @@
     });
     return group;
   }
+  // A ring of stones, a few crossed logs, and a flame — with an actual
+  // light embedded directly in the group itself rather than going
+  // through the separate wall-mounted fixture/torch system, since this
+  // needs to sit freestanding on the ground, not mounted to a face.
+  // Being part of the furniture group means it's added and removed
+  // along with everything else here for free, no separate cleanup path
+  // needed the way the fixture system's own light does.
+  function buildLogFire() {
+    const g = new THREE.Group();
+    const stoneMat = new THREE.MeshPhongMaterial({ color: 0x767672, flatShading: true, shininess: 0 });
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const stone = new THREE.Mesh(new THREE.SphereGeometry(0.13, 5, 4), stoneMat);
+      stone.position.set(Math.cos(a) * 0.42, 0.08, Math.sin(a) * 0.42);
+      g.add(stone);
+    }
+    const logMat = new THREE.MeshPhongMaterial({ color: 0x5a3d22, flatShading: true, shininess: 0 });
+    const logGeom = new THREE.CylinderGeometry(0.07, 0.08, 0.75, 6);
+    [0, 1.05, 2.1].forEach(angle => {
+      const log = new THREE.Mesh(logGeom, logMat);
+      log.rotation.z = Math.PI / 2.3;
+      log.rotation.y = angle;
+      log.position.y = 0.12;
+      g.add(log);
+    });
+    const flameOuter = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.5, 8), new THREE.MeshBasicMaterial({ color: 0xff7a1a, transparent: true, opacity: 0.85 }));
+    flameOuter.position.y = 0.35;
+    g.add(flameOuter);
+    const flameInner = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.32, 8), new THREE.MeshBasicMaterial({ color: 0xffe066 }));
+    flameInner.position.y = 0.3;
+    g.add(flameInner);
+    const light = new THREE.PointLight(0xff9a3c, 2.2, 9, 0.4);
+    light.castShadow = false; // same reasoning as every other light in this game — shadow-casting point lights are the single biggest lag source once there's more than a couple of them lit at once
+    light.position.y = 0.4;
+    g.add(light);
+    return g;
+  }
   // A handful of procedurally-drawn "channels" instead of a flat colour
   // — there's no real image asset to show, so each is drawn on a small
   // canvas the same way signs/shirt patterns already are. One is picked
@@ -4803,6 +4836,7 @@
     { name: 'Wardrobe',               build: buildWardrobe,       swatch: 0x4a3320, cost: 80, category: 'bedroom' },
     { name: 'Chest of Drawers',       build: buildChestOfDrawers, swatch: 0x6b4a2a, cost: 60, category: 'bedroom' },
     { name: 'Toy Box',                build: buildToyBox,         swatch: 0xe8703a, cost: 48, category: 'bedroom' },
+    { name: 'Open Log Fire',          build: buildLogFire,        swatch: 0xff7a1a, cost: 30, category: 'fire' },
   ];
   let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 19, cellarTypeIdx = 24, bedroomTypeIdx = 28; // default selection per category — indices into FURNITURE_TYPES above
   // A 1x1 item centers on the clicked cell (offset 0.5, as before). Beds
@@ -4899,30 +4933,48 @@
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
   const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
-  // Every house's footprint, keyed by the chunk that built it — checked
-  // before placing a new one so two villages (or a grid one and a
-  // forced one) can never land close enough to overlap. Removing the
-  // terrain gate made this a real risk for the first time: villages
-  // used to be rare enough, and restricted enough to open ground, that
-  // two of them landing near each other basically never happened. Kept
-  // per-village-chunk rather than one flat list so teardownVillage can
-  // free a village's own reservation when it unloads (see there).
-  // Also doubles as the registry generateChunkTerrain's own village-pad
-  // override checks (see nearbyHouses there) — a house's pad can
-  // legitimately reach past its own chunk's edge into a neighbouring
-  // one, and whichever of the two — the house, or that neighbouring
-  // chunk — happens to generate SECOND is the one that actually gets
-  // the clearing/wall right, using its own real data rather than either
-  // side having to guess about the other. Each entry also carries
-  // baseSurfaceType/subFillType/trim/gy/doorSide so that override can
-  // reproduce the exact same floor and wall the house's own build step
-  // would have made.
-  const villageHouseFootprints = new Map(); // ck -> [{x0,x1,z0,z1,gy,baseSurfaceType,subFillType,trim,doorSide}, ...]
+  // Every building's footprint — but keyed by every ACTUAL chunk its own
+  // reach (its pad, wall, and escape stair, ±20 to be safe) can touch,
+  // not by whichever chunk its village originated in. That distinction
+  // is what broke down for the castle: it can land 100+ blocks from the
+  // house that "owns" it, several chunks away, and a small fixed search
+  // radius around the village's own origin chunk (which is all the
+  // previous version had) has no way to find something that far out —
+  // exactly why terrain kept showing up uncleared in and around it.
+  // Registering directly under wherever a footprint actually reaches,
+  // however far that is from home, means the lookup in
+  // generateChunkTerrain never needs to guess a radius at all: it just
+  // checks the one chunk currently generating, always correctly, no
+  // matter how far that building ended up from its own village.
+  // __ck (the true origin) travels with each entry so teardownVillage
+  // and the overlap guard can still tell whose it is, since the same
+  // entry can now live under several different map keys at once.
+  const villageHouseFootprints = new Map(); // "cx_cz" (an ACTUAL chunk) -> [{x0,x1,z0,z1,gy,baseSurfaceType,subFillType,trim,doorSide,__ck}, ...]
+  const villageFootprintChunkKeys = new Map(); // village ck -> ["cx_cz", ...] every actual chunk key it registered into, for teardown
+  function registerBuildingFootprint(entry, ck) {
+    entry.__ck = ck;
+    const pad = 20; // covers the 10-block clearing pad plus the escape stair's own further reach, with margin
+    const ccx0 = Math.floor((entry.x0 - pad) / CHUNK_SIZE), ccx1 = Math.floor((entry.x1 + pad) / CHUNK_SIZE);
+    const ccz0 = Math.floor((entry.z0 - pad) / CHUNK_SIZE), ccz1 = Math.floor((entry.z1 + pad) / CHUNK_SIZE);
+    let touched = villageFootprintChunkKeys.get(ck);
+    if (!touched) { touched = []; villageFootprintChunkKeys.set(ck, touched); }
+    for (let tcx = ccx0; tcx <= ccx1; tcx++) {
+      for (let tcz = ccz0; tcz <= ccz1; tcz++) {
+        const tck = tcx + '_' + tcz;
+        let list = villageHouseFootprints.get(tck);
+        if (!list) { list = []; villageHouseFootprints.set(tck, list); }
+        list.push(entry);
+        touched.push(tck);
+      }
+    }
+  }
   const HOUSE_MIN_GAP = 15;
   function houseTooCloseToExisting(fx0, fx1, fz0, fz1, excludeCk) {
-    for (const [k, list] of villageHouseFootprints) {
-      if (k === excludeCk) continue;
+    const seen = new Set(); // the same entry is now registered under several chunk keys — only ever check it once
+    for (const [, list] of villageHouseFootprints) {
       for (const h of list) {
+        if (h.__ck === excludeCk || seen.has(h)) continue;
+        seen.add(h);
         const dx = Math.max(0, fx0 - h.x1, h.x0 - fx1);
         const dz = Math.max(0, fz0 - h.z1, h.z0 - fz1);
         if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
@@ -5877,6 +5929,20 @@
       }
     }
     buildSpiralStaircase(tcx, tcz, gy, topH - 2, CASTLE_STONE);
+    // A proper landing at the top — the staircase itself ends on a
+    // single last step with nothing beside it to actually stand on;
+    // this fills the whole shaft it's been spiralling around with a
+    // solid floor one block above that final step, so there's
+    // somewhere to arrive at rather than just running out of stairs.
+    const landingY = gy + topH - 1;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        blocks.set(key(tcx + dx, landingY, tcz + dz), CASTLE_STONE);
+        trackVillageHeight(tcx + dx, tcz + dz, landingY);
+        blocks.delete(key(tcx + dx, landingY + 1, tcz + dz));
+        blocks.delete(key(tcx + dx, landingY + 2, tcz + dz));
+      }
+    }
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
@@ -5914,8 +5980,16 @@
       }
     }
     const shell = { x0: kx0, x1: kx1, z0: kz0, z1: kz1, gy, h, midX, midZ };
-    placeShellDoor(shell, 'south', reg, 0);
-    placeShellLight(shell, 'south', reg);
+    // Door shifted 2 blocks off-centre — dead centre is exactly where
+    // the vertical divider below crosses (same bug as the house had:
+    // a centred door opens straight into the partition wall with no
+    // way through). doorX is returned so the bridge outside can be
+    // lined up with wherever the door actually ended up, not the
+    // keep's true centre.
+    const doorX = midX - 2;
+    const doorShell = Object.assign({}, shell, { midX: doorX });
+    placeShellDoor(doorShell, 'south', reg, 0);
+    placeShellLight(doorShell, 'south', reg);
     // Four rooms — same cross-divider-with-end-gaps idea as the house,
     // just on a plain rectangle instead of a cross-shaped one.
     const vGapA = kz0 + 2, vGapB = kz1 - 2;
@@ -5936,7 +6010,7 @@
     // it, so this is the one gap in an otherwise solid wall on that side.
     const towerZ = kz0 + 2;
     for (let y = gy + 1; y <= gy + 2; y++) { blocks.delete(key(kx0, y, towerZ)); blocks.delete(key(kx0 - 1, y, towerZ)); }
-    return shell;
+    return { ...shell, doorX };
   }
   function buildCastleMoat(sx0, sx1, sz0, sz1, gy, bridgeMidX) {
     for (let x = sx0 - 5; x <= sx1 + 5; x++) {
@@ -6659,7 +6733,11 @@
     // than the last one" — checked here exactly the same way as
     // everything else (the registry, edge-to-edge, excluding this
     // village's own siblings not yet registered), just with a much
-    // bigger number behind it.
+    // bigger number behind it. Also the only one of these extras that
+    // doesn't attempt every single time — a castle this size showing up
+    // in every village made them feel routine rather than a genuine
+    // rare find, so this only even tries in about 1 in 7.
+    if (rng() < 0.15) {
     const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
     let castlePlaced = false;
     for (let attempt = 0; attempt < 16 && !castlePlaced; attempt++) {
@@ -6678,12 +6756,13 @@
       clearSkyAroundHouse(sx0, sx1, sz0, sz1, castleY, castleBase, castleSub);
       buildHouseEdgeWall(sx0, sx1, sz0, sz1, castleY, palette, 'south');
       buildCastleTower(tx0, tz0, castleY);
-      buildCastleKeep(kx0, kz0, castleY, reg);
-      buildCastleMoat(sx0, sx1, sz0, sz1, castleY, kx0 + 9); // bridge centred on the keep's own door
+      const keepShell = buildCastleKeep(kx0, kz0, castleY, reg);
+      buildCastleMoat(sx0, sx1, sz0, sz1, castleY, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
       newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south' });
       castlePlaced = true;
     }
-    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, landmark, farm, and castle, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
+    }
+    newHouseFootprints.forEach(entry => registerBuildingFootprint(entry, ck)); // registered only now, after the whole village (houses, shop, church, landmark, farm, and castle, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
     // Forces a visual resync of every ALREADY-generated chunk this
     // village actually wrote into. This is the real, root cause behind
@@ -6812,7 +6891,25 @@
     villageNPCs = villageNPCs.filter(n => n.ck !== ck);
     villageAnimals = villageAnimals.filter(w => w.ck !== ck);
     villageRegistry.delete(ck);
-    villageHouseFootprints.delete(ck); // frees this village's reserved footprint so the SAME deterministic village can rebuild here later without the overlap guard mistaking its own old spot for someone else's house — also removes it from the generateChunkTerrain village-pad override, see nearbyHouses there
+    // Removes this village's own entries from every actual chunk key
+    // they were registered under (see registerBuildingFootprint) — not
+    // just one key any more, since a single footprint like the castle
+    // can now span several real chunks far from its own village's
+    // origin. Frees the reservation so the SAME deterministic village
+    // can rebuild here later without the overlap guard mistaking its
+    // own old spot for someone else's building, and stops
+    // generateChunkTerrain's village-pad override from still trying to
+    // protect a building that no longer exists.
+    const touchedKeys = villageFootprintChunkKeys.get(ck);
+    if (touchedKeys) {
+      new Set(touchedKeys).forEach(tck => {
+        const list = villageHouseFootprints.get(tck);
+        if (!list) return;
+        const filtered = list.filter(e => e.__ck !== ck);
+        if (filtered.length) villageHouseFootprints.set(tck, filtered); else villageHouseFootprints.delete(tck);
+      });
+      villageFootprintChunkKeys.delete(ck);
+    }
   }
 
   // ── Village map (discovered villages, saved locally) ──────────────
@@ -10898,6 +10995,7 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
+    if (e.code === 'KeyF') selectSlot(FIRE_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
@@ -10958,6 +11056,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x3a2a1a });
     } else if (i === ROOM_SLOT || i === BATHROOM_SLOT || i === BAR_SLOT || i === KITCHEN_SLOT || i === CELLAR_SLOT || i === BEDROOM_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x7a5a3a });
+    } else if (i === FIRE_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xff7a1a });
     } else if (i === VEHICLE_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: VEHICLE_TYPES[vehicleTypeIdx].swatch });
     } else if (i === DRAIN_SLOT) {
@@ -12003,6 +12103,23 @@
       if (!trySpendCoins(furnType.cost, furnType.name)) return;
       const rot = snapYawToStepIndex(yaw); // faces the same direction the player is currently facing
       addFurniture(r.hit.x, r.hit.y, r.hit.z, rot, typeIdx);
+      playThud(400);
+      return;
+    }
+
+    if (selectedSlot === FIRE_SLOT) {
+      if (r.isWater) return; // can't stand a fire on water
+      let nx = r.before.x-r.hit.x, ny = r.before.y-r.hit.y, nz = r.before.z-r.hit.z;
+      if (Math.abs(nx) >= Math.abs(ny) && Math.abs(nx) >= Math.abs(nz)) { ny=0; nz=0; nx = nx<0?-1:1; }
+      else if (Math.abs(ny) >= Math.abs(nx) && Math.abs(ny) >= Math.abs(nz)) { nx=0; nz=0; ny = ny<0?-1:1; }
+      else { nx=0; ny=0; nz = nz<0?-1:1; }
+      if (ny !== 1) { showSaveStatus('⚠ Place the fire on a top-facing surface', true); return; }
+      const fk = key(r.hit.x, r.hit.y, r.hit.z);
+      if (furniture.has(fk)) { removeFurniture(fk); playThud(200); return; }
+      const typeIdx = FURNITURE_TYPES.findIndex(f => f.category === 'fire');
+      const furnType = FURNITURE_TYPES[typeIdx];
+      if (!trySpendCoins(furnType.cost, furnType.name)) return;
+      addFurniture(r.hit.x, r.hit.y, r.hit.z, 0, typeIdx); // no facing direction — it looks the same from every side
       playThud(400);
       return;
     }
@@ -16962,6 +17079,27 @@
     slot.appendChild(c);
     slot.addEventListener('click', () => selectSlot(DRAIN_SLOT));
     slotElByIndex[DRAIN_SLOT] = slot;
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Open Log Fire — a freestanding fire with its own light, place on any top-facing surface';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'F';
+    slot.appendChild(keyEl);
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#2a1a12'; ctx.fillRect(0,0,34,34);
+    // A simple flame shape — a wide dark-orange outer teardrop with a
+    // smaller bright-yellow one inside, same two-tone idea as the
+    // torch fixture's own flame.
+    ctx.fillStyle = '#ff7a1a';
+    ctx.beginPath(); ctx.moveTo(17,4); ctx.quadraticCurveTo(26,16,22,24); ctx.quadraticCurveTo(19,30,17,30); ctx.quadraticCurveTo(15,30,12,24); ctx.quadraticCurveTo(8,16,17,4); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ffe066';
+    ctx.beginPath(); ctx.moveTo(17,13); ctx.quadraticCurveTo(21,20,18,25); ctx.quadraticCurveTo(17,27,16,25); ctx.quadraticCurveTo(13,20,17,13); ctx.closePath(); ctx.fill();
+    slot.appendChild(c);
+    slot.addEventListener('click', () => selectSlot(FIRE_SLOT));
+    slotElByIndex[FIRE_SLOT] = slot;
     hotbar.appendChild(slot);
   }
   // Buy Terrain hotbar slot removed — infinite terrain (see the INFINITE

@@ -6060,11 +6060,21 @@
     // area, which just means a slightly larger, perfectly reasonable
     // cleared yard around it.
     const CHURCH_MIN_GAP = 10;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    let churchPlaced = false;
+    for (let attempt = 0; attempt < 14 && !churchPlaced; attempt++) {
       const angle = rng() * Math.PI * 2, dist = 27 + rng() * 8; // clears both buildings' own half-widths plus the requested gap, for most angles with room to spare
       const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
       const cbx0 = ccx - 7, cbx1 = ccx + 7, cbz0 = ccz - 10, cbz1 = ccz + 10;
-      const tooCloseToOwn = newHouseFootprints.some(hf => {
+      // Last few attempts drop the check against this village's OWN
+      // other buildings (never the check against other villages,
+      // further down — that one guards against real overlap corruption
+      // and always applies) — 14 random tries failing to find 10 clear
+      // blocks in EVERY direction around two much smaller buildings
+      // would be extremely unlikely, but this exists so the church
+      // reliably shows up rather than depending on that being rare
+      // enough in practice.
+      const skipOwnCheck = attempt >= 11;
+      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
         const dx = Math.max(0, cbx0 - hf.x1, hf.x0 - cbx1), dz = Math.max(0, cbz0 - hf.z1, hf.z0 - cbz1);
         return Math.sqrt(dx * dx + dz * dz) < CHURCH_MIN_GAP;
       });
@@ -6074,7 +6084,7 @@
       buildHouseEdgeWall(cbx0, cbx1, cbz0, cbz1, churchY, palette, 'north');
       buildVillageChurch(cbx0, cbz0, churchY, palette, reg);
       newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north' });
-      break;
+      churchPlaced = true;
     }
     if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, and church, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
@@ -16142,7 +16152,13 @@
     // stays visible (setting overflow-x forces overflow-y to clip too),
     // which would cut this off. Anchoring to the page directly, using
     // the slot's own on-screen position, sidesteps that entirely.
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;`;
+    // max-height + scroll added since Glass's own family just grew from
+    // 5 entries to 9 (the new stained panes) — column-reverse stacking
+    // upward from a fixed point with no cap meant a long enough list
+    // could run off the top of a shorter screen with no way to reach
+    // the rest of it. Every other family is still short enough never to
+    // hit this cap in practice.
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:${window.innerHeight-20}px;overflow-y:auto;`;
     BLOCK_FAMILIES[primaryIdx].forEach(idx => {
       const entry = BLOCK_TYPES[idx];
       const btn = document.createElement('div');

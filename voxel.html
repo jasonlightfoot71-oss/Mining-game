@@ -4754,7 +4754,6 @@
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
   const VILLAGE_FORCE_DISTANCE = 275; // roughly the middle of the requested 250-300 block window
-  let generatingVillageNeighbor = false; // hard recursion cap — see the guard around the forced-neighbour-generation call further down
   // Every house's footprint, keyed by the chunk that built it — checked
   // before placing a new one so two villages (or a grid one and a
   // forced one) can never land close enough to overlap. Removing the
@@ -5724,39 +5723,6 @@
         clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
         buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette, doorSide);
         newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1, gy: plotY, baseSurfaceType, subFillType, trim: palette.trim, doorSide });
-        // Forces the ONE neighbouring chunk this house's back-side pad
-        // can reach into to generate right now, rather than waiting for
-        // the player to wander close enough for it to stream in
-        // naturally. Without this, a village viewed for the first time
-        // from any kind of distance — which is basically always, that's
-        // usually how you spot one — shows the back of whichever house
-        // faces away from you still sitting in raw, unmodified terrain
-        // until that side's own chunk eventually loads on its own. The
-        // village-pad override in generateChunkTerrain still does the
-        // real work here; this just makes sure it runs immediately
-        // instead of on a delay.
-        const backSide = HOUSE_BACK_SIDE[doorSide];
-        const neighborCx = backSide === 'west' ? cx - 1 : backSide === 'east' ? cx + 1 : cx;
-        const neighborCz = backSide === 'north' ? cz - 1 : backSide === 'south' ? cz + 1 : cz;
-        const neighborCk = neighborCx + '_' + neighborCz;
-        // Hard cap on top of the lastVillageWorldPos fix above, not
-        // instead of it — that fix addresses the actual cause, but
-        // forcing a chunk to generate immediately, synchronously, from
-        // inside another chunk's own generation is exactly the shape of
-        // bug that freezes the whole page if anything else ever turns
-        // out to trigger a village here too, for any reason at all.
-        // This guarantees it can only ever nest one level deep no
-        // matter what: while a forced neighbour is being generated, ANY
-        // village that neighbour's own generation might trigger is
-        // still free to build normally, it just can't ALSO force one of
-        // its own neighbours into existence early — that one just
-        // streams in later the normal way, same as before this feature
-        // existed.
-        if (!generatingVillageNeighbor && !generatedChunks.has(neighborCk)) {
-          generatingVillageNeighbor = true;
-          try { generateChunkTerrain(neighborCx, neighborCz); syncChunkInstances(neighborCx, neighborCz); }
-          finally { generatingVillageNeighbor = false; }
-        }
       }
 
       // Both grading passes below are now skipped entirely for houses —

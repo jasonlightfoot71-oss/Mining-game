@@ -5528,14 +5528,14 @@
     buildChurchWindow(transx0, winY, transz0 + 3, false, 3, 6, palette, 48); // west transept — Sapphire
     buildChurchWindow(transx1, winY, transz0 + 3, false, 3, 6, palette, 49); // east transept — Emerald
     buildChurchWindow(midX, winY, navez1, true, 5, 6, palette, [47, 50, 48, 50, 47]); // chancel — Ruby/Amber/Sapphire/Amber/Ruby
-    // Two small single-block accent windows either side of the door,
-    // one row above its top (the door itself occupies gy+1 and gy+2, so
-    // this sits at gy+3) — placed directly rather than through
-    // buildChurchWindow, since a 1×1 window is too small for that
-    // helper's frame-plus-glass logic to make sense of (at width 1 it
-    // would render as solid frame with no glass at all).
-    blocks.set(key(midX - 1, gy + 3, navez0), 50); trackVillageHeight(midX - 1, navez0, gy + 3);
-    blocks.set(key(midX + 1, gy + 3, navez0), 50); trackVillageHeight(midX + 1, navez0, gy + 3);
+    // Two small accent windows either side of the door — raised a block
+    // higher than they first were (door top is gy+2, so this starts a
+    // full block clear of it at gy+4) and taller now too, a 3-block
+    // vertical strip rather than a single block, so they read as proper
+    // narrow windows instead of a single accent dot.
+    [midX - 1, midX + 1].forEach(wx => {
+      for (let y = gy + 4; y <= gy + 6; y++) { blocks.set(key(wx, y, navez0), 50); trackVillageHeight(wx, navez0, y); }
+    });
 
     return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h, shapeFn: inChurch };
   }
@@ -5544,7 +5544,24 @@
   // footprint, small enough that "same exterior rules as the others"
   // barely matters, but it still gets the same clearing/wall treatment
   // for consistency with everything else in the village.
-  function buildVillageWell(x0, z0, gy, palette) {
+  function buildWellBucket() {
+    // A thin rope down to a small bucket, hanging under the crossbeam
+    // into the shaft — plain THREE geometry via placeVillageProp rather
+    // than voxel blocks, the same reasoning as the bell: a rope is
+    // thinner than a block can represent, and this needs no interaction
+    // of its own, just to hang there.
+    const g = new THREE.Group();
+    const ropeMat = new THREE.MeshBasicMaterial({ color: 0x3a2a18 });
+    const bucketMat = new THREE.MeshPhongMaterial({ color: 0x8a8a8a, shininess: 20, flatShading: true });
+    const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 2.6, 6), ropeMat);
+    rope.position.set(0, 1.6, 0); // spans up toward the crossbeam, down toward the water
+    g.add(rope);
+    const bucket = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.13, 0.26, 8), bucketMat);
+    bucket.position.set(0, 0.15, 0); // sits just above the water surface
+    g.add(bucket);
+    return g;
+  }
+  function buildVillageWell(x0, z0, gy, palette, reg) {
     const cx = x0 + 1, cz = z0 + 1;
     for (let x = x0; x <= x0 + 2; x++) {
       for (let z = z0; z <= z0 + 2; z++) {
@@ -5568,6 +5585,7 @@
     for (let i = -1; i <= 1; i++) {
       blocks.set(key(cx + i, gy + 5, cz + i), 6); trackVillageHeight(cx + i, cz + i, gy + 5); // diagonal beam, corner post to corner post
     }
+    placeVillageProp(buildWellBucket, cx, gy, cz, 0, reg);
     return { x0, x1: x0 + 2, z0, z1: z0 + 2, gy, h: 5 };
   }
   // Statue — a stone pedestal topped with a simple blocky standing
@@ -5610,6 +5628,134 @@
     if (bk) reg.bellKeys.push(bk);
     return { x0, x1: x0 + 2, z0, z1: z0 + 2, gy, h: 5 };
   }
+  // Farm — a proper standalone complex, not just one building: a
+  // farmhouse in the middle, a wheat field to its west, a cabbage field
+  // to its east, and a fenced pen with cows and sheep behind it. Fixed
+  // orientation throughout (door always south) rather than randomised —
+  // "left"/"right"/"back" only mean anything consistent if the whole
+  // layout doesn't rotate.
+  function buildVillageHouseWindowGeneric(cx, yBase, cz, alongX, palette) {
+    for (let i = -1; i <= 1; i++) {
+      for (let r = 0; r <= 2; r++) {
+        const wx = alongX ? cx + i : cx;
+        const wz = alongX ? cz : cz + i;
+        const y = yBase + r;
+        const isFrame = (i === 0 || r === 1);
+        blocks.set(key(wx, y, wz), isFrame ? palette.trim : palette.glass);
+        trackVillageHeight(wx, wz, y);
+      }
+    }
+  }
+  function buildFarmhouse(x0, z0, gy, palette, reg) {
+    const w = 11, d = 9, h = 8; // taller than the house (7) and shop (7) — "quite a big building"
+    const x1 = x0 + w - 1, z1 = z0 + d - 1;
+    const midX = x0 + 5, midZ = z0 + 4;
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
+      blocks.set(key(x, gy, z), 6); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); // wood floor, same reasoning as the shop
+    }
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        const edge = (x === x0 || x === x1 || z === z0 || z === z1);
+        if (!edge) continue;
+        const isCorner = (x === x0 || x === x1) && (z === z0 || z === z1);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          blocks.set(key(x, y, z), (isCorner || y === gy + h) ? palette.trim : palette.wall);
+          trackVillageHeight(x, z, y);
+        }
+      }
+    }
+    addPyramidRoof(x0, x1, z0, z1, gy + h + 1, palette, 4);
+    const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
+    placeShellDoor(shell, 'south', reg, 0);
+    placeShellLight(shell, 'south', reg);
+    const winY = gy + 2;
+    buildVillageHouseWindowGeneric(midX, winY, z0, true, palette); // north (back) wall
+    buildVillageHouseWindowGeneric(x1, winY, midZ, false, palette); // east wall, facing the cabbage field
+    buildVillageHouseWindowGeneric(x0, winY, midZ, false, palette); // west wall, facing the wheat field
+    return shell;
+  }
+  function buildWheatStalk() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color: 0xd4b83a, side: THREE.DoubleSide });
+    const geom = new THREE.PlaneGeometry(0.75, 0.85);
+    const p1 = new THREE.Mesh(geom, mat); p1.position.y = 0.42; g.add(p1);
+    const p2 = new THREE.Mesh(geom, mat); p2.rotation.y = Math.PI / 2; p2.position.y = 0.42; g.add(p2);
+    return g;
+  }
+  function buildCabbageHead() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshPhongMaterial({ color: 0x6fae4a, flatShading: true, shininess: 0 });
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 5), mat);
+    head.position.y = 0.26;
+    g.add(head);
+    return g;
+  }
+  // Tilled dirt as the base (block 1 — matches "farmland" better than
+  // leaving it as plain grass), planted in rows rather than covering
+  // every single tile — every other row, all columns within it, which
+  // both reads as a real planted field and keeps the prop count for a
+  // field this size reasonable.
+  function buildCropField(x0, x1, z0, z1, gy, cropBuilder, reg) {
+    for (let x = x0; x <= x1; x++) {
+      for (let z = z0; z <= z1; z++) {
+        blocks.set(key(x, gy, z), 1); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+        if ((z - z0) % 2 === 0) placeVillageProp(cropBuilder, x, gy, z, 0, reg);
+      }
+    }
+  }
+  function buildCowModel() {
+    const g = new THREE.Group();
+    const mat = new THREE.MeshPhongMaterial({ color: 0x8b6a4a, flatShading: true, shininess: 0 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 1.0), mat);
+    body.position.y = 0.55; g.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.32), mat);
+    head.position.set(0, 0.6, 0.62); g.add(head);
+    [[-0.22, -0.35], [0.22, -0.35], [-0.22, 0.35], [0.22, 0.35]].forEach(([x, z]) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.5, 0.14), mat);
+      leg.position.set(x, 0.25, z); g.add(leg);
+    });
+    return g;
+  }
+  function buildSheepModel() {
+    const g = new THREE.Group();
+    const wool = new THREE.MeshPhongMaterial({ color: 0xf2f2ea, flatShading: true, shininess: 0 });
+    const dark = new THREE.MeshPhongMaterial({ color: 0x4a4038, flatShading: true, shininess: 0 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.45, 0.75), wool);
+    body.position.y = 0.45; g.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.26), dark);
+    head.position.set(0, 0.48, 0.5); g.add(head);
+    [[-0.16, -0.28], [0.16, -0.28], [-0.16, 0.28], [0.16, 0.28]].forEach(([x, z]) => {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.1), dark);
+      leg.position.set(x, 0.2, z); g.add(leg);
+    });
+    return g;
+  }
+  // Fenced pen — a plain wood-post perimeter (a post every column along
+  // each edge, one block tall) rather than an actual see-through fence
+  // mesh, which this game doesn't have a block for. Reads as a field
+  // boundary well enough at this scale. A handful of cows and sheep
+  // scattered inside, static rather than wandering — the existing NPC
+  // wander system is built specifically around two-legged villager
+  // figures pathing between named spots, not a generic animal-wander
+  // behaviour, so giving these the same treatment would have been a
+  // much bigger feature on its own rather than part of this one.
+  function buildAnimalPen(x0, x1, z0, z1, gy, rng, reg) {
+    for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) { blocks.set(key(x, gy, z), 0); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy); }
+    for (let x = x0; x <= x1; x++) {
+      blocks.set(key(x, gy + 1, z0), 6); trackVillageHeight(x, z0, gy + 1);
+      blocks.set(key(x, gy + 1, z1), 6); trackVillageHeight(x, z1, gy + 1);
+    }
+    for (let z = z0; z <= z1; z++) {
+      blocks.set(key(x0, gy + 1, z), 6); trackVillageHeight(x0, z, gy + 1);
+      blocks.set(key(x1, gy + 1, z), 6); trackVillageHeight(x1, z, gy + 1);
+    }
+    for (let i = 0; i < 6; i++) {
+      const ax = x0 + 1 + Math.floor(rng() * Math.max(1, x1 - x0 - 1));
+      const az = z0 + 1 + Math.floor(rng() * Math.max(1, z1 - z0 - 1));
+      placeVillageProp(i % 2 === 0 ? buildCowModel : buildSheepModel, ax, gy, az, Math.floor(rng() * 4), reg);
+    }
+  }
+
   function buildVillagePub(plot, gy, rng, palette, doorSide, reg, name) {
     const w = Math.min(9, plot.x1 - plot.x0 + 1), d = Math.min(7, plot.z1 - plot.z0 + 1), h = 4;
     const shell = buildShell(plot.x0, plot.z0, w, d, h, gy, palette, doorSide);
@@ -6264,13 +6410,46 @@
       const { plotY: lY, baseSurfaceType: lBase, subFillType: lSub } = computePlotGrade(lx0, lx1, lz0, lz1, roadY);
       clearSkyAroundHouse(lx0, lx1, lz0, lz1, lY, lBase, lSub);
       buildHouseEdgeWall(lx0, lx1, lz0, lz1, lY, palette, 'north'); // doorSide is meaningless for these (no door), 'north' just picks a consistent side for the escape stair if one's needed
-      if (landmarkKind === 'well') buildVillageWell(lx0, lz0, lY, palette);
+      if (landmarkKind === 'well') buildVillageWell(lx0, lz0, lY, palette, reg);
       else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, lY, palette);
       else buildVillageBell(lx0, lz0, lY, palette, reg);
       newHouseFootprints.push({ x0: lx0, x1: lx1, z0: lz0, z1: lz1, gy: lY, baseSurfaceType: lBase, subFillType: lSub, trim: palette.trim, doorSide: 'north' });
       break;
     }
-    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, and landmark, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
+    // Farm — a genuinely separate complex (farmhouse + two fields + a
+    // fenced pen, 25×16 overall), placed further out and given a bigger
+    // gap than everything else here given its own size. Same
+    // freestanding pattern throughout: independently graded, same
+    // clearing/wall treatment applied to its whole combined footprint
+    // at once (the fields and pen then lay their own ground type —
+    // tilled dirt, grass — straight over that same flattened pad).
+    const FARM_MIN_GAP = 12;
+    let farmPlaced = false;
+    for (let attempt = 0; attempt < 14 && !farmPlaced; attempt++) {
+      const angle = rng() * Math.PI * 2, dist = 40 + rng() * 15;
+      const fcx = Math.round(houseCx + Math.cos(angle) * dist), fcz = Math.round(houseCz + Math.sin(angle) * dist);
+      const fx0 = fcx - 5, fx1 = fx0 + 10, fz0 = fcz - 4, fz1 = fz0 + 8; // farmhouse, 11×9
+      const wx1 = fx0 - 1, wx0 = wx1 - 6, wz0 = fz0, wz1 = fz1; // wheat, west, 7 wide
+      const gx0 = fx1 + 1, gx1 = gx0 + 6, gz0 = fz0, gz1 = fz1; // cabbage, east, 7 wide
+      const pz1 = fz0 - 1, pz0 = pz1 - 6, px0 = wx0, px1 = gx1; // pen, north (behind), 7 deep
+      const bx0 = wx0, bx1 = gx1, bz0 = pz0, bz1 = fz1; // overall bounding box
+      const skipOwnCheck = attempt >= 11;
+      const tooCloseToOwn = !skipOwnCheck && newHouseFootprints.some(hf => {
+        const dx = Math.max(0, bx0 - hf.x1, hf.x0 - bx1), dz = Math.max(0, bz0 - hf.z1, hf.z0 - bz1);
+        return Math.sqrt(dx * dx + dz * dz) < FARM_MIN_GAP;
+      });
+      if (tooCloseToOwn || houseTooCloseToExisting(bx0, bx1, bz0, bz1, ck)) continue;
+      const { plotY: farmY, baseSurfaceType: farmBase, subFillType: farmSub } = computePlotGrade(bx0, bx1, bz0, bz1, roadY);
+      clearSkyAroundHouse(bx0, bx1, bz0, bz1, farmY, farmBase, farmSub);
+      buildHouseEdgeWall(bx0, bx1, bz0, bz1, farmY, palette, 'south');
+      buildFarmhouse(fx0, fz0, farmY, palette, reg);
+      buildCropField(wx0, wx1, wz0, wz1, farmY, buildWheatStalk, reg);
+      buildCropField(gx0, gx1, gz0, gz1, farmY, buildCabbageHead, reg);
+      buildAnimalPen(px0, px1, pz0, pz1, farmY, rng, reg);
+      newHouseFootprints.push({ x0: bx0, x1: bx1, z0: bz0, z1: bz1, gy: farmY, baseSurfaceType: farmBase, subFillType: farmSub, trim: palette.trim, doorSide: 'south' });
+      farmPlaced = true;
+    }
+    if (newHouseFootprints.length) villageHouseFootprints.set(ck, newHouseFootprints); // registered only now, after the whole village (houses, shop, church, landmark, and farm, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
 
     // Forces a visual resync of every ALREADY-generated chunk this
     // village actually wrote into. This is the real, root cause behind

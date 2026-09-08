@@ -8119,10 +8119,15 @@
     if (v.group.userData.rotor) v.group.userData.rotor.rotation.y += dt*40;
     if (v.group.userData.tailRotor) v.group.userData.tailRotor.rotation.x += dt*50;
     const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+    // Pulled back and up a bit further than before (was 5 / +2.2) for a
+    // slightly more aerial angle — makes it easier to actually see and
+    // aim at other players below/around you in a dogfight, without
+    // locking pitch (you can still freely look up/down from here, same
+    // as before).
     const desired = new THREE.Vector3(
-      player.pos.x + backX*5,
-      player.pos.y + player.height*0.92 + 2.2,
-      player.pos.z + backZ*5
+      player.pos.x + backX*6,
+      player.pos.y + player.height*0.92 + 3.3,
+      player.pos.z + backZ*6
     );
     camera.position.lerp(desired, vehicleCamBlend);
     // Deliberately no pitch override here (unlike tennis/football/golf's

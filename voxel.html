@@ -7464,11 +7464,13 @@
     return group;
   }
   const VEHICLE_TYPES = [
-    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false }, // standing on the deck, not sitting
-    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true  },
-    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true  },
-    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false }, // standing in the basket
-    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true  },
+    // gunOffset: local-space point (roughly the front of each model) the
+    // vehicle gun's tracer visually fires from — see getVehicleMuzzleWorldPos.
+    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false, gunOffset: [0, 0.95, -0.32] }, // standing on the deck, not sitting
+    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true,  gunOffset: [0, 0.5, -0.9]   },
+    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true,  gunOffset: [0, 0.48, -1.05] },
+    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false, gunOffset: [0, 0.4, -0.3]   }, // standing in the basket
+    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true,  gunOffset: [0, 0.4, -1.05]  },
   ];
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
@@ -7650,7 +7652,107 @@
   }
   document.getElementById('vehicleEnterBtn').addEventListener('click', () => enterVehicle(nearestVehicleToPlayer(3)));
   document.getElementById('vehicleExitBtn').addEventListener('click', exitVehicle);
-  // ── Helicopter gun ──────────────────────────────────────────────
+  // WRECK_LIFETIME seconds after a vehicle is shot down with its rider
+  // still aboard, spawnVehicleWreck below removes it — see the function
+  // itself and the 'vehicleHit'/'vehicleWreck' broadcast handlers.
+  const WRECK_LIFETIME = 5;
+  // Turns an already-built vehicle THREE.Group into a burning wreck at
+  // worldPos: chars its own materials in place (so it reads as destroyed
+  // rather than pristine), then layers flickering fire points, drifting
+  // smoke points, and a flickering point light on top — all self-disposing
+  // together after WRECK_LIFETIME. Reused both for the real vehicle a
+  // local rider was thrown from (see ejectFromVehicleDestroyed) and for
+  // the throwaway visual-only copy other clients build from the
+  // 'vehicleWreck' broadcast, since neither side needs anything more than
+  // a group + a position.
+  function spawnVehicleWreck(group, worldPos) {
+    group.position.copy(worldPos);
+    if (group.parent !== scene) scene.add(group);
+    group.traverse(o => {
+      if (o.isMesh && o.material) {
+        (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => {
+          if (m.color) m.color.multiplyScalar(0.16); // near-black char, not a full recolor — keeps enough of the original shape/shading readable as "that vehicle, burnt"
+          if (m.emissive) m.emissiveIntensity = 0;
+        });
+      }
+    });
+    const fireCount = 10;
+    const fireGeo = new THREE.BufferGeometry();
+    fireGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(fireCount * 3), 3));
+    const fireMat = new THREE.PointsMaterial({ color: 0xff6a1a, size: 0.26, transparent: true, opacity: 0.95 });
+    const firePoints = new THREE.Points(fireGeo, fireMat);
+    scene.add(firePoints);
+    const smokeCount = 8;
+    const smokeGeo = new THREE.BufferGeometry();
+    smokeGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(smokeCount * 3), 3));
+    const smokeMat = new THREE.PointsMaterial({ color: 0x3a3a3a, size: 0.5, transparent: true, opacity: 0.5 });
+    const smokePoints = new THREE.Points(smokeGeo, smokeMat);
+    scene.add(smokePoints);
+    const light = new THREE.PointLight(0xff5522, 1.1, 4);
+    light.position.set(worldPos.x, worldPos.y + 0.4, worldPos.z);
+    scene.add(light);
+    const startTime = performance.now();
+    function animateWreck() {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (elapsed > WRECK_LIFETIME) {
+        scene.remove(group); disposeObject3D(group);
+        scene.remove(firePoints); fireGeo.dispose(); fireMat.dispose();
+        scene.remove(smokePoints); smokeGeo.dispose(); smokeMat.dispose();
+        scene.remove(light);
+        return;
+      }
+      const fp = fireGeo.attributes.position.array;
+      for (let i = 0; i < fireCount; i++) {
+        const a = elapsed*4 + i*1.7;
+        fp[i*3]   = worldPos.x + Math.sin(a)*0.18 + (Math.random()-0.5)*0.06;
+        fp[i*3+1] = worldPos.y + 0.15 + Math.abs(Math.sin(a*1.3+i))*0.35;
+        fp[i*3+2] = worldPos.z + Math.cos(a)*0.18 + (Math.random()-0.5)*0.06;
+      }
+      fireGeo.attributes.position.needsUpdate = true;
+      fireMat.opacity = 0.65 + Math.random()*0.3; // flicker, not a smooth fade — reads as fire rather than a pulsing light
+      light.intensity = 0.85 + Math.random()*0.6;
+      const sp = smokeGeo.attributes.position.array;
+      for (let i = 0; i < smokeCount; i++) {
+        const life = ((elapsed*0.5 + i/smokeCount) % 1);
+        sp[i*3]   = worldPos.x + Math.sin(i*2.1)*0.2;
+        sp[i*3+1] = worldPos.y + 0.3 + life*2.2;
+        sp[i*3+2] = worldPos.z + Math.cos(i*2.1)*0.2;
+      }
+      smokeGeo.attributes.position.needsUpdate = true;
+      smokeMat.opacity = Math.max(0, 0.5 * (1 - elapsed/WRECK_LIFETIME));
+      requestAnimationFrame(animateWreck);
+    }
+    animateWreck();
+  }
+  // Called only on the victim's own client (see the 'vehicleHit' handler
+  // below) when they were actually riding a vehicle at the moment they
+  // got hit — throws the player clear with an outward/upward velocity
+  // impulse (rather than just teleporting them, so it reads as being
+  // thrown rather than blinking out), pulls the vehicle out of the live
+  // `vehicles` array so it can no longer be re-entered, and hands the
+  // vehicle's own group off to spawnVehicleWreck instead of disposing it
+  // the way a normal exitVehicle would. Returns the wreck's spawn info so
+  // the caller can broadcast it for everyone else to see too.
+  function ejectFromVehicleDestroyed() {
+    if (!ridingVehicle) return null;
+    const v = ridingVehicle;
+    const wreckPos = v.group.position.clone();
+    const wreckYaw = v.group.rotation.y;
+    const typeIdx = v.typeIdx;
+    flying = vehiclePrevFlying;
+    ridingVehicle = null;
+    stopVehicleEngineSound();
+    removeRiderFromVehicle();
+    document.getElementById('vehicleExitBtn').style.display = 'none';
+    const i = vehicles.indexOf(v);
+    if (i >= 0) vehicles.splice(i, 1);
+    const ang = Math.random()*Math.PI*2;
+    player.vel.set(Math.cos(ang)*4, 4.5, Math.sin(ang)*4);
+    player.pos.y += 0.6; // clears the wreck mesh before gravity takes back over, same idea as the small lifts used elsewhere in this file
+    spawnVehicleWreck(v.group, wreckPos);
+    return { x: wreckPos.x, y: wreckPos.y, z: wreckPos.z, yaw: wreckYaw, typeIdx };
+  }
+  // ── Vehicle gun ──────────────────────────────────────────────────
   // Fires along the same look direction as normal block placement,
   // triggered by the same build action — see doPlace's own interception
   // at the top, matching the pattern battleship/football/tennis already
@@ -7661,18 +7763,24 @@
   // entities use a real THREE.Raycaster against their meshes) and then
   // compared by distance, since there's no single raycast in this file
   // that already covers both at once.
-  function heliGunBlockRaycast(maxDist) {
+  function vehicleGunBlockRaycast(maxDist) {
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
     const step = 0.15; // coarser than the normal 0.06 interaction raycast — this covers a much longer range for a fraction of the steps, and a few centimetres of slop doesn't matter for gunfire the way it does for precise block placement
     for (let t = 0; t < maxDist; t += step) {
       const p = origin.clone().addScaledVector(dir, t);
       const vx = Math.floor(p.x), vy = Math.floor(p.y), vz = Math.floor(p.z);
-      if (blocks.has(key(vx, vy, vz))) return { x: vx, y: vy, z: vz, dist: t, point: p };
+      const k = key(vx, vy, vz);
+      if (blocks.has(k)) return { x: vx, y: vy, z: vz, dist: t, point: p, isWater: false };
+      // Water stops the shot right at its surface/body rather than being
+      // silently passed through — same as a real bullet loses to water —
+      // but nothing about the water itself is touched; see the 'water'
+      // winner branch in fireVehicleGun, which only ever shows a splash.
+      if (waterBlocks.has(k)) return { x: vx, y: vy, z: vz, dist: t, point: p, isWater: true };
     }
     return null;
   }
-  function heliGunEntityRaycast(maxDist) {
+  function vehicleGunEntityRaycast(maxDist) {
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const origin = camera.getWorldPosition(new THREE.Vector3());
@@ -7742,7 +7850,7 @@
     }
     return true;
   }
-  function playHeliGunshot() {
+  function playVehicleGunshot() {
     if (!audioCtx) return;
     const now = audioCtx.currentTime;
     // Low-frequency "boom" body — a fast pitch-dropping tone, the same
@@ -7779,25 +7887,28 @@
     scene.add(line);
     setTimeout(() => { scene.remove(line); geom.dispose(); mat.dispose(); }, 80); // a flash, not a persistent beam
   }
-  // Where the tracer/bullet visually starts — the helicopter's own
-  // nose, not the camera (which sits pulled back behind the vehicle for
-  // the third-person view). This is ONLY where the bullet is drawn FROM;
-  // the actual aim/hit direction below still comes from the camera, the
-  // same thing the crosshair marks, so what you're aiming at and what
-  // gets hit always agree even though the visible tracer starts
-  // somewhere else on screen.
-  function getHeliMuzzleWorldPos() {
+  // Where the tracer/bullet visually starts — the current vehicle's own
+  // front (its gunOffset — see VEHICLE_TYPES), not the camera (which
+  // sits pulled back behind the vehicle for the third-person view).
+  // This is ONLY where the bullet is drawn FROM; the actual aim/hit
+  // direction below still comes from the camera, the same thing the
+  // crosshair marks, so what you're aiming at and what gets hit always
+  // agree even though the visible tracer starts somewhere else on screen.
+  function getVehicleMuzzleWorldPos() {
     if (!ridingVehicle) return camera.getWorldPosition(new THREE.Vector3());
+    const type = VEHICLE_TYPES[ridingVehicle.typeIdx] || VEHICLE_TYPES[0];
+    const off = type.gunOffset || [0, 0.5, -0.5];
     ridingVehicle.group.updateMatrixWorld(true);
-    return new THREE.Vector3(0, 0.48, -1.05).applyMatrix4(ridingVehicle.group.matrixWorld); // roughly the nose, just ahead of the cockpit bubble
+    return new THREE.Vector3(off[0], off[1], off[2]).applyMatrix4(ridingVehicle.group.matrixWorld);
   }
-  // A quick debris burst plus a brief bright flash at wherever a block
-  // just got destroyed — same particle-burst approach as
-  // launchSlFirework, just smaller, shorter, and coloured like dirt/rock
-  // debris rather than fireworks.
-  function showBlockExplosion(x, y, z) {
-    const center = new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5);
-    const debrisColors = [0x8a5a34, 0x6b4423, 0xa89070, 0x4a4a4a];
+  // Shared particle-burst core for both showBlockExplosion (mined/gunned
+  // blocks) and showImpactExplosion (a hit landing on an NPC, animal, or
+  // player) — same debris + flash idea as launchSlFirework, just smaller
+  // and shorter, with the colour and duration left to the caller so a
+  // block hit and a body hit can look distinct.
+  const EXPLOSION_DURATION = 1.0; // was 0.5s — extended so a hit reads clearly instead of flickering past
+  function showExplosionAt(center, colors) {
+    const debrisColors = colors || [0x8a5a34, 0x6b4423, 0xa89070, 0x4a4a4a];
     const particleCount = 16;
     const positions = new Float32Array(particleCount * 3);
     const velocities = [];
@@ -7818,7 +7929,7 @@
     const startTime = performance.now();
     function animateExplosion() {
       const elapsed = (performance.now() - startTime) / 1000;
-      if (elapsed > 0.5) {
+      if (elapsed > EXPLOSION_DURATION) {
         scene.remove(points); geo.dispose(); mat.dispose();
         scene.remove(flash); flash.geometry.dispose(); flash.material.dispose();
         return;
@@ -7830,12 +7941,69 @@
         pos[i*3+2] = center.z + velocities[i].z*elapsed;
       }
       geo.attributes.position.needsUpdate = true;
-      mat.opacity = Math.max(0, 1 - elapsed/0.5);
-      flash.scale.setScalar(1 + Math.min(1, elapsed/0.15)*1.5);
-      flash.material.opacity = Math.max(0, 0.9*(1 - elapsed/0.3));
+      mat.opacity = Math.max(0, 1 - elapsed/EXPLOSION_DURATION);
+      flash.scale.setScalar(1 + Math.min(1, elapsed/0.3)*1.5);
+      flash.material.opacity = Math.max(0, 0.9*(1 - elapsed/0.6));
       requestAnimationFrame(animateExplosion);
     }
     animateExplosion();
+  }
+  function showBlockExplosion(x, y, z) {
+    showExplosionAt(new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5));
+  }
+  // Same burst, reddish instead of dirt-coloured, at the exact impact
+  // point on an NPC/animal/player rather than snapped to a block centre.
+  function showImpactExplosion(point) {
+    showExplosionAt(point, [0xc0392b, 0xe74c3c, 0x8a2a20, 0xffb347]);
+  }
+  // A quick upward splash where a shot hits water instead of a solid
+  // block — water itself is never damaged or removed by gunfire (see the
+  // 'water' winner branch in fireVehicleGun), this is purely cosmetic.
+  function showWaterSplash(point) {
+    const particleCount = 10;
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = [];
+    for (let i = 0; i < particleCount; i++) {
+      positions[i*3] = point.x; positions[i*3+1] = point.y; positions[i*3+2] = point.z;
+      const theta = Math.random()*Math.PI*2;
+      const speed = 0.8 + Math.random()*1.4;
+      velocities.push(new THREE.Vector3(Math.cos(theta)*speed*0.5, 1.8 + Math.random()*1.2, Math.sin(theta)*speed*0.5));
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xbfe6ff, size: 0.16, transparent: true, opacity: 0.9 });
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+    const DURATION = 0.45; // quick — a splash, not an explosion
+    const startTime = performance.now();
+    function animateSplash() {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (elapsed > DURATION) { scene.remove(points); geo.dispose(); mat.dispose(); return; }
+      const pos = geo.attributes.position.array;
+      for (let i = 0; i < particleCount; i++) {
+        pos[i*3]   = point.x + velocities[i].x*elapsed;
+        pos[i*3+1] = point.y + velocities[i].y*elapsed - 5*elapsed*elapsed;
+        pos[i*3+2] = point.z + velocities[i].z*elapsed;
+      }
+      geo.attributes.position.needsUpdate = true;
+      mat.opacity = Math.max(0, 0.9*(1 - elapsed/DURATION));
+      requestAnimationFrame(animateSplash);
+    }
+    animateSplash();
+  }
+  function playWaterSplash() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.18, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * Math.pow(1 - i/data.length, 1.5); // noise burst, quicker decay than the gunshot's crack
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 2200; filter.Q.value = 0.6; // higher/brighter than the gunshot crack — reads as water, not impact
+    const gain = audioCtx.createGain(); gain.gain.value = 0.3;
+    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    src.start(now);
   }
   // A small on-screen toast, self-contained rather than reusing the chat
   // log — this needs to show a message to the LOCAL player about
@@ -7854,31 +8022,34 @@
     clearTimeout(el._hideTimer);
     el._hideTimer = setTimeout(() => { el.style.opacity = '0'; }, 1800);
   }
-  let lastHeliFireTime = 0;
-  const HELI_FIRE_COOLDOWN = 180; // ms between shots
-  function isRidingHelicopter() {
-    return !!(ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx] && VEHICLE_TYPES[ridingVehicle.typeIdx].name === 'Helicopter');
-  }
-  function fireHelicopterGun() {
-    if (currentWorldId === PUB_WORLD_ID) return; // shouldn't be reachable — the Mill is a no-fly zone and enterVehicle already refuses to let a helicopter in there — but this is cheap insurance against some edge case (e.g. a world switch mid-ride) getting a gun in anyway
+  let lastVehicleFireTime = 0;
+  const VEHICLE_FIRE_COOLDOWN = 180; // ms between shots
+  function fireVehicleGun() {
+    if (!ridingVehicle) return;
+    if (currentWorldId === PUB_WORLD_ID) return; // the Mill is a no-shooting zone — a social space, not somewhere combat (in any vehicle) belongs; enterVehicle already keeps flying vehicles out entirely, but ground vehicles (the Scooter) can still be parked/ridden in there, so this stays as a belt-and-braces check
     const now = performance.now();
-    if (now - lastHeliFireTime < HELI_FIRE_COOLDOWN) return;
-    lastHeliFireTime = now;
+    if (now - lastVehicleFireTime < VEHICLE_FIRE_COOLDOWN) return;
+    lastVehicleFireTime = now;
     ensureAudio();
-    playHeliGunshot();
-    const MAX_RANGE = 80; // helicopters fly high — a short-range gun would rarely reach anything
-    const blockHit = heliGunBlockRaycast(MAX_RANGE);
-    const entityHit = heliGunEntityRaycast(MAX_RANGE);
+    playVehicleGunshot();
+    const MAX_RANGE = 80; // generous range for every vehicle — helicopters/flying cars need it to reach anything at altitude, and it doesn't hurt a ground vehicle to have the same range
+    const blockHit = vehicleGunBlockRaycast(MAX_RANGE);
+    const entityHit = vehicleGunEntityRaycast(MAX_RANGE);
     const origin = camera.getWorldPosition(new THREE.Vector3()); // hit detection stays camera-based — this is what the crosshair actually marks
     let winner = null;
     if (entityHit && (!blockHit || entityHit.dist < blockHit.dist)) winner = entityHit;
-    else if (blockHit) winner = Object.assign({ kind: 'block' }, blockHit);
+    else if (blockHit) winner = Object.assign({ kind: blockHit.isWater ? 'water' : 'block' }, blockHit);
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const endPoint = winner ? winner.point : origin.clone().addScaledVector(dir, MAX_RANGE);
-    showTracer(getHeliMuzzleWorldPos(), endPoint); // visual start point only — see getHeliMuzzleWorldPos's own comment on why this differs from `origin` above
+    showTracer(getVehicleMuzzleWorldPos(), endPoint); // visual start point only — see getVehicleMuzzleWorldPos's own comment on why this differs from `origin` above
     if (!winner) return;
-    if (winner.kind === 'block') {
+    if (winner.kind === 'water') {
+      // Water is never damaged or removed by gunfire, same as real water
+      // — just a cosmetic splash where the shot met the surface.
+      showWaterSplash(winner.point);
+      playWaterSplash();
+    } else if (winner.kind === 'block') {
       if (!canEditAt(winner.x, winner.z)) return; // view-only world, or inside The Mill's protected footprint
       if (isProtectedStructuralBlock(winner.x, winner.y, winner.z) && !landscapeModeEnabled) return; // same protected minigame structures normal mining can't touch either
       destroyBlockAt(winner.x, winner.y, winner.z);
@@ -7886,11 +8057,14 @@
       playThud(150);
     } else if (winner.kind === 'npc') {
       destroyVillageNPC(winner.rec);
+      showImpactExplosion(winner.point);
       playThud(180);
     } else if (winner.kind === 'animal') {
       destroyVillageAnimal(winner.rec);
+      showImpactExplosion(winner.point);
       playThud(180);
     } else if (winner.kind === 'player') {
+      showImpactExplosion(winner.point);
       // No local authority over another player's own client — this only
       // broadcasts the hit; the actual effect happens on their end, in
       // the 'vehicleHit' listener below, exactly the same
@@ -7932,11 +8106,11 @@
     }
     vehicleCamWasActive = true;
     const crosshairEl = document.getElementById('crosshair');
-    // Helicopter is the one vehicle where aim actually matters — the
-    // crosshair marks exactly where the gun's raycast points (both use
-    // the same camera direction), so it stays visible there and hidden
-    // for every other vehicle, same as before.
-    if (crosshairEl) crosshairEl.style.display = isRidingHelicopter() ? 'block' : 'none';
+    // Every vehicle can now fire (see fireVehicleGun), so the crosshair —
+    // marking exactly where the gun's raycast points, using the same
+    // camera direction — stays visible for all of them, not just the
+    // Helicopter.
+    if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
@@ -12658,11 +12832,11 @@
   }
 
   function doPlace() {
-    // Helicopter's gun intercepts the build button entirely while
+    // Every vehicle's gun intercepts the build button entirely while
     // riding one — same "reuse an existing input for a vehicle-specific
     // action" idea as the minigame interceptions below, just gated on
     // the vehicle instead of a minigame being active.
-    if (isRidingHelicopter()) { fireHelicopterGun(); return; }
+    if (ridingVehicle) { fireVehicleGun(); return; }
     // Battleship ship placement intercepts a normal place-click while
     // actively placing a ship — look at your starting square and press
     // build, then look in the direction you want the ship to extend and
@@ -14021,11 +14195,11 @@
         bsGame.won = payload.won;
         if (payload.won) launchSlFirework();
       });
-      // Helicopter gun — shooter-side already picked the target and
-      // just tells that one player they were hit; only the victim's own
+      // Vehicle gun — shooter-side already picked the target and just
+      // tells that one player they were hit; only the victim's own
       // client applies the actual effect, matching bsFire's own
       // shooter-requests/victim-applies split just above.
-      // Helicopter gun destroying terrain — deliberately separate from
+      // Vehicle gun destroying terrain — deliberately separate from
       // the normal 'blockEdit' handler above, which also writes into
       // blockEdits/dirtyChunks (i.e. persists it). This only ever
       // updates the live block/mesh state, exactly mirroring
@@ -14041,11 +14215,34 @@
       });
       channel.on('broadcast', { event: 'vehicleHit' }, ({ payload }) => {
         if (!payload || payload.targetUid !== playerUid) return;
-        if (ridingVehicle) exitVehicle();
-        player.pos.y += 25; // same fall-and-recover safety margin used elsewhere in this file, not a real "death" — there's no health/lives system here to hook into
-        player.vel.set(0, 0, 0);
+        if (ridingVehicle) {
+          // Was actually riding something — thrown clear and the vehicle
+          // itself goes up as a burning wreck (see ejectFromVehicleDestroyed),
+          // rather than the plain on-foot knockback below.
+          const wreck = ejectFromVehicleDestroyed();
+          if (wreck && mpChannel && currentWorldId === mpConnectedWorldId) {
+            try { mpChannel.send({ type: 'broadcast', event: 'vehicleWreck', payload: wreck }); } catch (e) {}
+          }
+        } else {
+          player.pos.y += 25; // same fall-and-recover safety margin used elsewhere in this file, not a real "death" — there's no health/lives system here to hook into
+          player.vel.set(0, 0, 0);
+        }
         playThud(220);
         showBriefMessage(payload.shooterName ? ('Shot down by ' + payload.shooterName + '!') : 'Shot down!');
+      });
+      // Purely cosmetic on every OTHER client — the actual vehicle
+      // instance and its removal from `vehicles` only ever exist on the
+      // victim's own client (see ejectFromVehicleDestroyed); everyone
+      // else just builds a fresh throwaway copy of that vehicle type and
+      // hands it to the same spawnVehicleWreck used locally, so the
+      // burning wreck is visible to the whole world for the same 5s.
+      channel.on('broadcast', { event: 'vehicleWreck' }, ({ payload }) => {
+        if (!payload || currentWorldId !== mpConnectedWorldId) return;
+        const type = VEHICLE_TYPES[payload.typeIdx] || VEHICLE_TYPES[0];
+        const group = type.build();
+        group.rotation.y = payload.yaw || 0;
+        group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        spawnVehicleWreck(group, new THREE.Vector3(payload.x, payload.y, payload.z));
       });
       // Snakes & Ladders — the generating client sends the actual random
       // layout it rolled, and everyone else applies that exact same

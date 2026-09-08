@@ -2017,8 +2017,7 @@
   // a revisit, since the building is otherwise regenerated fresh every
   // time via generatePubWorld().
   function canEditAt(x, z) {
-    if (currentWorldId === PUB_WORLD_ID) return true; // placing stays unrestricted everywhere in the Mill EXCEPT within the protected game areas — see doPlace()/doMine()'s own checks, which handle that directly rather than through this shared gate
-    return !visitMode;
+    return true; // every world is now editable by everyone, not just its owner (and not just the Mill, which was already unrestricted) — visitMode itself is left alone since other things may still reference it, but it no longer gates editing here
   }
   // Keeps the football pitch, the Snakes & Ladders tower, and the
   // Battleship arena from being MINED away, and stops ordinary building
@@ -7611,6 +7610,15 @@
   }
   function enterVehicle(v) {
     if (ridingVehicle || !v) return;
+    // The Mill is a no-fly zone — a social space meant for people to
+    // walk around and play the minigames in, not somewhere a helicopter
+    // (with its gun) or any other flying vehicle should be tearing
+    // around. Ground vehicles (currently just the Scooter) are still
+    // fine there.
+    if (currentWorldId === PUB_WORLD_ID && VEHICLE_TYPES[v.typeIdx].flies) {
+      showBriefMessage('No-fly zone in the Mill');
+      return;
+    }
     ridingVehicle = v;
     vehiclePrevFlying = flying;
     flying = !!VEHICLE_TYPES[v.typeIdx].flies;
@@ -7712,9 +7720,16 @@
     if (pubWaterAllowed(bx, bz)) {
       const filledFromAbove = waterBlocks.has(key(bx, by+1, bz));
       const filledFromSide = !filledFromAbove && [[bx+1,by,bz],[bx-1,by,bz],[bx,by,bz+1],[bx,by,bz-1]].some(([nx,ny,nz]) => waterBlocks.has(key(nx,ny,nz)));
-      if (filledFromAbove || filledFromSide) { waterBlocks.set(k, 1); recordWaterEdit(bx, by, bz, 1); }
+      if (filledFromAbove || filledFromSide) waterBlocks.set(k, 1); // local-only for this session, not recorded — see below, none of the gun's damage is meant to survive a reload, including its knock-on effects
     }
-    recordBlockEdit(bx, by, bz, -1, 0);
+    // Deliberately NOT recordBlockEdit — that both persists the removal
+    // (blockEdits, saved with the world) and broadcasts it live. Gun
+    // damage should only do the second part: everyone currently in the
+    // world sees the block vanish in real time (via the dedicated
+    // broadcast below), but nobody's client — including yours, next time
+    // you load this world — remembers it happened, so it reappears
+    // exactly as originally generated. A normal mine/place still goes
+    // through recordBlockEdit as before and stays permanent.
     removeFixturesForBlock(bx, by, bz);
     removeLaddersForBlock(bx, by, bz);
     removeWallpapersForBlock(bx, by, bz);
@@ -7722,19 +7737,38 @@
     removeDoorsForBlock(bx, by, bz);
     removeFurnitureForBlock(bx, by, bz);
     handleLocalBlockChange(bx, by, bz);
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'gunBlockDestroy', payload: { x: bx, y: by, z: bz } }); } catch (e) {}
+    }
     return true;
   }
   function playHeliGunshot() {
     if (!audioCtx) return;
     const now = audioCtx.currentTime;
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.07, audioCtx.sampleRate);
+    // Low-frequency "boom" body — a fast pitch-dropping tone, the same
+    // trick a kick drum (or a real cannon/heavy gun recording) uses for
+    // weight. The crack alone (below) read as a small, tinny pop; this
+    // is what actually makes it sound big.
+    const boomOsc = audioCtx.createOscillator();
+    boomOsc.type = 'triangle';
+    boomOsc.frequency.setValueAtTime(150, now);
+    boomOsc.frequency.exponentialRampToValueAtTime(35, now + 0.16);
+    const boomGain = audioCtx.createGain();
+    boomGain.gain.setValueAtTime(0.55, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+    boomOsc.connect(boomGain); boomGain.connect(audioCtx.destination);
+    boomOsc.start(now); boomOsc.stop(now + 0.24);
+    // The crack on top — same noise-burst approach as before, but the
+    // bandpass dropped from 1400Hz to 500Hz so it reads as a heavier
+    // report rather than a bright, small-calibre pop.
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.09, audioCtx.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length); // short noise burst, fading out — a crack, not a tone
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 1400; filter.Q.value = 0.6;
-    const gain = audioCtx.createGain(); gain.gain.value = 0.4;
+    filter.type = 'bandpass'; filter.frequency.value = 500; filter.Q.value = 0.5;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.45;
     src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
     src.start(now);
   }
@@ -7826,6 +7860,7 @@
     return !!(ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx] && VEHICLE_TYPES[ridingVehicle.typeIdx].name === 'Helicopter');
   }
   function fireHelicopterGun() {
+    if (currentWorldId === PUB_WORLD_ID) return; // shouldn't be reachable — the Mill is a no-fly zone and enterVehicle already refuses to let a helicopter in there — but this is cheap insurance against some edge case (e.g. a world switch mid-ride) getting a gun in anyway
     const now = performance.now();
     if (now - lastHeliFireTime < HELI_FIRE_COOLDOWN) return;
     lastHeliFireTime = now;
@@ -13990,6 +14025,20 @@
       // just tells that one player they were hit; only the victim's own
       // client applies the actual effect, matching bsFire's own
       // shooter-requests/victim-applies split just above.
+      // Helicopter gun destroying terrain — deliberately separate from
+      // the normal 'blockEdit' handler above, which also writes into
+      // blockEdits/dirtyChunks (i.e. persists it). This only ever
+      // updates the live block/mesh state, exactly mirroring
+      // destroyBlockAt's own local half — see its comment for why gun
+      // damage is meant to reappear on a fresh load rather than stick
+      // around like a normal mine/place would.
+      channel.on('broadcast', { event: 'gunBlockDestroy' }, ({ payload }) => {
+        if (!payload || currentWorldId !== mpConnectedWorldId) return;
+        const { x, y, z } = payload;
+        const k = key(x, y, z);
+        blocks.delete(k); stepRotations.delete(k);
+        handleLocalBlockChange(x, y, z);
+      });
       channel.on('broadcast', { event: 'vehicleHit' }, ({ payload }) => {
         if (!payload || payload.targetUid !== playerUid) return;
         if (ridingVehicle) exitVehicle();
@@ -18575,7 +18624,7 @@
   document.getElementById('startBtn').addEventListener('click', () => {
     document.getElementById('overlay').style.display = 'none';
     document.getElementById('crosshair').style.display = 'block';
-    if (!visitMode) document.getElementById('hotbar').style.display = 'flex';
+    document.getElementById('hotbar').style.display = 'flex'; // shown even in visitMode now — every world is editable by everyone, not just its owner
     document.getElementById('modeTag').style.display = 'block';
     document.getElementById('coinsDisplay').style.display = 'block';
     document.getElementById('coordsDisplay').style.display = 'block';
@@ -18604,10 +18653,6 @@
     if (isTouchDevice) {
       touchActive = true;
       document.getElementById('touchUI').style.display = 'block';
-      if (visitMode) {
-        document.getElementById('btnMine').style.display = 'none';
-        document.getElementById('btnPlace').style.display = 'none';
-      }
       document.getElementById('hint').style.display = 'none';
       // Marks gameplay as started, which is what gates #rotatePrompt (see
       // its CSS above) — it only ever shows once play has actually begun,
@@ -18622,7 +18667,7 @@
     } else {
       document.getElementById('hint').style.display = 'block';
       document.getElementById('hint').innerHTML = visitMode
-        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — mining and placing are disabled'
+        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — hold LMB mine · RMB place · 1-9/scroll select'
         : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · 1-9/scroll select';
       renderer.domElement.requestPointerLock();
     }

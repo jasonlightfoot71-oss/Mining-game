@@ -7785,6 +7785,7 @@
     camera.getWorldDirection(dir);
     const origin = camera.getWorldPosition(new THREE.Vector3());
     const raycaster = new THREE.Raycaster(origin, dir, 0, maxDist);
+    raycaster.camera = camera; // required for hits against Sprite children (other players' floating name/chat tags, pulled in by the recursive intersectObjects below) — without it, three.js throws reading raycaster.camera.matrixWorld the instant the ray actually sweeps over another player, which is exactly what a dogfight does
     const candidates = [];
     const ownerOf = new Map();
     villageNPCs.forEach(n => { if (n.mesh) { candidates.push(n.mesh); ownerOf.set(n.mesh, { kind: 'npc', rec: n }); } });

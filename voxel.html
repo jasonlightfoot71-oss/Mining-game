@@ -7630,6 +7630,7 @@
     document.getElementById('vehicleEnterBtn').style.display = 'none';
     document.getElementById('vehicleExitBtn').style.display = 'block';
     ensureAudio();
+    ensureVehicleGunshotBuffer(); // kick off the gunshot sample decode now, well ahead of the first shot — see its own comment
     startVehicleEngineSound(v.typeIdx);
     addRiderToVehicle(v);
   }
@@ -7858,207 +7859,65 @@
     }
     return true;
   }
-  // ── Vehicle gunshot sound — 5 candidate "meatier" samples ─────────
-  // Temporary A/B setup: all five are defined below, a small on-screen
-  // panel (setupGunshotPreviewPanel, further down) lets them be previewed
-  // without needing to be in a vehicle, and vehicleGunshotVariant picks
-  // which one real gunfire actually uses. Once a favourite is chosen,
-  // the plan is to delete the other four plus the preview panel and
-  // just keep the winner as playVehicleGunshot.
-  function vehicleGunshotDistortionCurve(amount) {
-    const samples = 256, curve = new Float32Array(samples), deg = Math.PI/180;
-    for (let i = 0; i < samples; i++) {
-      const x = (i*2)/samples - 1;
-      curve[i] = ((3+amount)*x*20*deg) / (Math.PI + amount*Math.abs(x));
-    }
-    return curve;
+  // ── Vehicle gunshot sound ──────────────────────────────────────
+  // "Meaty Punch" — picked after an in-chat A/B test of 5 rendered
+  // candidates (proper synthesised/filtered audio, not live oscillators
+  // — the earlier live-oscillator attempts all came out thin/tinny no
+  // matter how they were shaped). Embedded here as base64 MP3 and
+  // decoded once into a real AudioBuffer, then just replayed from that
+  // buffer on every shot — this is what actually fixes the tinniness,
+  // since it's real recorded audio rather than something built live
+  // from oscillators.
+  const VEHICLE_GUNSHOT_MP3_B64 = "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";
+  let vehicleGunshotBuffer = null;
+  let vehicleGunshotDecoding = null;
+  function base64ToArrayBuffer(b64) {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
   }
-  // 1: "Heavy Boom" — the original boom+crack shape, just deeper and run
-  // through a soft distortion curve for grit.
-  function playVehicleGunshotSample1() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const boomOsc = audioCtx.createOscillator();
-    boomOsc.type = 'triangle';
-    boomOsc.frequency.setValueAtTime(120, now);
-    boomOsc.frequency.exponentialRampToValueAtTime(28, now + 0.22);
-    const shaper = audioCtx.createWaveShaper();
-    shaper.curve = vehicleGunshotDistortionCurve(18);
-    const boomGain = audioCtx.createGain();
-    boomGain.gain.setValueAtTime(0.65, now);
-    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-    boomOsc.connect(shaper); shaper.connect(boomGain); boomGain.connect(audioCtx.destination);
-    boomOsc.start(now); boomOsc.stop(now + 0.32);
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.11, audioCtx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 400; filter.Q.value = 0.5;
-    const gain = audioCtx.createGain(); gain.gain.value = 0.5;
-    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
-    src.start(now);
+  // Kicks off the (near-instant, but still async) decode — called from
+  // enterVehicle right after ensureAudio(), so the buffer is almost
+  // always ready well before the first shot is actually fired; also
+  // safe to call again later since it no-ops once already decoded/decoding.
+  function ensureVehicleGunshotBuffer() {
+    if (vehicleGunshotBuffer || vehicleGunshotDecoding || !audioCtx) return;
+    vehicleGunshotDecoding = audioCtx.decodeAudioData(base64ToArrayBuffer(VEHICLE_GUNSHOT_MP3_B64))
+      .then(buf => { vehicleGunshotBuffer = buf; })
+      .catch(err => { console.warn('vehicle gunshot decode failed (recovered):', err); vehicleGunshotDecoding = null; });
   }
-  // 2: "Punchy Slug" — short, hard-hitting transient rather than a long
-  // boom — reads more like a heavy single shot than a cannon.
-  function playVehicleGunshotSample2() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const punchOsc = audioCtx.createOscillator();
-    punchOsc.type = 'square';
-    punchOsc.frequency.setValueAtTime(95, now);
-    punchOsc.frequency.exponentialRampToValueAtTime(40, now + 0.09);
-    const shaper = audioCtx.createWaveShaper();
-    shaper.curve = vehicleGunshotDistortionCurve(30);
-    const punchGain = audioCtx.createGain();
-    punchGain.gain.setValueAtTime(0.5, now);
-    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
-    punchOsc.connect(shaper); shaper.connect(punchGain); punchGain.connect(audioCtx.destination);
-    punchOsc.start(now); punchOsc.stop(now + 0.16);
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.06, audioCtx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 900; filter.Q.value = 0.7;
-    const gain = audioCtx.createGain(); gain.gain.value = 0.55;
-    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
-    src.start(now);
-  }
-  // 3: "Cannon Blast" — a mechanical clack (bolt/breach) just ahead of a
-  // thick dual-oscillator boom, for the heaviest/most "vehicle-mounted
-  // gun" of the five.
-  function playVehicleGunshotSample3() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const clackBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.02, audioCtx.sampleRate);
-    const clackData = clackBuf.getChannelData(0);
-    for (let i = 0; i < clackData.length; i++) clackData[i] = (Math.random()*2-1) * (1 - i/clackData.length);
-    const clackSrc = audioCtx.createBufferSource(); clackSrc.buffer = clackBuf;
-    const clackFilter = audioCtx.createBiquadFilter();
-    clackFilter.type = 'highpass'; clackFilter.frequency.value = 2500;
-    const clackGain = audioCtx.createGain(); clackGain.gain.value = 0.25;
-    clackSrc.connect(clackFilter); clackFilter.connect(clackGain); clackGain.connect(audioCtx.destination);
-    clackSrc.start(now);
-    const o1 = audioCtx.createOscillator(), o2 = audioCtx.createOscillator();
-    o1.type = 'triangle'; o2.type = 'sawtooth';
-    o1.frequency.setValueAtTime(110, now + 0.015); o1.frequency.exponentialRampToValueAtTime(24, now + 0.28);
-    o2.frequency.setValueAtTime(105, now + 0.015); o2.frequency.exponentialRampToValueAtTime(22, now + 0.28);
-    const boomGain = audioCtx.createGain();
-    boomGain.gain.setValueAtTime(0.001, now);
-    boomGain.gain.setValueAtTime(0.55, now + 0.015);
-    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
-    o1.connect(boomGain); o2.connect(boomGain); boomGain.connect(audioCtx.destination);
-    o1.start(now + 0.015); o1.stop(now + 0.36); o2.start(now + 0.015); o2.stop(now + 0.36);
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 450; filter.Q.value = 0.5;
-    const gain = audioCtx.createGain(); gain.gain.value = 0.45;
-    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
-    src.start(now + 0.015);
-  }
-  // 4: "Growler" — a distorted low sawtooth through a lowpass for a
-  // throaty, gritty growl rather than a clean boom.
-  function playVehicleGunshotSample4() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const osc = audioCtx.createOscillator();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(85, now);
-    osc.frequency.exponentialRampToValueAtTime(30, now + 0.2);
-    const shaper = audioCtx.createWaveShaper();
-    shaper.curve = vehicleGunshotDistortionCurve(45);
-    const lowpass = audioCtx.createBiquadFilter();
-    lowpass.type = 'lowpass'; lowpass.frequency.value = 900;
-    const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.5, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
-    osc.connect(shaper); shaper.connect(lowpass); lowpass.connect(gain); gain.connect(audioCtx.destination);
-    osc.start(now); osc.stop(now + 0.3);
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.08, audioCtx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 600; filter.Q.value = 0.6;
-    const ngain = audioCtx.createGain(); ngain.gain.value = 0.5;
-    src.connect(filter); filter.connect(ngain); ngain.connect(audioCtx.destination);
-    src.start(now);
-  }
-  // 5: "Artillery Thump" — the lowest and longest of the five, with a
-  // two-stage crack (a sharp initial transient, then a softer slap ~40ms
-  // later) for the biggest, most "distant cannon" feeling shot.
-  function playVehicleGunshotSample5() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const boomOsc = audioCtx.createOscillator();
-    boomOsc.type = 'sine';
-    boomOsc.frequency.setValueAtTime(70, now);
-    boomOsc.frequency.exponentialRampToValueAtTime(18, now + 0.4);
-    const shaper = audioCtx.createWaveShaper();
-    shaper.curve = vehicleGunshotDistortionCurve(12);
-    const boomGain = audioCtx.createGain();
-    boomGain.gain.setValueAtTime(0.7, now);
-    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
-    boomOsc.connect(shaper); shaper.connect(boomGain); boomGain.connect(audioCtx.destination);
-    boomOsc.start(now); boomOsc.stop(now + 0.52);
-    [0, 0.04].forEach((delay, idx) => {
-      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.08, audioCtx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-      const src = audioCtx.createBufferSource(); src.buffer = buf;
-      const filter = audioCtx.createBiquadFilter();
-      filter.type = 'bandpass'; filter.frequency.value = idx === 0 ? 550 : 350; filter.Q.value = 0.5;
-      const gain = audioCtx.createGain(); gain.gain.value = idx === 0 ? 0.5 : 0.3;
-      src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
-      src.start(now + delay);
-    });
-  }
-  const VEHICLE_GUNSHOT_SAMPLES = [playVehicleGunshotSample1, playVehicleGunshotSample2, playVehicleGunshotSample3, playVehicleGunshotSample4, playVehicleGunshotSample5];
-  let vehicleGunshotVariant = 1; // which sample above real gunfire uses right now — change this once a favourite is picked, then the other four (and the preview panel below) can go
   function playVehicleGunshot() {
-    (VEHICLE_GUNSHOT_SAMPLES[vehicleGunshotVariant - 1] || VEHICLE_GUNSHOT_SAMPLES[0])();
+    if (!audioCtx) return;
+    if (!vehicleGunshotBuffer) { ensureVehicleGunshotBuffer(); return; } // buffer not ready yet (shouldn't normally happen — see enterVehicle) — skip this one shot's sound rather than throw
+    const src = audioCtx.createBufferSource();
+    src.buffer = vehicleGunshotBuffer;
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.95;
+    src.connect(gain); gain.connect(audioCtx.destination);
+    src.start();
   }
-  // TEMPORARY — lets the 5 samples above be A/B tested without needing
-  // to be in a vehicle at all. Delete this whole IIFE once one is picked.
-  (function setupGunshotPreviewPanel() {
-    const panel = document.createElement('div');
-    panel.id = 'gunshotPreviewPanel';
-    panel.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:60;background:rgba(0,0,0,0.75);padding:10px;border-radius:8px;display:flex;flex-direction:column;gap:6px;font-family:-apple-system,sans-serif;';
-    const label = document.createElement('div');
-    label.textContent = 'Gunshot samples (test)';
-    label.style.cssText = 'color:#fff;font-size:12px;opacity:0.8;margin-bottom:2px;';
-    panel.appendChild(label);
-    for (let i = 1; i <= 5; i++) {
-      const btn = document.createElement('button');
-      btn.textContent = 'Sample ' + i;
-      btn.style.cssText = 'padding:6px 10px;border:none;border-radius:5px;background:#3ac0e0;color:#000;font-weight:600;cursor:pointer;font-size:12px;';
-      btn.addEventListener('click', () => { ensureAudio(); VEHICLE_GUNSHOT_SAMPLES[i-1](); });
-      panel.appendChild(btn);
-    }
-    document.body.appendChild(panel);
-  })();
   // A low, muffled boom a beat after the immediate hit sound — as if the
-  // same explosion is also being heard reflected/from further off. Heavy
-  // lowpass (distance eats high frequencies first) plus a short delay
-  // and a long, quiet tail. Fired alongside every real explosion (see
-  // showExplosionAt) but not the water splash, which isn't an explosion.
+  // same explosion is also being heard reflected/from further off. Was
+  // originally tuned to a 55→20Hz sweep, which turned out to be almost
+  // entirely below what phone/laptop speakers actually reproduce — same
+  // pitfall the vehicle engine sound hit earlier in this file — so
+  // raised into a range that still reads as deep but is actually
+  // audible, and boosted a bit louder to compensate for the heavy
+  // lowpass "distance" filtering.
   function playDistantExplosionBoom() {
     if (!audioCtx) return;
     const now = audioCtx.currentTime;
     const delay = 0.12 + Math.random()*0.06;
     const osc = audioCtx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(55, now + delay);
-    osc.frequency.exponentialRampToValueAtTime(20, now + delay + 0.6);
+    osc.frequency.setValueAtTime(90, now + delay);
+    osc.frequency.exponentialRampToValueAtTime(35, now + delay + 0.6);
     const lowpass = audioCtx.createBiquadFilter();
-    lowpass.type = 'lowpass'; lowpass.frequency.value = 220; // heavy muffling — this is what actually reads as "far away"
+    lowpass.type = 'lowpass'; lowpass.frequency.value = 500; // still muffled/"distant", but no longer cutting off everything that would actually reach a small speaker
     const gain = audioCtx.createGain();
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.setValueAtTime(0.22, now + delay);
+    gain.gain.setValueAtTime(0.4, now + delay);
     gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 1.1);
     osc.connect(lowpass); lowpass.connect(gain); gain.connect(audioCtx.destination);
     osc.start(now + delay); osc.stop(now + delay + 1.2);
@@ -8069,8 +7928,8 @@
     for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
     const src = audioCtx.createBufferSource(); src.buffer = buf;
     const rumbleFilter = audioCtx.createBiquadFilter();
-    rumbleFilter.type = 'lowpass'; rumbleFilter.frequency.value = 180;
-    const rumbleGain = audioCtx.createGain(); rumbleGain.gain.value = 0.14;
+    rumbleFilter.type = 'lowpass'; rumbleFilter.frequency.value = 320;
+    const rumbleGain = audioCtx.createGain(); rumbleGain.gain.value = 0.24;
     src.connect(rumbleFilter); rumbleFilter.connect(rumbleGain); rumbleGain.connect(audioCtx.destination);
     src.start(now + delay);
   }

@@ -7465,11 +7465,11 @@
     return group;
   }
   const VEHICLE_TYPES = [
-    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5 },
-    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5 },
-    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7 },
-    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55 },
-    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2 },
+    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false }, // standing on the deck, not sitting
+    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true  },
+    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true  },
+    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false }, // standing in the basket
+    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true  },
   ];
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
@@ -7592,11 +7592,16 @@
   let riderMesh = null;
   function addRiderToVehicle(v) {
     removeRiderFromVehicle();
-    const figure = buildCustomerFigure(true, getMyAvatarColors());
-    figure.position.set(0, 0.5, 0); // roughly seat height above the vehicle's own origin — not tuned per vehicle type, so it may sit a little high/low on some of them
-    figure.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    v.group.add(figure);
-    riderMesh = figure;
+    try {
+      const type = VEHICLE_TYPES[v.typeIdx] || VEHICLE_TYPES[0];
+      const figure = buildCustomerFigure(type.riderSeated, getMyAvatarColors());
+      figure.position.set(0, type.riderY, 0); // per-vehicle floor/deck height — was a single fixed 0.5 for every vehicle, which floated well above the scooter's actual deck (0.22) since nothing here previously matched each vehicle's own geometry
+      figure.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      v.group.add(figure);
+      riderMesh = figure;
+    } catch (err) {
+      console.warn('addRiderToVehicle failed (recovered):', err); // failing here should never be silent again — riding still works fine without a visible rider, but the cause needs to actually surface somewhere
+    }
   }
   function removeRiderFromVehicle() {
     if (!riderMesh) return;
@@ -7637,6 +7642,173 @@
   }
   document.getElementById('vehicleEnterBtn').addEventListener('click', () => enterVehicle(nearestVehicleToPlayer(3)));
   document.getElementById('vehicleExitBtn').addEventListener('click', exitVehicle);
+  // ── Helicopter gun ──────────────────────────────────────────────
+  // Fires along the same look direction as normal block placement,
+  // triggered by the same build action — see doPlace's own interception
+  // at the top, matching the pattern battleship/football/tennis already
+  // use to intercept that same button for their own thing. Whatever's
+  // actually closest along that ray — a block, a wandering villager, a
+  // farm animal, or another player — is what gets hit; blocks and
+  // entities are raycast separately (blocks step through the voxel grid,
+  // entities use a real THREE.Raycaster against their meshes) and then
+  // compared by distance, since there's no single raycast in this file
+  // that already covers both at once.
+  function heliGunBlockRaycast(maxDist) {
+    const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    const step = 0.15; // coarser than the normal 0.06 interaction raycast — this covers a much longer range for a fraction of the steps, and a few centimetres of slop doesn't matter for gunfire the way it does for precise block placement
+    for (let t = 0; t < maxDist; t += step) {
+      const p = origin.clone().addScaledVector(dir, t);
+      const vx = Math.floor(p.x), vy = Math.floor(p.y), vz = Math.floor(p.z);
+      if (blocks.has(key(vx, vy, vz))) return { x: vx, y: vy, z: vz, dist: t, point: p };
+    }
+    return null;
+  }
+  function heliGunEntityRaycast(maxDist) {
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    const raycaster = new THREE.Raycaster(origin, dir, 0, maxDist);
+    const candidates = [];
+    const ownerOf = new Map();
+    villageNPCs.forEach(n => { if (n.mesh) { candidates.push(n.mesh); ownerOf.set(n.mesh, { kind: 'npc', rec: n }); } });
+    villageAnimals.forEach(a => { if (a.mesh) { candidates.push(a.mesh); ownerOf.set(a.mesh, { kind: 'animal', rec: a }); } });
+    otherPlayers.forEach(p => { if (p.group) { candidates.push(p.group); ownerOf.set(p.group, { kind: 'player', rec: p }); } });
+    if (!candidates.length) return null;
+    const hits = raycaster.intersectObjects(candidates, true);
+    if (!hits.length) return null;
+    let root = hits[0].object;
+    while (root && !ownerOf.has(root)) root = root.parent; // walks up from whatever sub-mesh was actually hit (an arm, a leg) to the top-level group registered above
+    if (!root) return null;
+    return Object.assign({ dist: hits[0].distance, point: hits[0].point }, ownerOf.get(root));
+  }
+  // Removing a single villager or animal — previously only ever possible
+  // in bulk (teardownVillage's own filter, when a whole chunk unloads at
+  // once), never one at a time.
+  function destroyVillageNPC(rec) {
+    const i = villageNPCs.indexOf(rec);
+    if (i < 0) return;
+    villageNPCs.splice(i, 1);
+    if (rec.mesh) { scene.remove(rec.mesh); disposeObject3D(rec.mesh); }
+  }
+  function destroyVillageAnimal(rec) {
+    const i = villageAnimals.indexOf(rec);
+    if (i < 0) return;
+    villageAnimals.splice(i, 1);
+    if (rec.mesh) { scene.remove(rec.mesh); disposeObject3D(rec.mesh); }
+  }
+  // The same sequence doMine() runs the instant a timed dig completes —
+  // pulled out into its own function so the gun can do it immediately,
+  // with no dig timer, while staying in perfect sync with everything a
+  // normal mine already does: multiplayer broadcast (via
+  // recordBlockEdit), water fill-in, and cleaning up anything attached
+  // to that block (fixtures, ladders, wallpaper, signs, doors,
+  // furniture).
+  function destroyBlockAt(bx, by, bz) {
+    const k = key(bx, by, bz);
+    if (!blocks.has(k)) return false;
+    blocks.delete(k);
+    stepRotations.delete(k);
+    if (pubWaterAllowed(bx, bz)) {
+      const filledFromAbove = waterBlocks.has(key(bx, by+1, bz));
+      const filledFromSide = !filledFromAbove && [[bx+1,by,bz],[bx-1,by,bz],[bx,by,bz+1],[bx,by,bz-1]].some(([nx,ny,nz]) => waterBlocks.has(key(nx,ny,nz)));
+      if (filledFromAbove || filledFromSide) { waterBlocks.set(k, 1); recordWaterEdit(bx, by, bz, 1); }
+    }
+    recordBlockEdit(bx, by, bz, -1, 0);
+    removeFixturesForBlock(bx, by, bz);
+    removeLaddersForBlock(bx, by, bz);
+    removeWallpapersForBlock(bx, by, bz);
+    removeSignsForBlock(bx, by, bz);
+    removeDoorsForBlock(bx, by, bz);
+    removeFurnitureForBlock(bx, by, bz);
+    handleLocalBlockChange(bx, by, bz);
+    return true;
+  }
+  function playHeliGunshot() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.07, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length); // short noise burst, fading out — a crack, not a tone
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 1400; filter.Q.value = 0.6;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.4;
+    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    src.start(now);
+  }
+  function showTracer(from, to) {
+    const geom = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const mat = new THREE.LineBasicMaterial({ color: 0xfff2a8, transparent: true, opacity: 0.9 });
+    const line = new THREE.Line(geom, mat);
+    scene.add(line);
+    setTimeout(() => { scene.remove(line); geom.dispose(); mat.dispose(); }, 80); // a flash, not a persistent beam
+  }
+  // A small on-screen toast, self-contained rather than reusing the chat
+  // log — this needs to show a message to the LOCAL player about
+  // something that just happened to them, not post a line into a shared
+  // chat transcript.
+  function showBriefMessage(text) {
+    let el = document.getElementById('briefMsg');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'briefMsg';
+      el.style.cssText = 'position:fixed;top:18%;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.7);color:#fff;padding:8px 16px;border-radius:6px;font-size:15px;z-index:50;pointer-events:none;text-shadow:0 1px 2px #000;transition:opacity 0.5s;';
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.style.opacity = '1';
+    clearTimeout(el._hideTimer);
+    el._hideTimer = setTimeout(() => { el.style.opacity = '0'; }, 1800);
+  }
+  let lastHeliFireTime = 0;
+  const HELI_FIRE_COOLDOWN = 180; // ms between shots
+  function isRidingHelicopter() {
+    return !!(ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx] && VEHICLE_TYPES[ridingVehicle.typeIdx].name === 'Helicopter');
+  }
+  function fireHelicopterGun() {
+    const now = performance.now();
+    if (now - lastHeliFireTime < HELI_FIRE_COOLDOWN) return;
+    lastHeliFireTime = now;
+    ensureAudio();
+    playHeliGunshot();
+    const MAX_RANGE = 80; // helicopters fly high — a short-range gun would rarely reach anything
+    const blockHit = heliGunBlockRaycast(MAX_RANGE);
+    const entityHit = heliGunEntityRaycast(MAX_RANGE);
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    let winner = null;
+    if (entityHit && (!blockHit || entityHit.dist < blockHit.dist)) winner = entityHit;
+    else if (blockHit) winner = Object.assign({ kind: 'block' }, blockHit);
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    const endPoint = winner ? winner.point : origin.clone().addScaledVector(dir, MAX_RANGE);
+    showTracer(origin, endPoint);
+    if (!winner) return;
+    if (winner.kind === 'block') {
+      if (!canEditAt(winner.x, winner.z)) return; // view-only world, or inside The Mill's protected footprint
+      if (isProtectedStructuralBlock(winner.x, winner.y, winner.z) && !landscapeModeEnabled) return; // same protected minigame structures normal mining can't touch either
+      destroyBlockAt(winner.x, winner.y, winner.z);
+      playThud(150);
+    } else if (winner.kind === 'npc') {
+      destroyVillageNPC(winner.rec);
+      playThud(180);
+    } else if (winner.kind === 'animal') {
+      destroyVillageAnimal(winner.rec);
+      playThud(180);
+    } else if (winner.kind === 'player') {
+      // No local authority over another player's own client — this only
+      // broadcasts the hit; the actual effect happens on their end, in
+      // the 'vehicleHit' listener below, exactly the same
+      // shooter-requests/victim-applies split battleship's own bsFire
+      // already uses for the same reason (nobody's client should be able
+      // to directly mutate another player's state).
+      if (mpChannel && currentWorldId === mpConnectedWorldId && winner.rec.uid) {
+        try { mpChannel.send({ type: 'broadcast', event: 'vehicleHit', payload: { targetUid: winner.rec.uid, shooterUid: playerUid, shooterName: getMyDisplayName() } }); } catch (e) {}
+      }
+      playThud(200);
+    }
+  }
   // Same third-person pull-back pattern as updateTennisCameraFocus/
   // updateFootballCameraFocus (see either's own comment) — the player's
   // OWN position/movement code is still what's actually authoritative
@@ -12388,6 +12560,11 @@
   }
 
   function doPlace() {
+    // Helicopter's gun intercepts the build button entirely while
+    // riding one — same "reuse an existing input for a vehicle-specific
+    // action" idea as the minigame interceptions below, just gated on
+    // the vehicle instead of a minigame being active.
+    if (isRidingHelicopter()) { fireHelicopterGun(); return; }
     // Battleship ship placement intercepts a normal place-click while
     // actively placing a ship — look at your starting square and press
     // build, then look in the direction you want the ship to extend and
@@ -13745,6 +13922,18 @@
         bsGame.turnSide = payload.turnSide;
         bsGame.won = payload.won;
         if (payload.won) launchSlFirework();
+      });
+      // Helicopter gun — shooter-side already picked the target and
+      // just tells that one player they were hit; only the victim's own
+      // client applies the actual effect, matching bsFire's own
+      // shooter-requests/victim-applies split just above.
+      channel.on('broadcast', { event: 'vehicleHit' }, ({ payload }) => {
+        if (!payload || payload.targetUid !== playerUid) return;
+        if (ridingVehicle) exitVehicle();
+        player.pos.y += 25; // same fall-and-recover safety margin used elsewhere in this file, not a real "death" — there's no health/lives system here to hook into
+        player.vel.set(0, 0, 0);
+        playThud(220);
+        showBriefMessage(payload.shooterName ? ('Shot down by ' + payload.shooterName + '!') : 'Shot down!');
       });
       // Snakes & Ladders — the generating client sends the actual random
       // layout it rolled, and everyone else applies that exact same
@@ -16889,7 +17078,14 @@
         // updateWaterMoveSound (right below, mirroring how wind/rain are
         // both handled as an ongoing sound rather than discrete events).
         const waterDepthHere = flying ? 0 : waterDepthAt(player.pos.x, player.pos.z);
-        if (wasMoving && waterDepthHere >= 2) {
+        if (ridingVehicle) {
+          // No footsteps or water-wading sound while riding — you're not
+          // the one walking, the vehicle is doing the moving, and its
+          // own engine sound (see updateVehicleEngineSound) is what
+          // should be heard instead.
+          updateWaterMoveSound(dt, 0);
+          footstepTimer = 0;
+        } else if (wasMoving && waterDepthHere >= 2) {
           updateWaterMoveSound(dt, 2);
           footstepTimer = 0;
         } else if (wasMoving && waterDepthHere > 0 && player.onGround) {

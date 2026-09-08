@@ -7790,6 +7790,7 @@
     const ownerOf = new Map();
     villageNPCs.forEach(n => { if (n.mesh) { candidates.push(n.mesh); ownerOf.set(n.mesh, { kind: 'npc', rec: n }); } });
     villageAnimals.forEach(a => { if (a.mesh) { candidates.push(a.mesh); ownerOf.set(a.mesh, { kind: 'animal', rec: a }); } });
+    ambientFish.forEach(f => { if (f.mesh) { candidates.push(f.mesh); ownerOf.set(f.mesh, { kind: 'fish', rec: f }); } });
     otherPlayers.forEach(p => { if (p.group) { candidates.push(p.group); ownerOf.set(p.group, { kind: 'player', rec: p }); } });
     if (!candidates.length) return null;
     const hits = raycaster.intersectObjects(candidates, true);
@@ -7812,6 +7813,12 @@
     const i = villageAnimals.indexOf(rec);
     if (i < 0) return;
     villageAnimals.splice(i, 1);
+    if (rec.mesh) { scene.remove(rec.mesh); disposeObject3D(rec.mesh); }
+  }
+  function destroyAmbientFish(rec) {
+    const i = ambientFish.indexOf(rec);
+    if (i < 0) return;
+    ambientFish.splice(i, 1);
     if (rec.mesh) { scene.remove(rec.mesh); disposeObject3D(rec.mesh); }
   }
   // The same sequence doMine() runs the instant a timed dig completes —
@@ -7851,35 +7858,221 @@
     }
     return true;
   }
-  function playVehicleGunshot() {
+  // ── Vehicle gunshot sound — 5 candidate "meatier" samples ─────────
+  // Temporary A/B setup: all five are defined below, a small on-screen
+  // panel (setupGunshotPreviewPanel, further down) lets them be previewed
+  // without needing to be in a vehicle, and vehicleGunshotVariant picks
+  // which one real gunfire actually uses. Once a favourite is chosen,
+  // the plan is to delete the other four plus the preview panel and
+  // just keep the winner as playVehicleGunshot.
+  function vehicleGunshotDistortionCurve(amount) {
+    const samples = 256, curve = new Float32Array(samples), deg = Math.PI/180;
+    for (let i = 0; i < samples; i++) {
+      const x = (i*2)/samples - 1;
+      curve[i] = ((3+amount)*x*20*deg) / (Math.PI + amount*Math.abs(x));
+    }
+    return curve;
+  }
+  // 1: "Heavy Boom" — the original boom+crack shape, just deeper and run
+  // through a soft distortion curve for grit.
+  function playVehicleGunshotSample1() {
     if (!audioCtx) return;
     const now = audioCtx.currentTime;
-    // Low-frequency "boom" body — a fast pitch-dropping tone, the same
-    // trick a kick drum (or a real cannon/heavy gun recording) uses for
-    // weight. The crack alone (below) read as a small, tinny pop; this
-    // is what actually makes it sound big.
     const boomOsc = audioCtx.createOscillator();
     boomOsc.type = 'triangle';
-    boomOsc.frequency.setValueAtTime(150, now);
-    boomOsc.frequency.exponentialRampToValueAtTime(35, now + 0.16);
+    boomOsc.frequency.setValueAtTime(120, now);
+    boomOsc.frequency.exponentialRampToValueAtTime(28, now + 0.22);
+    const shaper = audioCtx.createWaveShaper();
+    shaper.curve = vehicleGunshotDistortionCurve(18);
     const boomGain = audioCtx.createGain();
-    boomGain.gain.setValueAtTime(0.55, now);
-    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
-    boomOsc.connect(boomGain); boomGain.connect(audioCtx.destination);
-    boomOsc.start(now); boomOsc.stop(now + 0.24);
-    // The crack on top — same noise-burst approach as before, but the
-    // bandpass dropped from 1400Hz to 500Hz so it reads as a heavier
-    // report rather than a bright, small-calibre pop.
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.09, audioCtx.sampleRate);
+    boomGain.gain.setValueAtTime(0.65, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+    boomOsc.connect(shaper); shaper.connect(boomGain); boomGain.connect(audioCtx.destination);
+    boomOsc.start(now); boomOsc.stop(now + 0.32);
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.11, audioCtx.sampleRate);
     const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length); // short noise burst, fading out — a crack, not a tone
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
     const filter = audioCtx.createBiquadFilter();
-    filter.type = 'bandpass'; filter.frequency.value = 500; filter.Q.value = 0.5;
-    const gain = audioCtx.createGain(); gain.gain.value = 0.45;
+    filter.type = 'bandpass'; filter.frequency.value = 400; filter.Q.value = 0.5;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.5;
     src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
     src.start(now);
+  }
+  // 2: "Punchy Slug" — short, hard-hitting transient rather than a long
+  // boom — reads more like a heavy single shot than a cannon.
+  function playVehicleGunshotSample2() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const punchOsc = audioCtx.createOscillator();
+    punchOsc.type = 'square';
+    punchOsc.frequency.setValueAtTime(95, now);
+    punchOsc.frequency.exponentialRampToValueAtTime(40, now + 0.09);
+    const shaper = audioCtx.createWaveShaper();
+    shaper.curve = vehicleGunshotDistortionCurve(30);
+    const punchGain = audioCtx.createGain();
+    punchGain.gain.setValueAtTime(0.5, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    punchOsc.connect(shaper); shaper.connect(punchGain); punchGain.connect(audioCtx.destination);
+    punchOsc.start(now); punchOsc.stop(now + 0.16);
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.06, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 900; filter.Q.value = 0.7;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.55;
+    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    src.start(now);
+  }
+  // 3: "Cannon Blast" — a mechanical clack (bolt/breach) just ahead of a
+  // thick dual-oscillator boom, for the heaviest/most "vehicle-mounted
+  // gun" of the five.
+  function playVehicleGunshotSample3() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const clackBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.02, audioCtx.sampleRate);
+    const clackData = clackBuf.getChannelData(0);
+    for (let i = 0; i < clackData.length; i++) clackData[i] = (Math.random()*2-1) * (1 - i/clackData.length);
+    const clackSrc = audioCtx.createBufferSource(); clackSrc.buffer = clackBuf;
+    const clackFilter = audioCtx.createBiquadFilter();
+    clackFilter.type = 'highpass'; clackFilter.frequency.value = 2500;
+    const clackGain = audioCtx.createGain(); clackGain.gain.value = 0.25;
+    clackSrc.connect(clackFilter); clackFilter.connect(clackGain); clackGain.connect(audioCtx.destination);
+    clackSrc.start(now);
+    const o1 = audioCtx.createOscillator(), o2 = audioCtx.createOscillator();
+    o1.type = 'triangle'; o2.type = 'sawtooth';
+    o1.frequency.setValueAtTime(110, now + 0.015); o1.frequency.exponentialRampToValueAtTime(24, now + 0.28);
+    o2.frequency.setValueAtTime(105, now + 0.015); o2.frequency.exponentialRampToValueAtTime(22, now + 0.28);
+    const boomGain = audioCtx.createGain();
+    boomGain.gain.setValueAtTime(0.001, now);
+    boomGain.gain.setValueAtTime(0.55, now + 0.015);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+    o1.connect(boomGain); o2.connect(boomGain); boomGain.connect(audioCtx.destination);
+    o1.start(now + 0.015); o1.stop(now + 0.36); o2.start(now + 0.015); o2.stop(now + 0.36);
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.1, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 450; filter.Q.value = 0.5;
+    const gain = audioCtx.createGain(); gain.gain.value = 0.45;
+    src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+    src.start(now + 0.015);
+  }
+  // 4: "Growler" — a distorted low sawtooth through a lowpass for a
+  // throaty, gritty growl rather than a clean boom.
+  function playVehicleGunshotSample4() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(85, now);
+    osc.frequency.exponentialRampToValueAtTime(30, now + 0.2);
+    const shaper = audioCtx.createWaveShaper();
+    shaper.curve = vehicleGunshotDistortionCurve(45);
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = 'lowpass'; lowpass.frequency.value = 900;
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.5, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+    osc.connect(shaper); shaper.connect(lowpass); lowpass.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(now); osc.stop(now + 0.3);
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.08, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass'; filter.frequency.value = 600; filter.Q.value = 0.6;
+    const ngain = audioCtx.createGain(); ngain.gain.value = 0.5;
+    src.connect(filter); filter.connect(ngain); ngain.connect(audioCtx.destination);
+    src.start(now);
+  }
+  // 5: "Artillery Thump" — the lowest and longest of the five, with a
+  // two-stage crack (a sharp initial transient, then a softer slap ~40ms
+  // later) for the biggest, most "distant cannon" feeling shot.
+  function playVehicleGunshotSample5() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const boomOsc = audioCtx.createOscillator();
+    boomOsc.type = 'sine';
+    boomOsc.frequency.setValueAtTime(70, now);
+    boomOsc.frequency.exponentialRampToValueAtTime(18, now + 0.4);
+    const shaper = audioCtx.createWaveShaper();
+    shaper.curve = vehicleGunshotDistortionCurve(12);
+    const boomGain = audioCtx.createGain();
+    boomGain.gain.setValueAtTime(0.7, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
+    boomOsc.connect(shaper); shaper.connect(boomGain); boomGain.connect(audioCtx.destination);
+    boomOsc.start(now); boomOsc.stop(now + 0.52);
+    [0, 0.04].forEach((delay, idx) => {
+      const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.08, audioCtx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+      const src = audioCtx.createBufferSource(); src.buffer = buf;
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'bandpass'; filter.frequency.value = idx === 0 ? 550 : 350; filter.Q.value = 0.5;
+      const gain = audioCtx.createGain(); gain.gain.value = idx === 0 ? 0.5 : 0.3;
+      src.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+      src.start(now + delay);
+    });
+  }
+  const VEHICLE_GUNSHOT_SAMPLES = [playVehicleGunshotSample1, playVehicleGunshotSample2, playVehicleGunshotSample3, playVehicleGunshotSample4, playVehicleGunshotSample5];
+  let vehicleGunshotVariant = 1; // which sample above real gunfire uses right now — change this once a favourite is picked, then the other four (and the preview panel below) can go
+  function playVehicleGunshot() {
+    (VEHICLE_GUNSHOT_SAMPLES[vehicleGunshotVariant - 1] || VEHICLE_GUNSHOT_SAMPLES[0])();
+  }
+  // TEMPORARY — lets the 5 samples above be A/B tested without needing
+  // to be in a vehicle at all. Delete this whole IIFE once one is picked.
+  (function setupGunshotPreviewPanel() {
+    const panel = document.createElement('div');
+    panel.id = 'gunshotPreviewPanel';
+    panel.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:60;background:rgba(0,0,0,0.75);padding:10px;border-radius:8px;display:flex;flex-direction:column;gap:6px;font-family:-apple-system,sans-serif;';
+    const label = document.createElement('div');
+    label.textContent = 'Gunshot samples (test)';
+    label.style.cssText = 'color:#fff;font-size:12px;opacity:0.8;margin-bottom:2px;';
+    panel.appendChild(label);
+    for (let i = 1; i <= 5; i++) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Sample ' + i;
+      btn.style.cssText = 'padding:6px 10px;border:none;border-radius:5px;background:#3ac0e0;color:#000;font-weight:600;cursor:pointer;font-size:12px;';
+      btn.addEventListener('click', () => { ensureAudio(); VEHICLE_GUNSHOT_SAMPLES[i-1](); });
+      panel.appendChild(btn);
+    }
+    document.body.appendChild(panel);
+  })();
+  // A low, muffled boom a beat after the immediate hit sound — as if the
+  // same explosion is also being heard reflected/from further off. Heavy
+  // lowpass (distance eats high frequencies first) plus a short delay
+  // and a long, quiet tail. Fired alongside every real explosion (see
+  // showExplosionAt) but not the water splash, which isn't an explosion.
+  function playDistantExplosionBoom() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const delay = 0.12 + Math.random()*0.06;
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(55, now + delay);
+    osc.frequency.exponentialRampToValueAtTime(20, now + delay + 0.6);
+    const lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = 'lowpass'; lowpass.frequency.value = 220; // heavy muffling — this is what actually reads as "far away"
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.setValueAtTime(0.22, now + delay);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 1.1);
+    osc.connect(lowpass); lowpass.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(now + delay); osc.stop(now + delay + 1.2);
+    // A little low rumble noise layered under the tone so it doesn't
+    // read as a pure musical note.
+    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.5, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const rumbleFilter = audioCtx.createBiquadFilter();
+    rumbleFilter.type = 'lowpass'; rumbleFilter.frequency.value = 180;
+    const rumbleGain = audioCtx.createGain(); rumbleGain.gain.value = 0.14;
+    src.connect(rumbleFilter); rumbleFilter.connect(rumbleGain); rumbleGain.connect(audioCtx.destination);
+    src.start(now + delay);
   }
   function showTracer(from, to) {
     const geom = new THREE.BufferGeometry().setFromPoints([from, to]);
@@ -7903,30 +8096,31 @@
     return new THREE.Vector3(off[0], off[1], off[2]).applyMatrix4(ridingVehicle.group.matrixWorld);
   }
   // Shared particle-burst core for both showBlockExplosion (mined/gunned
-  // blocks) and showImpactExplosion (a hit landing on an NPC, animal, or
-  // player) — same debris + flash idea as launchSlFirework, just smaller
-  // and shorter, with the colour and duration left to the caller so a
+  // blocks) and showImpactExplosion (a hit landing on an NPC, animal,
+  // fish, or player) — same debris + flash idea as launchSlFirework,
+  // just bigger, with the colour and duration left to the caller so a
   // block hit and a body hit can look distinct.
-  const EXPLOSION_DURATION = 1.0; // was 0.5s — extended so a hit reads clearly instead of flickering past
+  const EXPLOSION_DURATION = 1.0;
   function showExplosionAt(center, colors) {
     const debrisColors = colors || [0x8a5a34, 0x6b4423, 0xa89070, 0x4a4a4a];
-    const particleCount = 16;
+    const particleCount = 28; // was 16 — bigger, denser burst
     const positions = new Float32Array(particleCount * 3);
     const velocities = [];
     for (let i = 0; i < particleCount; i++) {
       positions[i*3] = center.x; positions[i*3+1] = center.y; positions[i*3+2] = center.z;
       const theta = Math.random()*Math.PI*2, phi = Math.acos(2*Math.random()-1);
-      const speed = 1.5 + Math.random()*2;
-      velocities.push(new THREE.Vector3(Math.sin(phi)*Math.cos(theta)*speed, Math.abs(Math.sin(phi)*Math.sin(theta)*speed) + 1.2, Math.cos(phi)*speed));
+      const speed = 2.2 + Math.random()*3; // was 1.5 + 2 — throws debris further out
+      velocities.push(new THREE.Vector3(Math.sin(phi)*Math.cos(theta)*speed, Math.abs(Math.sin(phi)*Math.sin(theta)*speed) + 1.6, Math.cos(phi)*speed));
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const mat = new THREE.PointsMaterial({ color: debrisColors[Math.floor(Math.random()*debrisColors.length)], size: 0.22, transparent: true, opacity: 1 });
+    const mat = new THREE.PointsMaterial({ color: debrisColors[Math.floor(Math.random()*debrisColors.length)], size: 0.32, transparent: true, opacity: 1 }); // was 0.22
     const points = new THREE.Points(geo, mat);
     scene.add(points);
-    const flash = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9 }));
+    const flash = new THREE.Mesh(new THREE.SphereGeometry(0.65, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9 })); // was radius 0.4
     flash.position.copy(center);
     scene.add(flash);
+    playDistantExplosionBoom();
     const startTime = performance.now();
     function animateExplosion() {
       const elapsed = (performance.now() - startTime) / 1000;
@@ -7943,7 +8137,7 @@
       }
       geo.attributes.position.needsUpdate = true;
       mat.opacity = Math.max(0, 1 - elapsed/EXPLOSION_DURATION);
-      flash.scale.setScalar(1 + Math.min(1, elapsed/0.3)*1.5);
+      flash.scale.setScalar(1 + Math.min(1, elapsed/0.3)*2.2); // grows further than before (was *1.5)
       flash.material.opacity = Math.max(0, 0.9*(1 - elapsed/0.6));
       requestAnimationFrame(animateExplosion);
     }
@@ -7952,10 +8146,52 @@
   function showBlockExplosion(x, y, z) {
     showExplosionAt(new THREE.Vector3(x + 0.5, y + 0.5, z + 0.5));
   }
-  // Same burst, reddish instead of dirt-coloured, at the exact impact
-  // point on an NPC/animal/player rather than snapped to a block centre.
+  // A big, splattery burst of dark-red droplets — separate from (and on
+  // top of) the reddish debris/flash showImpactExplosion already draws,
+  // since a body hit should look wetter and messier than a block or
+  // vehicle exploding. Droplets fly out low and wide rather than
+  // straight up, then arc down and stick around a beat longer than the
+  // debris burst so the splatter actually reads before it fades.
+  function showBloodSplatter(point) {
+    const particleCount = 22;
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = [];
+    const bloodColors = [0x8b0000, 0xb22222, 0x5c0000, 0x7a0c0c];
+    for (let i = 0; i < particleCount; i++) {
+      positions[i*3] = point.x; positions[i*3+1] = point.y; positions[i*3+2] = point.z;
+      const theta = Math.random()*Math.PI*2;
+      const speed = 1.4 + Math.random()*2.6;
+      velocities.push(new THREE.Vector3(Math.cos(theta)*speed, 1.2 + Math.random()*2.2, Math.sin(theta)*speed)); // flatter/wider spread than the debris burst's near-spherical one
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({ color: bloodColors[Math.floor(Math.random()*bloodColors.length)], size: 0.24, transparent: true, opacity: 1 });
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+    const DURATION = 1.3; // a little longer than EXPLOSION_DURATION so the splatter outlives the flash/debris
+    const startTime = performance.now();
+    function animateSplatter() {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (elapsed > DURATION) { scene.remove(points); geo.dispose(); mat.dispose(); return; }
+      const pos = geo.attributes.position.array;
+      for (let i = 0; i < particleCount; i++) {
+        pos[i*3]   = point.x + velocities[i].x*elapsed;
+        pos[i*3+1] = point.y + velocities[i].y*elapsed - 4*elapsed*elapsed;
+        pos[i*3+2] = point.z + velocities[i].z*elapsed;
+      }
+      geo.attributes.position.needsUpdate = true;
+      mat.opacity = Math.max(0, 1 - elapsed/DURATION);
+      requestAnimationFrame(animateSplatter);
+    }
+    animateSplatter();
+  }
+  // Same burst as showBlockExplosion, reddish instead of dirt-coloured
+  // and at the exact impact point rather than snapped to a block centre
+  // — plus a blood splatter layered on top, for a hit landing on an
+  // NPC, animal, fish, or player specifically (never called for blocks).
   function showImpactExplosion(point) {
     showExplosionAt(point, [0xc0392b, 0xe74c3c, 0x8a2a20, 0xffb347]);
+    showBloodSplatter(point);
   }
   // A quick upward splash where a shot hits water instead of a solid
   // block — water itself is never damaged or removed by gunfire (see the
@@ -8064,6 +8300,10 @@
       destroyVillageAnimal(winner.rec);
       showImpactExplosion(winner.point);
       playThud(180);
+    } else if (winner.kind === 'fish') {
+      destroyAmbientFish(winner.rec);
+      showImpactExplosion(winner.point);
+      playThud(160);
     } else if (winner.kind === 'player') {
       showImpactExplosion(winner.point);
       // No local authority over another player's own client — this only

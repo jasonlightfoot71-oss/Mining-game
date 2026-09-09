@@ -7676,6 +7676,7 @@
   // a group + a position.
   function spawnVehicleWreck(group, worldPos) {
     group.position.copy(worldPos);
+    group.visible = true; // covers the local-eject case, where this same group might currently be hidden from a first-person view (see v.group.visible in updateVehicleCameraFocus) — the wreck needs to actually show up regardless of what camera mode it died in
     if (group.parent !== scene) scene.add(group);
     group.traverse(o => {
       if (o.isMesh && o.material) {
@@ -8191,6 +8192,15 @@
     v.group.rotation.y = yaw + Math.PI;
     if (v.group.userData.rotor) v.group.userData.rotor.rotation.y += dt*40;
     if (v.group.userData.tailRotor) v.group.userData.tailRotor.rotation.x += dt*50;
+    // In first person the camera sits at/inside the vehicle's own model
+    // (see the muzzle-anchor position below), so its own mesh would
+    // otherwise fill the screen or clip weirdly right in front of the
+    // camera — hidden here so first person actually reads as looking
+    // OUT of the vehicle, the way the third-person view (where the
+    // model is what you're meant to see) never needs to. Other players
+    // still see this vehicle normally — this only ever touches the
+    // locally-rendered copy, not the synced proxy other clients build.
+    v.group.visible = !vehicleFirstPerson;
     let desired;
     if (vehicleFirstPerson) {
       // Reuses the exact same "front of the vehicle" anchor the gun
@@ -11882,8 +11892,8 @@
   // interception. Same low-poly box-built approach as everything else in
   // this file rather than an actual modelled gun.
   const vehicleGunGroup = new THREE.Group();
-  const gunMetalMat = new THREE.MeshLambertMaterial({ color: 0x2b2f33 });
-  const gunGripMat = new THREE.MeshLambertMaterial({ color: 0x3a2a1f });
+  const gunMetalMat = new THREE.MeshLambertMaterial({ color: 0x2b2f33, depthTest: false }); // depthTest off + renderOrder below — riding a vehicle puts nearby vehicle geometry much closer to the camera than a normal held item ever sits, which could otherwise depth-occlude this small viewmodel
+  const gunGripMat = new THREE.MeshLambertMaterial({ color: 0x3a2a1f, depthTest: false });
   const gunBody = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.55), gunMetalMat);
   const gunBarrel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.35), gunMetalMat);
   gunBarrel.position.set(0, 0.02, -0.42);
@@ -11896,6 +11906,7 @@
   gunMag.position.set(0, -0.15, -0.02);
   gunMag.rotation.x = -0.25;
   vehicleGunGroup.add(gunBody, gunBarrel, gunGrip, gunSight, gunMag);
+  vehicleGunGroup.traverse(o => { if (o.isMesh) o.renderOrder = 999; }); // renderOrder has to be set per-mesh, not on the parent Group — pairs with depthTest:false above
   vehicleGunGroup.visible = false;
   camera.add(vehicleGunGroup);
   function positionVehicleGunGroup() {

@@ -432,6 +432,7 @@
 </div>
 <button id="vehicleEnterBtn" style="display:none;position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(20,120,80,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;">🚗 Enter Vehicle</button>
 <button id="vehicleExitBtn" style="display:none;position:fixed;bottom:70px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(190,60,50,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;">🚪 Exit Vehicle</button>
+<button id="vehicleViewToggleBtn" style="display:none;position:fixed;bottom:118px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(60,100,190,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;">🎥 First Person</button>
 <div id="roleAnnounce" style="display:none;position:fixed;top:18%;left:50%;transform:translateX(-50%);z-index:26;background:rgba(20,20,25,0.9);color:#fff;padding:16px 22px;border-radius:10px;text-align:center;font-size:15px;max-width:320px;">
   <div id="roleAnnounceTitle" style="font-size:20px;margin-bottom:4px;"></div>
   <div id="roleAnnounceDesc" style="opacity:0.85;font-size:13px;"></div>
@@ -7525,6 +7526,7 @@
   let ridingVehicle = null;
   let vehiclePrevFlying = false;
   let vehicleCamBlend = 0, vehicleCamWasActive = false;
+  let vehicleFirstPerson = false; // toggled by vehicleViewToggleBtn — see updateVehicleCameraFocus for how this changes the camera position
   // Continuous engine sound while riding — two slightly detuned
   // oscillators through a low-pass filter, the same "two close
   // frequencies beating against each other" trick real engine drones
@@ -7629,6 +7631,7 @@
     player.vel.set(0, 0, 0);
     document.getElementById('vehicleEnterBtn').style.display = 'none';
     document.getElementById('vehicleExitBtn').style.display = 'block';
+    document.getElementById('vehicleViewToggleBtn').style.display = 'block';
     ensureAudio();
     ensureVehicleGunshotBuffer(); // kick off the gunshot sample decode now, well ahead of the first shot — see its own comment
     startVehicleEngineSound(v.typeIdx);
@@ -7642,6 +7645,7 @@
     stopVehicleEngineSound();
     removeRiderFromVehicle();
     document.getElementById('vehicleExitBtn').style.display = 'none';
+    document.getElementById('vehicleViewToggleBtn').style.display = 'none';
     // Cleans itself up rather than staying parked wherever you happened
     // to get out — vehicles can be driven a long way from where they
     // were placed, so leaving a real one behind on exit meant they'd
@@ -7653,6 +7657,10 @@
   }
   document.getElementById('vehicleEnterBtn').addEventListener('click', () => enterVehicle(nearestVehicleToPlayer(3)));
   document.getElementById('vehicleExitBtn').addEventListener('click', exitVehicle);
+  document.getElementById('vehicleViewToggleBtn').addEventListener('click', () => {
+    vehicleFirstPerson = !vehicleFirstPerson;
+    document.getElementById('vehicleViewToggleBtn').textContent = vehicleFirstPerson ? '🎥 Third Person' : '🎥 First Person';
+  });
   // WRECK_LIFETIME seconds after a vehicle is shot down with its rider
   // still aboard, spawnVehicleWreck below removes it — see the function
   // itself and the 'vehicleHit'/'vehicleWreck' broadcast handlers.
@@ -7745,6 +7753,7 @@
     stopVehicleEngineSound();
     removeRiderFromVehicle();
     document.getElementById('vehicleExitBtn').style.display = 'none';
+    document.getElementById('vehicleViewToggleBtn').style.display = 'none';
     const i = vehicles.indexOf(v);
     if (i >= 0) vehicles.splice(i, 1);
     const ang = Math.random()*Math.PI*2;
@@ -7897,42 +7906,6 @@
     src.connect(gain); gain.connect(audioCtx.destination);
     src.start();
   }
-  // A low, muffled boom a beat after the immediate hit sound — as if the
-  // same explosion is also being heard reflected/from further off. Was
-  // originally tuned to a 55→20Hz sweep, which turned out to be almost
-  // entirely below what phone/laptop speakers actually reproduce — same
-  // pitfall the vehicle engine sound hit earlier in this file — so
-  // raised into a range that still reads as deep but is actually
-  // audible, and boosted a bit louder to compensate for the heavy
-  // lowpass "distance" filtering.
-  function playDistantExplosionBoom() {
-    if (!audioCtx) return;
-    const now = audioCtx.currentTime;
-    const delay = 0.12 + Math.random()*0.06;
-    const osc = audioCtx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(90, now + delay);
-    osc.frequency.exponentialRampToValueAtTime(35, now + delay + 0.6);
-    const lowpass = audioCtx.createBiquadFilter();
-    lowpass.type = 'lowpass'; lowpass.frequency.value = 500; // still muffled/"distant", but no longer cutting off everything that would actually reach a small speaker
-    const gain = audioCtx.createGain();
-    gain.gain.setValueAtTime(0.001, now);
-    gain.gain.setValueAtTime(0.4, now + delay);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 1.1);
-    osc.connect(lowpass); lowpass.connect(gain); gain.connect(audioCtx.destination);
-    osc.start(now + delay); osc.stop(now + delay + 1.2);
-    // A little low rumble noise layered under the tone so it doesn't
-    // read as a pure musical note.
-    const buf = audioCtx.createBuffer(1, audioCtx.sampleRate * 0.5, audioCtx.sampleRate);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random()*2-1) * (1 - i/data.length);
-    const src = audioCtx.createBufferSource(); src.buffer = buf;
-    const rumbleFilter = audioCtx.createBiquadFilter();
-    rumbleFilter.type = 'lowpass'; rumbleFilter.frequency.value = 320;
-    const rumbleGain = audioCtx.createGain(); rumbleGain.gain.value = 0.24;
-    src.connect(rumbleFilter); rumbleFilter.connect(rumbleGain); rumbleGain.connect(audioCtx.destination);
-    src.start(now + delay);
-  }
   function showTracer(from, to) {
     const geom = new THREE.BufferGeometry().setFromPoints([from, to]);
     const mat = new THREE.LineBasicMaterial({ color: 0xfff2a8, transparent: true, opacity: 0.9 });
@@ -7979,7 +7952,6 @@
     const flash = new THREE.Mesh(new THREE.SphereGeometry(0.65, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffcc66, transparent: true, opacity: 0.9 })); // was radius 0.4
     flash.position.copy(center);
     scene.add(flash);
-    playDistantExplosionBoom();
     const startTime = performance.now();
     function animateExplosion() {
       const elapsed = (performance.now() - startTime) / 1000;
@@ -8197,6 +8169,7 @@
       vehicleCamBlend = 0;
       if (vehicleCamWasActive) {
         vehicleCamWasActive = false;
+        vehicleGunGroup.visible = false;
         const crosshairEl = document.getElementById('crosshair');
         if (crosshairEl && !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
         if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
@@ -8209,25 +8182,36 @@
     // Every vehicle can now fire (see fireVehicleGun), so the crosshair —
     // marking exactly where the gun's raycast points, using the same
     // camera direction — stays visible for all of them, not just the
-    // Helicopter.
+    // Helicopter, and in both camera modes below.
     if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
+    vehicleGunGroup.visible = true; // the build button fires this vehicle's gun now, not a block — see doPlace's vehicle interception
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
     v.group.rotation.y = yaw + Math.PI;
     if (v.group.userData.rotor) v.group.userData.rotor.rotation.y += dt*40;
     if (v.group.userData.tailRotor) v.group.userData.tailRotor.rotation.x += dt*50;
-    const backX = Math.sin(yaw), backZ = Math.cos(yaw);
-    // Pulled back and up a bit further than before (was 5 / +2.2) for a
-    // slightly more aerial angle — makes it easier to actually see and
-    // aim at other players below/around you in a dogfight, without
-    // locking pitch (you can still freely look up/down from here, same
-    // as before).
-    const desired = new THREE.Vector3(
-      player.pos.x + backX*6,
-      player.pos.y + player.height*0.92 + 3.3,
-      player.pos.z + backZ*6
-    );
+    let desired;
+    if (vehicleFirstPerson) {
+      // Reuses the exact same "front of the vehicle" anchor the gun
+      // itself fires from (see getVehicleMuzzleWorldPos/gunOffset) — puts
+      // the eye roughly where the muzzle is, so first person and the
+      // gun's own visual origin naturally line up, and it's already
+      // tuned per vehicle (nose, handlebar, bow, basket rim...).
+      desired = getVehicleMuzzleWorldPos();
+    } else {
+      const backX = Math.sin(yaw), backZ = Math.cos(yaw);
+      // Pulled back and up a bit further than before (was 5 / +2.2) for a
+      // slightly more aerial angle — makes it easier to actually see and
+      // aim at other players below/around you in a dogfight, without
+      // locking pitch (you can still freely look up/down from here, same
+      // as before).
+      desired = new THREE.Vector3(
+        player.pos.x + backX*6,
+        player.pos.y + player.height*0.92 + 3.3,
+        player.pos.z + backZ*6
+      );
+    }
     camera.position.lerp(desired, vehicleCamBlend);
     // Deliberately no pitch override here (unlike tennis/football/golf's
     // identical-looking blend, which DO lock pitch toward a fixed
@@ -11891,6 +11875,35 @@
   }
   positionHeldStepGroup();
 
+  // ================= HELD GUN (vehicle combat viewmodel) =================
+  // Shown in place of the normal held-block/tool preview while riding any
+  // vehicle, since the build button now fires that vehicle's gun instead
+  // of placing a block — see fireVehicleGun / doPlace's vehicle
+  // interception. Same low-poly box-built approach as everything else in
+  // this file rather than an actual modelled gun.
+  const vehicleGunGroup = new THREE.Group();
+  const gunMetalMat = new THREE.MeshLambertMaterial({ color: 0x2b2f33 });
+  const gunGripMat = new THREE.MeshLambertMaterial({ color: 0x3a2a1f });
+  const gunBody = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.55), gunMetalMat);
+  const gunBarrel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.35), gunMetalMat);
+  gunBarrel.position.set(0, 0.02, -0.42);
+  const gunGrip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.3, 0.12), gunGripMat);
+  gunGrip.position.set(0, -0.18, 0.14);
+  gunGrip.rotation.x = 0.35;
+  const gunSight = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.07, 0.06), gunMetalMat);
+  gunSight.position.set(0, 0.12, -0.08);
+  const gunMag = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.22, 0.1), gunMetalMat);
+  gunMag.position.set(0, -0.15, -0.02);
+  gunMag.rotation.x = -0.25;
+  vehicleGunGroup.add(gunBody, gunBarrel, gunGrip, gunSight, gunMag);
+  vehicleGunGroup.visible = false;
+  camera.add(vehicleGunGroup);
+  function positionVehicleGunGroup() {
+    vehicleGunGroup.position.set(0.42, -0.32, -0.65);
+    vehicleGunGroup.rotation.set(0.05, -0.35, 0.05);
+  }
+  positionVehicleGunGroup();
+
   // ================= PLAYER =================
   const player = {
     pos: new THREE.Vector3(0.5, WORLD_HEIGHT+5, 0.5),
@@ -13340,6 +13353,7 @@
     // tracks the handle's drag position and has no reason to know about
     // flight-mode toggling itself.
     flyLever.addEventListener('touchstart', () => {
+      if (ridingVehicle) return; // don't let this override a grounded vehicle's own flight rule (e.g. the Scooter) — same guard toggleFly() already has
       if (!flying) { flying = true; updateModeTag(); }
     });
   }
@@ -17540,7 +17554,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       updateVehicleEngineSound();
 
       // bob held item slightly with movement

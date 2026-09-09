@@ -7900,14 +7900,36 @@
       .then(buf => { vehicleGunshotBuffer = buf; })
       .catch(err => { console.warn('vehicle gunshot decode failed (recovered):', err); vehicleGunshotDecoding = null; });
   }
+  // The actual cause of the "distorted" gunshot: VEHICLE_FIRE_COOLDOWN
+  // (180ms) is much shorter than the sample itself (~0.7s), so sustained
+  // fire has 3-4+ copies of the sound genuinely overlapping and summing
+  // at once. Web Audio doesn't limit that on its own — it just adds the
+  // waveforms — so those overlaps were clipping hard against
+  // audioCtx.destination regardless of how clean any single copy was.
+  // Every shot now routes through this one shared limiter instead of
+  // straight to the destination, so overlapping shots get compressed
+  // down rather than clipped.
+  let vehicleGunBus = null;
+  function ensureVehicleGunBus() {
+    if (vehicleGunBus || !audioCtx) return;
+    const limiter = audioCtx.createDynamicsCompressor();
+    limiter.threshold.value = -8;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20; // heavy enough to act as a limiter rather than gentle compression
+    limiter.attack.value = 0.001; // fast enough to actually catch a sharp transient
+    limiter.release.value = 0.15;
+    limiter.connect(audioCtx.destination);
+    vehicleGunBus = limiter;
+  }
   function playVehicleGunshot() {
     if (!audioCtx) return;
     if (!vehicleGunshotBuffer) { ensureVehicleGunshotBuffer(); return; } // buffer not ready yet (shouldn't normally happen — see enterVehicle) — skip this one shot's sound rather than throw
+    ensureVehicleGunBus();
     const src = audioCtx.createBufferSource();
     src.buffer = vehicleGunshotBuffer;
     const gain = audioCtx.createGain();
-    gain.gain.value = 1.3; // the retuned sample is normalized to a lower peak (more headroom, since the old one could overshoot 0dBFS after lossy re-encoding and clip) — bumped back up here to land at a similar loudness to before, safely under 1.0
-    src.connect(gain); gain.connect(audioCtx.destination);
+    gain.gain.value = 1.3; // safe as a single shot (the sample itself is normalized with headroom) — it's overlapping shots during sustained fire that the limiter above is actually for
+    src.connect(gain); gain.connect(vehicleGunBus || audioCtx.destination);
     src.start();
   }
   function showTracer(from, to) {
@@ -8174,6 +8196,8 @@
       if (vehicleCamWasActive) {
         vehicleCamWasActive = false;
         vehicleGunGroup.visible = false;
+        const btnPlaceEl = document.getElementById('btnPlace');
+        if (btnPlaceEl) btnPlaceEl.textContent = '🧱'; // back to the normal build icon
         const crosshairEl = document.getElementById('crosshair');
         if (crosshairEl && !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
         if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
@@ -8190,6 +8214,8 @@
     if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
     vehicleGunGroup.visible = true; // the build button fires this vehicle's gun now, not a block — see doPlace's vehicle interception
+    const btnPlaceEl = document.getElementById('btnPlace');
+    if (btnPlaceEl) btnPlaceEl.textContent = '🔫'; // the touch build button IS the fire button while riding — same doPlace interception fireVehicleGun relies on
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
     v.group.rotation.y = yaw + Math.PI;
@@ -17567,7 +17593,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnPlaceRecoverEl = document.getElementById('btnPlace'); if (btnPlaceRecoverEl) btnPlaceRecoverEl.textContent = '🧱'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       updateVehicleEngineSound();
 
       // bob held item slightly with movement

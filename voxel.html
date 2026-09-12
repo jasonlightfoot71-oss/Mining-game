@@ -18422,7 +18422,16 @@
         );
         let swimDir = new THREE.Vector3();
         if (isTouchDevice) {
-          swimDir.addScaledVector(forward, -moveState.y);
+          // Uses the pitch-aware swimForward here, not the flat forward
+          // flying's touch controls use — flying has a separate
+          // dedicated lever for altitude, so its joystick deliberately
+          // stays flat; swimming has no such second control, and
+          // vertical motion was only ever meant to come from this pitch
+          // component. Using the flat vector (copied from the flying
+          // pattern without noticing that difference) left touch with
+          // no way to swim up or down at all, while keyboard — which
+          // always used swimForward — worked fine.
+          swimDir.addScaledVector(swimForward, -moveState.y);
           swimDir.addScaledVector(right, moveState.x);
           if (swimDir.lengthSq() > 1) swimDir.normalize();
         } else {

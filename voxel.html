@@ -257,13 +257,15 @@
     overflow-y: auto; min-height: 0;
   }
   .titleQuadrant h3 { margin: 0 0 8px; font-size: 15px; opacity: 0.9; flex-shrink: 0; }
-  /* Two columns on medium-width screens, one on genuinely narrow
-     (portrait phone) ones — four across is the whole point of this
-     layout, but there isn't room for it below a certain width. */
-  @media (max-width: 900px) {
-    #worldQuadrants { grid-template-columns: 1fr 1fr; }
-  }
-  @media (max-width: 480px) {
+  /* Straight from four columns down to one — no intermediate 2x2 stage,
+     which is exactly what was showing up on phones: even in landscape
+     they're commonly 700-900px wide, comfortably past where a 2-column
+     tier used to kick in, so they were landing on "four squares in
+     each corner" instead of the four-across layout every wider screen
+     already got. One column only kicks in below 640px, where there
+     genuinely isn't room for four (or even two) side by side — a
+     portrait phone before it's been rotated, mainly. */
+  @media (max-width: 640px) {
     #worldQuadrants { grid-template-columns: 1fr; grid-auto-rows: auto; }
     .titleQuadrant { max-height: 46vh; }
   }
@@ -1407,6 +1409,29 @@
       const palette = ['#4a7a3a','#3f8f3f','#8a6a2a','#a9762f','#c9862a','#d9962a','#e0a83a','#7a5a25'];
       for (let y=0;y<s;y++) for (let x=0;x<s;x++) { ctx.fillStyle = palette[Math.floor(Math.random()*palette.length)]; ctx.fillRect(x,y,1,1); }
     }),
+    // Winter — bare branches with a dusting of snow, not the canopy
+    // made fully invisible (the previous approach): an invisible leaf
+    // block still left the separate snow-overlay system (which caps
+    // any solid, non-transparent, sky-exposed block — leaf blocks
+    // included) placing snow on top of it anyway, which is exactly
+    // what read as snow hovering in mid-air with nothing under it, and
+    // it also meant flying straight into a tree with no visual warning
+    // at all. Mostly transparent (cleared to nothing, not a solid
+    // base), with a few thin brown branch-like strokes and white snow
+    // flecks baked in — an actual tree silhouette this game's block
+    // system can manage, rather than a flat colour swap.
+    leavesWinter: makeCanvasTexture((ctx,s) => {
+      ctx.clearRect(0,0,s,s);
+      ctx.strokeStyle = '#5a4632';
+      ctx.lineWidth = 1;
+      for (let i=0;i<5;i++) {
+        const x0=Math.random()*s, y0=Math.random()*s;
+        const x1=Math.min(s,Math.max(0,x0+(Math.random()-0.5)*s*0.8)), y1=Math.min(s,Math.max(0,y0+(Math.random()-0.5)*s*0.8));
+        ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      for (let i=0;i<10;i++) { const x=Math.floor(Math.random()*s), y=Math.floor(Math.random()*s*0.6); ctx.fillRect(x,y,1,1); }
+    }),
     sand: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#e0d18a',['#d8c67c','#e8dc9c'],0.35)),
     water: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3b6fd6',['#4a80e6','#3260c2'],0.3)),
     planks: makeCanvasTexture((ctx,s) => {
@@ -1626,11 +1651,10 @@
     // index instead of shifting every existing type's index by one (a
     // huge number of places in this file reference block types by their
     // raw numeric index, not by name — CASTLE_STONE/CASTLE_TRIM/
-    // CASTLE_FLOOR among them). isVariant, listed under Glass's family
-    // (see BLOCK_FAMILIES) rather than getting its own primary hotbar
-    // slot, since it's another see-through wall material in the same
-    // vein as the coloured/stained glass already grouped there.
-    { name: 'Bars', mats: TEX.bars, transparent: true, cost: 4, isVariant: true },
+    // CASTLE_FLOOR among them). Its own hotbar slot, not tucked inside
+    // Glass's popup — that was hard to notice at all, easy to mistake
+    // for "there's no bars block".
+    { name: 'Bars', mats: TEX.bars, transparent: true, cost: 4 },
   ];
   // The index Bars actually landed at — computed rather than hand-
   // counted, so it stays correct even if more entries get appended
@@ -1648,7 +1672,7 @@
     5: [5, 27, 28, 29, 30], // Sand
     6: [6, 19, 20, 21, 22], // Planks
     7: [7, 15, 16, 17, 18], // Brick
-    8: [8, 35, 36, 37, 38, 47, 48, 49, 50, BARS_TYPE], // Glass (colours + stained + bars)
+    8: [8, 35, 36, 37, 38, 47, 48, 49, 50], // Glass (colours + stained)
     9: [9, 43, 44, 45, 46], // Step (materials)
     10: [10, 31, 32, 33, 34], // Concrete (colours)
   };
@@ -6176,49 +6200,35 @@
         blocks.set(key(tx1, gy + topH + 1, z), CASTLE_TRIM); trackVillageHeight(tx1, z, gy + topH + 1);
       }
     }
-    buildSpiralStaircase(tcx, tcz, gy, topH - 2, CASTLE_STONE);
-    // A proper landing at the top — was one block ABOVE the final
-    // step, which put a solid floor block exactly where the player's
-    // own head needed to be while standing on that last step at all,
-    // blocking the staircase off from ever reaching it. Matches the
-    // final step's own height instead (same level, not one higher) —
-    // walking off the last step onto the landing is then a level step
-    // sideways, not a climb, which is correct: the climbing already
-    // happened over the preceding steps.
-    const landingY = gy + topH - 2;
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        blocks.set(key(tcx + dx, landingY, tcz + dz), CASTLE_STONE);
-        trackVillageHeight(tcx + dx, tcz + dz, landingY);
-        blocks.delete(key(tcx + dx, landingY + 1, tcz + dz));
-        blocks.delete(key(tcx + dx, landingY + 2, tcz + dz));
-      }
-    }
-    // That landing is still 2 levels below the tower's own actual top
-    // (the walls keep going up to gy+topH, with the crenellated tips at
-    // gy+topH+1) — recessed inside the tower's own walls, with no way
-    // up the rest of the way. A straight ladder mounted on the east
-    // wall, climbing straight up from the landing to the wall's own
-    // top course, is the whole fix — no separate platform to build (an
-    // earlier attempt at one kept ending up solid exactly where the
-    // ladder's own top rung needed to be open, blocking the climb
-    // right at the top). The wall's own top course is already a
-    // walkable surface in its own right, same reasoning as the keep's
-    // roof — stepping sideways off the last rung lands directly on it.
-    // ladderZ is offset one block from the tower's true centre
-    // specifically to land in an actual GAP between merlons (the
+    // A single continuous ladder for the whole climb, not a spiral
+    // staircase — one wall-mounted mechanism top to bottom, mounted on
+    // the east wall, rather than a staircase for most of the height
+    // plus a separate ladder patched on just for the last stretch
+    // (which is what kept causing conflicts between the two). ladderZ
+    // is offset one block from the tower's true centre specifically to
+    // land in an actual GAP between merlons at the top (the
     // crenellation loop above only places one every other column,
     // starting at tz0) rather than directly under one — landing under
     // a merlon would have a solid block occupying the exact spot the
     // player needs to stand.
     const ladderZ = tcz + 1;
-    const topOpenY = gy + topH; // the wall's own top course
-    for (let y = landingY + 1; y <= topOpenY + 1; y++) blocks.delete(key(tcx + 1, y, ladderZ)); // the whole climb, kept clear all the way past the wall height and one block above it for headroom
-    for (let y = landingY; y <= topOpenY - 1; y++) { const lk = addLadder(tx1, y, ladderZ, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops one below the wall's own top course, not at it — that cell is the solid surface the player steps sideways onto, not another rung
+    const topOpenY = gy + topH; // the wall's own top course, already a walkable surface in its own right (same reasoning as the keep's roof) — stepping sideways off the last rung lands directly on it
+    for (let y = gy + 1; y <= topOpenY + 1; y++) blocks.delete(key(tcx + 1, y, ladderZ)); // the whole climb, floor to one block above the wall height, kept clear
+    for (let y = gy + 1; y <= topOpenY - 1; y++) { const lk = addLadder(tx1, y, ladderZ, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops one below the wall's own top course, not at it — that cell is the solid surface the player steps sideways onto, not another rung
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
     blocks.set(key(tx1, gy + 16, tcz), 8); trackVillageHeight(tx1, tcz, gy + 16);
+    // Actual torches too, not just windows — windows alone still leave
+    // a 24-block spiral climb almost completely dark, especially at
+    // night. Mounted on the north/south walls (the windows above are on
+    // east/west), spaced out up the climb.
+    [[gy + 4, tz0, 0, 1], [gy + 10, tz1, 0, -1], [gy + 16, tz0, 0, 1], [gy + 21, tz1, 0, -1]].forEach(([ty, bz, nx, nz]) => {
+      if (fixtures.size < MAX_LIGHTS) {
+        const fk = addFixture(tcx, ty, bz, nx, 0, nz);
+        if (fk) reg.fixtureKeys.push(fk);
+      }
+    });
     return { x0: tx0, x1: tx1, z0: tz0, z1: tz1, gy, h: topH };
   }
   function buildCastleKeep(kx0, kz0, gy, reg) {
@@ -6262,6 +6272,16 @@
     const doorShell = Object.assign({}, shell, { midX: doorX });
     placeShellDoor(doorShell, 'south', reg, 0);
     placeShellLight(doorShell, 'south', reg);
+    // One torch per room — the single light at the front door was
+    // nowhere near enough to light four good-sized rooms, and the
+    // castle was otherwise completely dark inside.
+    const roomLightY = gy + 3;
+    [[kx0, kz0 + 3, 1, 0], [kx1, kz0 + 3, -1, 0], [kx0, kz1 - 3, 1, 0], [kx1, kz1 - 3, -1, 0]].forEach(([bx, bz, nx, nz]) => {
+      if (fixtures.size < MAX_LIGHTS) {
+        const fk = addFixture(bx, roomLightY, bz, nx, 0, nz);
+        if (fk) reg.fixtureKeys.push(fk);
+      }
+    });
     // Four rooms — same cross-divider-with-end-gaps idea as the house,
     // just on a plain rectangle instead of a cross-shaped one.
     const vGapA = kz0 + 2, vGapB = kz1 - 2;
@@ -6288,13 +6308,14 @@
         markVillageGround(x, z, gy + h); // the actual walkable roof surface — what the patrolling guards stand on
       }
     }
-    // Roof access — the same spiral-staircase mechanism the tower
-    // already uses (see buildSpiralStaircase/buildCastleTower), tucked
-    // into the SW room right by the front door so it's the first thing
-    // a player finds, rather than a ladder buried in a corner. Built
-    // AFTER the roof fill above so its own headroom carving always
-    // wins where the two overlap — the very top step, which is meant
-    // to open directly onto the roof.
+    // Roof access — a spiral staircase (the tower's own climb has since
+    // moved to a straight ladder instead — see buildCastleTower — but
+    // this one's short enough, and contained enough within one room,
+    // that it hasn't caused the same problems), tucked into the SW room
+    // right by the front door so it's the first thing a player finds.
+    // Built AFTER the roof fill above so its own headroom carving
+    // always wins where the two overlap — the very top step, which is
+    // meant to open directly onto the roof.
     const roofStairCx = midX - 4, roofStairCz = midZ + 4;
     buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1, CASTLE_STONE);
     const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
@@ -6442,35 +6463,37 @@
       }
     }
   }
-  function spawnCastleGuards(ck, bounds, rng) {
+  function spawnCastleGuards(kx0, kx1, kz0, kz1, gy, ck, rng) {
+    // Copies spawnVillageNPCs' own body almost exactly — same picker
+    // (pickVillageWanderTarget), same surface lookup (villageSurfaceY),
+    // same mesh placement (placeVillageNpcMesh), same push onto
+    // villageNPCs — rather than routing through an extra layer of its
+    // own on top, on the theory that whatever's proven to work for
+    // every other village NPC is safer to lean on directly than to
+    // wrap. The one structural difference: two separate, non-
+    // overlapping zones (one per half of the roof) instead of one
+    // zone spanning the whole thing — a single zone here would be
+    // centred exactly on the point where the keep's two interior
+    // dividers cross below, and pickVillageWanderTarget's own fallback
+    // (used if all 8 of its random tries land somewhere blocked) is
+    // always the exact centre of whatever bounds it's given. That
+    // fallback landing dead centre on solid wall, rather than the
+    // fallback existing at all, was the actual risk.
+    const y = gy + CASTLE_KEEP_HEIGHT + 1;
+    const guardColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 5, pantsIdx: 0, heldItem: 'torch' }; // dark, uniform colours rather than the random villager palette — reads as a guard — holding a torch (the closest thing to a weapon/prop this figure system already supports) rather than nothing
+    const zones = [
+      { xMin: kx0 + 2, xMax: kx0 + 8, zMin: kz0 + 2, zMax: kz1 - 2, y },
+      { xMin: kx0 + 10, xMax: kx1 - 2, zMin: kz0 + 2, zMax: kz1 - 2, y },
+    ];
     const created = [];
-    // Dark, uniform colours rather than the random villager palette —
-    // reads as a guard rather than another wandering local — holding a
-    // torch (the closest thing to a weapon/prop this figure system
-    // already supports) rather than nothing.
-    const guardColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 5, pantsIdx: 0, heldItem: 'torch' };
-    // pickVillageWanderTarget's own fallback (only used if all 8 random
-    // tries land somewhere blocked) is the exact centre of the given
-    // bounds. For an ordinary village NPC that's just open ground —
-    // harmless — but this roof's bounds are centred on the keep itself,
-    // and that centre is exactly where the two interior dividers below
-    // cross, solid stone from the ground floor up through the roof. A
-    // guard that ever actually hit that fallback would spawn embedded
-    // in the wall: invisible, stuck, never seen. Re-checked here and
-    // nudged well off-centre if so, rather than risking it.
-    function safeSpot() {
+    zones.forEach(bounds => {
       const spot = pickVillageWanderTarget(bounds);
-      if (!villageNpcBlocked(spot.x, spot.z, bounds)) return spot;
-      return { x: bounds.xMin + (bounds.xMax - bounds.xMin) * 0.25, z: bounds.zMin + (bounds.zMax - bounds.zMin) * 0.25 };
-    }
-    for (let i = 0; i < 2; i++) {
-      const spot = safeSpot();
       const spawnY = villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1;
       const mesh = placeVillageNpcMesh(spot.x, spawnY, spot.z, guardColors);
-      const w = { mesh, target: safeSpot(), waitTimer: Math.random() * 2, bounds, ck };
+      const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
       villageNPCs.push(w);
       created.push(w);
-    }
+    });
     return created;
   }
   // ── Windmill ──────────────────────────────────────────────────────
@@ -7347,8 +7370,7 @@
       // console instead of just quietly missing in-game.
       try {
         buildCastleDungeon(kx0, kz0, castleY, reg);
-        const guardBounds = { xMin: kx0 + 2, xMax: kx1 - 2, zMin: kz0 + 2, zMax: kz1 - 2, y: castleY + CASTLE_KEEP_HEIGHT + 1 }; // the roof — inset from the crenellated edge so the guards don't spend their whole patrol weaving between merlons
-        reg.npcs = reg.npcs.concat(spawnCastleGuards(ck, guardBounds, rng));
+        reg.npcs = reg.npcs.concat(spawnCastleGuards(kx0, kx1, kz0, kz1, castleY, ck, rng));
       } catch (err) {
         console.warn('castle dungeon/guards build error (recovered):', err);
       }
@@ -14291,21 +14313,26 @@
       currentSeason = season;
       // Leaves are one shared material for every leaf block in the world,
       // so changing it here changes every tree at once — no rebuild
-      // needed. Autumn swaps the actual TEXTURE (not just a colour tint)
-      // for the mixed green/brown/orange one above — a tint alone can
-      // only shift the summer texture's existing green toward a single
-      // new hue, never show three distinct colours at once. Winter
-      // fades leaves out to fully transparent instead — same shared
-      // material, same block instances (still there to mine/collide
-      // with), just invisible, leaving bare trunks standing rather than
-      // trying to build actual branch geometry this game doesn't have.
+      // needed. Autumn and winter both swap the actual TEXTURE (not
+      // just a colour tint) — a tint alone can only shift the summer
+      // texture's existing green toward a single new hue, never show
+      // three distinct autumn colours, or a bare-branch silhouette, at
+      // once. Winter used to just fade leaves out to fully transparent,
+      // which looked like the separate snow-overlay system's snow caps
+      // (placed on any solid, sky-exposed block, leaves included) were
+      // hovering in mid-air over nothing, and gave no visual warning at
+      // all before flying straight into a tree. The winter texture is
+      // mostly transparent too, but has an actual thin bare-branch
+      // silhouette with snow flecks baked in rather than nothing at
+      // all — leaves stay physically solid year-round either way
+      // (there's no seasonal collision system, just the visuals).
       const leafMat = meshes[4] && meshes[4].material;
       (Array.isArray(leafMat) ? leafMat : [leafMat]).forEach(m => {
         if (!m) return;
-        m.map = (season === 3) ? TEX.leavesAutumn : TEX.leaves;
-        m.color.setHex(season === 1 || season === 3 ? LEAF_TINTS[season] : 0xffffff); // spring/autumn keep their own tint on top of the texture; summer and winter leave it neutral (winter's own look now comes from fading out, not a tint)
+        m.map = season === 3 ? TEX.leavesAutumn : season === 0 ? TEX.leavesWinter : TEX.leaves;
+        m.color.setHex(season === 1 ? LEAF_TINTS[season] : 0xffffff); // spring keeps its own tint over the plain summer texture; summer, autumn and winter all have their own already-correct colours baked in and don't want a further multiply on top
         m.transparent = (season === 0);
-        m.opacity = (season === 0) ? 0 : 1;
+        m.opacity = 1; // winter's transparency comes from the texture's own per-pixel alpha (see leavesWinter), not a uniform fade
         m.needsUpdate = true;
       });
       if (season === 0) { rebuildSnowOverlay(); clearFlowerOverlay(); }

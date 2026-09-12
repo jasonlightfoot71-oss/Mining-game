@@ -4268,6 +4268,25 @@
   // wallpaper — no collision, so the player can walk through a placed
   // piece rather than getting stuck on it.
   const furniture = new Map(); // "bx,by,bz" -> { group, bx,by,bz,rot,typeIdx }
+  // Every Open Log Fire ever built registers itself here (see the end of
+  // buildLogFire) regardless of how it ends up placed — a real piece of
+  // player-placed furniture, a decorative village prop, or anything
+  // else — so the one flicker update loop covers every fire in the game
+  // from a single hook, without needing to remember to wire up each new
+  // place a fire gets created separately. Pruned lazily in updateFires
+  // itself: once a fire's group is removed from the scene, Three sets
+  // its .parent to null, which is what marks an entry as stale here.
+  const activeFires = [];
+  function updateFires(t) {
+    for (let i = activeFires.length - 1; i >= 0; i--) {
+      const f = activeFires[i];
+      if (!f.group.parent) { activeFires.splice(i, 1); continue; }
+      const flicker = 0.82 + Math.sin(t * 13 + f.seed) * 0.1 + Math.sin(t * 27.3 + f.seed * 2) * 0.05 + (Math.random() - 0.5) * 0.06;
+      f.flameOuter.scale.setScalar(flicker);
+      f.flameInner.scale.setScalar(flicker * (0.95 + Math.sin(t * 19 + f.seed) * 0.08));
+      f.light.intensity = 2.2 * flicker;
+    }
+  }
   // Sized to actually fit within a single floor block (was 1.6 wide,
   // which — centered on the block it's placed on — spilled about 0.3
   // blocks past each edge and read as clipping through a third block
@@ -4483,6 +4502,7 @@
     light.castShadow = false; // same reasoning as every other light in this game — shadow-casting point lights are the single biggest lag source once there's more than a couple of them lit at once
     light.position.y = 0.4;
     g.add(light);
+    activeFires.push({ group: g, flameOuter, flameInner, light, seed: Math.random() * 1000 }); // see activeFires — this is the one place every fire, however it ends up placed, gets hooked into the flicker update
     return g;
   }
   // A handful of procedurally-drawn "channels" instead of a flat colour
@@ -6204,6 +6224,22 @@
         blocks.set(key(tx1, gy + topH + 1, z), CASTLE_TRIM); trackVillageHeight(tx1, z, gy + topH + 1);
       }
     }
+    // An actual roof — the walls' own top course only ever gave the
+    // player a walkable 1-block-wide rim around the OUTSIDE edge; the
+    // whole 3x3 interior above the hollow climbing shaft was never
+    // covered by anything, so climbing all the way up and stepping off
+    // the rim into the middle dropped straight back down the shaft.
+    // Filled solid here, then the ladder's own clearing below punches
+    // back through it at exactly its own landing spot (see the "build
+    // first, carve access after" comment on the keep's roof for the
+    // same reasoning) — so the only opening left in it is the ladder's.
+    for (let x = tx0 + 1; x <= tx1 - 1; x++) {
+      for (let z = tz0 + 1; z <= tz1 - 1; z++) {
+        blocks.set(key(x, gy + topH, z), CASTLE_FLOOR);
+        trackVillageHeight(x, z, gy + topH);
+        markVillageGround(x, z, gy + topH);
+      }
+    }
     // A single continuous ladder for the whole climb, not a spiral
     // staircase — one wall-mounted mechanism top to bottom. Mounted on
     // the north wall — the wall on your right as you walk in from the
@@ -6433,20 +6469,11 @@
     prisonerMesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(prisonerMesh);
     reg.props.push(prisonerMesh);
-    // One torch for light — mounted on the room's own north wall,
-    // right where the stairs come in.
-    if (fixtures.size < MAX_LIGHTS) {
-      const fk = addFixture(stairX, floorY + 2, rz0 - 1, 0, 0, 1);
-      if (fk) reg.fixtureKeys.push(fk);
-    }
-    // A second torch right by the cell itself — the first one is all
-    // the way back at the stairs, several blocks from the far end of
-    // the room, and a prisoner standing in an unlit cell is as good as
-    // invisible.
-    if (fixtures.size < MAX_LIGHTS) {
-      const fk2 = addFixture(Math.round((rx0 + rx1) / 2), floorY + 2, rz1 + 1, 0, 0, -1);
-      if (fk2) reg.fixtureKeys.push(fk2);
-    }
+    // A fire in the room's near corner (by the stairs, away from the
+    // cell) instead of wall-mounted torches — flickering now (see
+    // activeFires/updateFires), and warmer for a dungeon than a fixed
+    // torch.
+    placeVillageProp(buildLogFire, rx0, floorY, rz0, 0, reg);
     // Staircase down from the keep's own ground floor — real stone
     // Step blocks (half-height, L-shaped riser) rather than full cubes,
     // carved LAST so it always wins over the room above wherever the
@@ -17725,6 +17752,7 @@
     updateWanderingCustomers(dt);
     updateVillageNPCs(dt);
     updateVillageAnimals(dt);
+    updateFires(waterTime);
     updateWindSound(dt, windIntensity);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
     if (!locked) windIntensity = 0; // menus/paused — fade the wind out rather than leaving it stuck on from before

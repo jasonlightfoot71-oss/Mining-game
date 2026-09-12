@@ -18288,6 +18288,10 @@
           const s = signs.get(furnitureTarget.fk);
           furnitureOutline.position.set(s.bx + 0.5 + s.nx*0.3, s.by + 0.5 + s.ny*0.3, s.bz + 0.5 + s.nz*0.3);
           furnitureOutline.scale.set(0.9, 0.4, 0.9);
+        } else if (furnitureTarget.kind === 'treasure') {
+          const t = treasureChests.get(furnitureTarget.fk);
+          furnitureOutline.position.set(t.bx + 0.5, t.by + 0.7, t.bz + 0.5);
+          furnitureOutline.scale.set(0.8, 0.6, 0.6);
         } else {
           const f = furniture.get(furnitureTarget.fk);
           const type = FURNITURE_TYPES[f.typeIdx];

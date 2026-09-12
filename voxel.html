@@ -6127,6 +6127,7 @@
       trackVillageHeight(sx, sz, sy);
       blocks.delete(key(sx, sy + 1, sz)); // headroom to actually climb it
       blocks.delete(key(sx, sy + 2, sz));
+      blocks.delete(key(sx, sy + 3, sz)); // a third cell — two alone left the player's own 1.7-tall model clipping the ceiling on every step
     }
   }
   function buildCastleTower(tx0, tz0, gy, reg) {
@@ -6197,7 +6198,7 @@
         blocks.delete(key(tcx + dx, topPlatformY + 2, tcz + dz));
       }
     }
-    for (let y = landingY; y <= landingY + 2; y++) { const lk = addLadder(tx1, y, tcz, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
+    for (let y = landingY; y < topPlatformY; y++) { const lk = addLadder(tx1, y, tcz, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops BELOW topPlatformY, not at it — that cell is the solid platform surface itself, not a climbable one; a rung there would have the ladder trying to occupy the same cell as the platform's own floor, blocking the climb right at the top
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
@@ -6388,6 +6389,14 @@
       const fk = addFixture(stairX, floorY + 2, rz0 - 1, 0, 0, 1);
       if (fk) reg.fixtureKeys.push(fk);
     }
+    // A second torch right by the cell itself — the first one is all
+    // the way back at the stairs, several blocks from the far end of
+    // the room, and a prisoner standing in an unlit cell is as good as
+    // invisible.
+    if (fixtures.size < MAX_LIGHTS) {
+      const fk2 = addFixture(Math.round((rx0 + rx1) / 2), floorY + 2, rz1 + 1, 0, 0, -1);
+      if (fk2) reg.fixtureKeys.push(fk2);
+    }
     // Staircase down from the keep's own ground floor — real stone
     // Step blocks (half-height, L-shaped riser) rather than full cubes,
     // carved LAST so it always wins over the room above wherever the
@@ -6403,6 +6412,14 @@
       blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
       blocks.delete(key(stairX, sy + 2, sz));
       blocks.delete(key(stairX, sy + 3, sz)); // extra margin, given how the last version's math worked out
+      // Flanking walls, one on each side, floor to headroom — without
+      // these there was nothing at all stopping a player drifting a
+      // little left or right off the single-wide tread from just
+      // walking straight off the edge into the open stairwell shaft.
+      for (let y = sy; y <= sy + 3; y++) {
+        blocks.set(key(stairX - 1, y, sz), CASTLE_STONE);
+        blocks.set(key(stairX + 1, y, sz), CASTLE_STONE);
+      }
     }
   }
   function spawnCastleGuards(ck, bounds, rng) {
@@ -7408,6 +7425,23 @@
     if (!VILLAGES_ENABLED) return;
     const info = villageInfoForChunk(cx, cz);
     if (info) { buildVillageInChunk(cx, cz, info.rng); return; }
+    const ck = cx + '_' + cz;
+    // An existing building's footprint (a castle, church, farm —
+    // anything already registered via registerBuildingFootprint) spans
+    // into this chunk. Forcing a brand new, unrelated village attempt
+    // here wouldn't just be guaranteed to fail its own placement checks
+    // — buildVillageInChunk's very first passes (stripping trees/water,
+    // then unconditionally carving a straight road) delete blocks
+    // across this whole chunk before any of those placement checks ever
+    // run, with no awareness that something is already standing here.
+    // That's what was silently gutting part of a castle — the roof,
+    // a wall, whatever the road strip happened to cross — the first
+    // time a chunk containing part of it (often far from the village's
+    // own "home" chunk the castle was actually built from) finally
+    // streamed in as a player approached, well after the structure
+    // itself had already been built and, from a distance, looked
+    // completely intact.
+    if (villageHouseFootprints.has(ck)) return;
     // Fallback — this chunk wasn't the stride grid's own candidate for
     // its cell (or it was and got skip-rolled), so the grid alone isn't
     // going to build anything here. If it's also been more than

@@ -6075,6 +6075,7 @@
   // surrounds it, bridge at the entrance, tower on one side" only
   // stays true if the whole thing doesn't randomly rotate.
   const CASTLE_STONE = 13, CASTLE_TRIM = 12, CASTLE_FLOOR = 11; // Cracked Stone, Mossy Stone, Cobblestone
+  const CASTLE_KEEP_HEIGHT = 9; // shared so the roof (built at this height) and anything that needs to line up with it (the guards' patrol bounds, the dungeon stair depth) all agree with buildCastleKeep's own wall height
   function buildSpiralStaircase(cx, cz, gy, steps, material) {
     // Walks the 8 cells ringing a 1-wide central shaft, one step higher
     // each time it visits the next one — by the time it's gone round
@@ -6148,7 +6149,7 @@
     return { x0: tx0, x1: tx1, z0: tz0, z1: tz1, gy, h: topH };
   }
   function buildCastleKeep(kx0, kz0, gy, reg) {
-    const w = 19, d = 15, h = 9;
+    const w = 19, d = 15, h = CASTLE_KEEP_HEIGHT;
     const kx1 = kx0 + w - 1, kz1 = kz0 + d - 1;
     const midX = kx0 + 9, midZ = kz0 + 7;
     for (let x = kx0; x <= kx1; x++) for (let z = kz0; z <= kz1; z++) {
@@ -6200,6 +6201,27 @@
       if (x === hGapA || x === hGapB) continue;
       for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(x, y, midZ), CASTLE_STONE); trackVillageHeight(x, midZ, y); }
     }
+    // Flat roof, one level below the crenellated tips (which stay at
+    // gy+h+1) rather than flush with them — the walkway sits at gy+h,
+    // the same height the outer wall's own top course already
+    // occupies, so the two read as one continuous battlement rather
+    // than a roof set apart from its own walls. Skips one column
+    // (roofShaftX/Z below), left open as the hatch up from the room
+    // beneath it.
+    const roofShaftX = midX + 1, roofShaftZ = kz0 + 1;
+    for (let x = kx0 + 1; x <= kx1 - 1; x++) {
+      for (let z = kz0 + 1; z <= kz1 - 1; z++) {
+        if (x === roofShaftX && z === roofShaftZ) continue;
+        blocks.set(key(x, gy + h, z), CASTLE_FLOOR);
+        trackVillageHeight(x, z, gy + h);
+        markVillageGround(x, z, gy + h); // the actual walkable roof surface — what the patrolling guards stand on
+      }
+    }
+    // Ladder hatch up to the roof, mounted against the same central
+    // divider that already splits the keep into rooms below — no
+    // separate shaft wall needed, and the matching column was left
+    // open in the roof fill just above.
+    for (let y = gy + 1; y < gy + h; y++) { const lk = addLadder(midX, y, roofShaftZ, 1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
     const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
     buildVillageHouseWindowGeneric(midX, gy + 3, kz0, true, stonePalette); // north wall
     buildVillageHouseWindowGeneric(kx1, gy + 3, midZ, false, stonePalette); // east wall
@@ -6254,6 +6276,77 @@
         applyCastleMoatColumn(x, z, sx0, sx1, sz0, sz1, gy, bridgeMidX);
       }
     }
+  }
+  // A small cell buried under the keep's own floor, reached by a
+  // straight staircase — entirely inside the keep's own footprint
+  // (kx0..kx1, kz0..kz1), well clear of the moat: applyCastleMoatColumn
+  // never touches anything at dist===0 (inside the keep/tower
+  // footprint), so digging straight down anywhere in here, at any
+  // depth, can never collide with it.
+  function buildCastleDungeon(kx0, kz0, gy, reg) {
+    const depth = 5; // 5 steps down from the keep's own ground floor
+    const stairX = kx0 + 5; // tucked well inside the NW quadrant — clear of the outer wall (kx0) and short of the central divider (midX = kx0+9)
+    const stairZ0 = kz0 + 2;
+    for (let i = 1; i <= depth; i++) {
+      const sz = stairZ0 + i, sy = gy - i;
+      blocks.set(key(stairX, sy, sz), CASTLE_STONE);
+      blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
+      blocks.delete(key(stairX, sy + 2, sz));
+    }
+    const floorY = gy - depth;
+    const rx0 = stairX - 2, rx1 = stairX + 2, rz0 = stairZ0 + depth - 1, rz1 = rz0 + 5;
+    for (let x = rx0 - 1; x <= rx1 + 1; x++) {
+      for (let z = rz0 - 1; z <= rz1 + 1; z++) {
+        const edge = (x === rx0 - 1 || x === rx1 + 1 || z === rz0 - 1 || z === rz1 + 1);
+        if (edge) {
+          for (let y = floorY; y <= floorY + 3; y++) blocks.set(key(x, y, z), CASTLE_STONE); // wall, floor to ceiling
+        } else {
+          blocks.set(key(x, floorY, z), CASTLE_FLOOR);
+          blocks.set(key(x, floorY + 3, z), CASTLE_STONE); // ceiling — keeps the room the keep's own ground floor is sealed above it, not open to the ladder-hatch logic up on the roof
+          blocks.delete(key(x, floorY + 1, z));
+          blocks.delete(key(x, floorY + 2, z));
+        }
+      }
+    }
+    // A barred cell at the far end from the stairs — glass rather than
+    // a true iron-bar block (this game doesn't have one), same
+    // reasoning as the tower/keep's own windows: see-through, but
+    // still a solid wall the prisoner (and a player) can't just walk
+    // through.
+    const cellZ = rz1 - 1;
+    for (let x = rx0; x <= rx1; x++) {
+      for (let y = floorY + 1; y <= floorY + 2; y++) blocks.set(key(x, y, cellZ), 8); // Glass
+    }
+    const prisonerColors = { skinIdx: Math.floor(Math.random() * AVATAR_SKIN_TONES.length), hairIdx: Math.floor(Math.random() * AVATAR_HAIR_TONES.length), shirtIdx: 5, pantsIdx: 3 }; // dark, ragged colours rather than the random villager palette
+    const prisonerMesh = buildCustomerFigure(true, prisonerColors);
+    prisonerMesh.position.set((rx0 + rx1) / 2 + 0.5, floorY + 1, rz1 + 0.5);
+    prisonerMesh.rotation.y = Math.PI; // faces back toward the glass/the stairs, not the wall behind it
+    prisonerMesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(prisonerMesh);
+    reg.props.push(prisonerMesh);
+    // One torch for light — mounted on the room's own north wall,
+    // right where the stairs come in.
+    if (fixtures.size < MAX_LIGHTS) {
+      const fk = addFixture(stairX, floorY + 2, rz0 - 1, 0, 0, 1);
+      if (fk) reg.fixtureKeys.push(fk);
+    }
+  }
+  function spawnCastleGuards(ck, bounds, rng) {
+    const created = [];
+    // Dark, uniform colours rather than the random villager palette —
+    // reads as a guard rather than another wandering local — holding a
+    // torch (the closest thing to a weapon/prop this figure system
+    // already supports) rather than nothing.
+    const guardColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 5, pantsIdx: 0, heldItem: 'torch' };
+    for (let i = 0; i < 2; i++) {
+      const spot = pickVillageWanderTarget(bounds);
+      const spawnY = villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1;
+      const mesh = placeVillageNpcMesh(spot.x, spawnY, spot.z, guardColors);
+      const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
+      villageNPCs.push(w);
+      created.push(w);
+    }
+    return created;
   }
   // ── Windmill ──────────────────────────────────────────────────────
   // A standalone structure scattered across mountain tops, entirely
@@ -6669,7 +6762,7 @@
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [] };
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [] };
 
     // The road is the one part of the village that DOES stay a single
     // flat grade — everything else below is deliberately NOT flattened
@@ -7121,6 +7214,9 @@
       buildCastleTower(tx0, tz0, castleY);
       const keepShell = buildCastleKeep(kx0, kz0, castleY, reg);
       buildCastleMoat(sx0, sx1, sz0, sz1, castleY, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
+      buildCastleDungeon(kx0, kz0, castleY, reg);
+      const guardBounds = { xMin: kx0 + 2, xMax: kx1 - 2, zMin: kz0 + 2, zMax: kz1 - 2, y: castleY + CASTLE_KEEP_HEIGHT + 1 }; // the roof — inset from the crenellated edge so the guards don't spend their whole patrol weaving between merlons
+      reg.npcs = reg.npcs.concat(spawnCastleGuards(ck, guardBounds, rng));
       // shapeFn (same reasoning as the church) — the keep+tower's real
       // shape isn't the same as its bounding box either (the notch
       // where neither one reaches), so the reactive override needs to
@@ -7198,7 +7294,7 @@
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.
     const bounds = { xMin: wx0 + 10, xMax: wx0 + 19, zMin: wz0 + 0.5, zMax: wz1 - 0.5, y: roadY + 1 };
-    reg.npcs = spawnVillageNPCs(ck, bounds, npcCount, rng);
+    reg.npcs = reg.npcs.concat(spawnVillageNPCs(ck, bounds, npcCount, rng)); // concat, not reassign — the castle's own guards (if a castle got placed this village) were already pushed onto reg.npcs above
 
     villageRegistry.set(ck, reg);
     recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
@@ -7241,6 +7337,7 @@
     v.signKeys.forEach(sk => removeSign(sk));
     if (v.fixtureKeys) v.fixtureKeys.forEach(fk => removeFixture(fk));
     if (v.bellKeys) v.bellKeys.forEach(bk => removeBell(bk));
+    if (v.ladderKeys) v.ladderKeys.forEach(lk => removeLadder(lk)); // the castle roof's own access hatch, when this village has one
     // NPC figures and decorative props (the bar counter etc. — see
     // placeVillageProp) are the biggest single source of what was
     // actually leaking here: each NPC alone is a whole buildCustomerFigure

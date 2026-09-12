@@ -7568,6 +7568,23 @@
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);
     if (!v) return;
+    // A village's full extent can reach far beyond its own home chunk —
+    // the castle alone can land 100+ blocks out, several chunks away
+    // (see registerBuildingFootprint's own comment on this). Tearing
+    // down every NPC, ladder, fixture and prop the moment the home
+    // chunk specifically falls out of load range meant a player
+    // standing right at the castle — nowhere near home, actively
+    // exploring it — would watch guards, torches, the tower's ladder
+    // and the dungeon's prisoner all vanish at once, while the
+    // structure itself stayed put (the terrain blocks aren't touched
+    // here at all, only in unloadChunkTerrain's own separate pass,
+    // which is exactly why only the "extras" were disappearing). If
+    // any OTHER chunk this village's footprints actually touch is
+    // still generated, the village is still visibly in use somewhere,
+    // so leave everything alone and let whichever chunk unloads last
+    // actually trigger the real teardown.
+    const siblingKeys = villageFootprintChunkKeys.get(ck);
+    if (siblingKeys && siblingKeys.some(tck => tck !== ck && generatedChunks.has(tck))) return;
     v.furnitureKeys.forEach(fk => removeFurniture(fk));
     v.doorKeys.forEach(dk => removeDoor(dk));
     v.signKeys.forEach(sk => removeSign(sk));

@@ -18381,7 +18381,31 @@
           else player.vel.y = 0;
           touchJumpQueued = false;
         } else if (submerged) {
-          player.vel.y += GRAVITY*0.12*dt;
+          // Swims the way you're actually facing — pitch included, not
+          // just flat yaw with Space/Shift as the only up/down — the
+          // same directional model flying already uses. Only active
+          // while genuinely submerged; walking, flying, and ladders are
+          // all unchanged.
+          const swimForward = new THREE.Vector3(
+            -Math.sin(moveYaw)*Math.cos(pitch),
+            Math.sin(pitch),
+            -Math.cos(moveYaw)*Math.cos(pitch)
+          );
+          let swimMove = new THREE.Vector3();
+          if (isTouchDevice) {
+            swimMove.addScaledVector(forward, -moveState.y);
+            swimMove.addScaledVector(right, moveState.x);
+            if (swimMove.lengthSq() > 1) swimMove.normalize();
+          } else {
+            if (keys['KeyW']) swimMove.add(swimForward);
+            if (keys['KeyS']) swimMove.sub(swimForward);
+            if (keys['KeyD']) swimMove.add(right);
+            if (keys['KeyA']) swimMove.sub(right);
+            if (swimMove.lengthSq() > 0) swimMove.normalize();
+          }
+          swimMove.multiplyScalar(speed*dt);
+          move.x = swimMove.x; move.z = swimMove.z; // overrides the flat walking-style move computed above — steers on every axis with the camera while submerged
+          let dy = swimMove.y + GRAVITY*0.12*dt; // the look-direction component, plus the same gentle sink as before so coasting with no input still settles rather than hanging motionless
           // Raised from a gentle capped rise (3.2, good for just
           // reaching the surface) to a proper hop — the old version
           // could get you TO the surface but had nothing left to carry
@@ -18390,10 +18414,14 @@
           // couple of blocks onto land, the same kind of boost a normal
           // jump gives on dry ground, with gravity naturally arcing you
           // back down once you're clear of the water (this branch stops
-          // applying the moment you're no longer submerged).
-          if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) player.vel.y = 6.5;
-          else if (keys['ShiftLeft']) player.vel.y = -2.5;
-          player.vel.y = Math.max(-3.2, Math.min(6.5, player.vel.y));
+          // applying the moment you're no longer submerged). Kept as a
+          // fixed, always-available boost regardless of where you're
+          // looking, rather than folded into swimForward — looking
+          // straight down and hitting Space to escape upward would
+          // otherwise fight itself.
+          if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) dy = 6.5*dt;
+          else if (keys['ShiftLeft']) dy = -2.5*dt;
+          player.vel.y = Math.max(-3.2, Math.min(6.5, dy/dt));
           touchJumpQueued = false;
         } else {
           player.vel.y += GRAVITY*dt;

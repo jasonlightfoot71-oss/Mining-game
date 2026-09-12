@@ -1455,15 +1455,32 @@
     // system can manage, rather than a flat colour swap.
     leavesWinter: makeCanvasTexture((ctx,s) => {
       ctx.clearRect(0,0,s,s);
-      ctx.strokeStyle = '#5a4632';
-      ctx.lineWidth = 1;
-      for (let i=0;i<5;i++) {
-        const x0=Math.random()*s, y0=Math.random()*s;
-        const x1=Math.min(s,Math.max(0,x0+(Math.random()-0.5)*s*0.8)), y1=Math.min(s,Math.max(0,y0+(Math.random()-0.5)*s*0.8));
-        ctx.beginPath(); ctx.moveTo(x0,y0); ctx.lineTo(x1,y1); ctx.stroke();
+      // A handful of thin random strokes read as noise at this size (16x16,
+      // nearest-filtered) rather than a recognisable branch — this plots a
+      // deliberate, thicker forking twig instead: a main stem with two
+      // smaller forks off it, walked pixel-by-pixel (not ctx.stroke, which
+      // anti-aliases into a blur at this resolution) so every pixel lands
+      // exactly where placed. Mirrored randomly on each axis for variety
+      // between different leaf faces/trees without changing the underlying
+      // shape, which is what actually needs to stay legible.
+      function plotLine(x0, y0, x1, y1, w) {
+        const steps = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+        for (let i = 0; i <= steps; i++) {
+          const t = steps === 0 ? 0 : i / steps;
+          ctx.fillRect(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t), w, w);
+        }
       }
+      const flipX = Math.random() < 0.5, flipY = Math.random() < 0.5;
+      const tx = x => flipX ? s - 1 - x : x;
+      const ty = y => flipY ? s - 1 - y : y;
+      ctx.fillStyle = '#4a3826';
+      plotLine(tx(1), ty(14), tx(9), ty(5), 2);  // main stem, corner to corner-ish
+      plotLine(tx(6), ty(9), tx(12), ty(3), 1);  // a fork partway along
+      plotLine(tx(8), ty(6), tx(4), ty(2), 1);   // a second, smaller fork nearer the tip
+      // Snow sitting on top of the branch (one pixel above each point
+      // along it) rather than scattered at random over the whole tile.
       ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      for (let i=0;i<10;i++) { const x=Math.floor(Math.random()*s), y=Math.floor(Math.random()*s*0.6); ctx.fillRect(x,y,1,1); }
+      [[3,12],[6,9],[9,6],[10,4],[6,8]].forEach(([x,y]) => ctx.fillRect(tx(x), Math.max(0, ty(y) - 1), 1, 1));
     }),
     sand: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#e0d18a',['#d8c67c','#e8dc9c'],0.35)),
     water: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3b6fd6',['#4a80e6','#3260c2'],0.3)),
@@ -1603,7 +1620,29 @@
       ctx.fillRect(0, 0, s, braceH);
       ctx.fillRect(0, s-braceH, s, braceH);
     }),
+
+    // Path slabs — a flat base colour, a mortar-coloured cross cutting it
+    // into four slabs plus a thin border all round (so it reads as one
+    // paved tile butting up against the next, not just a solid square
+    // with a plus sign on it), and an optional scatter of a third colour
+    // for moss/cracks/wear on top. Shared by all five variants below —
+    // only the three colours actually change between them.
+    pathSlab: (base, mortar, fleck) => makeCanvasTexture((ctx, s) => {
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, s, s);
+      ctx.fillStyle = mortar;
+      ctx.fillRect(0, Math.floor(s/2) - 1, s, 2);
+      ctx.fillRect(Math.floor(s/2) - 1, 0, 2, s);
+      ctx.fillRect(0, 0, s, 1); ctx.fillRect(0, s-1, s, 1);
+      ctx.fillRect(0, 0, 1, s); ctx.fillRect(s-1, 0, 1, s);
+      if (fleck) { ctx.fillStyle = fleck; for (let i = 0; i < 7; i++) ctx.fillRect(Math.floor(Math.random()*s), Math.floor(Math.random()*s), 1, 1); }
+    }),
   };
+  TEX.pathSlabGrey      = TEX.pathSlab('#9a9a94', '#6e6e68', null);
+  TEX.pathSlabSandstone = TEX.pathSlab('#d8c48a', '#b8a468', null);
+  TEX.pathSlabMossy     = TEX.pathSlab('#8a9a84', '#5e6e58', '#4a7a3a');
+  TEX.pathSlabSlate     = TEX.pathSlab('#5a626a', '#3a4248', null);
+  TEX.pathSlabCracked   = TEX.pathSlab('#9a9a94', '#6e6e68', '#4a4a44');
 
   // block type registry
   // materials: single tex name, or {top,side,bottom}
@@ -1688,11 +1727,22 @@
     // Glass's popup — that was hard to notice at all, easy to mistake
     // for "there's no bars block".
     { name: 'Bars', mats: TEX.bars, transparent: true, cost: 4 },
+    // Path slabs — same reasoning as Bars above: appended at the very
+    // end, not inserted among the existing types, so nothing already
+    // referencing a block by raw index shifts. Grey is the primary (its
+    // own hotbar slot); the other four sit in its family popup (see
+    // BLOCK_FAMILIES below) the same way Stone's own extra tones do.
+    { name: 'Grey Path Slab',      mats: TEX.pathSlabGrey,      cost: 4 },
+    { name: 'Sandstone Path Slab', mats: TEX.pathSlabSandstone, cost: 4, isVariant: true },
+    { name: 'Mossy Path Slab',     mats: TEX.pathSlabMossy,     cost: 4, isVariant: true },
+    { name: 'Slate Path Slab',     mats: TEX.pathSlabSlate,     cost: 4, isVariant: true },
+    { name: 'Cracked Path Slab',   mats: TEX.pathSlabCracked,   cost: 4, isVariant: true },
   ];
   // The index Bars actually landed at — computed rather than hand-
   // counted, so it stays correct even if more entries get appended
   // above it later.
-  const BARS_TYPE = BLOCK_TYPES.length - 1;
+  const BARS_TYPE = BLOCK_TYPES.length - 6;
+  const GREY_SLAB_TYPE = BLOCK_TYPES.length - 5;
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1709,6 +1759,11 @@
     9: [9, 43, 44, 45, 46], // Step (materials)
     10: [10, 31, 32, 33, 34], // Concrete (colours)
   };
+  // Grey Path Slab's own family — added as a computed key rather than a
+  // literal in the object above, since GREY_SLAB_TYPE (like BARS_TYPE)
+  // is only known once appended to the end of BLOCK_TYPES, not a small
+  // fixed number the way the others above are.
+  BLOCK_FAMILIES[GREY_SLAB_TYPE] = [GREY_SLAB_TYPE, GREY_SLAB_TYPE+1, GREY_SLAB_TYPE+2, GREY_SLAB_TYPE+3, GREY_SLAB_TYPE+4];
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of

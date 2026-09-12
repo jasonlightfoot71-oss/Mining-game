@@ -282,17 +282,21 @@
     display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.07);
     border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
   }
-  .worldRow .wName { flex: 1; text-align: left; }
+  .worldRow .wName { flex: 1; text-align: left; min-width: 0; overflow-wrap: break-word; }
   .worldRow .wName .wTime { display: block; font-size: 11px; opacity: 0.6; }
+  /* Play stacked above Delete rather than the two side by side — this
+     column is a quarter of the screen now, not half, and "name, then
+     two buttons all in one row" simply didn't fit any more. */
+  .worldRowBtns { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
   .worldRow button { border: none; border-radius: 4px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
   .worldRow .playBtn { background: #5c9e3f; color: #fff; }
   .worldRow .delBtn { background: rgba(200,60,60,0.85); color: #fff; }
-  #newWorldRow { display: flex; gap: 8px; width: 100%; max-width: 420px; }
+  #newWorldRow { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 420px; }
   #newWorldName {
-    flex: 1; padding: 10px 12px; border-radius: 6px; border: none; font-size: 14px;
+    width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 6px; border: none; font-size: 14px;
     background: rgba(255,255,255,0.9); color: #222;
   }
-  #newWorldBtn { background: #5c9e3f; color: #fff; border: none; border-radius: 6px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
+  #newWorldBtn { width: 100%; background: #5c9e3f; color: #fff; border: none; border-radius: 6px; padding: 10px 16px; cursor: pointer; font-weight: 600; }
   #worldSelectMsg { opacity: 0.7; font-size: 13px; margin-bottom: 10px; }
 
   /* "Please rotate your device" prompt — the actual fallback for devices
@@ -333,7 +337,7 @@
     <div class="titleQuadrant" id="quadMill">
       <h3>🏘️ Community</h3>
       <p style="font-size:12px;opacity:0.7;margin:0 0 10px;">The shared community pub — clock in for a shift, or just visit.</p>
-      <button id="visitPubBtn" style="background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">🍺 Visit The Mill</button>
+      <button id="visitPubBtn" style="background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">🍺 Visit the Community</button>
       <button id="createPubBtn" style="display:none;margin-top:8px;background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.3);color:#ccc;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">＋ Create The Mill (sets it up as one of your own worlds, editable by you only)</button>
     </div>
     <div class="titleQuadrant" id="quadWorlds">
@@ -6201,31 +6205,40 @@
       }
     }
     // A single continuous ladder for the whole climb, not a spiral
-    // staircase — one wall-mounted mechanism top to bottom, mounted on
-    // the east wall, rather than a staircase for most of the height
-    // plus a separate ladder patched on just for the last stretch
-    // (which is what kept causing conflicts between the two). ladderZ
-    // is offset one block from the tower's true centre specifically to
-    // land in an actual GAP between merlons at the top (the
-    // crenellation loop above only places one every other column,
-    // starting at tz0) rather than directly under one — landing under
-    // a merlon would have a solid block occupying the exact spot the
-    // player needs to stand.
-    const ladderZ = tcz + 1;
+    // staircase — one wall-mounted mechanism top to bottom. Mounted on
+    // the north wall — the wall on your right as you walk in from the
+    // keep (the shared doorway is on the east wall, tx1, so walking
+    // west into the tower puts north on your right) — roughly centred
+    // on it rather than tucked in a corner. ladderX is offset one block
+    // off the tower's true centre specifically to land in an actual GAP
+    // between merlons at the top (the crenellation loop above only
+    // places one every other column, starting at tx0) rather than
+    // directly under one — landing under a merlon would have a solid
+    // block occupying the exact spot the player needs to stand.
+    const ladderX = tcx + 1;
+    const climbZ = tz0 + 1; // the cell just inside the north wall — where the player actually stands to climb
     const topOpenY = gy + topH; // the wall's own top course, already a walkable surface in its own right (same reasoning as the keep's roof) — stepping sideways off the last rung lands directly on it
-    for (let y = gy + 1; y <= topOpenY + 1; y++) blocks.delete(key(tcx + 1, y, ladderZ)); // the whole climb, floor to one block above the wall height, kept clear
-    for (let y = gy + 1; y <= topOpenY - 1; y++) { const lk = addLadder(tx1, y, ladderZ, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops one below the wall's own top course, not at it — that cell is the solid surface the player steps sideways onto, not another rung
+    for (let y = gy + 1; y <= topOpenY + 1; y++) {
+      blocks.delete(key(ladderX, y, climbZ)); // the whole climb, floor to one block above the wall height, kept clear
+    }
+    // At the very top, an extra block cleared one step further in from
+    // the climbing column (not just the column itself) — a small
+    // landing right where the ladder comes out, so it's actually
+    // visible (and the way back down obvious) from above rather than
+    // just a single hole easy to miss while standing on the platform.
+    for (let y = topOpenY; y <= topOpenY + 1; y++) blocks.delete(key(ladderX, y, climbZ + 1));
+    for (let y = gy + 1; y <= topOpenY - 1; y++) { const lk = addLadder(ladderX, y, tz0, 0, 0, 1); if (lk) reg.ladderKeys.push(lk); } // wall block at (ladderX, y, tz0), normal (0,0,1) pointing south into the tower — stops one below the wall's own top course, not at it, since that cell is the solid surface the player steps sideways onto, not another rung
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
     blocks.set(key(tx1, gy + 16, tcz), 8); trackVillageHeight(tx1, tcz, gy + 16);
     // Actual torches too, not just windows — windows alone still leave
-    // a 24-block spiral climb almost completely dark, especially at
-    // night. Mounted on the north/south walls (the windows above are on
-    // east/west), spaced out up the climb.
-    [[gy + 4, tz0, 0, 1], [gy + 10, tz1, 0, -1], [gy + 16, tz0, 0, 1], [gy + 21, tz1, 0, -1]].forEach(([ty, bz, nx, nz]) => {
+    // a 24-block climb almost completely dark, especially at night.
+    // Mounted on the south wall (the ladder's now on the north one, the
+    // windows above are on east/west), spaced out up the climb.
+    [[gy + 4, 0], [gy + 10, 1], [gy + 16, 0], [gy + 21, 1]].forEach(([ty, dxOff]) => {
       if (fixtures.size < MAX_LIGHTS) {
-        const fk = addFixture(tcx, ty, bz, nx, 0, nz);
+        const fk = addFixture(tcx - 1 + dxOff * 2, ty, tz1, 0, 0, -1);
         if (fk) reg.fixtureKeys.push(fk);
       }
     });
@@ -6444,8 +6457,25 @@
     for (let i = 1; i <= depth; i++) {
       const sz = stairZ0 + i, sy = gy - i;
       const k = key(stairX, sy, sz);
-      blocks.set(k, STEP_TYPE);
-      stepRotations.set(k, STAIR_DOWN_SOUTH_ROT); // riser faces back north, uphill, the way a real staircase's risers do
+      // The topmost step (i===1) is a full block instead of a Step —
+      // every other step uses the half-height Step with its riser
+      // facing north (correct for descending, since that's the uphill
+      // side). But that same riser is exactly what was blocking climbing
+      // BACK OUT: stepping north off tread 1 onto the keep's actual
+      // floor means passing straight through this cell's own solid
+      // north-facing riser first, which is real, deliberate collision
+      // geometry (see isSolid's half-block handling), not a rendering
+      // quirk — no rotation would have fixed it without breaking the
+      // other direction of travel instead. A plain full block here has
+      // no riser to be in the way, at the one spot where a player
+      // actually needs to pass through this exact cell in both
+      // directions equally rather than just descending through it.
+      if (i === 1) {
+        blocks.set(k, CASTLE_STONE);
+      } else {
+        blocks.set(k, STEP_TYPE);
+        stepRotations.set(k, STAIR_DOWN_SOUTH_ROT); // riser faces back north, uphill, the way a real staircase's risers do
+      }
       blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
       blocks.delete(key(stairX, sy + 2, sz));
       blocks.delete(key(stairX, sy + 3, sz)); // extra margin, given how the last version's math worked out
@@ -7465,12 +7495,10 @@
   const VILLAGES_ENABLED = true;
   function maybeBuildVillage(cx, cz) {
     if (!VILLAGES_ENABLED) return;
-    const info = villageInfoForChunk(cx, cz);
-    if (info) { buildVillageInChunk(cx, cz, info.rng); return; }
     const ck = cx + '_' + cz;
     // An existing building's footprint (a castle, church, farm —
     // anything already registered via registerBuildingFootprint) spans
-    // into this chunk. Forcing a brand new, unrelated village attempt
+    // into this chunk. Forcing a brand new, unrelated village build
     // here wouldn't just be guaranteed to fail its own placement checks
     // — buildVillageInChunk's very first passes (stripping trees/water,
     // then unconditionally carving a straight road) delete blocks
@@ -7482,8 +7510,15 @@
     // own "home" chunk the castle was actually built from) finally
     // streamed in as a player approached, well after the structure
     // itself had already been built and, from a distance, looked
-    // completely intact.
+    // completely intact. This has to be checked before EITHER path
+    // below, not just the fallback one — a castle's registered
+    // footprint (±20 padding, easily a dozen-plus chunks) can just as
+    // easily land on top of some OTHER, unrelated village's own
+    // legitimate scheduled grid slot, and that path used to build
+    // completely unconditionally.
     if (villageHouseFootprints.has(ck)) return;
+    const info = villageInfoForChunk(cx, cz);
+    if (info) { buildVillageInChunk(cx, cz, info.rng); return; }
     // Fallback — this chunk wasn't the stride grid's own candidate for
     // its cell (or it was and got skip-rolled), so the grid alone isn't
     // going to build anything here. If it's also been more than
@@ -14344,12 +14379,14 @@
       scheduleOverlayRebuild(season);
     }
 
-    // Sporadic weather — roll a new state every 30–120s.
+    // Sporadic weather — roll a new state every 45–180s. Precip chance
+    // dropped from 35% to 15% — rain/snow was turning up far more
+    // often than felt right for "occasional weather".
     weatherTimer -= dt;
     if (weatherTimer <= 0) {
       const roll = Math.random();
-      weatherState = roll < 0.35 ? 'precip' : roll < 0.5 ? 'fog' : 'clear';
-      weatherTimer = 30 + Math.random()*90;
+      weatherState = roll < 0.15 ? 'precip' : roll < 0.27 ? 'fog' : 'clear';
+      weatherTimer = 45 + Math.random()*135;
     }
 
     const snowy = season === 0;
@@ -19456,8 +19493,10 @@
         list.innerHTML = worlds.map(w => `
           <div class="worldRow" data-id="${w.id}">
             <div class="wName">${w.name}<span class="wTime">Last played ${timeAgo(w.updated_at)}</span></div>
-            <button class="playBtn">▶ Play</button>
-            <button class="delBtn">🗑</button>
+            <div class="worldRowBtns">
+              <button class="playBtn">▶ Play</button>
+              <button class="delBtn">🗑</button>
+            </div>
           </div>`).join('');
         list.querySelectorAll('.worldRow').forEach(row => {
           const id = row.dataset.id;

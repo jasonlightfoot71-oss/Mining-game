@@ -18256,7 +18256,20 @@
       // way the desktop mousemove listener already does, instead of
       // storing a value for this per-frame loop to keep re-applying.
       const sprinting = keys['ShiftLeft'] && !flying;
-      const submerged = !flying && waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z)));
+      // Checked at three heights (near feet, centre, near head) rather
+      // than just the body centre — a single sample point right at the
+      // surface (which is exactly where most actual swimming happens)
+      // could flicker in and out of "submerged" from one frame to the
+      // next as you bob slightly, and the non-submerged branch applies
+      // full, uncapped gravity — so any frame that missed felt like a
+      // sudden hard yank downward, not the gentle water sink. Now it
+      // only takes any ONE of the three still being in water to keep
+      // the gentler, camera-relative swim physics active.
+      const submerged = !flying && (
+        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + 0.1), Math.floor(player.pos.z))) ||
+        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z))) ||
+        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.9), Math.floor(player.pos.z)))
+      );
       // Golf: build charges power (handled entirely by the build-button
       // handlers themselves — mousedown/touchstart call golfStartCharge,
       // mouseup/touchend call golfPauseCharge), jump actually takes the

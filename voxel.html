@@ -729,6 +729,12 @@
         const rot = stepRotEdits.get(k);
         blocksOut.push(rot ? [+parts[0], +parts[1], +parts[2], type, rot] : [+parts[0], +parts[1], +parts[2], type]);
       }
+      for (const [colKey, gh] of groundPins) {
+        const commaIdx = colKey.indexOf(',');
+        const gx = +colKey.slice(0, commaIdx), gz = +colKey.slice(commaIdx+1);
+        if (chunkKeyOf(gx, gz) !== ck) continue;
+        blocksOut.push([gx, -1, gz, GROUND_PIN_MARKER, gh]); // see groundPins declaration — smuggled through the blocks array, y=-1 marks it as a pin rather than a real block
+      }
       for (const [k, level] of waterEdits) {
         const parts = k.split(',');
         if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
@@ -757,6 +763,7 @@
       const rows = await res.json();
       for (const row of rows) {
         for (const [x,y,z,t,rot] of (row.blocks||[])) {
+          if (t === GROUND_PIN_MARKER) { groundPins.set(x+','+z, rot); continue; } // see groundPins declaration — not a real block edit
           const k = key(x,y,z);
           blockEdits.set(k, t);
           if (rot) stepRotEdits.set(k, rot);
@@ -2106,6 +2113,24 @@
   const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
   const waterEdits = new Map();   // cellKey -> level (-1 = removed)
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
+  // Freezes the terrain height under any column a player has ever built
+  // or dug in, keyed "x,z" -> the natural height it had the very first
+  // time it was touched. Without this, a column's height is recomputed
+  // from the noise formula on every reload, and that formula keeps
+  // getting tuned (sea level, biome amplitude, etc.) — so a world that
+  // played fine last session can come back with the ground a few blocks
+  // higher or lower than it was, leaving anything player-built on top of
+  // it floating or half-buried. generateChunkTerrain uses the pin
+  // instead of the live formula for any pinned column; unpinned ground
+  // (the vast majority of the map) still generates fresh every time, so
+  // ordinary terrain tuning keeps working everywhere players haven't
+  // actually built. GROUND_PIN_MARKER is a sentinel "type" used only to
+  // smuggle these pins through the same persisted `blocks` array as real
+  // edits (y always -1, an otherwise-impossible coordinate, with the
+  // pinned height riding in the rot slot) — avoids needing a new saved
+  // column/table just for this.
+  const groundPins = new Map();
+  const GROUND_PIN_MARKER = -99;
   function recordBlockEdit(x, y, z, type, rot) {
     // Gated on terrainStreamingActive rather than checking currentWorldId
     // directly — The Mill now sets both this and infiniteWorldActive, so
@@ -2117,6 +2142,16 @@
     const k = key(x, y, z);
     blockEdits.set(k, type);
     if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
+    // First-ever touch of this column: freeze whatever height it has
+    // RIGHT NOW (before this edit's own mesh/columnHeight update runs),
+    // so it can never drift out from under whatever gets built here.
+    // Only pins once — later edits in the same column (building higher,
+    // digging a basement) must never move an already-frozen ground.
+    const colKeyPin = x + ',' + z;
+    if (!groundPins.has(colKeyPin)) {
+      const natural = columnHeight.get(colKeyPin);
+      if (natural !== undefined) groundPins.set(colKeyPin, natural);
+    }
     dirtyChunks.add(chunkKeyOf(x, z));
     // Broadcasts this one edit live to anyone else currently in this same
     // world — without this, another player's changes only ever became
@@ -2233,6 +2268,13 @@
           h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
         }
         h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
+        // A player has built or dug here before — use the ground height
+        // exactly as it was then, not whatever today's noise formula
+        // would produce. This is what keeps a manually built structure
+        // sitting properly on terrain across sessions, even after the
+        // generation formula above gets tuned again later.
+        const groundPin = groundPins.get(x+','+z);
+        if (groundPin !== undefined) h = groundPin;
         // Near The Mill, taper generated height down toward the pad's
         // own fixed ground level (y=0) instead of cutting off abruptly —
         // this is what actually lets you walk straight from the
@@ -6275,8 +6317,10 @@
     }
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [] };
     const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
-    placeShellDoor(shell, 'south', reg, 0);
-    placeShellLight(shell, 'south', reg);
+    // Door on the north side now — the same wall the sails are mounted
+    // on, rather than the opposite (south) wall.
+    placeShellDoor(shell, 'north', reg, 0);
+    placeShellLight(shell, 'north', reg);
     buildVillageHouseWindowGeneric(x0, gy + 3, midZ, false, palette); // west wall
     buildVillageHouseWindowGeneric(x1, gy + 3, midZ, false, palette); // east wall
     // Sails mounted on the flat north face, roughly centred on the
@@ -6284,7 +6328,7 @@
     // centring on the walls rather than tucked right under the roof
     // gives them room top and bottom without clipping into the ground
     // or the roofline.
-    addWindmillSails(midX + 0.5, gy + h / 2 + 2, z0 - 0.1, ck); // raised 2 blocks — was sitting a bit low on the wall
+    addWindmillSails(midX + 0.5, gy + h / 2 + 4, z0 - 0.1, ck); // raised a further 2 blocks on top of the earlier +2 raise
     return { shell, reg };
   }
   const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
@@ -6307,10 +6351,10 @@
     if (houseTooCloseToExisting(x0, x1, z0, z1, ck)) return; // real, if unlikely, chance of landing too close to a village building
     const { plotY: gy, baseSurfaceType, subFillType } = computeWindmillGrade(x0, x1, z0, z1, wcz);
     clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType);
-    buildHouseEdgeWall(x0, x1, z0, z1, gy, WINDMILL_PALETTE, 'south');
+    buildHouseEdgeWall(x0, x1, z0, z1, gy, WINDMILL_PALETTE, 'north');
     const { reg: windmillReg } = buildWindmillStructure(x0, z0, gy, ck);
     windmillRegs.set(ck, windmillReg);
-    const entry = { x0, x1, z0, z1, gy, baseSurfaceType, subFillType, trim: WINDMILL_PALETTE.trim, doorSide: 'south' };
+    const entry = { x0, x1, z0, z1, gy, baseSurfaceType, subFillType, trim: WINDMILL_PALETTE.trim, doorSide: 'north' };
     registerBuildingFootprint(entry, ck);
     resyncChunksInRange(x0 - 10, x1 + 10, z0 - 10, z1 + 10);
   }
@@ -17595,6 +17639,15 @@
       updateGolfCameraFocus(dt); // ditto again, near the golf course
       try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnPlaceRecoverEl = document.getElementById('btnPlace'); if (btnPlaceRecoverEl) btnPlaceRecoverEl.textContent = '🧱'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       updateVehicleEngineSound();
+      // Single authoritative crosshair check, run after all four camera
+      // modes above have settled for this frame — replaces relying on
+      // each mode's own teardown to correctly hand it back. Visible on
+      // foot AND while riding any vehicle (every vehicle can fire its own
+      // gun along this same reticle now), hidden only in the third-person
+      // pull-back views where there's nothing under it to aim at.
+      const crosshairShouldShow = !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive;
+      const crosshairEl = document.getElementById('crosshair');
+      if (crosshairEl) crosshairEl.style.display = crosshairShouldShow ? 'block' : 'none';
 
       // bob held item slightly with movement
       const bobT = performance.now()*0.006;

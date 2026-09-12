@@ -2611,6 +2611,7 @@
     generatedChunks.add(ck);
     maybeBuildVillage(cx, cz);
     maybeBuildWindmill(cx, cz);
+    maybeBuildShipwreck(cx, cz);
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -2621,6 +2622,7 @@
     if (!generatedChunks.has(ck)) return;
     teardownVillage(ck);
     teardownWindmill(ck);
+    teardownShipwreck(ck);
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
@@ -4170,6 +4172,77 @@
       s.group.rotation.z = Math.sin(t * Math.PI * 3) * 0.18 * (1 - t);
       return true;
     });
+  }
+  // Treasure chests — a one-shot collectible, same non-block scene-
+  // object pattern as the bell above, not an ordinary placeable/minable
+  // block. Scattered (at low odds — see wherever addTreasureChest is
+  // actually called, in the shipwreck/castle/windmill generation code)
+  // rather than something the player ever places themselves.
+  const treasureChests = new Map(); // "bx,by,bz" -> { group, bx, by, bz, amount }
+  function buildTreasureChestMesh() {
+    const g = new THREE.Group();
+    const woodMat = new THREE.MeshPhongMaterial({ color: 0x6b4a2a, flatShading: true, shininess: 0 });
+    const trimMat = new THREE.MeshPhongMaterial({ color: 0xd4af37, flatShading: true, shininess: 50 });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.4, 0.45), woodMat);
+    base.position.y = 0.2;
+    g.add(base);
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.225, 0.225, 0.7, 8, 1, false, 0, Math.PI), woodMat);
+    lid.rotation.z = Math.PI / 2;
+    lid.position.set(0, 0.4, 0);
+    g.add(lid);
+    const band1 = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.06, 0.49), trimMat);
+    band1.position.y = 0.2;
+    g.add(band1);
+    const band2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.49), trimMat);
+    band2.position.set(0, 0.35, 0);
+    g.add(band2);
+    const lock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.06), trimMat);
+    lock.position.set(0, 0.32, 0.24);
+    g.add(lock);
+    // A soft glow — treasure is usually tucked somewhere dim (a
+    // dungeon corner, a sunk hold), and a plain wooden chest is easy to
+    // walk straight past in the dark otherwise.
+    const light = new THREE.PointLight(0xffdd88, 0.9, 4, 1.2);
+    light.castShadow = false;
+    light.position.y = 0.4;
+    g.add(light);
+    return g;
+  }
+  function addTreasureChest(bx, by, bz, amount) {
+    const tk = key(bx, by, bz);
+    if (treasureChests.has(tk)) return tk;
+    const group = buildTreasureChestMesh();
+    group.position.set(bx + 0.5, by + 1, bz + 0.5);
+    group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(group);
+    treasureChests.set(tk, { group, bx, by, bz, amount });
+    return tk;
+  }
+  function removeTreasureChest(tk) {
+    const t = treasureChests.get(tk);
+    if (!t) return;
+    scene.remove(t.group);
+    disposeObject3D(t.group);
+    treasureChests.delete(tk);
+  }
+  function collectTreasureChest(tk) {
+    const t = treasureChests.get(tk);
+    if (!t) return;
+    addCoins(t.amount);
+    showSaveStatus('💰 Found treasure — +' + t.amount + ' coins!');
+    removeTreasureChest(tk);
+  }
+  // Shared 10% roll for the shipwreck/castle/windmill — one call site
+  // for "does this structure get treasure", rather than three separate
+  // copies of the same chance-and-amount logic. reg is whichever
+  // registry (village reg, windmill reg, shipwreck reg) owns this
+  // structure, so the chest gets torn down correctly alongside
+  // everything else if it's never found.
+  function maybeAddTreasure(bx, by, bz, reg) {
+    if (Math.random() >= 0.1) return;
+    const amount = 100 + Math.floor(Math.random() * 901); // 100-1000 inclusive
+    const tk = addTreasureChest(bx, by, bz, amount);
+    if (tk) reg.treasureKeys.push(tk);
   }
   // Windmill sails — a standalone scene object like the bell, for the
   // same reason: something that needs to keep animating on its own
@@ -6474,6 +6547,7 @@
     // activeFires/updateFires), and warmer for a dungeon than a fixed
     // torch.
     placeVillageProp(buildLogFire, rx0, floorY, rz0, 0, reg);
+    maybeAddTreasure(rx1, floorY, rz0, reg); // 10% chance, opposite corner from the fire — well clear of the cell
     // Staircase down from the keep's own ground floor — real stone
     // Step blocks (half-height, L-shaped riser) rather than full cubes,
     // carved LAST so it always wins over the room above wherever the
@@ -6613,7 +6687,7 @@
       for (let x = rx0; x <= rx1; x++) for (let z = z0; z <= rz1; z++) { blocks.set(key(x, ry, z), palette.roof); trackVillageHeight(x, z, ry); }
       rx0++; rx1--; rz1--; ry++; rlayer++;
     }
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [] };
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], treasureKeys: [] };
     const shell = { x0, x1, z0, z1, gy, h, midX, midZ };
     // Door on the north side now — the same wall the sails are mounted
     // on, rather than the opposite (south) wall.
@@ -6627,6 +6701,7 @@
     // gives them room top and bottom without clipping into the ground
     // or the roofline.
     addWindmillSails(midX + 0.5, gy + h / 2 + 4, z0 - 0.1, ck); // raised a further 2 blocks on top of the earlier +2 raise
+    maybeAddTreasure(x0 + 1, gy, z1 - 1, reg); // 10% chance, tucked in a floor corner
     return { shell, reg };
   }
   const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
@@ -6662,11 +6737,146 @@
     if (reg) {
       reg.doorKeys.forEach(dk => removeDoor(dk));
       reg.fixtureKeys.forEach(fk => removeFixture(fk));
+      if (reg.treasureKeys) reg.treasureKeys.forEach(tk => removeTreasureChest(tk));
       windmillRegs.delete(ck);
     }
     const touchedKeys = villageFootprintChunkKeys.get(ck);
     if (touchedKeys) {
       new Set(touchedKeys).forEach(tck => {
+        const list = villageHouseFootprints.get(tck);
+        if (!list) return;
+        const filtered = list.filter(e => e.__ck !== ck);
+        if (filtered.length) villageHouseFootprints.set(tck, filtered); else villageHouseFootprints.delete(tck);
+      });
+      villageFootprintChunkKeys.delete(ck);
+    }
+  }
+  // ── Shipwreck ───────────────────────────────────────────────────
+  // A standalone structure like the windmill — its own placement grid,
+  // entirely separate from village generation — except it doesn't wait
+  // to find suitable terrain: it carves and floods its own basin
+  // wherever it lands, since naturally-generated water deep enough to
+  // hide a whole hull in is rare, and this needed to be reliably
+  // explorable rather than a lucky find.
+  const SHIPWRECK_CHUNK_STRIDE = 11; // moderately rare — more common than the castle, less than the windmill's own mountain-top scarcity
+  function shipwreckGridHomeChunk(gx, gz) {
+    const r = mulberry32(seedFromHash(gx * 4409 + 2113, gz * 3221 + 877));
+    const ox = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));
+    const oz = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));
+    return [gx * SHIPWRECK_CHUNK_STRIDE + ox, gz * SHIPWRECK_CHUNK_STRIDE + oz];
+  }
+  const shipwreckRegs = new Map(); // "cx_cz" -> { fixtureKeys, ladderKeys, treasureKeys }
+  // Carves and floods a basin regardless of what's actually there —
+  // deleting any existing block first, then either sand (seabed/rim) or
+  // water, the exact same set-water-after-delete pattern the castle's
+  // own moat already uses. The sand rim contains the flood on every
+  // side so it always reads as a clean pool, whatever terrain used to
+  // be here.
+  function buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY, hx0, hx1, hz0, hz1) {
+    for (let x = pitX0 - 1; x <= pitX1 + 1; x++) {
+      for (let z = pitZ0 - 1; z <= pitZ1 + 1; z++) {
+        const rim = (x === pitX0 - 1 || x === pitX1 + 1 || z === pitZ0 - 1 || z === pitZ1 + 1);
+        const insideHull = (x >= hx0 && x <= hx1 && z >= hz0 && z <= hz1);
+        if (rim) {
+          for (let y = floorY - 1; y <= waterlineY; y++) { blocks.set(key(x, y, z), 5); trackVillageHeight(x, z, y); } // Sand retaining wall
+          continue;
+        }
+        for (let y = floorY - 1; y < waterlineY; y++) {
+          blocks.delete(key(x, y, z));
+          if (insideHull) continue; // the hull below builds its own floor/walls/interior here instead
+          if (y === floorY - 1) { blocks.set(key(x, y, z), 5); trackVillageHeight(x, z, y); } // sandy seabed
+          else waterBlocks.set(key(x, y, z), 1);
+        }
+      }
+    }
+  }
+  // The hull itself — floor, walls and a deck for its whole length, a
+  // tapered bow over the first few columns (each column one narrower
+  // than the last until it reaches full width), a flat stern at the
+  // back. Explorable rather than just a floating shell: the whole
+  // length below the deck is hollow (the hold), reached through a hole
+  // cut in the deck partway along, with a ladder down from it.
+  function buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg) {
+    const hzMid = Math.floor((hz0 + hz1) / 2);
+    const halfW = Math.floor((hz1 - hz0) / 2);
+    const deckY = floorY + 4;
+    const HULL = 6; // Planks
+    for (let x = hx0; x <= hx1; x++) {
+      const localHalf = Math.min(halfW, x - hx0); // tapers in from the bow (hx0) over the first halfW columns, full width for the rest
+      const z0 = hzMid - localHalf, z1 = hzMid + localHalf;
+      for (let z = z0; z <= z1; z++) {
+        const edge = (z === z0 || z === z1 || x === hx1); // side walls, plus a flat stern wall at the very back
+        blocks.set(key(x, floorY, z), HULL); trackVillageHeight(x, z, floorY);
+        if (edge) {
+          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.set(key(x, y, z), HULL); trackVillageHeight(x, z, y); }
+        } else {
+          for (let y = floorY + 1; y <= floorY + 3; y++) blocks.delete(key(x, y, z)); // hollow hold
+        }
+        blocks.set(key(x, deckY, z), HULL); trackVillageHeight(x, z, deckY); markVillageGround(x, z, deckY);
+      }
+    }
+    // Entry — a hole in the deck partway along (2 wide, so it's an
+    // obvious gap rather than a single easy-to-miss tile), with a
+    // ladder down one side of it so getting back out doesn't mean
+    // jumping the full height of the hold.
+    const holeX = hx0 + Math.round((hx1 - hx0) * 0.45);
+    [0, 1].forEach(dz => blocks.delete(key(holeX, deckY, hzMid + dz)));
+    for (let y = floorY + 1; y <= deckY - 1; y++) { const lk = addLadder(holeX - 1, y, hzMid, 1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
+    // A second, lower entrance — a breach in the side hull near the
+    // stern, at the waterline, so the wreck can also be swum into
+    // rather than only entered from above.
+    const breachX = hx0 + Math.round((hx1 - hx0) * 0.75);
+    for (let y = floorY + 1; y <= floorY + 2; y++) blocks.delete(key(breachX, y, hz1));
+    // A broken mast — a plain log rather than anything elaborate,
+    // deliberately not perfectly vertical (leaning slightly) to read as
+    // storm-snapped rather than a mast still doing its job.
+    const mastX = hx0 + Math.round((hx1 - hx0) * 0.4);
+    for (let i = 0; i < 5; i++) {
+      const lean = Math.floor(i / 2);
+      blocks.set(key(mastX + lean, deckY + 1 + i, hzMid), 3); // Wood (log)
+      trackVillageHeight(mastX + lean, hzMid, deckY + 1 + i);
+    }
+    // A couple of torches inside the hold — otherwise pitch black.
+    [[hx0 + 2, floorY + 2, hzMid - halfW, 0, 1, 0], [hx1 - 2, floorY + 2, hzMid + halfW, 0, -1, 0]].forEach(([bx, by, bz, nx, ny, nz]) => {
+      if (fixtures.size < MAX_LIGHTS) { const fk = addFixture(bx, by, bz, nx, ny, nz); if (fk) reg.fixtureKeys.push(fk); }
+    });
+    maybeAddTreasure(hx1 - 2, floorY, hzMid, reg); // 10% chance, tucked at the stern end of the hold
+  }
+  function maybeBuildShipwreck(cx, cz) {
+    const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
+    const [hx, hz] = shipwreckGridHomeChunk(gx, gz);
+    if (hx !== cx || hz !== cz) return;
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
+    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
+    const hullLen = 16, hullWid = 7;
+    const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
+    const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
+    const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
+    if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) return;
+    let waterlineY = SEA_LEVEL;
+    for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }
+    waterlineY = Math.max(SEA_LEVEL, waterlineY);
+    const floorY = Math.max(1, waterlineY - 4);
+    buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY, hx0, hx1, hz0, hz1);
+    const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
+    buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg);
+    shipwreckRegs.set(ck, reg);
+    const entry = { x0: pitX0, x1: pitX1, z0: pitZ0, z1: pitZ1, gy: waterlineY, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south' };
+    registerBuildingFootprint(entry, ck);
+    resyncChunksInRange(pitX0 - 10, pitX1 + 10, pitZ0 - 10, pitZ1 + 10);
+  }
+  function teardownShipwreck(ck) {
+    const reg = shipwreckRegs.get(ck);
+    if (reg) {
+      reg.fixtureKeys.forEach(fk => removeFixture(fk));
+      reg.ladderKeys.forEach(lk => removeLadder(lk));
+      reg.treasureKeys.forEach(tk => removeTreasureChest(tk));
+      shipwreckRegs.delete(ck);
+    }
+    const touchedKeys2 = villageFootprintChunkKeys.get(ck);
+    if (touchedKeys2) {
+      new Set(touchedKeys2).forEach(tck => {
         const list = villageHouseFootprints.get(tck);
         if (!list) return;
         const filtered = list.filter(e => e.__ck !== ck);
@@ -6967,7 +7177,7 @@
 
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [] };
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
 
     // The road is the one part of the village that DOES stay a single
     // flat grade — everything else below is deliberately NOT flattened
@@ -7591,6 +7801,7 @@
     if (v.fixtureKeys) v.fixtureKeys.forEach(fk => removeFixture(fk));
     if (v.bellKeys) v.bellKeys.forEach(bk => removeBell(bk));
     if (v.ladderKeys) v.ladderKeys.forEach(lk => removeLadder(lk)); // the castle roof's own access hatch, when this village has one
+    if (v.treasureKeys) v.treasureKeys.forEach(tk => removeTreasureChest(tk)); // whether or not it was ever actually found — an uncollected chest shouldn't survive its own village's teardown any more than a torch does
     // NPC figures and decorative props (the bar counter etc. — see
     // placeVillageProp) are the biggest single source of what was
     // actually leaking here: each NPC alone is a whole buildCustomerFigure
@@ -13208,6 +13419,9 @@
     bells.forEach((b, bk) => {
       consider('bell', bk, b.bx + 0.5, b.by + 1, b.bz + 0.5, 0.55);
     });
+    treasureChests.forEach((t, tk) => {
+      consider('treasure', tk, t.bx + 0.5, t.by + 0.7, t.bz + 0.5, 0.6);
+    });
     return bestKey ? { kind: bestKind, fk: bestKey, dist: bestDist } : null;
   }
   function voxelRaycast(skipWater, skipPlayerOverlap) {
@@ -13300,6 +13514,17 @@
       const b = bells.get(furnitureTarget.fk);
       if (!b || !canEditAt(b.bx, b.bz)) { mineHeld = false; return; }
       ringBell(furnitureTarget.fk);
+      mineHeld = false;
+      return;
+    }
+    // Treasure is collected, not deleted like ordinary furniture — one
+    // hit, coins added, gone for good. No canEditAt/ownership check:
+    // it's not editing the world in any lasting way, and coins are a
+    // per-player stat, not a per-world one, so finding it visiting
+    // someone else's world is exactly as valid as finding it in your
+    // own.
+    if (furnitureTarget && furnitureTarget.kind === 'treasure' && furnitureTarget.dist < blockDist) {
+      collectTreasureChest(furnitureTarget.fk);
       mineHeld = false;
       return;
     }

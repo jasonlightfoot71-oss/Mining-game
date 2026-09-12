@@ -1515,6 +1515,22 @@
     wallpaperSky:      makeCanvasTexture((ctx,s) => { ctx.fillStyle='#a8c4d8'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.08)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
     wallpaperBlush:    makeCanvasTexture((ctx,s) => { ctx.fillStyle='#dcaab0'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.08)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
     wallpaperCharcoal: makeCanvasTexture((ctx,s) => { ctx.fillStyle='#4a4a4e'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(255,255,255,0.06)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
+
+    // Iron bars — a mostly-transparent pane with a few solid vertical
+    // bars plus top/bottom braces, the way real cell bars read from a
+    // few blocks away. Kept out of the merged glass system entirely
+    // (see GLASS_TYPE_SET below) by not having "Glass" anywhere in its
+    // name — it renders as an ordinary one-cube-per-instance block, same
+    // as the stained panes.
+    bars: makeCanvasTexture((ctx,s) => {
+      ctx.clearRect(0,0,s,s);
+      ctx.fillStyle = '#2b2b2e';
+      const barW = Math.max(1, Math.round(s*0.13));
+      [s*0.18, s*0.5, s*0.82].forEach(cx => ctx.fillRect(cx-barW/2, 0, barW, s));
+      const braceH = Math.max(1, Math.round(s*0.1));
+      ctx.fillRect(0, 0, s, braceH);
+      ctx.fillRect(0, s-braceH, s, braceH);
+    }),
   };
 
   // block type registry
@@ -1591,7 +1607,21 @@
     { name: 'Stained Pane Sapphire', mats: TEX.stainedGlassSapphire, transparent: true, cost: 4, isVariant: true },
     { name: 'Stained Pane Emerald',  mats: TEX.stainedGlassEmerald,  transparent: true, cost: 4, isVariant: true },
     { name: 'Stained Pane Amber',    mats: TEX.stainedGlassAmber,    transparent: true, cost: 4, isVariant: true },
+    // Bars — appended at the very end rather than inserted anywhere
+    // among the block types above, specifically so it gets a brand new
+    // index instead of shifting every existing type's index by one (a
+    // huge number of places in this file reference block types by their
+    // raw numeric index, not by name — CASTLE_STONE/CASTLE_TRIM/
+    // CASTLE_FLOOR among them). isVariant, listed under Glass's family
+    // (see BLOCK_FAMILIES) rather than getting its own primary hotbar
+    // slot, since it's another see-through wall material in the same
+    // vein as the coloured/stained glass already grouped there.
+    { name: 'Bars', mats: TEX.bars, transparent: true, cost: 4, isVariant: true },
   ];
+  // The index Bars actually landed at — computed rather than hand-
+  // counted, so it stays correct even if more entries get appended
+  // above it later.
+  const BARS_TYPE = BLOCK_TYPES.length - 1;
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1604,7 +1634,7 @@
     5: [5, 27, 28, 29, 30], // Sand
     6: [6, 19, 20, 21, 22], // Planks
     7: [7, 15, 16, 17, 18], // Brick
-    8: [8, 35, 36, 37, 38, 47, 48, 49, 50], // Glass (colours + stained)
+    8: [8, 35, 36, 37, 38, 47, 48, 49, 50, BARS_TYPE], // Glass (colours + stained + bars)
     9: [9, 43, 44, 45, 46], // Step (materials)
     10: [10, 31, 32, 33, 34], // Concrete (colours)
   };
@@ -6075,7 +6105,14 @@
   // surrounds it, bridge at the entrance, tower on one side" only
   // stays true if the whole thing doesn't randomly rotate.
   const CASTLE_STONE = 13, CASTLE_TRIM = 12, CASTLE_FLOOR = 11; // Cracked Stone, Mossy Stone, Cobblestone
-  const CASTLE_KEEP_HEIGHT = 9; // shared so the roof (built at this height) and anything that needs to line up with it (the guards' patrol bounds, the dungeon stair depth) all agree with buildCastleKeep's own wall height
+  const CASTLE_KEEP_HEIGHT = 9; // shared so the roof (built at this height) and anything that needs to line up with it (the guards' patrol bounds) all agree with buildCastleKeep's own wall height
+  const STEP_TYPE = 9; // the 'Step' entry in BLOCK_TYPES — half-height, L-shaped riser, used for the dungeon staircase
+  // addStepInstance positions a Step block's upper (riser) quarter at
+  // theta = rot*90°, offset (-cos theta, sin theta) — rot 0/1/2/3 puts
+  // the riser at -X/+Z/+X/-Z (west/south/east/north) respectively. A
+  // staircase descending toward +Z (south, deeper into the dungeon)
+  // wants its risers facing back north — the uphill side — hence 3.
+  const STAIR_DOWN_SOUTH_ROT = 3;
   function buildSpiralStaircase(cx, cz, gy, steps, material) {
     // Walks the 8 cells ringing a 1-wide central shaft, one step higher
     // each time it visits the next one — by the time it's gone round
@@ -6092,7 +6129,7 @@
       blocks.delete(key(sx, sy + 2, sz));
     }
   }
-  function buildCastleTower(tx0, tz0, gy) {
+  function buildCastleTower(tx0, tz0, gy, reg) {
     const tx1 = tx0 + 4, tz1 = tz0 + 4, topH = 24;
     const tcx = tx0 + 2, tcz = tz0 + 2;
     for (let x = tx0; x <= tx1; x++) for (let z = tz0; z <= tz1; z++) {
@@ -6142,6 +6179,25 @@
         blocks.delete(key(tcx + dx, landingY + 2, tcz + dz));
       }
     }
+    // That landing is still 2 levels below the tower's own actual top
+    // (the walls keep going up to gy+topH, with the crenellated tips at
+    // gy+topH+1) — recessed inside the tower's own walls, with no way
+    // up the rest of the way. Three ladder rungs mounted on the east
+    // wall, right at the landing's own edge, cover that last stretch
+    // onto a proper platform level with the parapet — the one part of
+    // the tower's own height the spiral staircase was never going to
+    // reach on its own, since it stops climbing once it runs out of
+    // steps, not once it runs out of tower.
+    const topPlatformY = gy + topH;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        blocks.set(key(tcx + dx, topPlatformY, tcz + dz), CASTLE_STONE);
+        trackVillageHeight(tcx + dx, tcz + dz, topPlatformY);
+        blocks.delete(key(tcx + dx, topPlatformY + 1, tcz + dz));
+        blocks.delete(key(tcx + dx, topPlatformY + 2, tcz + dz));
+      }
+    }
+    for (let y = landingY; y <= landingY + 2; y++) { const lk = addLadder(tx1, y, tcz, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
@@ -6205,23 +6261,25 @@
     // gy+h+1) rather than flush with them — the walkway sits at gy+h,
     // the same height the outer wall's own top course already
     // occupies, so the two read as one continuous battlement rather
-    // than a roof set apart from its own walls. Skips one column
-    // (roofShaftX/Z below), left open as the hatch up from the room
-    // beneath it.
-    const roofShaftX = midX + 1, roofShaftZ = kz0 + 1;
+    // than a roof set apart from its own walls. Built solid across the
+    // whole interior; the spiral staircase below carves its own way
+    // through it afterwards (see the comment there).
     for (let x = kx0 + 1; x <= kx1 - 1; x++) {
       for (let z = kz0 + 1; z <= kz1 - 1; z++) {
-        if (x === roofShaftX && z === roofShaftZ) continue;
         blocks.set(key(x, gy + h, z), CASTLE_FLOOR);
         trackVillageHeight(x, z, gy + h);
         markVillageGround(x, z, gy + h); // the actual walkable roof surface — what the patrolling guards stand on
       }
     }
-    // Ladder hatch up to the roof, mounted against the same central
-    // divider that already splits the keep into rooms below — no
-    // separate shaft wall needed, and the matching column was left
-    // open in the roof fill just above.
-    for (let y = gy + 1; y < gy + h; y++) { const lk = addLadder(midX, y, roofShaftZ, 1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
+    // Roof access — the same spiral-staircase mechanism the tower
+    // already uses (see buildSpiralStaircase/buildCastleTower), tucked
+    // into the SW room right by the front door so it's the first thing
+    // a player finds, rather than a ladder buried in a corner. Built
+    // AFTER the roof fill above so its own headroom carving always
+    // wins where the two overlap — the very top step, which is meant
+    // to open directly onto the roof.
+    const roofStairCx = midX - 4, roofStairCz = midZ + 4;
+    buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1, CASTLE_STONE);
     const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
     buildVillageHouseWindowGeneric(midX, gy + 3, kz0, true, stonePalette); // north wall
     buildVillageHouseWindowGeneric(kx1, gy + 3, midZ, false, stonePalette); // east wall
@@ -6287,14 +6345,17 @@
     const depth = 5; // 5 steps down from the keep's own ground floor
     const stairX = kx0 + 5; // tucked well inside the NW quadrant — clear of the outer wall (kx0) and short of the central divider (midX = kx0+9)
     const stairZ0 = kz0 + 2;
-    for (let i = 1; i <= depth; i++) {
-      const sz = stairZ0 + i, sy = gy - i;
-      blocks.set(key(stairX, sy, sz), CASTLE_STONE);
-      blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
-      blocks.delete(key(stairX, sy + 2, sz));
-    }
     const floorY = gy - depth;
-    const rx0 = stairX - 2, rx1 = stairX + 2, rz0 = stairZ0 + depth - 1, rz1 = rz0 + 5;
+    const rx0 = stairX - 2, rx1 = stairX + 2, rz0 = stairZ0 + depth + 1, rz1 = rz0 + 4;
+    // Room built FIRST, stairs carved after — the previous version did
+    // it the other way round, and the room's own near wall landed
+    // squarely across the middle of the staircase (both were built to
+    // meet at the same point, but the room's wall-fill loop runs over
+    // its whole rectangle, including the columns the stairs already
+    // ran through), re-sealing the headroom the stairs had just opened.
+    // "One step, then blocked" was that wall. Carving the stairs last
+    // means whatever they cross always wins, however the numbers above
+    // end up lining up.
     for (let x = rx0 - 1; x <= rx1 + 1; x++) {
       for (let z = rz0 - 1; z <= rz1 + 1; z++) {
         const edge = (x === rx0 - 1 || x === rx1 + 1 || z === rz0 - 1 || z === rz1 + 1);
@@ -6302,25 +6363,22 @@
           for (let y = floorY; y <= floorY + 3; y++) blocks.set(key(x, y, z), CASTLE_STONE); // wall, floor to ceiling
         } else {
           blocks.set(key(x, floorY, z), CASTLE_FLOOR);
-          blocks.set(key(x, floorY + 3, z), CASTLE_STONE); // ceiling — keeps the room the keep's own ground floor is sealed above it, not open to the ladder-hatch logic up on the roof
+          blocks.set(key(x, floorY + 3, z), CASTLE_STONE); // ceiling — seals the room off from the keep's own ground floor above it
           blocks.delete(key(x, floorY + 1, z));
           blocks.delete(key(x, floorY + 2, z));
         }
       }
     }
-    // A barred cell at the far end from the stairs — glass rather than
-    // a true iron-bar block (this game doesn't have one), same
-    // reasoning as the tower/keep's own windows: see-through, but
-    // still a solid wall the prisoner (and a player) can't just walk
-    // through.
+    // A barred cell at the far end from the stairs — actual Bars now,
+    // not glass.
     const cellZ = rz1 - 1;
     for (let x = rx0; x <= rx1; x++) {
-      for (let y = floorY + 1; y <= floorY + 2; y++) blocks.set(key(x, y, cellZ), 8); // Glass
+      for (let y = floorY + 1; y <= floorY + 2; y++) blocks.set(key(x, y, cellZ), BARS_TYPE);
     }
     const prisonerColors = { skinIdx: Math.floor(Math.random() * AVATAR_SKIN_TONES.length), hairIdx: Math.floor(Math.random() * AVATAR_HAIR_TONES.length), shirtIdx: 5, pantsIdx: 3 }; // dark, ragged colours rather than the random villager palette
     const prisonerMesh = buildCustomerFigure(true, prisonerColors);
     prisonerMesh.position.set((rx0 + rx1) / 2 + 0.5, floorY + 1, rz1 + 0.5);
-    prisonerMesh.rotation.y = Math.PI; // faces back toward the glass/the stairs, not the wall behind it
+    prisonerMesh.rotation.y = Math.PI; // faces back toward the bars/the stairs, not the wall behind it
     prisonerMesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(prisonerMesh);
     reg.props.push(prisonerMesh);
@@ -6330,6 +6388,22 @@
       const fk = addFixture(stairX, floorY + 2, rz0 - 1, 0, 0, 1);
       if (fk) reg.fixtureKeys.push(fk);
     }
+    // Staircase down from the keep's own ground floor — real stone
+    // Step blocks (half-height, L-shaped riser) rather than full cubes,
+    // carved LAST so it always wins over the room above wherever the
+    // last step overlaps the room's own near wall (rz0-1, exactly
+    // where step `depth` lands — that overlap is deliberate, it's what
+    // makes the stairs open directly into the room instead of
+    // stopping short of it).
+    for (let i = 1; i <= depth; i++) {
+      const sz = stairZ0 + i, sy = gy - i;
+      const k = key(stairX, sy, sz);
+      blocks.set(k, STEP_TYPE);
+      stepRotations.set(k, STAIR_DOWN_SOUTH_ROT); // riser faces back north, uphill, the way a real staircase's risers do
+      blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
+      blocks.delete(key(stairX, sy + 2, sz));
+      blocks.delete(key(stairX, sy + 3, sz)); // extra margin, given how the last version's math worked out
+    }
   }
   function spawnCastleGuards(ck, bounds, rng) {
     const created = [];
@@ -6338,11 +6412,25 @@
     // torch (the closest thing to a weapon/prop this figure system
     // already supports) rather than nothing.
     const guardColors = { skinIdx: 0, hairIdx: 0, shirtIdx: 5, pantsIdx: 0, heldItem: 'torch' };
-    for (let i = 0; i < 2; i++) {
+    // pickVillageWanderTarget's own fallback (only used if all 8 random
+    // tries land somewhere blocked) is the exact centre of the given
+    // bounds. For an ordinary village NPC that's just open ground —
+    // harmless — but this roof's bounds are centred on the keep itself,
+    // and that centre is exactly where the two interior dividers below
+    // cross, solid stone from the ground floor up through the roof. A
+    // guard that ever actually hit that fallback would spawn embedded
+    // in the wall: invisible, stuck, never seen. Re-checked here and
+    // nudged well off-centre if so, rather than risking it.
+    function safeSpot() {
       const spot = pickVillageWanderTarget(bounds);
+      if (!villageNpcBlocked(spot.x, spot.z, bounds)) return spot;
+      return { x: bounds.xMin + (bounds.xMax - bounds.xMin) * 0.25, z: bounds.zMin + (bounds.zMax - bounds.zMin) * 0.25 };
+    }
+    for (let i = 0; i < 2; i++) {
+      const spot = safeSpot();
       const spawnY = villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1;
       const mesh = placeVillageNpcMesh(spot.x, spawnY, spot.z, guardColors);
-      const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
+      const w = { mesh, target: safeSpot(), waitTimer: Math.random() * 2, bounds, ck };
       villageNPCs.push(w);
       created.push(w);
     }
@@ -7211,12 +7299,22 @@
       const { plotY: castleY, baseSurfaceType: castleBase, subFillType: castleSub } = computePlotGrade(sx0, sx1, sz0, sz1, roadY);
       clearSkyAroundHouse(sx0, sx1, sz0, sz1, castleY, castleBase, castleSub);
       buildHouseEdgeWall(sx0, sx1, sz0, sz1, castleY, palette, 'south');
-      buildCastleTower(tx0, tz0, castleY);
+      buildCastleTower(tx0, tz0, castleY, reg);
       const keepShell = buildCastleKeep(kx0, kz0, castleY, reg);
       buildCastleMoat(sx0, sx1, sz0, sz1, castleY, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
-      buildCastleDungeon(kx0, kz0, castleY, reg);
-      const guardBounds = { xMin: kx0 + 2, xMax: kx1 - 2, zMin: kz0 + 2, zMax: kz1 - 2, y: castleY + CASTLE_KEEP_HEIGHT + 1 }; // the roof — inset from the crenellated edge so the guards don't spend their whole patrol weaving between merlons
-      reg.npcs = reg.npcs.concat(spawnCastleGuards(ck, guardBounds, rng));
+      // Wrapped — these two are extras on top of the core castle (which
+      // must always succeed, moat and all): a bug in the dungeon or the
+      // guards should never take the whole castle, let alone the rest
+      // of this village, down with it. Logged rather than silently
+      // swallowed, so a real problem here is at least visible in the
+      // console instead of just quietly missing in-game.
+      try {
+        buildCastleDungeon(kx0, kz0, castleY, reg);
+        const guardBounds = { xMin: kx0 + 2, xMax: kx1 - 2, zMin: kz0 + 2, zMax: kz1 - 2, y: castleY + CASTLE_KEEP_HEIGHT + 1 }; // the roof — inset from the crenellated edge so the guards don't spend their whole patrol weaving between merlons
+        reg.npcs = reg.npcs.concat(spawnCastleGuards(ck, guardBounds, rng));
+      } catch (err) {
+        console.warn('castle dungeon/guards build error (recovered):', err);
+      }
       // shapeFn (same reasoning as the church) — the keep+tower's real
       // shape isn't the same as its bounding box either (the notch
       // where neither one reaches), so the reactive override needs to

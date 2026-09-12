@@ -18405,7 +18405,15 @@
           }
           swimMove.multiplyScalar(speed*dt);
           move.x = swimMove.x; move.z = swimMove.z; // overrides the flat walking-style move computed above — steers on every axis with the camera while submerged
-          let dy = swimMove.y + GRAVITY*0.12*dt; // the look-direction component, plus the same gentle sink as before so coasting with no input still settles rather than hanging motionless
+          // The gentle sink only applies when there's no W/S input at
+          // all — it was being added on top of swimMove.y unconditionally
+          // before, which meant it was fighting the look-direction
+          // component on every frame and mostly cancelling it out. Only
+          // coasting (no key held) should drift down passively; actually
+          // pressing W while looking up needs the full climb, not a
+          // partial one constantly being pulled back down.
+          const hasVerticalIntent = keys['KeyW'] || keys['KeyS'] || (isTouchDevice && Math.abs(moveState.y) > 0.15);
+          let dy = hasVerticalIntent ? swimMove.y : GRAVITY*0.12*dt;
           // Raised from a gentle capped rise (3.2, good for just
           // reaching the surface) to a proper hop — the old version
           // could get you TO the surface but had nothing left to carry

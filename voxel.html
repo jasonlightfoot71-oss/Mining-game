@@ -241,15 +241,15 @@
     min-height: 0; /* flex items default to min-height:auto, which can silently stop a flex column from ever recognising its own content is taller than the viewport — overflow-y:auto above then has nothing to actually trigger on, even though it's set correctly. This is what actually made "the worlds are there, just not visible" possible: the list was really being rendered, just past a boundary nothing let you scroll to reach. */
   }
   #worldSelect h1 { margin: 0 0 12px; font-size: 24px; text-align: center; text-shadow: 2px 2px 0 #000; flex-shrink: 0; }
-  /* Four quadrants — Mill top-left, avatar top-right, your worlds
-     bottom-left, other worlds bottom-right. Each panel scrolls its own
-     content independently (min-height:0 is what makes that actually
-     work inside a grid row instead of the row just growing to fit
-     whichever panel has the most content), so a long worlds list never
-     pushes the other three panels around. */
+  /* Four columns side by side — Community, Your Worlds, Other Worlds,
+     Your Avatar, in that order, each scrolling its own content
+     independently (min-height:0 is what makes that actually work
+     inside a grid row instead of the row just growing to fit whichever
+     panel has the most content), so a long worlds list never pushes
+     the other three panels around. */
   #worldQuadrants {
-    display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: 1fr;
-    gap: 12px; flex: 1; min-height: 0; max-width: 900px; width: 100%; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 1fr;
+    gap: 12px; flex: 1; min-height: 0; max-width: 1400px; width: 100%; margin: 0 auto;
   }
   .titleQuadrant {
     background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 10px;
@@ -257,10 +257,12 @@
     overflow-y: auto; min-height: 0;
   }
   .titleQuadrant h3 { margin: 0 0 8px; font-size: 15px; opacity: 0.9; flex-shrink: 0; }
-  /* Only genuinely narrow (portrite-oriented) screens fall back to a
-     single column — a 2x2 grid is the whole point of this layout, and
-     landscape phones have plenty of width for it even though they're
-     short, so height alone was never a good reason to abandon it. */
+  /* Two columns on medium-width screens, one on genuinely narrow
+     (portrait phone) ones — four across is the whole point of this
+     layout, but there isn't room for it below a certain width. */
+  @media (max-width: 900px) {
+    #worldQuadrants { grid-template-columns: 1fr 1fr; }
+  }
   @media (max-width: 480px) {
     #worldQuadrants { grid-template-columns: 1fr; grid-auto-rows: auto; }
     .titleQuadrant { max-height: 46vh; }
@@ -327,15 +329,10 @@
   <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin:0 auto 10px;max-width:700px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
   <div id="worldQuadrants">
     <div class="titleQuadrant" id="quadMill">
-      <h3>🍺 The Mill</h3>
+      <h3>🏘️ Community</h3>
       <p style="font-size:12px;opacity:0.7;margin:0 0 10px;">The shared community pub — clock in for a shift, or just visit.</p>
       <button id="visitPubBtn" style="background:rgba(212,160,23,0.25);border:1px solid rgba(212,160,23,0.6);color:#ffd866;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">🍺 Visit The Mill</button>
       <button id="createPubBtn" style="display:none;margin-top:8px;background:rgba(255,255,255,0.08);border:1px dashed rgba(255,255,255,0.3);color:#ccc;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">＋ Create The Mill (sets it up as one of your own worlds, editable by you only)</button>
-    </div>
-    <div class="titleQuadrant" id="quadAvatar">
-      <h3>🧑 Your Avatar</h3>
-      <canvas id="titleAvatarCanvas" style="width:min(140px,20vh);height:min(168px,24vh);background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:10px;"></canvas>
-      <button id="avatarOpenBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">Customize your avatar</button>
     </div>
     <div class="titleQuadrant" id="quadWorlds">
       <h3>🗺️ Your Worlds</h3>
@@ -354,6 +351,11 @@
         <div id="otherWorldMsg" style="opacity:0.7;font-size:13px;margin:10px 0;">Loading other worlds…</div>
         <div id="otherWorldList"></div>
       </div>
+    </div>
+    <div class="titleQuadrant" id="quadAvatar">
+      <h3>🧑 Your Avatar</h3>
+      <canvas id="titleAvatarCanvas" style="width:min(140px,20vh);height:min(168px,24vh);background:rgba(255,255,255,0.05);border-radius:10px;margin-bottom:10px;"></canvas>
+      <button id="avatarOpenBtn" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;">Customize your avatar</button>
     </div>
   </div>
 </div>
@@ -1393,6 +1395,18 @@
       for (let r=2;r<8;r+=2){ ctx.beginPath(); ctx.arc(8,8,r,0,7); ctx.stroke(); }
     }),
     leaves: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3f8f3f',['#357a35','#4aa14a','#2e6e2e'],0.5)),
+    // Autumn — a genuine mix of green, brown and orange pixels rather
+    // than the summer texture tinted a single hue (this game has no way
+    // to vary colour per individual leaf block — no per-instance colour
+    // in this Three.js version, see the note on InstancedMesh.setColorAt
+    // elsewhere — so the only way to actually get three different
+    // colours reading together at once is to bake all three into the
+    // one shared texture itself, pixel by pixel, rather than speckling
+    // occasional variants over a single dominant base colour).
+    leavesAutumn: makeCanvasTexture((ctx,s) => {
+      const palette = ['#4a7a3a','#3f8f3f','#8a6a2a','#a9762f','#c9862a','#d9962a','#e0a83a','#7a5a25'];
+      for (let y=0;y<s;y++) for (let x=0;x<s;x++) { ctx.fillStyle = palette[Math.floor(Math.random()*palette.length)]; ctx.fillRect(x,y,1,1); }
+    }),
     sand: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#e0d18a',['#d8c67c','#e8dc9c'],0.35)),
     water: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3b6fd6',['#4a80e6','#3260c2'],0.3)),
     planks: makeCanvasTexture((ctx,s) => {
@@ -6183,22 +6197,24 @@
     // That landing is still 2 levels below the tower's own actual top
     // (the walls keep going up to gy+topH, with the crenellated tips at
     // gy+topH+1) — recessed inside the tower's own walls, with no way
-    // up the rest of the way. Three ladder rungs mounted on the east
-    // wall, right at the landing's own edge, cover that last stretch
-    // onto a proper platform level with the parapet — the one part of
-    // the tower's own height the spiral staircase was never going to
-    // reach on its own, since it stops climbing once it runs out of
-    // steps, not once it runs out of tower.
-    const topPlatformY = gy + topH;
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dz = -1; dz <= 1; dz++) {
-        blocks.set(key(tcx + dx, topPlatformY, tcz + dz), CASTLE_STONE);
-        trackVillageHeight(tcx + dx, tcz + dz, topPlatformY);
-        blocks.delete(key(tcx + dx, topPlatformY + 1, tcz + dz));
-        blocks.delete(key(tcx + dx, topPlatformY + 2, tcz + dz));
-      }
-    }
-    for (let y = landingY; y < topPlatformY; y++) { const lk = addLadder(tx1, y, tcz, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops BELOW topPlatformY, not at it — that cell is the solid platform surface itself, not a climbable one; a rung there would have the ladder trying to occupy the same cell as the platform's own floor, blocking the climb right at the top
+    // up the rest of the way. A straight ladder mounted on the east
+    // wall, climbing straight up from the landing to the wall's own
+    // top course, is the whole fix — no separate platform to build (an
+    // earlier attempt at one kept ending up solid exactly where the
+    // ladder's own top rung needed to be open, blocking the climb
+    // right at the top). The wall's own top course is already a
+    // walkable surface in its own right, same reasoning as the keep's
+    // roof — stepping sideways off the last rung lands directly on it.
+    // ladderZ is offset one block from the tower's true centre
+    // specifically to land in an actual GAP between merlons (the
+    // crenellation loop above only places one every other column,
+    // starting at tz0) rather than directly under one — landing under
+    // a merlon would have a solid block occupying the exact spot the
+    // player needs to stand.
+    const ladderZ = tcz + 1;
+    const topOpenY = gy + topH; // the wall's own top course
+    for (let y = landingY + 1; y <= topOpenY + 1; y++) blocks.delete(key(tcx + 1, y, ladderZ)); // the whole climb, kept clear all the way past the wall height and one block above it for headroom
+    for (let y = landingY; y <= topOpenY - 1; y++) { const lk = addLadder(tx1, y, ladderZ, -1, 0, 0); if (lk) reg.ladderKeys.push(lk); } // stops one below the wall's own top course, not at it — that cell is the solid surface the player steps sideways onto, not another rung
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
@@ -6416,7 +6432,11 @@
       // these there was nothing at all stopping a player drifting a
       // little left or right off the single-wide tread from just
       // walking straight off the edge into the open stairwell shaft.
-      for (let y = sy; y <= sy + 3; y++) {
+      // Capped at the keep's own ground floor (gy) — the first step or
+      // two would otherwise poke a couple of blocks up above the floor
+      // right at the entrance, which just made the actual hole harder
+      // to spot, not safer.
+      for (let y = sy; y <= Math.min(sy + 3, gy); y++) {
         blocks.set(key(stairX - 1, y, sz), CASTLE_STONE);
         blocks.set(key(stairX + 1, y, sz), CASTLE_STONE);
       }
@@ -14270,9 +14290,24 @@
     if (season !== currentSeason) {
       currentSeason = season;
       // Leaves are one shared material for every leaf block in the world,
-      // so re-tinting it changes every tree at once — no rebuild needed.
+      // so changing it here changes every tree at once — no rebuild
+      // needed. Autumn swaps the actual TEXTURE (not just a colour tint)
+      // for the mixed green/brown/orange one above — a tint alone can
+      // only shift the summer texture's existing green toward a single
+      // new hue, never show three distinct colours at once. Winter
+      // fades leaves out to fully transparent instead — same shared
+      // material, same block instances (still there to mine/collide
+      // with), just invisible, leaving bare trunks standing rather than
+      // trying to build actual branch geometry this game doesn't have.
       const leafMat = meshes[4] && meshes[4].material;
-      (Array.isArray(leafMat) ? leafMat : [leafMat]).forEach(m => m && m.color.setHex(LEAF_TINTS[season]));
+      (Array.isArray(leafMat) ? leafMat : [leafMat]).forEach(m => {
+        if (!m) return;
+        m.map = (season === 3) ? TEX.leavesAutumn : TEX.leaves;
+        m.color.setHex(season === 1 || season === 3 ? LEAF_TINTS[season] : 0xffffff); // spring/autumn keep their own tint on top of the texture; summer and winter leave it neutral (winter's own look now comes from fading out, not a tint)
+        m.transparent = (season === 0);
+        m.opacity = (season === 0) ? 0 : 1;
+        m.needsUpdate = true;
+      });
       if (season === 0) { rebuildSnowOverlay(); clearFlowerOverlay(); }
       else if (season === 1) { clearSnowOverlay(); rebuildFlowerOverlay(); }
       else if (season === 2) { clearSnowOverlay(); rebuildFlowerOverlay(); }

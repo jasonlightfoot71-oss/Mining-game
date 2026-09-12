@@ -13044,31 +13044,38 @@
   // outward from the player's own current height first since that's by
   // far the most likely place to find the relevant surface, rather than
   // scanning from a fixed world height every time.
-  // Finds the y of the topmost water block the player is actually
-  // standing in (or right on top of), or null if there isn't one —
-  // shared by waterDepthAt (below) and by the swim movement code, which
-  // clamps the player's own y to this so swimming can only ever lift you
-  // to the top water layer itself (roughly head height, since the camera
-  // sits above the feet) rather than letting you rise clear out and
-  // hover over the surface like solid ground.
+  // Finds the y of the TRUE top of the water column the player is
+  // actually standing in (or right on top of), or null if there isn't
+  // one — shared by waterDepthAt (below) and by the swim movement code,
+  // which clamps the player's own y to this so swimming can only ever
+  // lift you to the top water layer itself (roughly head height, since
+  // the camera sits above the feet) rather than letting you rise clear
+  // out and hover over the surface like solid ground.
   //
-  // Deliberately tight: only the player's own current cell and the one
-  // directly below it count. This used to scan up to 16 blocks below
-  // wherever the player currently was, which was meant to catch a deep
-  // trench opening up right at a shallow-water ledge before the player
-  // had actually started falling into it — but since that window was
-  // anchored to the player's own (possibly already wrong) height rather
-  // than to anything about the ground under their feet, it also treated
-  // standing on ordinary dry land a couple of blocks above a lake as
-  // "in the water". Checking only your own two nearest cells means this
-  // now answers exactly one question — is there water right here — and
-  // nothing more.
+  // First anchors tightly — only the player's own current cell or the
+  // one directly below counts as "touching water at all", which is what
+  // keeps merely standing on dry land near a lake from counting. But
+  // that anchor is wherever the player's FEET happen to be, which while
+  // wading is usually the floor at the BOTTOM of the water, not its top
+  // — a pool that's the same floor height throughout but piles much
+  // taller water above the deep end. Counting depth downward from the
+  // anchor alone (the old approach) always measured "however much water
+  // is at or below my own feet", which is 1 for anyone standing on a
+  // floor, no matter how many blocks of water are stacked above them.
+  // Scanning upward from the anchor first finds the column's actual top
+  // regardless of where within it the player's feet currently sit, so
+  // walking from the shallow end into the deep end registers correctly
+  // without needing to jump to "accidentally" measure further down.
   function waterSurfaceNear(x, z) {
     const px = Math.floor(x), pz = Math.floor(z);
     const base = Math.floor(player.pos.y);
-    if (waterBlocks.has(key(px, base, pz))) return base;
-    if (waterBlocks.has(key(px, base-1, pz))) return base-1;
-    return null;
+    let anchor = null;
+    if (waterBlocks.has(key(px, base, pz))) anchor = base;
+    else if (waterBlocks.has(key(px, base-1, pz))) anchor = base-1;
+    if (anchor === null) return null;
+    let topY = anchor;
+    while (waterBlocks.has(key(px, topY+1, pz))) topY++;
+    return topY;
   }
 
   function waterDepthAt(x, z) {
@@ -14388,29 +14395,29 @@
       // placement still fires immediately, exactly as it always has. A
       // quick release before the timer fires falls back to a normal
       // single placement (see touchend below); holding past it fills the
-      // whole pocket instead. Deliberately does NOT set placingHeld here
-      // — that flag is what the main loop's own continuous
-      // "re-fire on a new target" logic watches every frame to paint
-      // repeated blocks while the button's held and you look around, and
-      // it has no idea a fill-hold is in progress. Leaving it on left
-      // that other logic free to notice the tiniest wobble in aim
-      // (unavoidable just holding a touchscreen still) and place a
-      // normal block itself before this timer ever got the chance to —
-      // which is exactly what was silently beating fill to the punch.
+      // whole pocket instead.
       else if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
       else {
-        placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now();
+        // Deliberately a single placement only, on touch — no
+        // placingHeld/continuous repeat here anymore. That repeat-while-
+        // held-and-looking-around behaviour is what let a single normal
+        // block sneak in ahead of the fill timer whenever aim wobbled
+        // even slightly (unavoidable on a touchscreen), and taking it
+        // out entirely on touch removes any doubt about whether it's
+        // still interfering. Desktop's RMB keeps its own separate
+        // continuous-place behaviour untouched (see the mousedown
+        // handler) since none of this was ever reported there.
         doPlace();
       }
     });
     btnPlace.addEventListener('touchend', e => {
       e.preventDefault();
       if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; doPlace(); } // released before the hold fired — treat as an ordinary tap
-      placingHeld = false; tennisReleaseCharge(); golfPauseCharge();
+      tennisReleaseCharge(); golfPauseCharge();
     });
     btnPlace.addEventListener('touchcancel', e => {
       if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; }
-      placingHeld = false; tennisReleaseCharge(); golfPauseCharge();
+      tennisReleaseCharge(); golfPauseCharge();
     });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
@@ -18528,7 +18535,7 @@
       const golfSpaceJustPressed = keys['Space'] && !golfSpacePrevDown;
       golfSpacePrevDown = keys['Space'];
       if (golfChargingNow && golfSpaceJustPressed) golfFireShot();
-      let speed = flying ? 7 : (submerged ? 2.6 : (sprinting ? 6.5 : 4.3));
+      let speed = flying ? 7 : (submerged ? 5 : (sprinting ? 6.5 : 4.3)); // swim speed raised from 2.6 — it felt sluggish compared to walking
       if (ridingVehicle) speed *= VEHICLE_TYPES[ridingVehicle.typeIdx].speedMult;
       // Recovering from a kick — see tryKickFootball's own comment.
       if (performance.now() < footballSlowUntil) speed *= 0.55;

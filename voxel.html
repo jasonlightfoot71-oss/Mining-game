@@ -14053,6 +14053,17 @@
   const moveState = { x: 0, y: 0 };
   const flyState = { x: 0, y: 0 }; // only .y is used — drag up/down to ascend/descend
   let touchJumpQueued = false;
+  // Separate from touchJumpQueued above — that one is a single-shot
+  // "was it tapped" flag, consumed and cleared the instant any branch
+  // checks it, which is exactly right for an ordinary land jump (one
+  // press, one impulse, gravity/momentum carries the rest of the arc).
+  // Swimming has no momentum carry-through of its own though — the
+  // submerged branch sets its upward speed directly, every single
+  // frame, for as long as the input says to — so it needs to know
+  // "is the button still actually held down", not just "was it tapped
+  // once". Space already behaves that way for keyboard (true for the
+  // whole physical hold); this is what gives touch the same thing.
+  let touchJumpHeld = false;
 
   function setupJoystick(el, knob, state) {
     const maxDist = 40;
@@ -14192,8 +14203,10 @@
       e.preventDefault();
       if (golfChargeEligible()) { golfFireShot(); return; } // a discrete press takes the shot at whatever power's been built up with build — see golfChargeEligible's own comment for why this isn't hold-and-release anymore
       if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
-      else { touchJumpQueued = true; }
+      else { touchJumpQueued = true; touchJumpHeld = true; }
     });
+    btnJump.addEventListener('touchend', e => { e.preventDefault(); touchJumpHeld = false; });
+    btnJump.addEventListener('touchcancel', e => { touchJumpHeld = false; });
     // Touching the fly lever auto-engages flying, same as the old fly
     // buttons did — this fires alongside (not instead of) setupLever's
     // own touchstart handler on the same element, since that one only
@@ -18443,7 +18456,7 @@
         }
         const swimming = swimDir.lengthSq() > 0.0001;
         let vy;
-        if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) vy = 6.5;
+        if ((keys['Space'] && !golfChargingNow) || touchJumpHeld) vy = 6.5; // touchJumpHeld, not touchJumpQueued — this needs "is it still held" every frame, the same as keys['Space'] naturally is, not a one-shot tap that only ever lasted a single frame
         else if (swimming) vy = swimDir.y * speed;
         else if (keys['ShiftLeft']) vy = -2.5;
         else vy = GRAVITY * 0.12; // genuinely stationary — a gentle passive sink
@@ -18458,7 +18471,7 @@
 
         if (!window._voxelWasSubmerged) playSplash();
         window._voxelWasSubmerged = true;
-        updateWaterMoveSound(dt, 2);
+        updateWaterMoveSound(dt, swimming ? 2 : 0); // only while actually swimming — this was playing constantly before, even floating dead still
         footstepTimer = 0;
       } else {
         const onLadder = playerOnLadder(); // submerged is handled in its own branch entirely now, above — this whole walking branch never runs while swimming
@@ -18470,7 +18483,7 @@
           // but keyed off "in a ladder cell" instead of "in water", and
           // without water's momentum/drift.
           const climbSpeed = 3.2;
-          const wantUp = (keys['Space'] && !golfChargingNow) || keys['KeyW'] || touchJumpQueued || moveState.y < -0.3;
+          const wantUp = (keys['Space'] && !golfChargingNow) || keys['KeyW'] || touchJumpHeld || moveState.y < -0.3; // touchJumpHeld here too — climbing sets vel.y directly every frame same as swimming does, so it needs the sustained held-state, not a one-shot tap
           const wantDown = keys['ShiftLeft'] || keys['KeyS'] || moveState.y > 0.3;
           if (wantUp) player.vel.y = climbSpeed;
           else if (wantDown) player.vel.y = -climbSpeed;

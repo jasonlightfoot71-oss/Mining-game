@@ -13044,10 +13044,17 @@
   // outward from the player's own current height first since that's by
   // far the most likely place to find the relevant surface, rather than
   // scanning from a fixed world height every time.
-  function waterDepthAt(x, z) {
+  // Finds the y of the topmost water block near the player's current
+  // height at (x,z), or null if there isn't one close enough to count as
+  // "at" the water — shared by waterDepthAt (below) and by the swim
+  // movement code, which clamps the player's own y to this so swimming
+  // can only ever lift you to the top water layer itself (roughly head
+  // height, since the camera sits above the feet) rather than letting
+  // you rise clear out and hover over the surface like solid ground.
+  function waterSurfaceNear(x, z) {
     const px = Math.floor(x), pz = Math.floor(z);
-    let topY = null;
     const base = Math.floor(player.pos.y);
+    let topY = null;
     // Downward search widened from 4 to 16 — right at the exact edge
     // where shallow (wading) water drops into a deeper section, the
     // player's own y is still the shallow floor's height (they haven't
@@ -13062,7 +13069,7 @@
     for (let dy = 2; dy >= -16; dy--) {
       if (waterBlocks.has(key(px, base+dy, pz))) { topY = base+dy; break; }
     }
-    if (topY === null) return 0;
+    if (topY === null) return null;
     // Finding a surface somewhere in that wide window doesn't mean the
     // player is actually AT it though — and since the window is anchored
     // to the player's own (possibly rising) y every single frame, without
@@ -13077,7 +13084,14 @@
     // doesn't count — this still leaves the ledge-edge case above intact,
     // since a continuous body of water has one surface height throughout,
     // normally only a block or so above the player's feet either way.
-    if (base - topY > 2) return 0;
+    if (base - topY > 2) return null;
+    return topY;
+  }
+
+  function waterDepthAt(x, z) {
+    const topY = waterSurfaceNear(x, z);
+    if (topY === null) return 0;
+    const px = Math.floor(x), pz = Math.floor(z);
     let depth = 0;
     while (waterBlocks.has(key(px, topY-depth, pz))) depth++;
     return depth;
@@ -14379,17 +14393,25 @@
       e.preventDefault(); ensureAudio();
       if (tennisChargeEligible()) tennisStartCharge();
       else if (golfChargeEligible()) golfStartCharge();
+      // Only defer to a hold-timer when the crosshair is actually over a
+      // valid sealed pocket of the selected material right now —
+      // everywhere else (the vast majority of ordinary building),
+      // placement still fires immediately, exactly as it always has. A
+      // quick release before the timer fires falls back to a normal
+      // single placement (see touchend below); holding past it fills the
+      // whole pocket instead. Deliberately does NOT set placingHeld here
+      // — that flag is what the main loop's own continuous
+      // "re-fire on a new target" logic watches every frame to paint
+      // repeated blocks while the button's held and you look around, and
+      // it has no idea a fill-hold is in progress. Leaving it on left
+      // that other logic free to notice the tiniest wobble in aim
+      // (unavoidable just holding a touchscreen still) and place a
+      // normal block itself before this timer ever got the chance to —
+      // which is exactly what was silently beating fill to the punch.
+      else if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
       else {
         placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now();
-        // Only defer to a hold-timer when the crosshair is actually over
-        // a valid sealed pocket of the selected material right now —
-        // everywhere else (the vast majority of ordinary building),
-        // placement still fires immediately, exactly as it always has.
-        // A quick release before the timer fires falls back to a normal
-        // single placement (see touchend below); holding past it fills
-        // the whole pocket instead.
-        if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
-        else doPlace();
+        doPlace();
       }
     });
     btnPlace.addEventListener('touchend', e => {
@@ -18666,6 +18688,15 @@
         swimNewPos.x += swimDir.x * speed * dt;
         swimNewPos.z += swimDir.z * speed * dt;
         swimNewPos.y += vy * dt;
+        // Swimming should only ever get you as high as the water itself —
+        // your head can break the surface (the camera sits above the
+        // feet, so it pokes out above this), but your feet shouldn't be
+        // able to rise clear out and hover over the top like it's solid
+        // ground. Clamped to the actual surface at the player's CURRENT
+        // position, not the new one, so it can't be dodged by swimming
+        // sideways out from under the clamp in the same frame.
+        const surfaceY = waterSurfaceNear(player.pos.x, player.pos.z);
+        if (surfaceY !== null && swimNewPos.y > surfaceY) swimNewPos.y = surfaceY;
         trySwimMove(swimNewPos);
         player.vel.y = 0;
         player.onGround = false;

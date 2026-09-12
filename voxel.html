@@ -14303,6 +14303,27 @@
     if (!test(x,y,newPos.z)) z = newPos.z;
     player.pos.set(x,y,z);
   }
+  // A dedicated, much simpler collision resolver for swimming — same
+  // "resolve X, then Y, then Z against solid ground, one axis at a
+  // time" idea as tryMove above, but without any of that function's
+  // walking-specific baggage (auto-step-up, onGround bookkeeping) that
+  // kept interfering with plain vertical swim movement regardless of
+  // how carefully it was gated off. Checks a single point at the
+  // player's own centre height plus four cardinal offsets at that same
+  // height, rather than the full standing-human bounding box (feet AND
+  // head height) tryMove uses — a swimming body doesn't need walking's
+  // exact collision precision, just "is there solid rock actually in
+  // the way", and the simpler check is much less likely to clip on
+  // something at head height that isn't really blocking the swim.
+  function trySwimMove(newPos) {
+    const r = player.radius;
+    const test = (x,y,z) => isSolid(x,y,z) || isSolid(x-r,y,z) || isSolid(x+r,y,z) || isSolid(x,y,z-r) || isSolid(x,y,z+r);
+    let {x,y,z} = player.pos;
+    if (!test(newPos.x,y,z)) x = newPos.x;
+    if (!test(x,newPos.y,z)) y = newPos.y;
+    if (!test(x,y,newPos.z)) z = newPos.z;
+    player.pos.set(x,y,z);
+  }
 
   // ================= DAY/NIGHT =================
   let dayTime = 0.3; // 0..1 cycle
@@ -18376,75 +18397,75 @@
         tryMove(newPos, false);
         player.vel.y = 0;
         footstepTimer = 0;
+      } else if (submerged) {
+        // Swimming — its own fully separate branch now, the same way
+        // flying already is, rather than nested inside ordinary walking
+        // sharing walking's tryMove(). That function's auto-step-up
+        // logic and its "onGround" bookkeeping are both walking-specific
+        // concepts that kept tangling with plain vertical movement here
+        // no matter how they were gated — this uses its own much
+        // simpler collision check instead (trySwimMove, below), the
+        // same "resolve X, then Y, then Z against solid ground only"
+        // idea but without any of walking's extra machinery.
+        //
+        // Moves the way you're actually facing, pitch included — look
+        // up and hold forward to rise, down to dive — the same
+        // directional model flying uses. Weightless while any of
+        // WASD/the touch stick is held; a gentle passive sink only when
+        // genuinely stationary. Space is always a strong upward boost
+        // regardless of the other two, so getting back to the surface
+        // never depends on the camera angle being right first.
+        const swimForward = new THREE.Vector3(
+          -Math.sin(moveYaw)*Math.cos(pitch),
+          Math.sin(pitch),
+          -Math.cos(moveYaw)*Math.cos(pitch)
+        );
+        let swimDir = new THREE.Vector3();
+        if (isTouchDevice) {
+          swimDir.addScaledVector(forward, -moveState.y);
+          swimDir.addScaledVector(right, moveState.x);
+          if (swimDir.lengthSq() > 1) swimDir.normalize();
+        } else {
+          if (keys['KeyW']) swimDir.add(swimForward);
+          if (keys['KeyS']) swimDir.sub(swimForward);
+          if (keys['KeyD']) swimDir.add(right);
+          if (keys['KeyA']) swimDir.sub(right);
+          if (swimDir.lengthSq() > 0) swimDir.normalize();
+        }
+        const swimming = swimDir.lengthSq() > 0.0001;
+        let vy;
+        if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) vy = 6.5;
+        else if (swimming) vy = swimDir.y * speed;
+        else if (keys['ShiftLeft']) vy = -2.5;
+        else vy = GRAVITY * 0.12; // genuinely stationary — a gentle passive sink
+        const swimNewPos = player.pos.clone();
+        swimNewPos.x += swimDir.x * speed * dt;
+        swimNewPos.z += swimDir.z * speed * dt;
+        swimNewPos.y += vy * dt;
+        trySwimMove(swimNewPos);
+        player.vel.y = 0;
+        player.onGround = false;
+        touchJumpQueued = false;
+
+        if (!window._voxelWasSubmerged) playSplash();
+        window._voxelWasSubmerged = true;
+        updateWaterMoveSound(dt, 2);
+        footstepTimer = 0;
       } else {
-        const onLadder = !submerged && playerOnLadder();
+        const onLadder = playerOnLadder(); // submerged is handled in its own branch entirely now, above — this whole walking branch never runs while swimming
         if (onLadder) {
           // Climbing — gravity is overridden entirely while standing in a
           // ladder's cell. Forward (W / push the move stick forward) or
           // jump climbs up, crouch climbs down, no input holds you in
-          // place rather than falling — same general feel as swimming
-          // just above, but keyed off "in a ladder cell" instead of "in
-          // water", and without water's momentum/drift.
+          // place rather than falling — same general feel as swimming,
+          // but keyed off "in a ladder cell" instead of "in water", and
+          // without water's momentum/drift.
           const climbSpeed = 3.2;
           const wantUp = (keys['Space'] && !golfChargingNow) || keys['KeyW'] || touchJumpQueued || moveState.y < -0.3;
           const wantDown = keys['ShiftLeft'] || keys['KeyS'] || moveState.y > 0.3;
           if (wantUp) player.vel.y = climbSpeed;
           else if (wantDown) player.vel.y = -climbSpeed;
           else player.vel.y = 0;
-          touchJumpQueued = false;
-        } else if (submerged) {
-          // Swims the way you're actually facing — pitch included, not
-          // just flat yaw with Space/Shift as the only up/down — the
-          // same directional model flying already uses. Only active
-          // while genuinely submerged; walking, flying, and ladders are
-          // all unchanged.
-          const swimForward = new THREE.Vector3(
-            -Math.sin(moveYaw)*Math.cos(pitch),
-            Math.sin(pitch),
-            -Math.cos(moveYaw)*Math.cos(pitch)
-          );
-          let swimDir = new THREE.Vector3();
-          if (isTouchDevice) {
-            swimDir.addScaledVector(forward, -moveState.y);
-            swimDir.addScaledVector(right, moveState.x);
-            if (swimDir.lengthSq() > 1) swimDir.normalize();
-          } else {
-            if (keys['KeyW']) swimDir.add(swimForward);
-            if (keys['KeyS']) swimDir.sub(swimForward);
-            if (keys['KeyD']) swimDir.add(right);
-            if (keys['KeyA']) swimDir.sub(right);
-            if (swimDir.lengthSq() > 0) swimDir.normalize();
-          }
-          const moving = swimDir.lengthSq() > 0.0001;
-          // Kept as actual velocities (units/second) throughout, the same
-          // as gravity/JUMP_VEL everywhere else in this function — the
-          // previous version computed a per-frame displacement first and
-          // then divided back by dt to recover a velocity for player.vel.y,
-          // which was needless indirection for the same result and one
-          // extra place a mistake could hide. move.x/z (a displacement,
-          // like every other frame) still gets its own separate *dt below.
-          move.x = swimDir.x*speed*dt; move.z = swimDir.z*speed*dt; // overrides the flat walking-style move computed above — steers on every axis with the camera while submerged
-          // No gravity at all while actually moving (any of WASD/the
-          // touch stick held) — swimDir.y alone decides vertical motion
-          // then, full stop. Gravity only re-enters the picture once
-          // you're genuinely still, as a gentle passive sink. Space is
-          // still the dedicated "jump" — a fixed, always-available pop
-          // up and out regardless of which of the two states above
-          // applied, so escaping to the surface never depends on
-          // getting the camera angle right first.
-          player.vel.y = moving ? swimDir.y*speed : GRAVITY*0.12; // this whole branch only runs when submerged (3+ blocks deep, see above) — stationary always sinks gently here now, no separate depth check needed
-          // Raised from a gentle capped rise (3.2, good for just
-          // reaching the surface) to a proper hop — the old version
-          // could get you TO the surface but had nothing left to carry
-          // you UP AND OVER a bank once there, so you'd bob right at the
-          // edge and fall back in. This gives enough height to clear a
-          // couple of blocks onto land, the same kind of boost a normal
-          // jump gives on dry ground, with gravity naturally arcing you
-          // back down once you're clear of the water (this branch stops
-          // applying the moment you're no longer submerged).
-          if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) player.vel.y = 6.5;
-          else if (keys['ShiftLeft'] && !moving) player.vel.y = -2.5; // only when otherwise stationary — moving already has its own full look-direction descent via swimDir.y
-          player.vel.y = Math.max(-3.2, Math.min(6.5, player.vel.y));
           touchJumpQueued = false;
         } else {
           player.vel.y += GRAVITY*dt;

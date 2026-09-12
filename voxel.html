@@ -14049,7 +14049,36 @@
   // touch triggers it by holding the build button down on the target
   // instead of tapping it (see FILL_HOLD_MS below).
   const FILL_CAP = 1024; // a fill that spreads past this many cells without closing is treated as "not sealed" and aborted, same idea as DRAIN_CAP for the drain tool
-  const FILL_DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  const ALL_NEIGHBOR_DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]; // full 6-directional — used only for the post-fill mesh refresh, not for the (plane-constrained) flood itself
+
+  // Which two axes the fill is allowed to spread across — the third
+  // (fixed) axis is the one "through" the wall/floor/ceiling. A hole in
+  // a 1-block-thick wall is open on BOTH sides (the room you're
+  // standing in, and whatever's beyond) — an unconstrained 6-directional
+  // flood immediately spills through the hole into those open spaces
+  // and blows straight past FILL_CAP almost instantly, which is exactly
+  // why this failed before: it never got the chance to trace out the
+  // flat patch itself before bailing out as "leaked". Restricting travel
+  // to the two in-plane axes keeps it on that single layer and makes the
+  // "1 block wide" behaviour Jason asked for structural, not a check
+  // applied after the fact.
+  const FILL_PLANE_DIRS = {
+    x: [[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]], // wall facing along x — spread across y/z
+    y: [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]], // floor/ceiling — spread across x/z
+    z: [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0]], // wall facing along z — spread across x/y
+  };
+
+  // Reads which plane you're actually looking square at, from the
+  // dominant component of the current view direction — looking mostly
+  // down/up means a floor/ceiling (fixed axis y), mostly along x or z
+  // means a wall facing that way (fixed axis x or z). Aim pretty much
+  // straight into the patch for this to pick the right plane.
+  function fillViewAxis() {
+    const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    const ax = Math.abs(dir.x), ay = Math.abs(dir.y), az = Math.abs(dir.z);
+    if (ay >= ax && ay >= az) return 'y';
+    return (ax >= az) ? 'x' : 'z';
+  }
 
   function isOpenForFill(k) {
     // "Open" here means genuinely empty — not just absent from `blocks`.
@@ -14060,36 +14089,32 @@
     return !blocks.has(k) && !waterBlocks.has(k) && !furniture.has(k) && !doors.has(k);
   }
 
-  // BFS out from the target cell over connected open cells. Returns the
-  // list of cells to fill, or null if it's not a valid fill target: the
-  // pocket never closes (leaks into open space, or is simply too big —
-  // either way it isn't "sealed"), or it's a genuine 3D hollow (a room,
-  // not a flat square/line) rather than a single-block-thick pocket.
-  function findFillRegion(sx, sy, sz) {
+  // BFS out from the target cell over connected open cells, confined to
+  // the two axes given by `axis` (see FILL_PLANE_DIRS). Returns the list
+  // of cells to fill, or null if it's not a valid fill target: the
+  // pocket never closes within that single layer (it leaks past
+  // FILL_CAP, meaning the plane guess was probably wrong, or the patch
+  // is just huge).
+  function findFillRegion(sx, sy, sz, axis) {
     const startKey = key(sx, sy, sz);
     if (!isOpenForFill(startKey)) return null;
+    const dirs = FILL_PLANE_DIRS[axis];
     const visited = new Set([startKey]);
     const cells = [{x:sx,y:sy,z:sz}];
     const queue = [{x:sx,y:sy,z:sz}];
-    let minX=sx,maxX=sx,minY=sy,maxY=sy,minZ=sz,maxZ=sz;
     while (queue.length) {
       const c = queue.pop();
-      for (const [dx,dy,dz] of FILL_DIRS) {
+      for (const [dx,dy,dz] of dirs) {
         const nx=c.x+dx, ny=c.y+dy, nz=c.z+dz;
         const nk = key(nx,ny,nz);
         if (visited.has(nk) || !isOpenForFill(nk)) continue;
         visited.add(nk);
-        if (visited.size > FILL_CAP) return null; // leaked out into open space rather than closing — not actually sealed
+        if (visited.size > FILL_CAP) return null; // didn't close within this one layer — not actually sealed (or the plane guess was wrong)
         const cell = {x:nx,y:ny,z:nz};
         cells.push(cell);
         queue.push(cell);
-        if (nx<minX) minX=nx; if (nx>maxX) maxX=nx;
-        if (ny<minY) minY=ny; if (ny>maxY) maxY=ny;
-        if (nz<minZ) minZ=nz; if (nz>maxZ) maxZ=nz;
       }
     }
-    const spanX = maxX-minX+1, spanY = maxY-minY+1, spanZ = maxZ-minZ+1;
-    if (spanX > 1 && spanY > 1 && spanZ > 1) return null; // a real 3D pocket (a room), not a flat single-layer square — fill only ever touches one layer
     return cells;
   }
 
@@ -14107,7 +14132,7 @@
     const {x,y,z} = r.isWater ? r.hit : r.before;
     if (!canEditAt(x, z)) return null; // view only
     if (isProtectedGameArea(x, z) && !landscapeModeEnabled) return null;
-    return findFillRegion(x, y, z);
+    return findFillRegion(x, y, z, fillViewAxis());
   }
 
   function fillTargetAvailable() {
@@ -14135,7 +14160,7 @@
       recordBlockEdit(c.x, c.y, c.z, selectedSlot, 0);
       placed++;
       refresh.add(k);
-      for (const [dx,dy,dz] of FILL_DIRS) refresh.add(key(c.x+dx, c.y+dy, c.z+dz));
+      for (const [dx,dy,dz] of ALL_NEIGHBOR_DIRS) refresh.add(key(c.x+dx, c.y+dy, c.z+dz));
     }
     refresh.forEach(rk => {
       const parts = rk.split(',');

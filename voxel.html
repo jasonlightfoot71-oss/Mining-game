@@ -12774,6 +12774,7 @@
     if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
     if (e.code === 'KeyF') selectSlot(FIRE_SLOT);
     if (e.code === 'KeyF') toggleFly();
+    if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
       // because the on-screen Enter/Exit Vehicle buttons are unreliable
@@ -13047,7 +13048,18 @@
     const px = Math.floor(x), pz = Math.floor(z);
     let topY = null;
     const base = Math.floor(player.pos.y);
-    for (let dy = 3; dy >= -4; dy--) {
+    // Downward search widened from 4 to 16 — right at the exact edge
+    // where shallow (wading) water drops into a deeper section, the
+    // player's own y is still the shallow floor's height (they haven't
+    // fallen yet), and a narrow window here could miss how deep the
+    // water just ahead of them actually goes, under-reporting it as
+    // still shallow. That kept the game treating them as walking
+    // (ordinary ground collision) right at the one spot it most needed
+    // to recognise "this is deep water now" and hand off to swimming —
+    // walking into it just stopped dead, and only a jump (which moves
+    // the player enough to land the search somewhere it could see the
+    // true depth) broke it loose.
+    for (let dy = 2; dy >= -16; dy--) {
       if (waterBlocks.has(key(px, base+dy, pz))) { topY = base+dy; break; }
     }
     if (topY === null) return 0;
@@ -13650,6 +13662,8 @@
   const MINE_DURATION = 380; // ms
   let placingHeld = false, lastPlaceKey = null; // continuous place-while-held-and-moving
   let lastPlaceTime = 0;
+  let fillHoldTimer = null; // touch only — set while waiting to see if a press on a fillable pocket becomes a hold; see btnPlace's touch handlers
+  const FILL_HOLD_MS = 450; // how long touch build must be held on a fillable target before it resolves to a fill instead of a normal tap-placement
   const PLACE_COOLDOWN = 220; // ms — minimum gap between continuous placements, so a fast sweep doesn't wall you in instantly
 
   function doMine() {
@@ -14027,6 +14041,114 @@
     }
   }
 
+  // ================= FILL TOOL =================
+  // Flood-fills a fully sealed, single-block-thick empty pocket — a
+  // missing patch in a floor, wall, or ceiling that's otherwise
+  // surrounded — with whatever block is currently selected. Desktop
+  // triggers it with a dedicated key (H, see the keydown handler);
+  // touch triggers it by holding the build button down on the target
+  // instead of tapping it (see FILL_HOLD_MS below).
+  const FILL_CAP = 1024; // a fill that spreads past this many cells without closing is treated as "not sealed" and aborted, same idea as DRAIN_CAP for the drain tool
+  const FILL_DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+
+  function isOpenForFill(k) {
+    // "Open" here means genuinely empty — not just absent from `blocks`.
+    // Furniture and doors share the same key space as blocks (unlike
+    // fixtures/ladders/signs, which key off a face instead) but aren't
+    // stored in `blocks`, so without this check the flood could walk
+    // straight through — and later fill over — a chair or a door.
+    return !blocks.has(k) && !waterBlocks.has(k) && !furniture.has(k) && !doors.has(k);
+  }
+
+  // BFS out from the target cell over connected open cells. Returns the
+  // list of cells to fill, or null if it's not a valid fill target: the
+  // pocket never closes (leaks into open space, or is simply too big —
+  // either way it isn't "sealed"), or it's a genuine 3D hollow (a room,
+  // not a flat square/line) rather than a single-block-thick pocket.
+  function findFillRegion(sx, sy, sz) {
+    const startKey = key(sx, sy, sz);
+    if (!isOpenForFill(startKey)) return null;
+    const visited = new Set([startKey]);
+    const cells = [{x:sx,y:sy,z:sz}];
+    const queue = [{x:sx,y:sy,z:sz}];
+    let minX=sx,maxX=sx,minY=sy,maxY=sy,minZ=sz,maxZ=sz;
+    while (queue.length) {
+      const c = queue.pop();
+      for (const [dx,dy,dz] of FILL_DIRS) {
+        const nx=c.x+dx, ny=c.y+dy, nz=c.z+dz;
+        const nk = key(nx,ny,nz);
+        if (visited.has(nk) || !isOpenForFill(nk)) continue;
+        visited.add(nk);
+        if (visited.size > FILL_CAP) return null; // leaked out into open space rather than closing — not actually sealed
+        const cell = {x:nx,y:ny,z:nz};
+        cells.push(cell);
+        queue.push(cell);
+        if (nx<minX) minX=nx; if (nx>maxX) maxX=nx;
+        if (ny<minY) minY=ny; if (ny>maxY) maxY=ny;
+        if (nz<minZ) minZ=nz; if (nz>maxZ) maxZ=nz;
+      }
+    }
+    const spanX = maxX-minX+1, spanY = maxY-minY+1, spanZ = maxZ-minZ+1;
+    if (spanX > 1 && spanY > 1 && spanZ > 1) return null; // a real 3D pocket (a room), not a flat single-layer square — fill only ever touches one layer
+    return cells;
+  }
+
+  // Resolves what's currently under the crosshair into a fillable cell
+  // list, or null if fill doesn't apply right now — shared by doFill()
+  // itself and by the touch hold-detection (fillTargetAvailable) so
+  // both agree on exactly the same target.
+  function getFillTargetCells() {
+    if (ridingVehicle || bsPlacing) return null; // fill isn't meaningful mid-vehicle-gun or mid-ship-placement
+    const type = BLOCK_TYPES[selectedSlot];
+    if (!type) return null; // only ordinary blocks are fillable material — not water, furniture, fixtures, vehicles, etc.
+    const r = voxelRaycast(false, true);
+    if (!r) return null;
+    if (!r.isWater && !r.before) return null;
+    const {x,y,z} = r.isWater ? r.hit : r.before;
+    if (!canEditAt(x, z)) return null; // view only
+    if (isProtectedGameArea(x, z) && !landscapeModeEnabled) return null;
+    return findFillRegion(x, y, z);
+  }
+
+  function fillTargetAvailable() {
+    const cells = getFillTargetCells();
+    return !!(cells && cells.length > 0);
+  }
+
+  function doFill() {
+    const cells = getFillTargetCells();
+    if (!cells || cells.length === 0) { showSaveStatus('⚠ That space isn\u2019t a sealed, single-layer square', true); return; }
+    const type = BLOCK_TYPES[selectedSlot];
+    const totalCost = (type.cost || 0) * cells.length;
+    if (totalCost > 0 && !trySpendCoins(totalCost, type.name + ' fill')) return;
+    // Batch the mesh/water/glass refresh to run once at the end rather
+    // than once per cell (as a normal single placement does via
+    // handleLocalBlockChange) — for a fill of hundreds of blocks,
+    // rebuilding water/glass geometry that many times would be far
+    // slower than the placement itself.
+    const refresh = new Set();
+    let placed = 0;
+    for (const c of cells) {
+      const k = key(c.x, c.y, c.z);
+      if (blocks.has(k) || blockOverlapsPlayer(c.x, c.y, c.z)) continue; // shouldn't happen — findFillRegion only returns open, non-player-overlapping cells — but never place blindly
+      blocks.set(k, selectedSlot);
+      recordBlockEdit(c.x, c.y, c.z, selectedSlot, 0);
+      placed++;
+      refresh.add(k);
+      for (const [dx,dy,dz] of FILL_DIRS) refresh.add(key(c.x+dx, c.y+dy, c.z+dz));
+    }
+    refresh.forEach(rk => {
+      const parts = rk.split(',');
+      updateFullInstanceAt(Number(parts[0]), Number(parts[1]), Number(parts[2]));
+    });
+    rebuildWaterGeometry();
+    rebuildGlassGeometry();
+    const s = getSeasonState().season;
+    if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s);
+    playThud(320);
+    showSaveStatus('Filled ' + placed + ' block' + (placed === 1 ? '' : 's'));
+  }
+
   document.addEventListener('mousedown', e => {
     if (document.pointerLockElement !== renderer.domElement) return;
     ensureAudio();
@@ -14195,10 +14317,28 @@
       e.preventDefault(); ensureAudio();
       if (tennisChargeEligible()) tennisStartCharge();
       else if (golfChargeEligible()) golfStartCharge();
-      else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
+      else {
+        placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now();
+        // Only defer to a hold-timer when the crosshair is actually over
+        // a valid sealed pocket of the selected material right now —
+        // everywhere else (the vast majority of ordinary building),
+        // placement still fires immediately, exactly as it always has.
+        // A quick release before the timer fires falls back to a normal
+        // single placement (see touchend below); holding past it fills
+        // the whole pocket instead.
+        if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
+        else doPlace();
+      }
     });
-    btnPlace.addEventListener('touchend', e => { e.preventDefault(); placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); });
-    btnPlace.addEventListener('touchcancel', e => { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); });
+    btnPlace.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; doPlace(); } // released before the hold fired — treat as an ordinary tap
+      placingHeld = false; tennisReleaseCharge(); golfPauseCharge();
+    });
+    btnPlace.addEventListener('touchcancel', e => {
+      if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; }
+      placingHeld = false; tennisReleaseCharge(); golfPauseCharge();
+    });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
       if (golfChargeEligible()) { golfFireShot(); return; } // a discrete press takes the shot at whatever power's been built up with build — see golfChargeEligible's own comment for why this isn't hold-and-release anymore
@@ -20020,8 +20160,8 @@
     } else {
       document.getElementById('hint').style.display = 'block';
       document.getElementById('hint').innerHTML = visitMode
-        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — hold LMB mine · RMB place · 1-9/scroll select'
-        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · 1-9/scroll select';
+        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — hold LMB mine · RMB place · 1-9/scroll select · H fill sealed square'
+        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · 1-9/scroll select · H fill sealed square';
       renderer.domElement.requestPointerLock();
     }
     if (visitMode) document.getElementById('visitBanner').style.display = 'flex';

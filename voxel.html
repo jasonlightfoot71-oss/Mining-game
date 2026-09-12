@@ -18256,29 +18256,19 @@
       // way the desktop mousemove listener already does, instead of
       // storing a value for this per-frame loop to keep re-applying.
       const sprinting = keys['ShiftLeft'] && !flying;
-      // Checked at three heights (near feet, centre, near head) rather
-      // than just the body centre — a single sample point right at the
-      // surface (which is exactly where most actual swimming happens)
-      // could flicker in and out of "submerged" from one frame to the
-      // next as you bob slightly, and the non-submerged branch applies
-      // full, uncapped gravity — so any frame that missed felt like a
-      // sudden hard yank downward, not the gentle water sink. Now it
-      // only takes any ONE of the three still being in water to keep
-      // the gentler, camera-relative swim physics active.
-      const submerged = !flying && (
-        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + 0.1), Math.floor(player.pos.z))) ||
-        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.5), Math.floor(player.pos.z))) ||
-        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.9), Math.floor(player.pos.z)))
-      );
-      // Deep enough for the passive sink (see the submerged branch
-      // below) to make any sense at all — checks for at least 2 more
-      // blocks of water stacked below the player's own feet. Standing
-      // still in shallow wading-depth water shouldn't drift downward
-      // at all; there's nowhere further down to sink TO before hitting
-      // the bottom anyway, so it was just a constant, pointless tug.
-      const deepWater = submerged &&
-        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y) - 1, Math.floor(player.pos.z))) &&
-        waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y) - 2, Math.floor(player.pos.z)));
+      // 1-2 blocks of water is wading, not swimming — ordinary walking
+      // physics the whole time (gravity pulls you down through the
+      // non-solid water to the real floor beneath it, same as walking
+      // on land, water's just passable and rendered around your legs).
+      // Only 3+ blocks actually goes weightless. This reuses the exact
+      // same depth count the water-movement SOUND already relies on
+      // (waterDepthAt, above) rather than a separate guess at whether
+      // any part of the player's body happens to be touching water —
+      // that guessing (checking 1, then 3, sample points at different
+      // heights) is what every previous attempt at this got tangled up
+      // in, and it still couldn't actually tell wading from swimming.
+      const waterDepthHere = flying ? 0 : waterDepthAt(player.pos.x, player.pos.z);
+      const submerged = !flying && waterDepthHere >= 3;
       // Golf: build charges power (handled entirely by the build-button
       // handlers themselves — mousedown/touchstart call golfStartCharge,
       // mouseup/touchend call golfPauseCharge), jump actually takes the
@@ -18436,7 +18426,7 @@
           // states above applied, so escaping to the surface never
           // depends on getting the camera angle right first.
           const moving = swimMove.lengthSq() > 0.0001;
-          let dy = moving ? swimMove.y : (deepWater ? GRAVITY*0.12*dt : 0); // stationary in shallow water just holds position — nowhere to sink to anyway
+          let dy = moving ? swimMove.y : GRAVITY*0.12*dt; // this whole branch only runs when submerged (3+ blocks deep, see above) — stationary always sinks gently here now, no separate depth check needed
           // Raised from a gentle capped rise (3.2, good for just
           // reaching the surface) to a proper hop — the old version
           // could get you TO the surface but had nothing left to carry

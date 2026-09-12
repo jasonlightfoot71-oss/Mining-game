@@ -4232,14 +4232,14 @@
     showSaveStatus('💰 Found treasure — +' + t.amount + ' coins!');
     removeTreasureChest(tk);
   }
-  // Shared 10% roll for the shipwreck/castle/windmill — one call site
+  // Shared 50% roll for the shipwreck/castle/windmill — one call site
   // for "does this structure get treasure", rather than three separate
   // copies of the same chance-and-amount logic. reg is whichever
   // registry (village reg, windmill reg, shipwreck reg) owns this
   // structure, so the chest gets torn down correctly alongside
   // everything else if it's never found.
   function maybeAddTreasure(bx, by, bz, reg) {
-    if (Math.random() >= 0.1) return;
+    if (Math.random() >= 0.5) return;
     const amount = 100 + Math.floor(Math.random() * 901); // 100-1000 inclusive
     const tk = addTreasureChest(bx, by, bz, amount);
     if (tk) reg.treasureKeys.push(tk);
@@ -6758,7 +6758,7 @@
   // wherever it lands, since naturally-generated water deep enough to
   // hide a whole hull in is rare, and this needed to be reliably
   // explorable rather than a lucky find.
-  const SHIPWRECK_CHUNK_STRIDE = 11; // moderately rare — more common than the castle, less than the windmill's own mountain-top scarcity
+  const SHIPWRECK_CHUNK_STRIDE = 4; // cut right down from 11 — nobody was finding one after minutes of actual travel, so "moderately rare" was nowhere near common enough for something meant to be an explorable discovery, not a needle in a haystack
   function shipwreckGridHomeChunk(gx, gz) {
     const r = mulberry32(seedFromHash(gx * 4409 + 2113, gz * 3221 + 877));
     const ox = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));

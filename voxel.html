@@ -13063,6 +13063,21 @@
       if (waterBlocks.has(key(px, base+dy, pz))) { topY = base+dy; break; }
     }
     if (topY === null) return 0;
+    // Finding a surface somewhere in that wide window doesn't mean the
+    // player is actually AT it though — and since the window is anchored
+    // to the player's own (possibly rising) y every single frame, without
+    // this check a player who swims/jumps upward out of deep water keeps
+    // re-detecting that same water "within range" below them no matter
+    // how high they go, so they never stop being treated as submerged.
+    // That's exactly what let someone climb 15-20 blocks straight up out
+    // of any lake deeper than 2: the water was always still technically
+    // "there" 16 blocks under whatever height they'd already reached. A
+    // surface more than a couple of blocks under the player's own feet
+    // isn't water they're actually standing in or swimming through, so it
+    // doesn't count — this still leaves the ledge-edge case above intact,
+    // since a continuous body of water has one surface height throughout,
+    // normally only a block or so above the player's feet either way.
+    if (base - topY > 2) return 0;
     let depth = 0;
     while (waterBlocks.has(key(px, topY-depth, pz))) depth++;
     return depth;
@@ -14048,7 +14063,7 @@
   // triggers it with a dedicated key (H, see the keydown handler);
   // touch triggers it by holding the build button down on the target
   // instead of tapping it (see FILL_HOLD_MS below).
-  const FILL_CAP = 1024; // a fill that spreads past this many cells without closing is treated as "not sealed" and aborted, same idea as DRAIN_CAP for the drain tool
+  const FILL_CAP = 400; // a fill that spreads past this many cells without closing is treated as "not sealed" and aborted — also keeps this from accidentally swallowing a whole room's cross-section, see getFillTargetCells below
   const ALL_NEIGHBOR_DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]; // full 6-directional — used only for the post-fill mesh refresh, not for the (plane-constrained) flood itself
 
   // Which two axes the fill is allowed to spread across — the third
@@ -14122,17 +14137,39 @@
   // list, or null if fill doesn't apply right now — shared by doFill()
   // itself and by the touch hold-detection (fillTargetAvailable) so
   // both agree on exactly the same target.
+  //
+  // This walks the sightline itself rather than reusing the normal
+  // build raycast (which only ever reports a target next to a SOLID
+  // surface it hits). That's exactly wrong for fill: aiming into the
+  // open middle of a 10x10 frame with nothing solid behind it within
+  // range meant the normal raycast found nothing at all, and fill
+  // silently did nothing. Instead this tries every open cell along your
+  // view, nearest first, and returns the first one that actually closes
+  // into a bounded pocket — so it doesn't matter whether anything sits
+  // behind the frame; what matters is whether the patch itself seals.
   function getFillTargetCells() {
     if (ridingVehicle || bsPlacing) return null; // fill isn't meaningful mid-vehicle-gun or mid-ship-placement
     const type = BLOCK_TYPES[selectedSlot];
     if (!type) return null; // only ordinary blocks are fillable material — not water, furniture, fixtures, vehicles, etc.
-    const r = voxelRaycast(false, true);
-    if (!r) return null;
-    if (!r.isWater && !r.before) return null;
-    const {x,y,z} = r.isWater ? r.hit : r.before;
-    if (!canEditAt(x, z)) return null; // view only
-    if (isProtectedGameArea(x, z) && !landscapeModeEnabled) return null;
-    return findFillRegion(x, y, z, fillViewAxis());
+    const axis = fillViewAxis();
+    const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    const step = 0.06;
+    let lastKey = null;
+    for (let t=0; t<10; t+=step) {
+      const p = origin.clone().addScaledVector(dir, t);
+      const vx=Math.floor(p.x), vy=Math.floor(p.y), vz=Math.floor(p.z);
+      if (blockOverlapsPlayer(vx,vy,vz)) continue; // skip the player's own body, same reasoning as voxelRaycast's own skip
+      const k = key(vx,vy,vz);
+      if (k === lastKey) continue;
+      lastKey = k;
+      if (!isOpenForFill(k)) break; // a solid block, water, furniture, or door blocks the view beyond it — nothing further along this line is reachable anyway
+      if (!canEditAt(vx, vz)) return null; // view only
+      if (isProtectedGameArea(vx, vz) && !landscapeModeEnabled) return null;
+      const cells = findFillRegion(vx, vy, vz, axis);
+      if (cells && cells.length) return cells; // first bounded pocket found along your line of sight
+    }
+    return null;
   }
 
   function fillTargetAvailable() {

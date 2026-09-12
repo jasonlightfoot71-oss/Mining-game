@@ -1643,6 +1643,30 @@
   TEX.pathSlabMossy     = TEX.pathSlab('#8a9a84', '#5e6e58', '#4a7a3a');
   TEX.pathSlabSlate     = TEX.pathSlab('#5a626a', '#3a4248', null);
   TEX.pathSlabCracked   = TEX.pathSlab('#9a9a94', '#6e6e68', '#4a4a44');
+  // Winter branch blocks — solid wood-grain, not a mostly-transparent
+  // twig texture: "full of wood" rather than sparse sticks. Several of
+  // these actually get swapped in at real leaf-block positions when
+  // winter starts (see winterizedLeaves/applyWinterBranchVariety
+  // below), each block keeping its own single grain direction rather
+  // than everything sharing one busy texture — that's what makes them
+  // actually read as different chunks of branch running different
+  // ways once several sit next to each other in a canopy, not just a
+  // repeating pattern.
+  function woodGrainTexture(base, grain, angleDeg) {
+    return makeCanvasTexture((ctx, s) => {
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, s, s);
+      ctx.save();
+      ctx.translate(s / 2, s / 2);
+      ctx.rotate(angleDeg * Math.PI / 180);
+      ctx.fillStyle = grain;
+      for (let i = -s; i <= s; i += 3) ctx.fillRect(i, -s, 1.5, s * 2);
+      ctx.restore();
+    });
+  }
+  TEX.winterBranchA = woodGrainTexture('#5a3f28', '#3f2c1a', 15);
+  TEX.winterBranchB = woodGrainTexture('#6b4a30', '#4a3320', 75);
+  TEX.winterBranchC = woodGrainTexture('#4a3320', '#2f2013', -30);
 
   // block type registry
   // materials: single tex name, or {top,side,bottom}
@@ -1737,12 +1761,23 @@
     { name: 'Mossy Path Slab',     mats: TEX.pathSlabMossy,     cost: 4, isVariant: true },
     { name: 'Slate Path Slab',     mats: TEX.pathSlabSlate,     cost: 4, isVariant: true },
     { name: 'Cracked Path Slab',   mats: TEX.pathSlabCracked,   cost: 4, isVariant: true },
+    // Winter branch variants — not meant to be placed by hand often
+    // (hence isVariant on all three, tucked under Wood's own family
+    // rather than given their own slots), but real block types since
+    // they need to actually exist at real leaf-block positions in the
+    // world, not just be a material swap.
+    { name: 'Winter Branch A', mats: TEX.winterBranchA, cost: 4, isVariant: true },
+    { name: 'Winter Branch B', mats: TEX.winterBranchB, cost: 4, isVariant: true },
+    { name: 'Winter Branch C', mats: TEX.winterBranchC, cost: 4, isVariant: true },
   ];
   // The index Bars actually landed at — computed rather than hand-
   // counted, so it stays correct even if more entries get appended
   // above it later.
-  const BARS_TYPE = BLOCK_TYPES.length - 6;
-  const GREY_SLAB_TYPE = BLOCK_TYPES.length - 5;
+  const BARS_TYPE = BLOCK_TYPES.length - 9;
+  const GREY_SLAB_TYPE = BLOCK_TYPES.length - 8;
+  const WINTER_BRANCH_A = BLOCK_TYPES.length - 3;
+  const WINTER_BRANCH_B = BLOCK_TYPES.length - 2;
+  const WINTER_BRANCH_C = BLOCK_TYPES.length - 1;
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1764,6 +1799,10 @@
   // is only known once appended to the end of BLOCK_TYPES, not a small
   // fixed number the way the others above are.
   BLOCK_FAMILIES[GREY_SLAB_TYPE] = [GREY_SLAB_TYPE, GREY_SLAB_TYPE+1, GREY_SLAB_TYPE+2, GREY_SLAB_TYPE+3, GREY_SLAB_TYPE+4];
+  // Same reasoning — Winter Branch A/B/C tucked into Wood's own family
+  // rather than getting their own slots, since they're mostly meant to
+  // appear automatically each winter rather than be hand-placed.
+  BLOCK_FAMILIES[3].push(WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C);
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -14357,6 +14396,56 @@
     new THREE.Color(0xf0c496), // autumn — warm amber
   ];
   const LEAF_TINTS = [0x9aa896, 0xb8e0a0, 0xffffff, 0xd97a2a]; // winter (muted grey-green), spring (fresh bright tint), summer (neutral — leaves the texture's own colour unmodified), autumn (orange)
+  // Real per-block variety for winter trees — the shared winter leaf
+  // texture (see leavesWinter) is one texture for every leaf block in
+  // the world, so it can never look different from one block to the
+  // next no matter how it's drawn. Actually swapping some leaf
+  // positions' own block TYPE to one of the three solid wood-grain
+  // Winter Branch types (each its own grain direction) is what gets
+  // real variation — different blocks, not just a busier shared image.
+  // Left as ordinary Leaves (still showing the shared winter texture)
+  // the rest of the time, so this is a mix of both rather than an
+  // all-or-nothing swap.
+  const winterizedLeaves = new Map(); // "x,y,z" -> the type it was swapped to (a branch type, or 4 if the roll decided to leave it as ordinary Leaves — recorded either way so a later top-up scan never re-rolls the same block twice)
+  const WINTER_BRANCH_POOL = [WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C];
+  function scanForWinterBranchVariety() {
+    let changed = false;
+    for (const [k, type] of blocks) {
+      if (type !== 4 || winterizedLeaves.has(k)) continue;
+      if (Math.random() < 0.55) {
+        const variant = WINTER_BRANCH_POOL[Math.floor(Math.random() * WINTER_BRANCH_POOL.length)];
+        blocks.set(k, variant);
+        winterizedLeaves.set(k, variant);
+        changed = true;
+      } else {
+        winterizedLeaves.set(k, 4);
+      }
+    }
+    if (changed) rebuildMeshes();
+  }
+  let winterBranchScanTimer = 0;
+  function applyWinterBranchVariety() {
+    winterBranchScanTimer = 4; // the immediate scan just below covers what's loaded right now; the next periodic top-up (see updateWinterBranchVariety) doesn't need to run again for a few seconds
+    scanForWinterBranchVariety();
+  }
+  function updateWinterBranchVariety(dt) {
+    if (currentSeason !== 0) return;
+    winterBranchScanTimer -= dt;
+    if (winterBranchScanTimer > 0) return;
+    winterBranchScanTimer = 4; // re-scan every 4s while winter's ongoing — cheap enough at this interval, and catches newly streamed-in trees without re-rolling ones already decided
+    scanForWinterBranchVariety();
+  }
+  function revertWinterBranchVariety() {
+    if (!winterizedLeaves.size) return;
+    let changed = false;
+    winterizedLeaves.forEach((variant, k) => {
+      if (variant === 4) return;
+      if (blocks.get(k) === variant) { blocks.set(k, 4); changed = true; } // the === check is what leaves a block alone if the player mined/replaced it mid-winter instead of blindly reverting over whatever's there now
+    });
+    winterizedLeaves.clear();
+    winterBranchScanTimer = 0; // next winter starts scanning immediately rather than waiting out whatever was left on the old timer
+    if (changed) rebuildMeshes();
+  }
 
   function isExposedToSky(x, y, z) {
     // Bounded generously rather than to WORLD_HEIGHT — a tall player-built
@@ -14793,6 +14882,7 @@
       else if (season === 1) { clearSnowOverlay(); rebuildFlowerOverlay(); }
       else if (season === 2) { clearSnowOverlay(); rebuildFlowerOverlay(); }
       else { clearSnowOverlay(); clearFlowerOverlay(); }
+      if (season === 0) applyWinterBranchVariety(); else revertWinterBranchVariety();
     } else if (needsRebuild && (season === 0 || season === 1 || season === 2)) {
       // Keep the overlay in sync as the player builds/mines mid-season.
       scheduleOverlayRebuild(season);
@@ -18145,6 +18235,7 @@
     updateVillageNPCs(dt);
     updateVillageAnimals(dt);
     updateFires(waterTime);
+    updateWinterBranchVariety(dt);
     updateWindSound(dt, windIntensity);
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
     if (!locked) windIntensity = 0; // menus/paused — fade the wind out rather than leaving it stuck on from before

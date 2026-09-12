@@ -18405,15 +18405,16 @@
           }
           swimMove.multiplyScalar(speed*dt);
           move.x = swimMove.x; move.z = swimMove.z; // overrides the flat walking-style move computed above — steers on every axis with the camera while submerged
-          // The gentle sink only applies when there's no W/S input at
-          // all — it was being added on top of swimMove.y unconditionally
-          // before, which meant it was fighting the look-direction
-          // component on every frame and mostly cancelling it out. Only
-          // coasting (no key held) should drift down passively; actually
-          // pressing W while looking up needs the full climb, not a
-          // partial one constantly being pulled back down.
-          const hasVerticalIntent = keys['KeyW'] || keys['KeyS'] || (isTouchDevice && Math.abs(moveState.y) > 0.15);
-          let dy = hasVerticalIntent ? swimMove.y : GRAVITY*0.12*dt;
+          // No gravity at all while actually moving (any of WASD/the
+          // touch stick held) — swimMove.y alone decides vertical
+          // motion then, full stop. Gravity only re-enters the picture
+          // once you're genuinely still, as a gentle passive sink.
+          // Space is still the dedicated "jump" — a fixed, always-
+          // available pop up and out regardless of which of the two
+          // states above applied, so escaping to the surface never
+          // depends on getting the camera angle right first.
+          const moving = swimMove.lengthSq() > 0.0001;
+          let dy = moving ? swimMove.y : GRAVITY*0.12*dt;
           // Raised from a gentle capped rise (3.2, good for just
           // reaching the surface) to a proper hop — the old version
           // could get you TO the surface but had nothing left to carry
@@ -18422,13 +18423,9 @@
           // couple of blocks onto land, the same kind of boost a normal
           // jump gives on dry ground, with gravity naturally arcing you
           // back down once you're clear of the water (this branch stops
-          // applying the moment you're no longer submerged). Kept as a
-          // fixed, always-available boost regardless of where you're
-          // looking, rather than folded into swimForward — looking
-          // straight down and hitting Space to escape upward would
-          // otherwise fight itself.
+          // applying the moment you're no longer submerged).
           if ((keys['Space'] && !golfChargingNow) || touchJumpQueued) dy = 6.5*dt;
-          else if (keys['ShiftLeft']) dy = -2.5*dt;
+          else if (keys['ShiftLeft'] && !moving) dy = -2.5*dt; // only when otherwise stationary — moving already has its own full look-direction descent via swimMove.y
           player.vel.y = Math.max(-3.2, Math.min(6.5, dy/dt));
           touchJumpQueued = false;
         } else {

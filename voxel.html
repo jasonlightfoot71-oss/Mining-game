@@ -6801,7 +6801,7 @@
   // wherever it lands, since naturally-generated water deep enough to
   // hide a whole hull in is rare, and this needed to be reliably
   // explorable rather than a lucky find.
-  const SHIPWRECK_CHUNK_STRIDE = 4; // cut right down from 11 — nobody was finding one after minutes of actual travel, so "moderately rare" was nowhere near common enough for something meant to be an explorable discovery, not a needle in a haystack
+  const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground
   function shipwreckGridHomeChunk(gx, gz) {
     const r = mulberry32(seedFromHash(gx * 4409 + 2113, gz * 3221 + 877));
     const ox = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));
@@ -6840,6 +6840,21 @@
           blocks.delete(key(x, y, z));
           if (y === floorY - 1) { blocks.set(key(x, y, z), 5); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); } // sandy seabed
           else waterBlocks.set(key(x, y, z), 1);
+        }
+        // Anything the natural terrain had ABOVE the waterline within
+        // this footprint — a hillock, a slope, the edge of a rise —
+        // was never touched by the loop above, since that only ever
+        // worked downward from the waterline. Left in place, it stuck
+        // up out of the water right at the pit's own edge looking
+        // exactly like a built wall, when it was actually just
+        // whatever ground was already there before the pit carved
+        // around (but not through) it. Cleared out to open air instead,
+        // all the way to the world's own ceiling — the hull below
+        // rebuilds the one solid shape that's actually supposed to be
+        // sitting in this rectangle.
+        for (let y = waterlineY; y < WORLD_HEIGHT; y++) {
+          blocks.delete(key(x, y, z));
+          waterBlocks.delete(key(x, y, z));
         }
       }
     }

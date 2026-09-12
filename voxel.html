@@ -153,6 +153,31 @@
     background: rgba(0,0,0,0.45); padding: 4px 9px; border-radius: 6px; color: #9effa0;
     opacity: 0; transition: opacity .4s; pointer-events: none;
   }
+  /* Treasure found — a big, hard-to-miss centre-screen moment rather
+     than just the small saveStatus corner text everything else uses.
+     Kept as its own element (not reusing saveStatus) since it needs a
+     real pop-in/settle/fade animation and much bigger type, neither of
+     which the plain fade-only saveStatus is built for. */
+  #treasurePopup {
+    position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%) scale(0.4);
+    z-index: 30; pointer-events: none; opacity: 0; text-align: center;
+  }
+  #treasurePopup.show { animation: treasurePop 2.6s ease-out forwards; }
+  #treasurePopup .tpTitle {
+    font-size: 34px; font-weight: 800; color: #ffd866; white-space: nowrap;
+    text-shadow: 0 0 14px rgba(255,200,60,0.9), 0 2px 4px rgba(0,0,0,0.85);
+  }
+  #treasurePopup .tpAmount {
+    font-size: 26px; font-weight: 700; color: #fff; margin-top: 4px;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.85);
+  }
+  @keyframes treasurePop {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); }
+    15%  { opacity: 1; transform: translate(-50%, -50%) scale(1.15); }
+    25%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    80%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    100% { opacity: 0; transform: translate(-50%, -56%) scale(0.92); }
+  }
   #waterOverlay {
     position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none;
     background:
@@ -455,6 +480,10 @@
   <button id="leaveMillEditBtn" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer;">🏠 Exit to menu</button>
 </div>
 <div id="saveStatus"></div>
+<div id="treasurePopup">
+  <div class="tpTitle">💰 Treasure Found!</div>
+  <div class="tpAmount" id="treasurePopupAmount"></div>
+</div>
 <div id="signTextModal" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
   <div style="background:#1c1c22;border-radius:10px;padding:18px;max-width:320px;width:90%;color:#fff;font-size:13px;">
     <div style="margin-bottom:10px;font-weight:600;" id="signTextModalTitle">Sign text</div>
@@ -4225,10 +4254,24 @@
     disposeObject3D(t.group);
     treasureChests.delete(tk);
   }
+  let treasurePopupTimer = null;
+  function showTreasurePopup(amount) {
+    const el = document.getElementById('treasurePopup');
+    const amountEl = document.getElementById('treasurePopupAmount');
+    if (!el || !amountEl) return;
+    amountEl.textContent = '+' + amount + ' coins';
+    el.classList.remove('show');
+    void el.offsetWidth; // forces the browser to notice the class was removed before re-adding it, so the animation actually restarts if a second chest is found while the first popup is still playing, rather than the re-add being a no-op
+    el.classList.add('show');
+    clearTimeout(treasurePopupTimer);
+    treasurePopupTimer = setTimeout(() => { el.classList.remove('show'); }, 2700);
+  }
   function collectTreasureChest(tk) {
     const t = treasureChests.get(tk);
     if (!t) return;
     addCoins(t.amount);
+    showTreasurePopup(t.amount);
+    playTreasureSound();
     showSaveStatus('💰 Found treasure — +' + t.amount + ' coins!');
     removeTreasureChest(tk);
   }
@@ -6772,19 +6815,30 @@
   // own moat already uses. The sand rim contains the flood on every
   // side so it always reads as a clean pool, whatever terrain used to
   // be here.
-  function buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY, hx0, hx1, hz0, hz1) {
-    for (let x = pitX0 - 1; x <= pitX1 + 1; x++) {
-      for (let z = pitZ0 - 1; z <= pitZ1 + 1; z++) {
-        const rim = (x === pitX0 - 1 || x === pitX1 + 1 || z === pitZ0 - 1 || z === pitZ1 + 1);
-        const insideHull = (x >= hx0 && x <= hx1 && z >= hz0 && z <= hz1);
-        if (rim) {
-          for (let y = floorY - 1; y <= waterlineY; y++) { blocks.set(key(x, y, z), 5); trackVillageHeight(x, z, y); } // Sand retaining wall
-          continue;
-        }
+  // Carves and floods a basin regardless of what's actually there —
+  // deleting any existing block first, then either sand (seabed) or
+  // water, the exact same set-water-after-delete pattern the castle's
+  // own moat already uses. No containment wall around the edge any
+  // more — a real wreck like this would have been half-swallowed by
+  // the surrounding terrain over time anyway, so it blending straight
+  // into whatever's around it (rather than sitting in an artificially
+  // walled pool) is the more natural look, not a bug to fix.
+  // Deliberately fills the WHOLE rectangle uniformly, including the
+  // hull's own footprint — buildShipwreckHull runs right after this
+  // and overwrites its actual (tapered, not rectangular) shape on top,
+  // the same "build the surroundings solid first, then carve the real
+  // shape into it" order that fixed the same kind of gap on the
+  // keep's roof and the dungeon stairs before this. Trying to carve
+  // the hull's exact tapered footprint out of the flood here instead
+  // (skipping just the bow's cut corners) is what left them as
+  // untouched gaps last time — neither sand nor water nor hull ever
+  // touched those specific cells.
+  function buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY) {
+    for (let x = pitX0; x <= pitX1; x++) {
+      for (let z = pitZ0; z <= pitZ1; z++) {
         for (let y = floorY - 1; y < waterlineY; y++) {
           blocks.delete(key(x, y, z));
-          if (insideHull) continue; // the hull below builds its own floor/walls/interior here instead
-          if (y === floorY - 1) { blocks.set(key(x, y, z), 5); trackVillageHeight(x, z, y); } // sandy seabed
+          if (y === floorY - 1) { blocks.set(key(x, y, z), 5); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); } // sandy seabed
           else waterBlocks.set(key(x, y, z), 1);
         }
       }
@@ -6795,7 +6849,11 @@
   // than the last until it reaches full width), a flat stern at the
   // back. Explorable rather than just a floating shell: the whole
   // length below the deck is hollow (the hold), reached through a hole
-  // cut in the deck partway along, with a ladder down from it.
+  // cut in the deck partway along, with a ladder down from it. Every
+  // solid or hollowed-dry cell it places also clears any water the pit
+  // above already flooded that same cell with — the hold in particular
+  // needs to end up dry, not still tagged as water underneath its own
+  // floor.
   function buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg) {
     const hzMid = Math.floor((hz0 + hz1) / 2);
     const halfW = Math.floor((hz1 - hz0) / 2);
@@ -6806,13 +6864,13 @@
       const z0 = hzMid - localHalf, z1 = hzMid + localHalf;
       for (let z = z0; z <= z1; z++) {
         const edge = (z === z0 || z === z1 || x === hx1); // side walls, plus a flat stern wall at the very back
-        blocks.set(key(x, floorY, z), HULL); trackVillageHeight(x, z, floorY);
+        blocks.set(key(x, floorY, z), HULL); waterBlocks.delete(key(x, floorY, z)); trackVillageHeight(x, z, floorY);
         if (edge) {
-          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.set(key(x, y, z), HULL); trackVillageHeight(x, z, y); }
+          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.set(key(x, y, z), HULL); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); }
         } else {
-          for (let y = floorY + 1; y <= floorY + 3; y++) blocks.delete(key(x, y, z)); // hollow hold
+          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.delete(key(x, y, z)); waterBlocks.delete(key(x, y, z)); } // hollow hold — dry, not flooded
         }
-        blocks.set(key(x, deckY, z), HULL); trackVillageHeight(x, z, deckY); markVillageGround(x, z, deckY);
+        blocks.set(key(x, deckY, z), HULL); waterBlocks.delete(key(x, deckY, z)); trackVillageHeight(x, z, deckY); markVillageGround(x, z, deckY);
       }
     }
     // Entry — a hole in the deck partway along (2 wide, so it's an
@@ -6858,7 +6916,7 @@
     for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }
     waterlineY = Math.max(SEA_LEVEL, waterlineY);
     const floorY = Math.max(1, waterlineY - 4);
-    buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY, hx0, hx1, hz0, hz1);
+    buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY);
     const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
     buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg);
     shipwreckRegs.set(ck, reg);
@@ -13340,6 +13398,28 @@
     noiseGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
     noise.connect(noiseFilter).connect(noiseGain).connect(audioCtx.destination);
     noise.start(now);
+  }
+  // A quick ascending arpeggio — the classic "reward" chime, distinct
+  // from every other sound in the game (all thuds, ambience, or the
+  // bell's single struck tone) specifically so a treasure find is
+  // unmistakable even with your eyes on something else at the moment.
+  function playTreasureSound() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const notes = [523.25, 659.25, 784.0, 1046.5]; // C5, E5, G5, C6 — a bright major arpeggio
+    notes.forEach((freq, i) => {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = 'triangle'; // softer/rounder than the bell's sine, brighter than a square — reads as a chime, not a tone test
+      o.frequency.value = freq;
+      const start = now + i * 0.08;
+      const dur = 0.4;
+      g.gain.setValueAtTime(0.0001, start);
+      g.gain.exponentialRampToValueAtTime(0.2, start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(start); o.stop(start + dur);
+    });
   }
   // A short organ phrase — three sustained chords in sequence, each
   // built from a stack of square-wave oscillators (square, not sine,

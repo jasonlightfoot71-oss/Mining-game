@@ -2613,13 +2613,39 @@
               break;
             }
             if (x < padX0 || x > padX1 || z < padZ0 || z > padZ1) continue;
-            const onEdge = (x === padX0 || x === padX1 || z === padZ0 || z === padZ1);
-            const onDoorSide = (house.doorSide === 'west' && x === padX0) || (house.doorSide === 'east' && x === padX1) ||
-                                (house.doorSide === 'north' && z === padZ0) || (house.doorSide === 'south' && z === padZ1);
-            const onEscapeEdge = onEdge && backSide === (x === padX0 ? 'west' : x === padX1 ? 'east' : z === padZ0 ? 'north' : 'south') && (x === escapeAt || z === escapeAt);
-            if (onEdge && !onDoorSide && !onEscapeEdge && h > house.gy) {
-              for (let y = house.gy + 1; y <= h; y++) blocks.set(key(x, y, z), house.trim);
-              columnHeight.set(x + ',' + z, h);
+            // Which of the (up to 3, non-door) edges this column is
+            // within ramp range of — checked in the same west/east/
+            // north/south priority buildHouseEdgeWall's own wall order
+            // already uses. A column near a corner can be technically
+            // close to two edges at once; this always resolves it the
+            // same way that ambiguity already existed before (whichever
+            // edge is checked first wins). The escape stair's own single
+            // line (backSide, at escapeAt) is excluded here too — same
+            // reasoning as onEscapeEdge before: that line is a walkway,
+            // never a wall or ramp.
+            let rampY = null, rampMaterial = null;
+            const edgeChecks = [
+              { side: 'west',  ok: house.doorSide !== 'west',  dist: x - padX0, along: z, inBand: z >= padZ0 && z <= padZ1, nx: padX0 - 1, nz: z },
+              { side: 'east',  ok: house.doorSide !== 'east',  dist: padX1 - x, along: z, inBand: z >= padZ0 && z <= padZ1, nx: padX1 + 1, nz: z },
+              { side: 'north', ok: house.doorSide !== 'north', dist: z - padZ0, along: x, inBand: x >= padX0 && x <= padX1, nx: x, nz: padZ0 - 1 },
+              { side: 'south', ok: house.doorSide !== 'south', dist: padZ1 - z, along: x, inBand: x >= padX0 && x <= padX1, nx: x, nz: padZ1 + 1 },
+            ];
+            for (const e of edgeChecks) {
+              if (!e.ok || !e.inBand || e.dist < 0 || e.dist >= HOUSE_PAD) continue;
+              if (backSide === e.side && e.along === escapeAt) continue; // the escape stair's own walkway line — never a wall/ramp
+              const naturalHere = columnHeight.get(e.nx + ',' + e.nz);
+              if (naturalHere === undefined || naturalHere <= house.gy) continue;
+              const targetY = gradedPadHeightAt(e.dist, house.gy, naturalHere);
+              const prevY = gradedPadHeightAt(e.dist + 1, house.gy, naturalHere);
+              const stepSize = targetY - prevY;
+              rampY = (e.dist === 0 && targetY < naturalHere) ? naturalHere : targetY; // the outermost column also absorbs whatever's left over past a full HOUSE_PAD-wide ramp, same fallback the build-time wall always used
+              rampMaterial = stepSize >= 3 ? 2 : stepSize === 2 ? 1 : house.trim;
+              break;
+            }
+            if (rampY !== null && rampY > house.gy) {
+              for (let y = house.gy + 1; y <= rampY; y++) blocks.set(key(x, y, z), rampMaterial);
+              blocks.delete(key(x, rampY + 1, z)); blocks.delete(key(x, rampY + 2, z)); // headroom to actually walk up it
+              columnHeight.set(x + ',' + z, rampY);
             } else {
               blocks.set(key(x, house.gy, z), house.baseSurfaceType);
               for (let y = Math.max(0, house.gy - 16); y < house.gy; y++) blocks.set(key(x, y, z), house.subFillType);
@@ -2631,6 +2657,22 @@
           }
           if (handled) continue;
         }
+        // Surface material now driven primarily by STEEPNESS, not just
+        // biome — how big a step this column actually is from its
+        // already-resolved west/south neighbour (the same hWest/hSouth
+        // used for the smoothing clamp above, so this is nearly free to
+        // compute). A gentle rise (0-1) keeps the ordinary biome pick
+        // below; a moderate one (2) always shows bare dirt; anything
+        // steeper (3-4, the largest a step is ever allowed to be) always
+        // shows stone — a proper cliff face, regardless of what the
+        // biome underneath it would otherwise be. This is what makes
+        // "gradual most of the time, but real cliffs where the terrain
+        // actually earns them" a visible fact instead of just a height
+        // number: most columns land in the gentle tier already (see the
+        // clamp's own delta distribution), so grass/sand still dominates
+        // — dirt and stone only show up where the ground is actually
+        // doing something steep.
+        const gradient = Math.max(Math.abs(h - hWest), Math.abs(h - hSouth));
         // Surface now depends on BOTH axes: rocky peaks still need real
         // height, but low moisture gives sandy/dry ground even inland
         // (not just at the waterline), and everything else defaults to
@@ -2638,14 +2680,16 @@
         // work together with the stretch above — both changes push
         // these biomes to show up meaningfully more often.
         const surfaceType = blend < 1 ? 0 /*grass, matching the pad*/
+          : (gradient >= 3 ? 2 /*cliff — steep enough that only stone belongs here*/
+          : (gradient === 2 ? 1 /*dirt — too steep for grass/sand to sit on, not steep enough to be a cliff*/
           : (h <= SEA_LEVEL ? 5 /*sand at the waterline*/
-          : (elevation > 0.55 && h > SEA_LEVEL+5 ? 2 /*stone peaks*/
+          : (elevation > 0.55 && h > SEA_LEVEL+5 ? 2 /*stone peaks — a flat-ish high plateau still reads as rocky even without a steep local step*/
           : (moisture < 0.35 ? 5 /*dry/desert-like ground, independent of height*/
-          : 0 /*grass*/)));
+          : 0 /*grass*/)))));
         // Forest density now follows moisture, not elevation — dense
         // woodland can happen on a hill OR a plain, sparse/none in dry
         // areas regardless of how high or low they are.
-        const treeChance = blend < 1 ? 0 : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
+        const treeChance = (blend < 1 || surfaceType === 1 || surfaceType === 2) ? 0 : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
         // Fills all the way down to bedrock within the Mill's blend zone
         // specifically (blend < 1), rather than the normal capped depth
         // — this is a narrow, bounded area (only ever relevant inside
@@ -2674,6 +2718,7 @@
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
+          else if (surfaceType === 2) type = 2; // stone surface (cliff or rocky peak) — solid rock all the way through what's exposed, not a thin dirt band a couple layers down
           else if (y >= h-2) type = (surfaceType === 5 ? 5 : 1);
           else type = 2;
           blocks.set(key(x,y,z), type);
@@ -5637,6 +5682,25 @@
   // Skipped outright rather than special-cased, since a road corridor
   // never needs a retaining wall regardless of what's sitting past it.
   const HOUSE_BACK_SIDE = { south: 'north', north: 'south', east: 'west', west: 'east' };
+  const HOUSE_PAD = 10; // how far a house's cleared pad reaches past its own footprint on every side — the graded ramp below never reaches further in than this, which is what guarantees it can never spill into a neighbouring building's own pad, however tall the difference or however tightly two structures happen to be placed (HOUSE_MIN_GAP is tighter than two of these pads side by side already allows for)
+  // Given how far inward a pad column sits from its OWN edge (0 = the
+  // outermost column itself, right at the pad boundary) and the natural
+  // terrain height just outside that edge, returns the height a graded
+  // retaining ramp should reach there — MAX_TERRAIN_STEP per column (the
+  // same steepest grade ordinary terrain itself is ever allowed, see
+  // generateChunkTerrain's own smoothing clamp), rather than the single
+  // sheer wall this used to be right at the edge. Caps the number of
+  // steps used at HOUSE_PAD — if the natural height difference is so
+  // large that even a full MAX_TERRAIN_STEP-per-column ramp across the
+  // whole pad width can't reach it, whatever's left over above that
+  // still becomes a plain vertical wall at the outermost column, the
+  // same fallback the whole perimeter always used before this.
+  function gradedPadHeightAt(distFromEdge, gy, naturalH) {
+    if (naturalH === undefined || naturalH <= gy) return gy;
+    const steps = Math.min(HOUSE_PAD, Math.ceil((naturalH - gy) / MAX_TERRAIN_STEP));
+    if (distFromEdge >= steps) return gy; // inside the flat courtyard, past where the ramp needs to reach
+    return Math.min(naturalH, gy + (steps - distFromEdge) * MAX_TERRAIN_STEP);
+  }
   // One single point on the wall directly opposite the door gets left
   // out of the sheer-wall treatment and carved into a proper staircase
   // instead — one block up, one block out, per step, all the way up to
@@ -5662,7 +5726,7 @@
     }
   }
   function buildHouseEdgeWall(x0, x1, z0, z1, gy, palette, doorSide) {
-    const pad = 10;
+    const pad = HOUSE_PAD;
     const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
     function wallColumn(x, z, dx, dz) {
       const nx = x + dx, nz = z + dz;
@@ -5674,7 +5738,32 @@
       // village-pad override in generateChunkTerrain), using its own
       // real height instead of a value computed ahead of time.
       if (naturalH === undefined || naturalH <= gy) return; // also covers "outside is at or below the pad's own level — nothing to hold back"
-      for (let y = gy + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
+      const steps = Math.min(HOUSE_PAD, Math.ceil((naturalH - gy) / MAX_TERRAIN_STEP));
+      let prevY = gy;
+      // Builds the ramp from the INNERMOST active step (closest to the
+      // house, smallest rise) out to the pad's own edge (x,z itself,
+      // reaching natural height) — see gradedPadHeightAt's own comment
+      // for why this can never reach past the pad's existing width.
+      for (let distFromEdge = steps - 1; distFromEdge >= 0; distFromEdge--) {
+        const stepX = x - dx*distFromEdge, stepZ = z - dz*distFromEdge;
+        const targetY = gradedPadHeightAt(distFromEdge, gy, naturalH);
+        const stepSize = targetY - prevY;
+        // Material follows the same steepness rule ordinary terrain now
+        // uses — a 1-block riser blends in with the village's own trim,
+        // a 2-block riser is bare dirt, anything steeper is stone.
+        const material = stepSize >= 3 ? 2 : stepSize === 2 ? 1 : palette.trim;
+        for (let y = prevY + 1; y <= targetY; y++) blocks.set(key(stepX, y, stepZ), material);
+        blocks.delete(key(stepX, targetY + 1, stepZ)); blocks.delete(key(stepX, targetY + 2, stepZ)); // headroom to actually walk up it
+        trackVillageHeight(stepX, stepZ, targetY);
+        prevY = targetY;
+      }
+      // Whatever's left over — natural height taller than even a full
+      // MAX_TERRAIN_STEP-per-column ramp across the whole pad width can
+      // reach — still gets a plain sheer wall at the outer edge column,
+      // same fallback the whole perimeter always used before this.
+      if (prevY < naturalH) {
+        for (let y = prevY + 1; y <= naturalH; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
+      }
     }
     const backSide = HOUSE_BACK_SIDE[doorSide];
     const escapeAt = (backSide === 'west' || backSide === 'east') ? Math.round((z0 + z1) / 2) : Math.round((x0 + x1) / 2);
@@ -7125,21 +7214,45 @@
     if (hx !== cx || hz !== cz) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
-    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
     const hullLen = 16, hullWid = 7;
-    const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
-    const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
-    const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
-    if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) return;
-    // Only ever land somewhere that was already a body of water —
-    // depth doesn't matter (the pit still carves its own floor down to
-    // a sensible depth regardless), but the whole footprint needs to
-    // already be sitting in existing water, not dry land the basin
-    // would otherwise have to carve and flood from scratch. Checking
-    // the center plus all four corners is enough to confirm the whole
-    // rectangle is submerged, not just clipping the edge of a pond.
-    const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
-    if (!waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) return;
+    const halfSpanX = Math.floor(hullLen/2) + 4, halfSpanZ = Math.floor(hullWid/2) + 3; // matches the pit's own padding below — how far the footprint reaches from its own centre in each direction
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    // The home chunk being assigned to this 7x7 region says nothing about
+    // whether it actually has water anywhere in it — try dead centre
+    // first (matches the original, simplest placement), then a handful
+    // of other deterministic spots within this same chunk's own bounds,
+    // rather than giving up on the WHOLE region the instant the exact
+    // centre isn't submerged. This is what was actually causing "no
+    // shipwrecks in large water areas" — the chunk assigned as this
+    // region's home could easily have water somewhere in it (or right
+    // alongside it) without that water happening to sit exactly at its
+    // centre.
+    const rng = mulberry32(seedFromHash(cx*9001 + 13, cz*7907 + 29));
+    const candidates = [[baseX + CHUNK_SIZE/2, baseZ + CHUNK_SIZE/2]];
+    for (let i = 0; i < 8; i++) {
+      const spanX = CHUNK_SIZE - 2*halfSpanX, spanZ = CHUNK_SIZE - 2*halfSpanZ;
+      const cxOff = halfSpanX + (spanX > 0 ? Math.floor(rng()*spanX) : 0);
+      const czOff = halfSpanZ + (spanZ > 0 ? Math.floor(rng()*spanZ) : 0);
+      candidates.push([baseX + cxOff, baseZ + czOff]);
+    }
+    let spot = null;
+    for (const [wcx, wcz] of candidates) {
+      const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
+      const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
+      const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
+      if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) continue;
+      // Only ever land somewhere that was already a body of water —
+      // depth doesn't matter (the pit still carves its own floor down to
+      // a sensible depth regardless), but the whole footprint needs to
+      // already be sitting in existing water, not dry land the basin
+      // would otherwise have to carve and flood from scratch. Checking
+      // the centre plus all four corners is enough to confirm the whole
+      // rectangle is submerged, not just clipping the edge of a pond.
+      const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
+      if (waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) { spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break; }
+    }
+    if (!spot) return; // nothing in this chunk was ever fully submerged — genuinely no shipwreck for this region, same as a dry region always meant
+    const { hx0, hx1, hz0, hz1, pitX0, pitX1, pitZ0, pitZ1, wcx, wcz } = spot;
     let waterlineY = SEA_LEVEL;
     for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }
     waterlineY = Math.max(SEA_LEVEL, waterlineY);

@@ -1995,7 +1995,63 @@
     const norm = ((y % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
     return Math.round(norm / (Math.PI/2)) % 4;
   }
-  const waterBlocks = new Map(); // "x,y,z" -> flow level: 0 = source (player-placed, or a falling
+  // A Map-compatible wrapper (same .set/.get/.delete/.has/iteration
+  // interface, so every existing call site elsewhere in the file keeps
+  // working completely unchanged) that ALSO maintains a per-chunk index
+  // as a side effect of every set/delete — chunkCells (chunkKey -> Set
+  // of its own water keys) and dirtyChunks (chunks touched since the
+  // last time rebuildWaterGeometry consumed this set). This is what
+  // lets that function stop re-scanning literally every water cell in
+  // the whole loaded world on every single call — even with the unload
+  // leak fixed, a modest loaded radius at today's water coverage still
+  // legitimately holds several hundred thousand water cells, and
+  // rebuilding the per-chunk bucketing from scratch every time was
+  // always going to be too slow at that scale, leak or no leak.
+  class WaterBlockMap {
+    constructor() {
+      this._data = new Map();
+      this.chunkCells = new Map(); // chunkKey -> Set of "x,y,z" keys
+      this.dirtyChunks = new Set(); // chunkKeys touched since last consumed
+    }
+    _chunkKeyForK(k) {
+      const firstComma = k.indexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10);
+      const lastComma = k.lastIndexOf(',');
+      const z = parseInt(k.slice(lastComma + 1), 10);
+      return chunkKeyOf(x, z);
+    }
+    set(k, level) {
+      const isNew = !this._data.has(k);
+      this._data.set(k, level);
+      const ck = this._chunkKeyForK(k);
+      if (isNew) {
+        let set = this.chunkCells.get(ck);
+        if (!set) { set = new Set(); this.chunkCells.set(ck, set); }
+        set.add(k);
+      }
+      this.dirtyChunks.add(ck); // also covers a level-only change (height fraction) on an existing key — geometry can still differ
+      return this;
+    }
+    delete(k) {
+      if (!this._data.has(k)) return false;
+      this._data.delete(k);
+      const ck = this._chunkKeyForK(k);
+      const set = this.chunkCells.get(ck);
+      if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
+      this.dirtyChunks.add(ck);
+      return true;
+    }
+    has(k) { return this._data.has(k); }
+    get(k) { return this._data.get(k); }
+    get size() { return this._data.size; }
+    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); }
+    [Symbol.iterator]() { return this._data[Symbol.iterator](); }
+    entries() { return this._data.entries(); }
+    keys() { return this._data.keys(); }
+    values() { return this._data.values(); }
+    forEach(fn) { this._data.forEach(fn); }
+  }
+  const waterBlocks = new WaterBlockMap(); // "x,y,z" -> flow level: 0 = source (player-placed, or a falling
                                   // column's own body — see below), 1..MAX_SPREAD = flowing water,
                                   // weaker (shallower) the further it's spread from a source.
   // Which water blocks the flow simulation below actually bothers
@@ -3855,83 +3911,84 @@
     return (((x*73856093) ^ (y*19349663) ^ (z*83492791) ^ (Math.round(h*4)*2654435761)) | 0);
   }
   function rebuildWaterGeometry() {
-    // Pass 1: bucket every current water cell by chunk, and build up
-    // each chunk's own running signature as we go. Cheap relative to
-    // the actual face-culling work below — just a chunk-key lookup, a
-    // hash combine, and an array push per cell, no neighbour checks at
-    // all — and unavoidable regardless of caching, since this is how we
-    // find out which chunks even have water in them right now. This is
-    // the part whose cost still scales with total water cells in the
-    // loaded world (a deep ocean means more of them), but it's a small
-    // fraction of what the full per-cell occlusion pass used to cost
-    // for every single one of them, every single rebuild.
-    const cellsByChunk = new Map(); // chunkKey -> [[x,y,z,h], ...]
-    const signatures = new Map(); // chunkKey -> signature for THIS rebuild
-    for (const [k, level] of waterBlocks) {
-      const [x,y,z] = k.split(',').map(Number);
-      const h = (typeof level === 'number' && level > 0 && level < 1) ? level : 1;
-      const ck = chunkKeyOf(x, z);
-      let arr = cellsByChunk.get(ck);
-      if (!arr) { arr = []; cellsByChunk.set(ck, arr); }
-      arr.push([x, y, z, h]);
-      signatures.set(ck, ((signatures.get(ck) || 0) + waterCellHash(x, y, z, h)) | 0);
-    }
-    // A chunk needs its faces actually recomputed if its own signature
-    // changed, OR if a direct neighbour's did — a water cell right at a
-    // chunk border can be occluded (or exposed) by a neighbour's cell
-    // on the other side of that border, so a change over there can
-    // still change what THIS chunk needs to draw even though none of
-    // its own cells moved. Everything else just reuses last rebuild's
-    // arrays untouched.
-    const dirty = new Set();
-    const allChunkKeys = new Set([...cellsByChunk.keys(), ...waterChunkSignatures.keys()]);
-    for (const ck of allChunkKeys) {
+    // Which chunks actually need their water geometry recomputed this
+    // time: any chunk whose own water cells changed since the last
+    // rebuild (waterBlocks.dirtyChunks, maintained incrementally by
+    // WaterBlockMap itself as a side effect of every set/delete
+    // elsewhere in the file — nothing about those ~30 call sites had to
+    // change), plus each of their direct neighbours — a water cell
+    // right at a chunk border can be occluded (or exposed) by a
+    // neighbour's cell on the other side of that border, so a change
+    // over there can still change what an otherwise-untouched
+    // neighbouring chunk needs to draw. Every other chunk's
+    // last-computed geometry is still exactly correct and gets reused
+    // untouched below. This is what actually lets this function's cost
+    // scale with how much changed since last time, not with how much
+    // water exists in the whole loaded world — re-deriving the full
+    // per-chunk bucketing from every water cell, on every single call,
+    // regardless of what actually changed, was the real reason this got
+    // slower and slower (and eventually froze the game) the more of the
+    // world got explored, quite apart from the separate unload leak.
+    const toRecompute = new Set();
+    for (const ck of waterBlocks.dirtyChunks) {
+      toRecompute.add(ck);
       const [ccx, ccz] = ck.split('_').map(Number);
-      const neighborKeys = [ck, (ccx+1)+'_'+ccz, (ccx-1)+'_'+ccz, ccx+'_'+(ccz+1), ccx+'_'+(ccz-1)];
-      const changed = neighborKeys.some(nk => signatures.get(nk) !== waterChunkSignatures.get(nk));
-      if (changed) dirty.add(ck);
+      toRecompute.add((ccx+1)+'_'+ccz); toRecompute.add((ccx-1)+'_'+ccz);
+      toRecompute.add(ccx+'_'+(ccz+1)); toRecompute.add(ccx+'_'+(ccz-1));
     }
-    const positions = [];
-    const normals = [];
-    for (const [ck, cells] of cellsByChunk) {
-      let chunkGeom = waterChunkCache.get(ck);
-      if (dirty.has(ck) || !chunkGeom) {
+    for (const ck of toRecompute) {
+      const cellKeys = waterBlocks.chunkCells.get(ck);
+      if (!cellKeys || cellKeys.size === 0) {
+        // No water left in this chunk at all (fully drained, or
+        // unloaded) — drop any stale cache/signature for it, rather
+        // than letting it pile up forever as the player explores.
+        waterChunkCache.delete(ck);
+        waterChunkSignatures.delete(ck);
+        continue;
+      }
+      const cp = [], cn = [];
+      let signature = 0;
+      for (const k of cellKeys) {
+        const level = waterBlocks.get(k);
+        const commaIdx = k.indexOf(','), lastComma = k.lastIndexOf(',');
+        const x = parseInt(k.slice(0, commaIdx), 10);
+        const y = parseInt(k.slice(commaIdx + 1, lastComma), 10);
+        const z = parseInt(k.slice(lastComma + 1), 10);
         // Height fraction (1, 0.75, 0.5, 0.25 — see the water hotbar's
         // partial-height entries, for manually shaping a shoreline now
         // that automatic flow/spread is off). Anything else stored here
         // — old integer "flow level" values from a save made before
-        // this, or 0 — just falls back to a full block. Occlusion below
-        // is unchanged and still treats any water neighbour as fully
-        // hiding a shared face regardless of height difference, so a
-        // small seam can show right at the boundary between two
-        // different heights — an acceptable trade-off for not needing
-        // full per-neighbour height comparisons here.
-        const cp = [], cn = [];
-        for (const [x, y, z, h] of cells) {
-          for (const face of WATER_FACES) {
-            const [dx,dy,dz] = face.d;
-            if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
-            const [a,b,c,d] = face.c;
-            // two triangles: a,b,c and a,c,d
-            for (const corner of [a,b,c, a,c,d]) {
-              const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
-              cp.push(x+corner[0], y+cy, z+corner[2]);
-              cn.push(dx, dy, dz);
-            }
+        // this, or 0 — just falls back to a full block.
+        const h = (typeof level === 'number' && level > 0 && level < 1) ? level : 1;
+        signature = (signature + waterCellHash(x, y, z, h)) | 0;
+        for (const face of WATER_FACES) {
+          const [dx,dy,dz] = face.d;
+          if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
+          const [a,b,c,d] = face.c;
+          // two triangles: a,b,c and a,c,d
+          for (const corner of [a,b,c, a,c,d]) {
+            const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
+            cp.push(x+corner[0], y+cy, z+corner[2]);
+            cn.push(dx, dy, dz);
           }
         }
-        chunkGeom = { positions: cp, normals: cn };
-        waterChunkCache.set(ck, chunkGeom);
       }
+      waterChunkCache.set(ck, { positions: cp, normals: cn });
+      waterChunkSignatures.set(ck, signature);
+    }
+    waterBlocks.dirtyChunks.clear();
+    // Assemble the final merged buffers from every chunk that currently
+    // has water — cheap array concatenation over however many chunks
+    // have water at all (hundreds, typically), not over every
+    // individual cell (hundreds of thousands) the way Pass 1 used to.
+    const positions = [];
+    const normals = [];
+    for (const ck of waterBlocks.chunkCells.keys()) {
+      const chunkGeom = waterChunkCache.get(ck);
+      if (!chunkGeom) continue; // shouldn't normally happen (would mean a chunk has cells but was never recomputed), but guard rather than crash
       for (let i = 0; i < chunkGeom.positions.length; i++) positions.push(chunkGeom.positions[i]);
       for (let i = 0; i < chunkGeom.normals.length; i++) normals.push(chunkGeom.normals[i]);
     }
-    // Drop cached geometry/signatures for chunks that no longer have any
-    // water at all (fully drained, or unloaded) — otherwise stale
-    // entries pile up in these maps forever as the player explores.
-    for (const ck of waterChunkCache.keys()) { if (!cellsByChunk.has(ck)) waterChunkCache.delete(ck); }
-    waterChunkSignatures.clear();
-    for (const [ck, sig] of signatures) waterChunkSignatures.set(ck, sig);
 
     const geom = waterMesh.geometry;
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));

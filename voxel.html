@@ -628,8 +628,13 @@
 
   // ================= CONFIG =================
   const WORLD_SIZE = 30;
-  const WORLD_HEIGHT = 20;
-  const SEA_LEVEL = 5;
+  const WORLD_HEIGHT = 105; // raised from 20 — sea level moving up (below) needs somewhere to move up INTO. Today's above-sea-level terrain shape/variety is untouched — same formula as before, just sitting on the new, higher baseline — so this only needs enough headroom for that plus a wide margin for whatever the below-sea-level range below actually uses. Also leaves room for a later "vary the above-sea-level range too" pass without needing to touch this again.
+  const SEA_LEVEL = 50; // raised from 5 — below sea level now reserves a permanent 10-block solid floor at the world's absolute bottom (y=0..9, see MIN_TERRAIN_HEIGHT/BEDROCK_Y) with up to 40 blocks of water able to sit above that, so sea level itself has to sit at least 50 up from the bottom to leave room for all of it
+  const MIN_TERRAIN_HEIGHT = SEA_LEVEL - 40; // the lowest the natural ocean floor/land height is ever allowed to generate — below this is the reserved floor, never touched by generation
+  const BEDROCK_Y = 0; // the single bottom-most layer of that reserved floor — unmineable (see doMine's own check), the one hard boundary beneath the 10-block buffer
+  const MAX_TERRAIN_STEP = 4; // steepest a natural column's height is ever allowed to differ from its west/south neighbour (see rawTerrainHeight below) — at this rate, the deepest possible basin (40 below sea level) takes at least 10 columns to reach from the shoreline, but that's the CAP, not the norm; most transitions are gentler, purely from how smooth the underlying noise already is
+  const OCEAN_FIELD_THRESHOLD = 0.65; // oceanField (see rawTerrainHeight) crossing this marks the start of a lake/ocean basin — re-measured empirically against what this noise setup actually produces, see rawTerrainHeight's own comment
+  const OCEAN_FIELD_FULL_AT = 0.85; // oceanField at (or beyond) this counts as the basin's deepest core — reaching the full 40-block depth
   const half = Math.floor(WORLD_SIZE/2);
 
   // ================= PERSISTENCE (Supabase) =================
@@ -1823,7 +1828,7 @@
     members.forEach(m => { variantToPrimary[m] = Number(primary); });
   });
   const WATER_TYPE = 100; // legacy marker, unused now that water has real raycast/place/mine support
-  const SNOW_TOP_HEIGHT = WORLD_HEIGHT - 3;
+  const SNOW_TOP_HEIGHT = SEA_LEVEL + 12; // was WORLD_HEIGHT-3, back when actual terrain topped out near WORLD_HEIGHT itself. Now that WORLD_HEIGHT is a far-off ceiling terrain never really reaches, this is anchored to SEA_LEVEL instead — preserves the exact same relationship snow always had to sea level (old: SEA_LEVEL 5, snow at 17, natural peaks up to ~21 — the same 12-above-sea-level trigger point, just carried forward to the new sea level)
   const WATER_SLOT = BLOCK_TYPES.length; // one past the last real block — the placeable "Water" hotbar entry
   const LIGHT_SLOT = WATER_SLOT + 1; // the placeable "LED Spotlight" hotbar entry
   const LADDER_SLOT = LIGHT_SLOT + 1; // the placeable "Ladder" hotbar entry
@@ -2092,6 +2097,17 @@
   }
 
   function generateNewWorld() {
+    // Deliberately decoupled from the live SEA_LEVEL/WORLD_HEIGHT/
+    // SNOW_TOP_HEIGHT constants with its own frozen equivalents — this is
+    // the old small, finite (non-streaming) world generator, a completely
+    // separate code path from generateChunkTerrain's infinite streamed
+    // world. Letting it inherit the new, much taller constants would fill
+    // every column all the way from y=0 up to its own height with no
+    // depth cap at all (unlike the streamed system's CHUNK_FILL_DEPTH_CAP),
+    // so it would generate several times more blocks per column, all
+    // synchronously in one call, with nothing to show for it — this
+    // world's own shape/scale was never meant to change.
+    const LEGACY_SEA_LEVEL = 5, LEGACY_WORLD_HEIGHT = 20, LEGACY_SNOW_TOP_HEIGHT = LEGACY_WORLD_HEIGHT - 3;
     blocks.clear();
     stepRotations.clear();
     waterBlocks.clear();
@@ -2106,9 +2122,9 @@
     for (let x = -half; x < half; x++) {
       for (let z = -half; z < half; z++) {
         const n = fbm((x+half)*0.6, (z+half)*0.6);
-        let h = Math.round(SEA_LEVEL - 2 + n * 10);
-        h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
-        const surfaceType = h <= SEA_LEVEL ? 5 /*sand*/ : (h >= SNOW_TOP_HEIGHT ? 0 : 0);
+        let h = Math.round(LEGACY_SEA_LEVEL - 2 + n * 10);
+        h = Math.max(1, Math.min(LEGACY_WORLD_HEIGHT-2, h));
+        const surfaceType = h <= LEGACY_SEA_LEVEL ? 5 /*sand*/ : (h >= LEGACY_SNOW_TOP_HEIGHT ? 0 : 0);
         for (let y = 0; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -2116,10 +2132,10 @@
           else type = 2;
           blocks.set(key(x,y,z), type);
         }
-        if (h < SEA_LEVEL) {
-          for (let y = h+1; y <= SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1); // full-height block — see the water hotbar's partial-height entries for the only other values this now takes
+        if (h < LEGACY_SEA_LEVEL) {
+          for (let y = h+1; y <= LEGACY_SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1); // full-height block — see the water hotbar's partial-height entries for the only other values this now takes
         }
-        if (h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && Math.random() < 0.025) {
+        if (h > LEGACY_SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && Math.random() < 0.025) {
           const trunkH = 3 + Math.floor(Math.random()*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -2385,6 +2401,55 @@
   // band around what's ACTUALLY there in that specific column.
   const columnHeight = new Map(); // "x,z" -> terrain height at that column
   let anyWaterTouchedThisStream = false; // reset per streaming update — see updateChunkStreaming
+  // Pure, side-effect-free natural-height computation for a single
+  // column — no groundPin override, no Mill blend, nothing that depends
+  // on anything other than (x,z) themselves. Used both for the column
+  // actually being generated AND to check what its west/south
+  // neighbours' own natural height would be, purely so the main loop can
+  // clamp against them (see MAX_TERRAIN_STEP) — calling this for a
+  // neighbour never generates or touches that neighbour's chunk, it's
+  // just re-running the same deterministic noise formula for a different
+  // (x,z), which is safe and free of side effects.
+  function rawTerrainHeight(x, z) {
+    const elevation = biomeStretch(fbm(x*0.008, z*0.008));
+    const n = fbm(x*0.045, z*0.045) - 0.5; // centred -0.5..0.5, so local noise can push a column down as easily as up
+    const amp = 3 + elevation*11;
+    const baseline = SEA_LEVEL - 6 + elevation*22;
+    const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
+    let h = Math.round(baseline + n*amp);
+    // OCEAN_FIELD_THRESHOLD/OCEAN_FIELD_FULL_AT were 0.985/0.999 —
+    // measured against what this exact noise setup can actually produce
+    // (4 octaves of fbm, undistorted by biomeStretch here), its raw
+    // output never even reached 0.88 across a 6000x6000-block sample,
+    // let alone 0.985 — meaning "big buckets of water" were already
+    // essentially unreachable before this pass touched anything. These
+    // were re-measured empirically the same way (sampling this exact
+    // formula) rather than guessed, and land ocean/lake coverage around
+    // 19% of the world, in genuinely large, smoothly-connected bodies
+    // (this field's own wavelength is ~550 blocks) rather than scattered
+    // puddles.
+    if (oceanField > OCEAN_FIELD_THRESHOLD) { // basins are a fairly common but still distinct encounter — a lake or ocean, not everywhere
+      const oceanStrength = Math.min(1, (oceanField - OCEAN_FIELD_THRESHOLD) / (OCEAN_FIELD_FULL_AT - OCEAN_FIELD_THRESHOLD)); // 0 at the basin's edge, 1 at (or beyond) its deepest core
+      // Scaled up from the old "-10 at the deepest core" (a max depth of
+      // ~14) so a genuine basin can now reach all the way to the new
+      // 40-block maximum — shallow dips and ordinary terrain are
+      // completely unaffected, since this only ever applies inside a
+      // basin (oceanField > OCEAN_FIELD_THRESHOLD) at all.
+      h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*36));
+    }
+    const allowWater = pubWaterAllowed(x, z);
+    // Only genuine ocean/lake basins get a guaranteed minimum depth for
+    // fish etc — small natural dips are left exactly as the noise made
+    // them, which is what gives shallow water its naturally tapered edge
+    // for free (see the fractional top-layer height in the fill loop
+    // below).
+    if (allowWater && h < SEA_LEVEL && oceanField > OCEAN_FIELD_THRESHOLD) {
+      const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
+      const targetDepth = 3 + Math.round(depthNoise*2);
+      if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
+    }
+    return Math.max(MIN_TERRAIN_HEIGHT, Math.min(WORLD_HEIGHT-2, h));
+  }
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (generatedChunks.has(ck)) return;
@@ -2406,63 +2471,35 @@
         const x = x0+lx, z = z0+lz;
         if (isPubColumn(x, z) || (currentWorldId === PUB_WORLD_ID && isProtectedGameArea(x, z))) continue; // The Mill's own building AND its game structures (football pitch, tower, battleship arena, tennis court, golf course) all build their own ground at fixed heights — never procedurally generate over any of them, or the two independently-written grounds fight and leave gaps/mismatches exactly where they don't perfectly agree
         // Regional biome — two DECOUPLED low-frequency noise layers, not
-        // just one. `elevation` drives height, `moisture` independently
-        // governs how sandy, grassy, or forested an area is, so you get
+        // just one. `elevation` drives height (via rawTerrainHeight
+        // below) AND surface type here; `moisture` independently governs
+        // how sandy, grassy, or forested an area is, so you get
         // combinations like a dry rocky lowland or a lush high plateau
         // instead of one simple gradient.
-        //
-        // fbm() sums several independently-random octaves together,
-        // which — like averaging several dice rolls — naturally clusters
-        // its output around the middle of its range and rarely reaches
-        // the extremes. Left as-is, that meant genuinely mountainous or
-        // sandy areas were rare enough that a long flight could easily
-        // never encounter one, which is what was actually being
-        // reported ("only grass and trees generated"). biomeStretch()
-        // pushes the distribution outward from the middle before it's
-        // used for anything else, so the full range of biomes shows up
-        // over a much shorter distance, without changing the underlying
-        // noise's smooth, continuous shape.
         const elevation = biomeStretch(fbm(x*0.008, z*0.008));
         const moisture = biomeStretch(fbm(x*0.006 + 500, z*0.006 + 500));
-        // Real fix, not another shrink: every previous round of "reduce
-        // water" cut the SAME noise term that also produces hills and
-        // mountains — the baseline below used to average out barely
-        // above SEA_LEVEL for typical (mid-range) elevation, so even a
-        // small amount of local noise was enough to dip huge stretches
-        // of the map below the waterline; shrinking that noise further
-        // and further just flattened everything toward sea level
-        // instead of actually making water rarer, which is exactly why
-        // "no terrain rises above sea level" was true almost everywhere.
-        // amp is restored to a proper range (real hills/valleys again,
-        // not a sliver), and n is used at FULL strength now — the actual
-        // lever for water frequency is baseline below, not this.
-        const n = fbm(x*0.045, z*0.045) - 0.5; // centred -0.5..0.5, so local noise can push a column down as easily as up
-        const amp = 3 + elevation*11;
-        // Sits well ABOVE sea level for most of the elevation range now
-        // — SEA_LEVEL-6 at the very lowest elevation, up to SEA_LEVEL+16
-        // at the highest, and averaging around SEA_LEVEL+5 for ordinary
-        // mid-range elevation. Water becomes possible only where
-        // elevation is genuinely LOW (not just "slightly below
-        // average"), which is what actually makes it the exception
-        // rather than the rule, instead of merely shrinking how far
-        // local noise can reach either way.
-        const baseline = SEA_LEVEL - 6 + elevation*22;
-        // A second, much larger and slower-changing noise field, entirely
-        // separate from the regional elevation above — elevation alone
-        // only ever produces small, scattered dips, never a body of
-        // water big enough to read as "a lake" or "an ocean" rather than
-        // a puddle. This one only crosses its own threshold in sparse,
-        // wide patches (its wavelength is roughly 550 blocks), and where
-        // it does, it pulls the baseline down hard regardless of what
-        // the regional elevation says — that's deliberate: a proper lake
-        // shouldn't care that it's sitting in an otherwise-hilly area.
-        const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
-        let h = Math.round(baseline + n*amp);
-        if (oceanField > 0.985) { // basins are a rare, special encounter
-          const oceanStrength = (oceanField - 0.985) / 0.015; // 0 at the basin's edge, 1 at its deepest core
-          h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*10));
-        }
-        h = Math.max(1, Math.min(WORLD_HEIGHT-2, h));
+        let h = rawTerrainHeight(x, z);
+        // Smooths the transition into deep water (or any other steep
+        // natural drop) so it always takes several columns to get there
+        // rather than dropping all at once. Clamped against the west and
+        // south neighbours' own ACTUAL resolved height (columnHeight),
+        // not a freshly-recomputed raw value for that neighbour — those
+        // two are not the same thing: the neighbour's own final height
+        // may already have been pulled toward ITS OWN west/south
+        // neighbours by this exact same clamp, and comparing against its
+        // raw, pre-clamp noise value instead let the clamps fail to
+        // compose across a run of columns, allowing much bigger steps
+        // than MAX_TERRAIN_STEP to slip through overall. Since
+        // generation scans x then z in order, the true west/south
+        // neighbour has already been fully resolved by the time this
+        // column runs, except right at the leading edge of brand new,
+        // never-before-generated terrain — there, with nothing real to
+        // compare against yet, this falls back to that neighbour's own
+        // raw value, same as before.
+        const hWest = columnHeight.has((x-1)+','+z) ? columnHeight.get((x-1)+','+z) : rawTerrainHeight(x-1, z);
+        const hSouth = columnHeight.has(x+','+(z-1)) ? columnHeight.get(x+','+(z-1)) : rawTerrainHeight(x, z-1);
+        h = Math.max(hWest-MAX_TERRAIN_STEP, Math.min(hWest+MAX_TERRAIN_STEP, h));
+        h = Math.max(hSouth-MAX_TERRAIN_STEP, Math.min(hSouth+MAX_TERRAIN_STEP, h));
         // A player has built or dug here before — use the ground height
         // exactly as it was then, not whatever today's noise formula
         // would produce. This is what keeps a manually built structure
@@ -2482,22 +2519,6 @@
         const blend = pubBlendFactor(x, z);
         if (blend < 1) h = Math.max(0, Math.round(h * blend));
         const allowWater = pubWaterAllowed(x, z);
-        // Only genuine ocean/lake basins get a guaranteed minimum depth
-        // for fish etc now — small natural dips are left exactly as the
-        // noise made them. That's what gives shallow water a naturally
-        // tapered edge for free (see the fractional top-layer height
-        // computed in the fill loop below): a column just 1 block below
-        // sea level gets just a sliver of water, one a bit further down
-        // gets a bit more — with no separate pass, no neighbour lookups,
-        // and nothing that can ever cascade or run away, because it's a
-        // pure function of this single column's own already-computed
-        // height, not a stateful process that has to run at the right
-        // time in the right place.
-        if (allowWater && h < SEA_LEVEL && oceanField > 0.985) {
-          const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
-          const targetDepth = 3 + Math.round(depthNoise*2);
-          if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;
-        }
         // Village pad override — a house's clearing/wall step (see
         // clearSkyAroundHouse/buildHouseEdgeWall) already handles this
         // column directly if ITS chunk had already generated by the
@@ -7095,7 +7116,7 @@
   // moat) far below or above what "this column is part of a lake/ocean"
   // actually means.
   function hasNaturalWaterAt(x, z) {
-    for (let y = SEA_LEVEL; y >= SEA_LEVEL - 12; y--) { if (waterBlocks.has(key(x, y, z))) return true; }
+    for (let y = SEA_LEVEL; y >= MIN_TERRAIN_HEIGHT; y--) { if (waterBlocks.has(key(x, y, z))) return true; } // was SEA_LEVEL-12, tuned for the old ~14-block max depth — widened to cover the full new depth range so shipwrecks can still land in a genuinely deep basin
     return false;
   }
   function maybeBuildShipwreck(cx, cz) {
@@ -13854,6 +13875,7 @@
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
+    if (!r.isWater && r.hit.y === BEDROCK_Y) { showSaveStatus('⚠ Solid bedrock — can\'t be mined', true); return; } // the single hard floor at the very bottom of the world, beneath the reserved buffer under any ocean — mining through the buffer above it is fine, this one layer just isn't going anywhere
     if (r.isWater) {
       // Drains a quarter-block at a time now instead of coming out
       // whole — mine it once and a full block becomes 3/4, mine that

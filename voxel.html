@@ -2536,6 +2536,17 @@
         if (nearbyHouses.length) {
           let handled = false;
           for (const house of nearbyHouses) {
+            // Standalone houses (see maybeBuildStandaloneHouse) level
+            // their WHOLE safeguarded footprint at build time — there's
+            // no padded ramp/wall band around them the way the old
+            // road-based houses had, so a column outside their own
+            // x0..x1/z0..z1 bounds needs nothing at all from this house
+            // specifically; ordinary generation (or another house in the
+            // list) handles it instead.
+            if (house.standalone) {
+              const insideOwnBox = x >= house.x0 && x <= house.x1 && z >= house.z0 && z <= house.z1;
+              if (!insideOwnBox) continue;
+            }
             const padX0 = house.x0 - 10, padX1 = house.x1 + 10, padZ0 = house.z0 - 10, padZ1 = house.z1 + 10;
             // A building's own actual footprint (as opposed to the pad
             // around it) is already built directly, chunk-boundary-
@@ -2802,7 +2813,7 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
-    maybeBuildVillage(cx, cz);
+    maybeBuildStandaloneHouse(cx, cz); // replaces maybeBuildVillage (still defined below, just unused for now) — see its own comment for why
     maybeBuildWindmill(cx, cz);
     maybeBuildShipwreck(cx, cz);
   }
@@ -7251,6 +7262,20 @@
     const gh = groundHeightOnly.get(x + ',' + z);
     return gh !== undefined && gh < SEA_LEVEL;
   }
+  const SHIPWRECK_MIN_GAP = 200; // deliberately much larger than HOUSE_MIN_GAP — a single large lake/ocean (which the terrain generation now makes fairly common) can easily span several unrelated SHIPWRECK_CHUNK_STRIDE regions, each unaware the others exist, so the ordinary building-to-building gap (15) did nothing to stop several regions from each independently finding water in the SAME lake and landing a ship in it — this is what was actually causing 5 wrecks in one lake.
+  function shipwreckTooCloseToOtherWrecks(wcx, wcz) {
+    const seen = new Set();
+    for (const [, list] of villageHouseFootprints) {
+      for (const h of list) {
+        if (!h.isShipwreck || seen.has(h)) continue;
+        seen.add(h);
+        const hcx = (h.x0 + h.x1) / 2, hcz = (h.z0 + h.z1) / 2; // centre of that wreck's own pit, not this one's
+        const dx = wcx - hcx, dz = wcz - hcz;
+        if (Math.sqrt(dx*dx + dz*dz) < SHIPWRECK_MIN_GAP) return true;
+      }
+    }
+    return false;
+  }
   const shipwreckRegionClaimed = new Set(); // "gx_gz" -> a shipwreck has already landed somewhere in this SHIPWRECK_CHUNK_STRIDE x STRIDE region this session — see maybeBuildShipwreck's own comment on why this replaced a single fixed "home chunk" per region
   function maybeBuildShipwreck(cx, cz) {
     const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
@@ -7305,6 +7330,7 @@
       // rectangle is submerged, not just clipping the edge of a pond.
       const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
       if (!waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) continue;
+      if (shipwreckTooCloseToOtherWrecks(wcx, wcz)) continue;
       if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) continue;
       spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break;
     }
@@ -7319,7 +7345,7 @@
     const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
     buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg);
     shipwreckRegs.set(ck, reg);
-    const entry = { x0: pitX0, x1: pitX1, z0: pitZ0, z1: pitZ1, gy: waterlineY, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south' };
+    const entry = { x0: pitX0, x1: pitX1, z0: pitZ0, z1: pitZ1, gy: waterlineY, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south', isShipwreck: true };
     registerBuildingFootprint(entry, ck);
     resyncChunksInRange(pitX0 - 10, pitX1 + 10, pitZ0 - 10, pitZ1 + 10);
   }
@@ -8186,6 +8212,96 @@
   // world's save, built up across a long run of earlier, since-fixed
   // generation bugs. See hardResetWorld() for the actual fix — wiping
   // that world's saved state clean, not touching the code further.
+  // ── Standalone house (replaces the old road-based village house) ──
+  // Houses no longer share a road or sit on a graded/ramped pad — each
+  // one searches for a patch of already-flat-enough land nearby and
+  // just sits on it, with only a small (<=2 blocks per column)
+  // correction rather than the old system's wide clearing and retaining
+  // walls/ramps. This is what actually removes village generation's
+  // biggest cost: no more sweeping trees/water across a whole 32x32
+  // chunk up front, no 50-block-tall clearing box, no wall/ramp
+  // construction at all.
+  const HOUSE_FOOTPRINT = 11; // matches buildVillageHouse's own fixed w/d
+  const HOUSE_SEARCH_PAD = 1; // margin kept clear/level on every side of the house itself
+  const HOUSE_SEARCH_SIZE = HOUSE_FOOTPRINT + HOUSE_SEARCH_PAD * 2; // 13 — the whole safeguarded area, registered as this house's footprint so nothing else can be placed inside it either
+  const HOUSE_MAX_VARIANCE = 3; // a candidate site's natural high point minus its low point, across the whole 13x13 area, must be at or under this to qualify
+  const HOUSE_STANDALONE_STRIDE = VILLAGE_CHUNK_STRIDE; // reuses the density already tuned for the old village grid (roughly one every 320 blocks)
+  const houseRegionClaimed = new Set(); // "gx_gz" -> a house has already landed somewhere in this HOUSE_STANDALONE_STRIDE x STRIDE region this session — same idea as shipwreckRegionClaimed, and for the same reason: the chunk assigned as a region's own candidate says nothing about whether IT has suitable land, so any chunk in the region gets a chance instead of just one fixed one.
+  // Returns the floor height a house should sit at if (sx0,sz0) (top-left
+  // corner of the full 13x13 safeguarded area) qualifies, or null if it
+  // doesn't — either the height varies by more than HOUSE_MAX_VARIANCE
+  // across the site, or part of it hasn't generated yet. Reads
+  // groundHeightOnly specifically, not columnHeight — a tree standing
+  // anywhere in or near the site would otherwise inflate columnHeight
+  // and make an otherwise-flat spot look artificially steep (see
+  // groundHeightOnly's own declaration comment).
+  function findFlatHouseSite(sx0, sz0) {
+    let lo = Infinity, hi = -Infinity;
+    for (let x = sx0; x < sx0 + HOUSE_SEARCH_SIZE; x++) {
+      for (let z = sz0; z < sz0 + HOUSE_SEARCH_SIZE; z++) {
+        const h = groundHeightOnly.get(x + ',' + z);
+        if (h === undefined) return null;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+    }
+    if (hi - lo > HOUSE_MAX_VARIANCE) return null;
+    return Math.round((lo + hi) / 2);
+  }
+  function maybeBuildStandaloneHouse(cx, cz) {
+    const gx = Math.floor(cx / HOUSE_STANDALONE_STRIDE), gz = Math.floor(cz / HOUSE_STANDALONE_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (houseRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageHouseFootprints.has(ck)) return; // something (a house from a reload, or another structure's padded reach) is already registered touching this chunk
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*7919 + 31, cz*6113 + 71));
+    const maxOffset = CHUNK_SIZE - HOUSE_SEARCH_SIZE; // how far the site's own top-left corner can range and still fit entirely within this one chunk
+    let site = null;
+    for (let i = 0; i < 10; i++) {
+      const sx0 = baseX + Math.floor(rng() * (maxOffset + 1));
+      const sz0 = baseZ + Math.floor(rng() * (maxOffset + 1));
+      const floor = findFlatHouseSite(sx0, sz0);
+      if (floor === null) continue;
+      if (houseTooCloseToExisting(sx0, sx0 + HOUSE_SEARCH_SIZE - 1, sz0, sz0 + HOUSE_SEARCH_SIZE - 1, ck)) continue;
+      site = { sx0, sz0, floor }; break;
+    }
+    if (!site) return; // nothing flat enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    houseRegionClaimed.add(regionKey);
+    const { sx0, sz0, floor } = site;
+    const sx1 = sx0 + HOUSE_SEARCH_SIZE - 1, sz1 = sz0 + HOUSE_SEARCH_SIZE - 1;
+    // Corrects the whole safeguarded area to one level — since the site
+    // was specifically chosen for low variance, this is a small (<=2
+    // blocks either way per column) correction, not the old system's
+    // wide clearing and retaining walls. Still clears well above the
+    // new floor to remove any tree standing here, just not 50 blocks of
+    // it — the house itself is only 7 tall plus its roof.
+    for (let x = sx0; x <= sx1; x++) {
+      for (let z = sz0; z <= sz1; z++) {
+        const cur = groundHeightOnly.get(x + ',' + z);
+        const curSurface = blocks.get(key(x, cur, z));
+        const fillType = (curSurface === 5) ? 5 : 1; // Sand stays sand-based; everything else gets Dirt
+        const clearTop = Math.max(cur, floor) + 12;
+        for (let y = Math.min(cur, floor); y <= clearTop; y++) {
+          const k = key(x, y, z);
+          blocks.delete(k); stepRotations.delete(k);
+          if (waterBlocks.delete(k)) anyWaterTouchedThisStream = true;
+        }
+        for (let y = Math.max(0, floor - 8); y < floor; y++) blocks.set(key(x, y, z), fillType); // solid base under the new floor — matters when this column had to be filled UP to reach it
+        blocks.set(key(x, floor, z), fillType === 5 ? 5 : 0); // a clean grass/sand surface, not whatever sub-layer material happened to end up exposed
+        trackVillageHeight(x, z, floor);
+        markVillageGround(x, z, floor);
+      }
+    }
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['north','south','east','west'][Math.floor(rng() * 4)]; // no road to face any more — any side is equally valid
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
+    const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
+    registerBuildingFootprint(entry, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
   const VILLAGES_ENABLED = true;
   function maybeBuildVillage(cx, cz) {
     if (!VILLAGES_ENABLED) return;
@@ -15318,7 +15434,7 @@
   const precipPositions = new Float32Array(PRECIP_COUNT * 3);
   for (let i=0;i<PRECIP_COUNT;i++) {
     precipPositions[i*3] = (Math.random()-0.5)*40;
-    precipPositions[i*3+1] = Math.random()*30;
+    precipPositions[i*3+1] = SEA_LEVEL + Math.random()*30; // was an absolute 0-30, assuming ground level was near world-origin height — recycling in updateWeather already re-centres these on the player's own y every frame regardless, so this only ever matters for the first instant precip turns on before that's had a chance to run
     precipPositions[i*3+2] = (Math.random()-0.5)*40;
   }
   const precipGeom = new THREE.BufferGeometry();
@@ -15382,7 +15498,7 @@
   for (let i=0;i<CLOUD_COUNT;i++) {
     const cloud = buildCloud();
     const angle = Math.random()*Math.PI*2, dist = 20+Math.random()*70;
-    cloud.position.set(Math.cos(angle)*dist, 32+Math.random()*8, Math.sin(angle)*dist);
+    cloud.position.set(Math.cos(angle)*dist, SEA_LEVEL+31+Math.random()*8, Math.sin(angle)*dist);
     cloudsGroup.add(cloud);
     cloudData.push({ mesh: cloud, speed: 0.4+Math.random()*0.4, mat: cloud.userData.mat });
   }
@@ -15395,7 +15511,7 @@
       const dx = c.mesh.position.x-player.pos.x, dz = c.mesh.position.z-player.pos.z;
       if (dx*dx+dz*dz > 90*90) {
         // recycled upwind (west) of the player at a random distance/depth
-        c.mesh.position.set(player.pos.x-70-Math.random()*20, 32+Math.random()*8, player.pos.z+(Math.random()-0.5)*140);
+        c.mesh.position.set(player.pos.x-70-Math.random()*20, SEA_LEVEL+31+Math.random()*8, player.pos.z+(Math.random()-0.5)*140);
       }
       c.mat.opacity = 0.15 + dayFactor*0.7; // faint at night rather than fully invisible, since real clouds don't vanish either
     });

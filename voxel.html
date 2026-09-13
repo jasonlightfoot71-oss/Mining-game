@@ -2860,6 +2860,26 @@
           stepRotations.delete(k);
           if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
         }
+        // Natural water can extend far above this range — for a deep
+        // ocean column, columnHeight reflects the SEABED (the tallest
+        // solid block ever placed there), while the water above it
+        // reaches all the way up to SEA_LEVEL, which for a 40-block-deep
+        // column is well outside yMax. Left alone, that water never got
+        // cleared on unload at all — it just stayed in waterBlocks
+        // forever, chunk after chunk, growing without bound the more
+        // ocean got explored. This is what was actually behind
+        // rebuildWaterGeometry (which scans the ENTIRE waterBlocks map
+        // every call) getting slower over a session until it froze the
+        // game outright, and why it got dramatically worse right after
+        // making seas bigger. Only worth the extra loop for columns that
+        // actually reach underwater at all.
+        const naturalFloor = groundHeightOnly.get(colKey);
+        if (naturalFloor !== undefined && naturalFloor < SEA_LEVEL) {
+          for (let y = Math.max(yMax + 1, naturalFloor + 1); y <= SEA_LEVEL; y++) {
+            const k = key(x,y,z);
+            if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
+          }
+        }
         // columnHeight is deliberately NOT cleared here — syncChunkInstances
         // (always called right after this, by the same caller) still needs
         // it to know what range to scan in order to actually remove the

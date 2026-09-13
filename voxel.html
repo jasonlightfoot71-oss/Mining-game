@@ -2399,7 +2399,8 @@
   // needlessly huge vertical range. This tracks each individual column's
   // own height instead, so syncChunkInstances only ever scans a tight
   // band around what's ACTUALLY there in that specific column.
-  const columnHeight = new Map(); // "x,z" -> terrain height at that column
+  const columnHeight = new Map(); // "x,z" -> TALLEST block ever recorded at that column — includes tree canopy spillover into neighbouring columns (see the tree-placement loop below), which is exactly right for its original purpose (bounding the mesh-sync scan range) but wrong as a "how steep is the natural ground here" reference — see groundHeightOnly below for that.
+  const groundHeightOnly = new Map(); // "x,z" -> this column's own actual ground height, deliberately NEVER touched by a neighbouring tree's canopy. Used only for the smoothing clamp and the steepness-driven surface material below — using columnHeight for those instead was mistaking "a tree's leaves reach over this column" for "the ground here is steep", putting dirt/stone rings around every tree.
   let anyWaterTouchedThisStream = false; // reset per streaming update — see updateChunkStreaming
   // Pure, side-effect-free natural-height computation for a single
   // column — no groundPin override, no Mill blend, nothing that depends
@@ -2482,7 +2483,9 @@
         // Smooths the transition into deep water (or any other steep
         // natural drop) so it always takes several columns to get there
         // rather than dropping all at once. Clamped against the west and
-        // south neighbours' own ACTUAL resolved height (columnHeight),
+        // south neighbours' own ACTUAL resolved ground height
+        // (groundHeightOnly, not columnHeight — see its own declaration
+        // comment for why that distinction matters here specifically),
         // not a freshly-recomputed raw value for that neighbour — those
         // two are not the same thing: the neighbour's own final height
         // may already have been pulled toward ITS OWN west/south
@@ -2496,8 +2499,8 @@
         // never-before-generated terrain — there, with nothing real to
         // compare against yet, this falls back to that neighbour's own
         // raw value, same as before.
-        const hWest = columnHeight.has((x-1)+','+z) ? columnHeight.get((x-1)+','+z) : rawTerrainHeight(x-1, z);
-        const hSouth = columnHeight.has(x+','+(z-1)) ? columnHeight.get(x+','+(z-1)) : rawTerrainHeight(x, z-1);
+        const hWest = groundHeightOnly.has((x-1)+','+z) ? groundHeightOnly.get((x-1)+','+z) : rawTerrainHeight(x-1, z);
+        const hSouth = groundHeightOnly.has(x+','+(z-1)) ? groundHeightOnly.get(x+','+(z-1)) : rawTerrainHeight(x, z-1);
         h = Math.max(hWest-MAX_TERRAIN_STEP, Math.min(hWest+MAX_TERRAIN_STEP, h));
         h = Math.max(hSouth-MAX_TERRAIN_STEP, Math.min(hSouth+MAX_TERRAIN_STEP, h));
         // A player has built or dug here before — use the ground height
@@ -2633,7 +2636,7 @@
             for (const e of edgeChecks) {
               if (!e.ok || !e.inBand || e.dist < 0 || e.dist >= HOUSE_PAD) continue;
               if (backSide === e.side && e.along === escapeAt) continue; // the escape stair's own walkway line — never a wall/ramp
-              const naturalHere = columnHeight.get(e.nx + ',' + e.nz);
+              const naturalHere = groundHeightOnly.get(e.nx + ',' + e.nz); // groundHeightOnly, not columnHeight — see wallColumn's own comment on why
               if (naturalHere === undefined || naturalHere <= house.gy) continue;
               const targetY = gradedPadHeightAt(e.dist, house.gy, naturalHere);
               const prevY = gradedPadHeightAt(e.dist + 1, house.gy, naturalHere);
@@ -2715,6 +2718,7 @@
         // scanned high enough to notice or re-show it again.
         const prevColH = columnHeight.get(x+','+z);
         columnHeight.set(x+','+z, prevColH !== undefined ? Math.max(prevColH, h) : h);
+        groundHeightOnly.set(x+','+z, h); // this column's own actual ground height, deliberately separate from columnHeight above — see its declaration comment
         for (let y = fillFrom; y <= h; y++) {
           let type;
           if (y === h) type = surfaceType;
@@ -5714,7 +5718,7 @@
     else if (backSide === 'east') { px = padX1; pz = escapeAt; dx = 1; dz = 0; }
     else if (backSide === 'north') { px = escapeAt; pz = padZ0; dx = 0; dz = -1; }
     else { px = escapeAt; pz = padZ1; dx = 0; dz = 1; }
-    const naturalH = columnHeight.get((px + dx) + ',' + (pz + dz));
+    const naturalH = groundHeightOnly.get((px + dx) + ',' + (pz + dz)); // groundHeightOnly, not columnHeight — a tree right outside the pad shouldn't make the staircase climb to meet its leaves instead of the actual ground (see wallColumn's own comment on this)
     if (naturalH === undefined || naturalH <= gy) return; // flat ground here anyway, or this side's neighbour hasn't generated yet (its own generation runs the same wall/floor check once it does — see the village-pad override in generateChunkTerrain — just not this staircase, which only ever gets cut by the house's own build step)
     const steps = naturalH - gy;
     for (let i = 1; i <= steps; i++) {
@@ -5730,13 +5734,18 @@
     const padX0 = x0 - pad, padX1 = x1 + pad, padZ0 = z0 - pad, padZ1 = z1 + pad;
     function wallColumn(x, z, dx, dz) {
       const nx = x + dx, nz = z + dz;
-      const naturalH = columnHeight.get(nx + ',' + nz);
+      const naturalH = groundHeightOnly.get(nx + ',' + nz);
       // Undefined means that neighbouring column's own chunk hasn't
       // generated yet — same reasoning as clearSkyAroundHouse: skip
       // rather than guess, and let that chunk's own generation build
       // this exact same wall itself once it actually runs (see the
       // village-pad override in generateChunkTerrain), using its own
-      // real height instead of a value computed ahead of time.
+      // real height instead of a value computed ahead of time. Reads
+      // groundHeightOnly rather than columnHeight specifically because
+      // a tree just outside the pad would otherwise inflate this to its
+      // own canopy height (columnHeight's whole point elsewhere), which
+      // would have the wall/ramp try to rise to meet leaves instead of
+      // the actual ground.
       if (naturalH === undefined || naturalH <= gy) return; // also covers "outside is at or below the pad's own level — nothing to hold back"
       const steps = Math.min(HOUSE_PAD, Math.ceil((naturalH - gy) / MAX_TERRAIN_STEP));
       let prevY = gy;
@@ -7081,13 +7090,7 @@
   // doesn't matter, since the pit still carves its own floor to a
   // sensible depth regardless, but it no longer floods dry land into an
   // artificial pool just to have somewhere to land.
-  const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground
-  function shipwreckGridHomeChunk(gx, gz) {
-    const r = mulberry32(seedFromHash(gx * 4409 + 2113, gz * 3221 + 877));
-    const ox = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));
-    const oz = 1 + Math.floor(r() * Math.max(1, SHIPWRECK_CHUNK_STRIDE - 2));
-    return [gx * SHIPWRECK_CHUNK_STRIDE + ox, gz * SHIPWRECK_CHUNK_STRIDE + oz];
-  }
+  const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground. Now the width of the region any one of its chunks can claim a shipwreck within (see maybeBuildShipwreck) rather than a single fixed chunk's own width.
   const shipwreckRegs = new Map(); // "cx_cz" -> { fixtureKeys, ladderKeys, treasureKeys }
   // Carves and floods a basin regardless of what's actually there —
   // deleting any existing block first, then either sand (seabed/rim) or
@@ -7208,25 +7211,32 @@
     for (let y = SEA_LEVEL; y >= MIN_TERRAIN_HEIGHT; y--) { if (waterBlocks.has(key(x, y, z))) return true; } // was SEA_LEVEL-12, tuned for the old ~14-block max depth — widened to cover the full new depth range so shipwrecks can still land in a genuinely deep basin
     return false;
   }
+  const shipwreckRegionClaimed = new Set(); // "gx_gz" -> a shipwreck has already landed somewhere in this SHIPWRECK_CHUNK_STRIDE x STRIDE region this session — see maybeBuildShipwreck's own comment on why this replaced a single fixed "home chunk" per region
   function maybeBuildShipwreck(cx, cz) {
     const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
-    const [hx, hz] = shipwreckGridHomeChunk(gx, gz);
-    if (hx !== cx || hz !== cz) return;
+    const regionKey = gx + '_' + gz;
+    // Used to lock onto one fixed, pre-determined chunk per region
+    // (shipwreckGridHomeChunk) and give up on the WHOLE region if THAT
+    // one chunk didn't happen to have water — which said nothing at all
+    // about whether the region actually had water somewhere else in it,
+    // and was the real reason large lakes/oceans could go without a
+    // single shipwreck: the one chunk the region was allowed to use was
+    // picked with no awareness of water at all. Now any chunk within the
+    // region can claim its one shipwreck — whichever chunk the player
+    // happens to explore first that turns out to have suitable water —
+    // so a shipwreck only fails to appear if genuinely nothing in the
+    // whole region ever does.
+    if (shipwreckRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const hullLen = 16, hullWid = 7;
     const halfSpanX = Math.floor(hullLen/2) + 4, halfSpanZ = Math.floor(hullWid/2) + 3; // matches the pit's own padding below — how far the footprint reaches from its own centre in each direction
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    // The home chunk being assigned to this 7x7 region says nothing about
-    // whether it actually has water anywhere in it — try dead centre
-    // first (matches the original, simplest placement), then a handful
-    // of other deterministic spots within this same chunk's own bounds,
-    // rather than giving up on the WHOLE region the instant the exact
-    // centre isn't submerged. This is what was actually causing "no
-    // shipwrecks in large water areas" — the chunk assigned as this
-    // region's home could easily have water somewhere in it (or right
-    // alongside it) without that water happening to sit exactly at its
-    // centre.
+    // Try dead centre of THIS chunk first, then a handful of other
+    // deterministic spots within its own bounds — a body of water
+    // rarely lines up exactly with a chunk's own centre, so checking a
+    // few different spots inside the one chunk being generated makes it
+    // much more likely to find one that's actually submerged.
     const rng = mulberry32(seedFromHash(cx*9001 + 13, cz*7907 + 29));
     const candidates = [[baseX + CHUNK_SIZE/2, baseZ + CHUNK_SIZE/2]];
     for (let i = 0; i < 8; i++) {
@@ -7251,7 +7261,8 @@
       const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
       if (waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) { spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break; }
     }
-    if (!spot) return; // nothing in this chunk was ever fully submerged — genuinely no shipwreck for this region, same as a dry region always meant
+    if (!spot) return; // nothing suitable in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    shipwreckRegionClaimed.add(regionKey);
     const { hx0, hx1, hz0, hz1, pitX0, pitX1, pitZ0, pitZ1, wcx, wcz } = spot;
     let waterlineY = SEA_LEVEL;
     for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }

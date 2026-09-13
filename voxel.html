@@ -2813,8 +2813,9 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
-    maybeBuildStandaloneHouse(cx, cz); // replaces maybeBuildVillage (still defined below, just unused for now) — see its own comment for why
+    maybeBuildSettlement(cx, cz); // replaces maybeBuildVillage (still defined below, just unused for now) — see its own comment for why
     maybeBuildWindmill(cx, cz);
+    maybeBuildCastle(cx, cz);
     maybeBuildShipwreck(cx, cz);
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
@@ -7075,31 +7076,84 @@
     return { shell, reg };
   }
   const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
-  function windmillGridHomeChunk(gx, gz) {
-    const r = mulberry32(seedFromHash(gx * 5303 + 911, gz * 7919 + 433));
-    const ox = 1 + Math.floor(r() * Math.max(1, WINDMILL_CHUNK_STRIDE - 2));
-    const oz = 1 + Math.floor(r() * Math.max(1, WINDMILL_CHUNK_STRIDE - 2));
-    return [gx * WINDMILL_CHUNK_STRIDE + ox, gz * WINDMILL_CHUNK_STRIDE + oz];
-  }
+  const windmillRegionClaimed = new Set(); // "gx_gz" -> a windmill has already landed somewhere in this WINDMILL_CHUNK_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as houseRegionClaimed/shipwreckRegionClaimed
   function maybeBuildWindmill(cx, cz) {
     const gx = Math.floor(cx / WINDMILL_CHUNK_STRIDE), gz = Math.floor(cz / WINDMILL_CHUNK_STRIDE);
-    const [hx, hz] = windmillGridHomeChunk(gx, gz);
-    if (hx !== cx || hz !== cz) return;
+    const regionKey = gx + '_' + gz;
+    if (windmillRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
-    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const elevation = biomeStretch(fbm(wcx * 0.008, wcz * 0.008));
-    if (elevation < 0.5) return; // not mountainous enough here — skip silently, the next candidate gets its own roll. Was 0.6 — combined with the stride above, simulating the actual real-world gap this produced (not just eyeballing the threshold in isolation) is what caught both of these needing to change together
-    const x0 = wcx - 3, x1 = x0 + 6, z0 = wcz - 3, z1 = z0 + 6;
-    if (houseTooCloseToExisting(x0, x1, z0, z1, ck)) return; // real, if unlikely, chance of landing too close to a village building
-    const { plotY: gy, baseSurfaceType, subFillType } = computeWindmillGrade(x0, x1, z0, z1, wcz);
-    clearSkyAroundHouse(x0, x1, z0, z1, gy, baseSurfaceType, subFillType);
-    buildHouseEdgeWall(x0, x1, z0, z1, gy, WINDMILL_PALETTE, 'north');
-    const { reg: windmillReg } = buildWindmillStructure(x0, z0, gy, ck);
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const elevation = biomeStretch(fbm((baseX+16) * 0.008, (baseZ+16) * 0.008));
+    if (elevation < 0.5) return; // not mountainous enough here at all — skip outright, no point even searching this chunk. Same threshold as before, still a cheap single fbm call ahead of anything else
+    const rng = mulberry32(seedFromHash(cx*5303 + 911, cz*7919 + 433));
+    // Same flat/dry search every other standalone building now uses,
+    // instead of the old unconditional build-wherever-and-wall-it-in —
+    // kept to one chunk (a windmill doesn't need to span several the
+    // way a whole settlement does).
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, 7, 7, 0, 14, 3, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    windmillRegionClaimed.add(regionKey);
+    const { sx0, sz0, sx1, sz1, floor } = site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 20); // windmill is tall (h=9, plus roof, plus sails) — clears generously
+    const { reg: windmillReg } = buildWindmillStructure(sx0, sz0, floor, ck);
     windmillRegs.set(ck, windmillReg);
-    const entry = { x0, x1, z0, z1, gy, baseSurfaceType, subFillType, trim: WINDMILL_PALETTE.trim, doorSide: 'north' };
+    const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: WINDMILL_PALETTE.trim, doorSide: 'north', standalone: true };
     registerBuildingFootprint(entry, ck);
-    resyncChunksInRange(x0 - 10, x1 + 10, z0 - 10, z1 + 10);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+  const CASTLE_CHUNK_STRIDE = 20; // 20*32 = 640 blocks apart, jittered — meant to be a rarer, special find, unlike a windmill or a settlement
+  const castleRegionClaimed = new Set(); // same reasoning as windmillRegionClaimed/houseRegionClaimed
+  function maybeBuildCastle(cx, cz) {
+    const gx = Math.floor(cx / CASTLE_CHUNK_STRIDE), gz = Math.floor(cz / CASTLE_CHUNK_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (castleRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*4001 + 601, cz*3001 + 701));
+    // Combined keep+tower footprint is 24 wide x 15 deep — searched as
+    // one block the same way every other standalone building's site is,
+    // kept to one chunk (a castle doesn't need to span several the way
+    // a whole settlement does).
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 14, 3, rng, 12, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    castleRegionClaimed.add(regionKey);
+    const { sx0, sz0, sx1, sz1, floor } = site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 25); // the keep's own towers reach well above a house or shop
+    const tx0 = sx0, tx1 = tx0 + 4, tz0 = sz0, tz1 = tz0 + 4; // tower, 5x5, west side
+    const kx0 = tx0 + 5, kx1 = sx1, kz0 = sz0, kz1 = sz1; // keep, 19x15
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    buildCastleTower(tx0, tz0, floor, reg);
+    const keepShell = buildCastleKeep(kx0, kz0, floor, reg);
+    buildCastleMoat(sx0, sx1, sz0, sz1, floor, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
+    // Wrapped — these two are extras on top of the core castle (which
+    // must always succeed, moat and all): a bug in the dungeon or the
+    // guards should never take the whole castle down with it. Logged
+    // rather than silently swallowed, so a real problem here is at
+    // least visible in the console instead of just quietly missing
+    // in-game.
+    try {
+      buildCastleDungeon(kx0, kz0, floor, reg);
+      reg.npcs = reg.npcs.concat(spawnCastleGuards(kx0, kx1, kz0, kz1, floor, ck, rng));
+    } catch (err) {
+      console.warn('castle dungeon/guards build error (recovered):', err);
+    }
+    // shapeFn — the keep+tower's real shape isn't the same as its
+    // bounding box (the notch where neither one reaches), so the
+    // reactive override needs to be told the difference; moat carries
+    // what's needed to reproduce the moat/bridge too, for the same
+    // reason. Both only matter if this castle's OWN box ever spans a
+    // chunk boundary — standalone:true otherwise keeps the reactive
+    // path from doing anything outside this box at all (see its own
+    // comment).
+    function inCastle(x, z) {
+      return (x >= kx0 && x <= kx1 && z >= kz0 && z <= kz1) || (x >= tx0 && x <= tx1 && z >= tz0 && z <= tz1);
+    }
+    const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: 2, doorSide: 'south', standalone: true, shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } };
+    registerBuildingFootprint(entry, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
   function teardownWindmill(ck) {
     removeWindmillSails(ck);
@@ -8224,11 +8278,13 @@
   const HOUSE_FOOTPRINT = 11; // matches buildVillageHouse's own fixed w/d
   const HOUSE_SEARCH_PAD = 1; // margin kept clear/level on every side of the house itself
   const HOUSE_SEARCH_SIZE = HOUSE_FOOTPRINT + HOUSE_SEARCH_PAD * 2; // 13 — the whole safeguarded area, registered as this house's footprint so nothing else can be placed inside it either
-  const HOUSE_MAX_VARIANCE = 3; // a candidate site's natural high point minus its low point, across the whole 13x13 area, must be at or under this to qualify
-  const HOUSE_STANDALONE_STRIDE = VILLAGE_CHUNK_STRIDE; // reuses the density already tuned for the old village grid (roughly one every 320 blocks)
-  const VILLAGE_MIN_GAP = 250; // block gap enforced between separate settlements' own centres, independent of HOUSE_STANDALONE_STRIDE's own grid spacing — a starting value to try, not a final one; easy to retune without touching the grid itself
+  const HOUSE_MAX_VARIANCE = 3; // a candidate site's natural high point minus its low point, across its own footprint, must be at or under this to qualify
+  const SETTLEMENT_STRIDE = 31; // 31*32 = 992, ~1000 blocks apart, jittered within the region — was HOUSE_STANDALONE_STRIDE (320 blocks, reusing the old village grid's own density); this is the actual requested spacing now, not a hand-me-down from a different system
+  const VILLAGE_MIN_GAP = 1000; // force-distance backstop against the last settlement's own centre, independent of SETTLEMENT_STRIDE's own grid spacing — first value to try, not a final one
+  const SETTLEMENT_RADIUS = 65; // half of the ~130-block area a house + shop + church + farm can spread across at their old, already-tuned distances from each other
+  const SETTLEMENT_AREA_MAX_VARIANCE = 12; // "mostly flat", not flat — a coarse, sparse-sampled check over the WHOLE settlement radius, just to rule out an obviously bad site (a cliff, a mountainside) before spending time on each building's own much tighter (<=3) search
   let lastSettlementPos = { x: -Infinity, z: -Infinity }; // updated the moment a settlement is committed to, before it builds anything — same reasoning the old village system's lastVillageWorldPos had: this needs to be current before any knock-on chunk generation this settlement's own build might trigger, or that generation could see a stale position and misjudge its own distance check
-  const houseRegionClaimed = new Set(); // "gx_gz" -> a house has already landed somewhere in this HOUSE_STANDALONE_STRIDE x STRIDE region this session — same idea as shipwreckRegionClaimed, and for the same reason: the chunk assigned as a region's own candidate says nothing about whether IT has suitable land, so any chunk in the region gets a chance instead of just one fixed one.
+  const houseRegionClaimed = new Set(); // "gx_gz" -> a settlement has already landed somewhere in this SETTLEMENT_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as shipwreckRegionClaimed
   // Returns the floor height a house should sit at if (sx0,sz0) (top-left
   // corner of the full 13x13 safeguarded area) qualifies, or null if it
   // doesn't — either the height varies by more than HOUSE_MAX_VARIANCE
@@ -8237,31 +8293,16 @@
   // anywhere in or near the site would otherwise inflate columnHeight
   // and make an otherwise-flat spot look artificially steep (see
   // groundHeightOnly's own declaration comment).
-  function findFlatHouseSite(sx0, sz0) {
-    let lo = Infinity, hi = -Infinity;
-    for (let x = sx0; x < sx0 + HOUSE_SEARCH_SIZE; x++) {
-      for (let z = sz0; z < sz0 + HOUSE_SEARCH_SIZE; z++) {
-        const h = groundHeightOnly.get(x + ',' + z);
-        if (h === undefined) return null;
-        if (h < SEA_LEVEL) return null; // a flat LAKE BED still passes the variance check below — this is what was actually letting houses land underwater. h < SEA_LEVEL means natural generation put water on top of this column; only dry ground (h >= SEA_LEVEL, no water layer at all here) counts as a candidate site.
-        if (h < lo) lo = h;
-        if (h > hi) hi = h;
-      }
-    }
-    if (hi - lo > HOUSE_MAX_VARIANCE) return null;
-    return Math.round((lo + hi) / 2);
-  }
-  // Generalised version of the above for the OTHER buildings clustered
-  // around a house (shop/church/landmark/farm) — same idea (dry,
-  // low-variance ground, a small correction to reach one level floor),
-  // just for an arbitrary footprint size and search radius around an
-  // anchor point instead of the house's own fixed 13x13/whole-chunk
-  // search. Constrained to stay within the SAME chunk as the anchor
-  // house (chunkX0/X1/Z0/Z1) — a building spilling into a neighbouring,
-  // not-yet-generated chunk is a real bug class this file has hit
-  // before (see registerBuildingFootprint's own comments), and unlike
-  // the house itself, these don't need the reactive fallback machinery
-  // that would otherwise be needed to handle that safely.
+  // Finds a flat, dry site of the given size somewhere within
+  // [minDist,maxDist] of an anchor point, at a random angle, trying up
+  // to `attempts` times. Used for the house itself (anchored on a
+  // coarsely-validated settlement centre, small radius) and for every
+  // other building clustered around it (shop/church/landmark/farm,
+  // anchored on the house, wider radii) — same search either way, just
+  // different sizes/distances. chunkX0/X1/Z0/Z1 optionally constrain the
+  // site to one chunk (pass -Infinity/Infinity to allow it to span
+  // several, which the settlement's own companions now do — see
+  // maybeBuildSettlement).
   function findNearbyFlatSite(anchorX, anchorZ, sizeX, sizeZ, minDist, maxDist, maxVariance, rng, attempts, ck, chunkX0, chunkX1, chunkZ0, chunkZ1) {
     for (let i = 0; i < attempts; i++) {
       const angle = rng() * Math.PI * 2, dist = minDist + rng() * (maxDist - minDist);
@@ -8307,34 +8348,61 @@
       }
     }
   }
-  function maybeBuildStandaloneHouse(cx, cz) {
-    const gx = Math.floor(cx / HOUSE_STANDALONE_STRIDE), gz = Math.floor(cz / HOUSE_STANDALONE_STRIDE);
+  // Sparse, cheap check that a candidate settlement centre's WHOLE
+  // surrounding area (SETTLEMENT_RADIUS out in every direction) is
+  // plausible before spending time on each building's own much more
+  // precise search — samples a grid of points rather than every column,
+  // since this can be a ~130-block-wide area spanning several chunks.
+  // Requires every sampled point to already be generated (undefined
+  // means that chunk hasn't streamed in yet) and dry; only loosely
+  // bounds how much the ground varies overall ("mostly flat", not
+  // flat — each building's OWN search further down still requires its
+  // own <=3 variance within its own footprint).
+  function settlementAreaPlausible(ccx, ccz) {
+    let lo = Infinity, hi = -Infinity;
+    for (let dx = -SETTLEMENT_RADIUS; dx <= SETTLEMENT_RADIUS; dx += 13) {
+      for (let dz = -SETTLEMENT_RADIUS; dz <= SETTLEMENT_RADIUS; dz += 13) {
+        const h = groundHeightOnly.get((ccx+dx) + ',' + (ccz+dz));
+        if (h === undefined || h < SEA_LEVEL) return false;
+        if (h < lo) lo = h;
+        if (h > hi) hi = h;
+      }
+    }
+    return (hi - lo) <= SETTLEMENT_AREA_MAX_VARIANCE;
+  }
+  function maybeBuildSettlement(cx, cz) {
+    const gx = Math.floor(cx / SETTLEMENT_STRIDE), gz = Math.floor(cz / SETTLEMENT_STRIDE);
     const regionKey = gx + '_' + gz;
     if (houseRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return; // something (a house from a reload, or another structure's padded reach) is already registered touching this chunk
+    if (villageHouseFootprints.has(ck)) return; // something (a settlement from a reload, or another structure's padded reach) is already registered touching this chunk
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const chunkX0 = baseX, chunkX1 = baseX + CHUNK_SIZE - 1, chunkZ0 = baseZ, chunkZ1 = baseZ + CHUNK_SIZE - 1;
     const rng = mulberry32(seedFromHash(cx*7919 + 31, cz*6113 + 71));
-    const maxOffset = CHUNK_SIZE - HOUSE_SEARCH_SIZE; // how far the site's own top-left corner can range and still fit entirely within this one chunk
-    let site = null;
-    for (let i = 0; i < 10; i++) {
-      const sx0 = baseX + Math.floor(rng() * (maxOffset + 1));
-      const sz0 = baseZ + Math.floor(rng() * (maxOffset + 1));
-      const floor = findFlatHouseSite(sx0, sz0);
-      if (floor === null) continue;
-      // Settlement-to-settlement spacing — independent of the region
-      // grid's own inherent spacing (see VILLAGE_MIN_GAP's own comment).
-      const ccx = sx0 + HOUSE_SEARCH_SIZE/2, ccz = sz0 + HOUSE_SEARCH_SIZE/2;
+    // A few random candidate centres within this one chunk — each
+    // checked for the ~1000-block settlement gap first (cheapest check),
+    // then the coarse area-plausibility sample above. The settlement
+    // itself can end up spanning several chunks outward from whichever
+    // centre passes, which is exactly why this only checks broad
+    // plausibility here rather than trying to fit everything inside one
+    // chunk the way the single-chunk version used to.
+    let centerX = null, centerZ = null;
+    for (let i = 0; i < 6; i++) {
+      const ccx = baseX + Math.floor(rng() * CHUNK_SIZE);
+      const ccz = baseZ + Math.floor(rng() * CHUNK_SIZE);
       const ddx = ccx - lastSettlementPos.x, ddz = ccz - lastSettlementPos.z;
       if (Math.sqrt(ddx*ddx + ddz*ddz) < VILLAGE_MIN_GAP) continue;
-      if (houseTooCloseToExisting(sx0, sx0 + HOUSE_SEARCH_SIZE - 1, sz0, sz0 + HOUSE_SEARCH_SIZE - 1, ck)) continue;
-      site = { sx0, sz0, floor }; break;
+      if (!settlementAreaPlausible(ccx, ccz)) continue;
+      centerX = ccx; centerZ = ccz; break;
     }
-    if (!site) return; // nothing flat/far-enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    if (centerX === null) return; // nothing far-enough/plausible in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work, and as more of the area streams in the coarse check gets more likely to pass too
+    // The house's own precise, tight (<=3 variance) site somewhere close
+    // to this validated centre — the coarse check above only confirmed
+    // the general area looks workable, not that there's an exact 13x13
+    // spot for the house right at its centre.
+    const houseSite = findNearbyFlatSite(centerX, centerZ, HOUSE_SEARCH_SIZE, HOUSE_SEARCH_SIZE, 0, 20, HOUSE_MAX_VARIANCE, rng, 10, ck, -Infinity, Infinity, -Infinity, Infinity);
+    if (!houseSite) return; // the coarse centre looked fine on a sparse sample, but no precise spot for the house itself turned up nearby
     houseRegionClaimed.add(regionKey);
-    const { sx0, sz0, floor } = site;
-    const sx1 = sx0 + HOUSE_SEARCH_SIZE - 1, sz1 = sz0 + HOUSE_SEARCH_SIZE - 1;
+    const { sx0, sz0, sx1, sz1, floor } = houseSite;
     const houseCx = sx0 + HOUSE_SEARCH_SIZE/2, houseCz = sz0 + HOUSE_SEARCH_SIZE/2;
     // Set immediately, before this settlement builds anything — same
     // reasoning the old village system's lastVillageWorldPos had: this
@@ -8353,15 +8421,16 @@
     let resyncX0 = sx0 - 10, resyncX1 = sx1 + 10, resyncZ0 = sz0 - 10, resyncZ1 = sz1 + 10;
     // ── Companions — shop, church, a small landmark, and a farm, each
     // independently searching for their own nearby flat/dry spot the
-    // exact same way the house did. Only ever attempted once a house has
-    // actually landed (rare — once per ~320-block region, and now once
-    // per VILLAGE_MIN_GAP too), so this never adds cost to the ~4 in 5
-    // chunks that don't end up with a house at all. Each one is skipped
-    // outright if nothing suitable turns up nearby — no fallback that
-    // forces an overlap, same principle the old system settled on for
-    // all of these. Distances below are carried over from the old
-    // system's own already-tuned values.
-    const shopSite = findNearbyFlatSite(houseCx, houseCz, 11, 11, 20, 30, HOUSE_MAX_VARIANCE, rng, 8, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
+    // exact same way the house did — now genuinely free to spread out
+    // across the full settlement radius (up to ~65 blocks from the
+    // house), spanning as many chunks as they need to, rather than being
+    // squeezed into the house's own one chunk. Only ever attempted once
+    // a house has actually landed (rare — once per ~1000-block region),
+    // so this never adds cost to chunks that don't end up with a
+    // settlement at all. Each one is skipped outright if nothing
+    // suitable turns up nearby — no fallback that forces an overlap,
+    // same principle the old system settled on for all of these.
+    const shopSite = findNearbyFlatSite(houseCx, houseCz, 11, 11, 20, 30, HOUSE_MAX_VARIANCE, rng, 8, ck, -Infinity, Infinity, -Infinity, Infinity);
     if (shopSite) {
       levelSite(shopSite.sx0, shopSite.sx1, shopSite.sz0, shopSite.sz1, shopSite.floor, 12);
       const shopDoorSide = ['south','north','east','west'][Math.floor(rng()*4)];
@@ -8369,14 +8438,14 @@
       registerBuildingFootprint({ x0: shopSite.sx0, x1: shopSite.sx1, z0: shopSite.sz0, z1: shopSite.sz1, gy: shopSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: shopDoorSide, standalone: true }, ck);
       resyncX0 = Math.min(resyncX0, shopSite.sx0-10); resyncX1 = Math.max(resyncX1, shopSite.sx1+10); resyncZ0 = Math.min(resyncZ0, shopSite.sz0-10); resyncZ1 = Math.max(resyncZ1, shopSite.sz1+10);
     }
-    const churchSite = findNearbyFlatSite(houseCx, houseCz, 15, 21, 24, 40, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
+    const churchSite = findNearbyFlatSite(houseCx, houseCz, 15, 21, 24, 40, HOUSE_MAX_VARIANCE, rng, 10, ck, -Infinity, Infinity, -Infinity, Infinity);
     if (churchSite) {
       levelSite(churchSite.sx0, churchSite.sx1, churchSite.sz0, churchSite.sz1, churchSite.floor, 15); // taller (h=10) plus roof
       const churchShell = buildVillageChurch(churchSite.sx0, churchSite.sz0, churchSite.floor, palette, reg, ck);
       registerBuildingFootprint({ x0: churchSite.sx0, x1: churchSite.sx1, z0: churchSite.sz0, z1: churchSite.sz1, gy: churchSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
       resyncX0 = Math.min(resyncX0, churchSite.sx0-10); resyncX1 = Math.max(resyncX1, churchSite.sx1+10); resyncZ0 = Math.min(resyncZ0, churchSite.sz0-10); resyncZ1 = Math.max(resyncZ1, churchSite.sz1+10);
     }
-    const landmarkSite = findNearbyFlatSite(houseCx, houseCz, 3, 3, 14, 24, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
+    const landmarkSite = findNearbyFlatSite(houseCx, houseCz, 3, 3, 14, 24, HOUSE_MAX_VARIANCE, rng, 10, ck, -Infinity, Infinity, -Infinity, Infinity);
     if (landmarkSite) {
       levelSite(landmarkSite.sx0, landmarkSite.sx1, landmarkSite.sz0, landmarkSite.sz1, landmarkSite.floor, 8);
       const landmarkKind = ['well','statue','bell'][Math.floor(rng()*3)];
@@ -8389,7 +8458,7 @@
     // Farm — same combined 25x16 (farmhouse + wheat + cabbage + pen)
     // layout math as the old system, just anchored on this site's own
     // sx0/sz0 instead of a centre point.
-    const farmSite = findNearbyFlatSite(houseCx, houseCz, 25, 16, 34, 55, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
+    const farmSite = findNearbyFlatSite(houseCx, houseCz, 25, 16, 34, 55, HOUSE_MAX_VARIANCE, rng, 10, ck, -Infinity, Infinity, -Infinity, Infinity);
     if (farmSite) {
       levelSite(farmSite.sx0, farmSite.sx1, farmSite.sz0, farmSite.sz1, farmSite.floor, 14);
       const ffx0 = farmSite.sx0 + 7, ffx1 = ffx0 + 10, ffz0 = farmSite.sz0 + 7, ffz1 = ffz0 + 8; // farmhouse, 11x9

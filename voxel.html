@@ -2814,6 +2814,10 @@
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
     maybeBuildSettlement(cx, cz); // replaces maybeBuildVillage (still defined below, just unused for now) — see its own comment for why
+    maybeBuildShop(cx, cz);
+    maybeBuildChurch(cx, cz);
+    maybeBuildLandmark(cx, cz);
+    maybeBuildFarm(cx, cz);
     maybeBuildWindmill(cx, cz);
     maybeBuildCastle(cx, cz);
     maybeBuildShipwreck(cx, cz);
@@ -7090,13 +7094,15 @@
     // Same flat/dry search every other standalone building now uses,
     // instead of the old unconditional build-wherever-and-wall-it-in —
     // kept to one chunk (a windmill doesn't need to span several the
-    // way a whole settlement does).
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, 7, 7, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    // way a whole settlement does). Search size is the 7x7 windmill plus
+    // 2 blocks cleared beyond its own walls on every side.
+    const size = 7 + HOUSE_SEARCH_PAD*2; // 11
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     windmillRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 20); // windmill is tall (h=9, plus roof, plus sails) — clears generously
-    const { reg: windmillReg } = buildWindmillStructure(sx0, sz0, floor, ck);
+    const { reg: windmillReg } = buildWindmillStructure(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, ck);
     windmillRegs.set(ck, windmillReg);
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: WINDMILL_PALETTE.trim, doorSide: 'north', standalone: true };
     registerBuildingFootprint(entry, ck);
@@ -7112,21 +7118,27 @@
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const rng = mulberry32(seedFromHash(cx*4001 + 601, cz*3001 + 701));
-    // Combined keep+tower footprint is 24 wide x 15 deep — searched as
-    // one block the same way every other standalone building's site is,
-    // kept to one chunk (a castle doesn't need to span several the way
-    // a whole settlement does).
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 14, HOUSE_MAX_VARIANCE, rng, 12, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    // Combined keep+tower footprint is 24 wide x 15 deep, but the moat
+    // (see buildCastleMoat) reaches a further 6 blocks out beyond THAT —
+    // the search/level area has to cover the moat's own reach too, plus
+    // a small margin past it, or the moat ends up dug into whatever raw,
+    // uncleared terrain happened to be sitting there, which is exactly
+    // what was missing before.
+    const MOAT_REACH = 6, CASTLE_PAD = MOAT_REACH + 2;
+    const searchW = 24 + CASTLE_PAD*2, searchD = 15 + CASTLE_PAD*2; // 40x31
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, searchW, searchD, 0, 8, HOUSE_MAX_VARIANCE, rng, 12, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     castleRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 25); // the keep's own towers reach well above a house or shop
-    const tx0 = sx0, tx1 = tx0 + 4, tz0 = sz0, tz1 = tz0 + 4; // tower, 5x5, west side
-    const kx0 = tx0 + 5, kx1 = sx1, kz0 = sz0, kz1 = sz1; // keep, 19x15
+    const px0 = sx0 + CASTLE_PAD, pz0 = sz0 + CASTLE_PAD; // combined tower+keep's own top-left, inside the padding
+    const px1 = px0 + 23, pz1 = pz0 + 14; // 24x15
+    const tx0 = px0, tx1 = tx0 + 4, tz0 = pz0, tz1 = tz0 + 4; // tower, 5x5, west side
+    const kx0 = tx0 + 5, kx1 = px1, kz0 = pz0, kz1 = pz1; // keep, 19x15
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     buildCastleTower(tx0, tz0, floor, reg);
     const keepShell = buildCastleKeep(kx0, kz0, floor, reg);
-    buildCastleMoat(sx0, sx1, sz0, sz1, floor, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
+    buildCastleMoat(px0, px1, pz0, pz1, floor, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre; reaches MOAT_REACH beyond px0/px1/pz0/pz1 on its own, comfortably inside the wider levelled area above
     // Wrapped — these two are extras on top of the core castle (which
     // must always succeed, moat and all): a bug in the dungeon or the
     // guards should never take the whole castle down with it. Logged
@@ -8276,7 +8288,7 @@
   // chunk up front, no 50-block-tall clearing box, no wall/ramp
   // construction at all.
   const HOUSE_FOOTPRINT = 11; // matches buildVillageHouse's own fixed w/d
-  const HOUSE_SEARCH_PAD = 1; // margin kept clear/level on every side of the house itself
+  const HOUSE_SEARCH_PAD = 2; // was 1 — clearing needs to reach 2 blocks beyond the walls, not 1
   const HOUSE_SEARCH_SIZE = HOUSE_FOOTPRINT + HOUSE_SEARCH_PAD * 2; // 13 — the whole safeguarded area, registered as this house's footprint so nothing else can be placed inside it either
   const HOUSE_MAX_VARIANCE = 5; // raised from 3 — the multi-chunk settlement area (spanning several chunks, most of which are frequently still ungenerated at trigger time — only ~160 blocks around the player is ever actually loaded) essentially never found anywhere fully generated to check, which is what caused settlements to stop appearing at all. Reverted to the single-chunk approach below; this relaxation makes a few more single-chunk candidates qualify too.
   const HOUSE_STANDALONE_STRIDE = VILLAGE_CHUNK_STRIDE; // reuses the density already tuned for the old village grid (roughly one every 320 blocks) — back from the ~1000-block SETTLEMENT_STRIDE, which was tied to the multi-chunk area that didn't work out
@@ -8353,15 +8365,14 @@
     const ck = cx + '_' + cz;
     if (villageHouseFootprints.has(ck)) return; // something (a settlement from a reload, or another structure's padded reach) is already registered touching this chunk
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const chunkX0 = baseX, chunkX1 = baseX + CHUNK_SIZE - 1, chunkZ0 = baseZ, chunkZ1 = baseZ + CHUNK_SIZE - 1;
     const rng = mulberry32(seedFromHash(cx*7919 + 31, cz*6113 + 71));
-    // Back to searching for the house's own precise (<=5 variance) site
-    // directly within this one chunk — the multi-chunk version tried to
-    // validate a much wider area first, but that area is frequently only
-    // partly generated (only ~160 blocks around the player is ever
-    // actually loaded), so it essentially never found anywhere fully
-    // generated to check. Companions below are similarly back to being
-    // confined to this same chunk.
+    // Searching for the house's own precise (<=5 variance) site directly
+    // within this one chunk. Shop/church/landmark/farm are now fully
+    // separate standalone systems (see maybeBuildShop etc. below) rather
+    // than companions searched near this house — trying to fit several
+    // buildings inside one 32-wide chunk alongside the house was the
+    // actual cause of settlements rarely getting more than one or two
+    // extra buildings.
     const maxOffset = CHUNK_SIZE - HOUSE_SEARCH_SIZE;
     let site = null;
     for (let i = 0; i < 10; i++) {
@@ -8388,12 +8399,12 @@
     houseRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     const houseCx = sx0 + HOUSE_SEARCH_SIZE/2, houseCz = sz0 + HOUSE_SEARCH_SIZE/2;
-    // Set immediately, before this settlement builds anything — same
+    // Set immediately, before this house builds anything — same
     // reasoning the old village system's lastVillageWorldPos had: this
-    // settlement's own build can trigger further chunk generation
-    // nearby (resyncChunksInRange below), and that generation needs to
-    // see this settlement's real position, not a stale one, or the
-    // distance check above could pass when it shouldn't.
+    // house's own build can trigger further chunk generation nearby
+    // (resyncChunksInRange below), and that generation needs to see this
+    // house's real position, not a stale one, or the distance check
+    // above could pass when it shouldn't.
     lastSettlementPos = { x: houseCx, z: houseCz };
     levelSite(sx0, sx1, sz0, sz1, floor, 12); // 12 clears the house's own 7 tall + roof with margin, nowhere near the old system's 50-block clearance
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
@@ -8402,64 +8413,122 @@
     buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
     registerBuildingFootprint(entry, ck);
-    let resyncX0 = sx0 - 10, resyncX1 = sx1 + 10, resyncZ0 = sz0 - 10, resyncZ1 = sz1 + 10;
-    // ── Companions — shop, church, a small landmark, and a farm, each
-    // independently searching for their own nearby flat/dry spot the
-    // exact same way the house did, kept within this same chunk (see
-    // findNearbyFlatSite's own chunk-bound params) — a multi-chunk
-    // version was tried and reverted (see HOUSE_MAX_VARIANCE's own
-    // comment), so a settlement may end up with fewer companions than
-    // hoped when the house's own chunk is crowded, but this is what's
-    // actually reliable. Only ever attempted once a house has actually
-    // landed (rare — once per ~320-block region), so this never adds
-    // cost to chunks that don't end up with a settlement at all. Each
-    // one is skipped outright if nothing suitable turns up nearby — no
-    // fallback that forces an overlap, same principle the old system
-    // settled on for all of these.
-    const shopSite = findNearbyFlatSite(houseCx, houseCz, 11, 11, 20, 30, HOUSE_MAX_VARIANCE, rng, 8, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
-    if (shopSite) {
-      levelSite(shopSite.sx0, shopSite.sx1, shopSite.sz0, shopSite.sz1, shopSite.floor, 12);
-      const shopDoorSide = ['south','north','east','west'][Math.floor(rng()*4)];
-      buildVillageShop(shopSite.sx0, shopSite.sz0, shopSite.floor, palette, shopDoorSide, reg);
-      registerBuildingFootprint({ x0: shopSite.sx0, x1: shopSite.sx1, z0: shopSite.sz0, z1: shopSite.sz1, gy: shopSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: shopDoorSide, standalone: true }, ck);
-      resyncX0 = Math.min(resyncX0, shopSite.sx0-10); resyncX1 = Math.max(resyncX1, shopSite.sx1+10); resyncZ0 = Math.min(resyncZ0, shopSite.sz0-10); resyncZ1 = Math.max(resyncZ1, shopSite.sz1+10);
-    }
-    const churchSite = findNearbyFlatSite(houseCx, houseCz, 15, 21, 24, 40, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
-    if (churchSite) {
-      levelSite(churchSite.sx0, churchSite.sx1, churchSite.sz0, churchSite.sz1, churchSite.floor, 15); // taller (h=10) plus roof
-      const churchShell = buildVillageChurch(churchSite.sx0, churchSite.sz0, churchSite.floor, palette, reg, ck);
-      registerBuildingFootprint({ x0: churchSite.sx0, x1: churchSite.sx1, z0: churchSite.sz0, z1: churchSite.sz1, gy: churchSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
-      resyncX0 = Math.min(resyncX0, churchSite.sx0-10); resyncX1 = Math.max(resyncX1, churchSite.sx1+10); resyncZ0 = Math.min(resyncZ0, churchSite.sz0-10); resyncZ1 = Math.max(resyncZ1, churchSite.sz1+10);
-    }
-    const landmarkSite = findNearbyFlatSite(houseCx, houseCz, 3, 3, 14, 24, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
-    if (landmarkSite) {
-      levelSite(landmarkSite.sx0, landmarkSite.sx1, landmarkSite.sz0, landmarkSite.sz1, landmarkSite.floor, 8);
-      const landmarkKind = ['well','statue','bell'][Math.floor(rng()*3)];
-      if (landmarkKind === 'well') buildVillageWell(landmarkSite.sx0, landmarkSite.sz0, landmarkSite.floor, palette, reg);
-      else if (landmarkKind === 'statue') buildVillageStatue(landmarkSite.sx0, landmarkSite.sz0, landmarkSite.floor, palette);
-      else buildVillageBell(landmarkSite.sx0, landmarkSite.sz0, landmarkSite.floor, palette, reg);
-      registerBuildingFootprint({ x0: landmarkSite.sx0, x1: landmarkSite.sx1, z0: landmarkSite.sz0, z1: landmarkSite.sz1, gy: landmarkSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true }, ck);
-      resyncX0 = Math.min(resyncX0, landmarkSite.sx0-10); resyncX1 = Math.max(resyncX1, landmarkSite.sx1+10); resyncZ0 = Math.min(resyncZ0, landmarkSite.sz0-10); resyncZ1 = Math.max(resyncZ1, landmarkSite.sz1+10);
-    }
-    // Farm — same combined 25x16 (farmhouse + wheat + cabbage + pen)
-    // layout math as the old system, just anchored on this site's own
-    // sx0/sz0 instead of a centre point.
-    const farmSite = findNearbyFlatSite(houseCx, houseCz, 25, 16, 34, 55, HOUSE_MAX_VARIANCE, rng, 10, ck, chunkX0, chunkX1, chunkZ0, chunkZ1);
-    if (farmSite) {
-      levelSite(farmSite.sx0, farmSite.sx1, farmSite.sz0, farmSite.sz1, farmSite.floor, 14);
-      const ffx0 = farmSite.sx0 + 7, ffx1 = ffx0 + 10, ffz0 = farmSite.sz0 + 7, ffz1 = ffz0 + 8; // farmhouse, 11x9
-      const fwx0 = farmSite.sx0, fwx1 = ffx0 - 1, fwz0 = ffz0, fwz1 = ffz1; // wheat, west, 7 wide
-      const fgx0 = ffx1 + 1, fgx1 = farmSite.sx1, fgz0 = ffz0, fgz1 = ffz1; // cabbage, east, 7 wide
-      const fpx0 = farmSite.sx0, fpx1 = farmSite.sx1, fpz0 = farmSite.sz0, fpz1 = ffz0 - 1; // pen, north (behind), 7 deep
-      buildFarmhouse(ffx0, ffz0, farmSite.floor, palette, reg);
-      buildCropField(fwx0, fwx1, fwz0, fwz1, farmSite.floor, buildWheatStalk, reg);
-      buildCropField(fgx0, fgx1, fgz0, fgz1, farmSite.floor, buildCabbageHead, reg);
-      buildAnimalPen(fpx0, fpx1, fpz0, fpz1, farmSite.floor, rng, reg, ck);
-      registerBuildingFootprint({ x0: farmSite.sx0, x1: farmSite.sx1, z0: farmSite.sz0, z1: farmSite.sz1, gy: farmSite.floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'south', standalone: true }, ck);
-      resyncX0 = Math.min(resyncX0, farmSite.sx0-10); resyncX1 = Math.max(resyncX1, farmSite.sx1+10); resyncZ0 = Math.min(resyncZ0, farmSite.sz0-10); resyncZ1 = Math.max(resyncZ1, farmSite.sz1+10);
-    }
     villageRegistry.set(ck, reg);
-    resyncChunksInRange(resyncX0, resyncX1, resyncZ0, resyncZ1);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+  // ── Shop — fully independent of the house now, its own placement
+  // grid entirely (see "let's just separate all buildings"), same
+  // search-and-level approach throughout.
+  const SHOP_CHUNK_STRIDE = 12; // 12*32 = 384 blocks apart, jittered
+  const shopRegionClaimed = new Set();
+  function maybeBuildShop(cx, cz) {
+    const gx = Math.floor(cx / SHOP_CHUNK_STRIDE), gz = Math.floor(cz / SHOP_CHUNK_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (shopRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageHouseFootprints.has(ck)) return;
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*3079 + 151, cz*2953 + 251));
+    const size = 11 + HOUSE_SEARCH_PAD*2; // 15 — 11x11 shop, cleared 2 blocks beyond its own walls
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return;
+    shopRegionClaimed.add(regionKey);
+    const { sx0, sz0, sx1, sz1, floor } = site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 12);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south','north','east','west'][Math.floor(rng()*4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+  // ── Church — fully independent, own grid.
+  const CHURCH_CHUNK_STRIDE = 15; // 480 blocks apart
+  const churchRegionClaimed = new Set();
+  function maybeBuildChurch(cx, cz) {
+    const gx = Math.floor(cx / CHURCH_CHUNK_STRIDE), gz = Math.floor(cz / CHURCH_CHUNK_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (churchRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageHouseFootprints.has(ck)) return;
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*3541 + 331, cz*2711 + 431));
+    const sizeX = 15 + HOUSE_SEARCH_PAD*2, sizeZ = 21 + HOUSE_SEARCH_PAD*2; // 19x25 — 15x21 church, cleared 2 beyond its own walls
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 12, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return;
+    churchRegionClaimed.add(regionKey);
+    const { sx0, sz0, sx1, sz1, floor } = site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 15); // taller (h=10) plus roof
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const churchShell = buildVillageChurch(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, reg, ck);
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+  // ── Landmark (well/statue/bell) — fully independent, own grid. Small
+  // and common — a much tighter stride than the others.
+  const LANDMARK_CHUNK_STRIDE = 9; // 288 blocks apart
+  const landmarkRegionClaimed = new Set();
+  function maybeBuildLandmark(cx, cz) {
+    const gx = Math.floor(cx / LANDMARK_CHUNK_STRIDE), gz = Math.floor(cz / LANDMARK_CHUNK_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (landmarkRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageHouseFootprints.has(ck)) return;
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*2081 + 91, cz*2437 + 181));
+    const size = 3 + HOUSE_SEARCH_PAD*2; // 7 — 3x3 landmark, cleared 2 beyond its own edge
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return;
+    landmarkRegionClaimed.add(regionKey);
+    const { sx0, sz0, floor } = site;
+    levelSite(sx0, site.sx1, sz0, site.sz1, floor, 8);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const landmarkKind = ['well','statue','bell'][Math.floor(rng()*3)];
+    const lx0 = sx0 + HOUSE_SEARCH_PAD, lz0 = sz0 + HOUSE_SEARCH_PAD;
+    if (landmarkKind === 'well') buildVillageWell(lx0, lz0, floor, palette, reg);
+    else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, floor, palette);
+    else buildVillageBell(lx0, lz0, floor, palette, reg);
+    registerBuildingFootprint({ x0: sx0, x1: site.sx1, z0: sz0, z1: site.sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, site.sx1 + 10, sz0 - 10, site.sz1 + 10);
+  }
+  // ── Farm — fully independent, own grid. Combined 25x16 (farmhouse +
+  // wheat + cabbage + pen) layout math is unchanged from before, just
+  // anchored on this site's own sx0/sz0.
+  const FARM_CHUNK_STRIDE = 14; // 448 blocks apart
+  const farmRegionClaimed = new Set();
+  function maybeBuildFarm(cx, cz) {
+    const gx = Math.floor(cx / FARM_CHUNK_STRIDE), gz = Math.floor(cz / FARM_CHUNK_STRIDE);
+    const regionKey = gx + '_' + gz;
+    if (farmRegionClaimed.has(regionKey)) return;
+    const ck = cx + '_' + cz;
+    if (villageHouseFootprints.has(ck)) return;
+    const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
+    const rng = mulberry32(seedFromHash(cx*2657 + 71, cz*3319 + 211));
+    const sizeX = 25 + HOUSE_SEARCH_PAD*2, sizeZ = 16 + HOUSE_SEARCH_PAD*2; // 29x20 — the whole complex, cleared 2 beyond its own outer edge
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    if (!site) return;
+    farmRegionClaimed.add(regionKey);
+    const { sx0, sz0, sx1, sz1, floor } = site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 14);
+    const px0 = sx0 + HOUSE_SEARCH_PAD, pz0 = sz0 + HOUSE_SEARCH_PAD; // the 25x16 complex's own top-left, inside the padding
+    const ffx0 = px0 + 7, ffx1 = ffx0 + 10, ffz0 = pz0 + 7, ffz1 = ffz0 + 8; // farmhouse, 11x9
+    const fwx0 = px0, fwx1 = ffx0 - 1, fwz0 = ffz0, fwz1 = ffz1; // wheat, west, 7 wide
+    const fgx0 = ffx1 + 1, fgx1 = px0 + 24, fgz0 = ffz0, fgz1 = ffz1; // cabbage, east, 7 wide
+    const fpx0 = px0, fpx1 = px0 + 24, fpz0 = pz0, fpz1 = ffz0 - 1; // pen, north (behind), 7 deep
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    buildFarmhouse(ffx0, ffz0, floor, palette, reg);
+    buildCropField(fwx0, fwx1, fwz0, fwz1, floor, buildWheatStalk, reg);
+    buildCropField(fgx0, fgx1, fgz0, fgz1, floor, buildCabbageHead, reg);
+    buildAnimalPen(fpx0, fpx1, fpz0, fpz1, floor, rng, reg, ck);
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'south', standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
   const VILLAGES_ENABLED = true;
   function maybeBuildVillage(cx, cz) {

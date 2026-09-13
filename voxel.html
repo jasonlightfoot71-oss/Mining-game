@@ -3574,11 +3574,24 @@
   // reprocesses the ENTIRE loaded world, not just the one block that
   // changed, and the loaded world is now large enough for that to take
   // multiple frames.
-  function handleLocalBlockChange(x, y, z) {
+  function handleLocalBlockChange(x, y, z, removedType) {
     const cells = [[x,y,z],[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
     for (const [cx,cy,cz] of cells) updateFullInstanceAt(cx,cy,cz);
     rebuildWaterGeometry(); // cheap relative to the block rebuild — keeps water's own occlusion in sync with whatever changed
-    rebuildGlassGeometry(); // same idea — keeps joined-glass seams in sync with whatever changed, instant feedback for a deliberate mine/place
+    // Only worth a full glass-panel rebuild if this edit could plausibly
+    // have touched glass at all — either a neighbouring cell (or this
+    // one) is currently glass, which this edit could have changed the
+    // face visibility of, or the caller tells us the block just REMOVED
+    // here was glass (removedType) — that can't be detected by looking
+    // at the current state, since by the time this runs the removal has
+    // already happened. Skips the (otherwise unconditional, on every
+    // single mine/place anywhere) full rebuild — which has to scan the
+    // ENTIRE blocks map just to relocate glass cells — for the vast
+    // majority of edits that have nothing to do with glass at all. This
+    // was the actual cause of lag scaling with how much of the world had
+    // been explored: every edit anywhere paid that full-map cost
+    // regardless of whether glass was ever involved.
+    if ((removedType !== undefined && GLASS_TYPE_SET.has(removedType)) || cells.some(([cx,cy,cz]) => GLASS_TYPE_SET.has(blocks.get(key(cx,cy,cz))))) rebuildGlassGeometry();
     // Keeps flowers/snow in sync with whatever just changed — without
     // this, mining a grass block left its flower floating in place, and
     // newly-placed grass never grew any at all, since the overlay only
@@ -5575,7 +5588,22 @@
     }
   }
   const HOUSE_MIN_GAP = 15;
+  const PLAYER_BUILD_SAFE_MARGIN = 15; // matches HOUSE_MIN_GAP — how far outside a proposed footprint the player needs to be standing before it's allowed to generate there at all
   function houseTooCloseToExisting(fx0, fx1, fz0, fz1, excludeCk) {
+    // The player being physically standing where a structure is about to
+    // generate — walls, a pad, a moat, whatever — is treated exactly
+    // like another building already being there: skip this spot rather
+    // than build around them. This was the actual cause of a castle
+    // generating around the player and needing to be dug out of — chunk
+    // generation (and everything it builds) had no idea the player
+    // existed at all. A structure simply not appearing here because the
+    // player happened to be standing on the spot is a far smaller cost
+    // than trapping them, and only matters for the one instant the
+    // player's own position happens to overlap with where a structure
+    // was about to land — vanishingly rare in practice.
+    const dpx = Math.max(0, fx0 - player.pos.x, player.pos.x - fx1);
+    const dpz = Math.max(0, fz0 - player.pos.z, player.pos.z - fz1);
+    if (Math.sqrt(dpx * dpx + dpz * dpz) < PLAYER_BUILD_SAFE_MARGIN) return true;
     const seen = new Set(); // the same entry is now registered under several chunk keys — only ever check it once
     for (const [, list] of villageHouseFootprints) {
       for (const h of list) {
@@ -8876,6 +8904,7 @@
   function destroyBlockAt(bx, by, bz) {
     const k = key(bx, by, bz);
     if (!blocks.has(k)) return false;
+    const removedType = blocks.get(k); // captured before deletion — see handleLocalBlockChange's own comment on why
     blocks.delete(k);
     stepRotations.delete(k);
     if (pubWaterAllowed(bx, bz)) {
@@ -8897,7 +8926,7 @@
     removeSignsForBlock(bx, by, bz);
     removeDoorsForBlock(bx, by, bz);
     removeFurnitureForBlock(bx, by, bz);
-    handleLocalBlockChange(bx, by, bz);
+    handleLocalBlockChange(bx, by, bz, removedType);
     if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
       try { mpChannel.send({ type: 'broadcast', event: 'gunBlockDestroy', payload: { x: bx, y: by, z: bz } }); } catch (e) {}
     }
@@ -15676,6 +15705,7 @@
         if (currentWorldId !== mpConnectedWorldId) return; // stale message from a world we've since left
         const { x, y, z, t, rot } = payload;
         const k = key(x, y, z);
+        const removedType = t === -1 ? blocks.get(k) : undefined; // captured before deletion — see handleLocalBlockChange's own comment on why
         if (t === -1) { blocks.delete(k); stepRotations.delete(k); }
         else { blocks.set(k, t); if (rot) stepRotations.set(k, rot); else stepRotations.delete(k); }
         blockEdits.set(k, t);
@@ -15684,7 +15714,7 @@
         const colKey = x+','+z;
         const prevColH = columnHeight.get(colKey);
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
-        handleLocalBlockChange(x, y, z); // updates the visible mesh instance immediately, exactly like a local edit would
+        handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
       });
       // The football — see updateFootballBall's own comment on why this
       // is a "snap toward the last broadcast" sync rather than anything
@@ -15795,8 +15825,9 @@
         if (!payload || currentWorldId !== mpConnectedWorldId) return;
         const { x, y, z } = payload;
         const k = key(x, y, z);
+        const removedType = blocks.get(k); // captured before deletion — see handleLocalBlockChange's own comment on why
         blocks.delete(k); stepRotations.delete(k);
-        handleLocalBlockChange(x, y, z);
+        handleLocalBlockChange(x, y, z, removedType);
       });
       channel.on('broadcast', { event: 'vehicleHit' }, ({ payload }) => {
         if (!payload || payload.targetUid !== playerUid) return;
@@ -19204,6 +19235,7 @@
             // below correctly removes whichever kind of instance (full
             // cube or step) actually existed, just by looking at what's
             // in `blocks` now versus before.
+            const removedType = blocks.get(mining.k); // captured before deletion — handleLocalBlockChange below needs to know if this was glass, since by the time it runs the removal has already happened and the current state no longer shows it
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
             // One-time water response, not a continuous simulation (the
@@ -19232,7 +19264,7 @@
             removeSignsForBlock(bx, by, bz);
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
-            handleLocalBlockChange(bx, by, bz); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            handleLocalBlockChange(bx, by, bz, removedType); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
             playThud(150);
             mining = null;
             crackMesh.visible = false;

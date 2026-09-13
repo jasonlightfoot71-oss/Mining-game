@@ -5620,14 +5620,31 @@
     const dpx = Math.max(0, fx0 - player.pos.x, player.pos.x - fx1);
     const dpz = Math.max(0, fz0 - player.pos.z, player.pos.z - fz1);
     if (Math.sqrt(dpx * dpx + dpz * dpz) < PLAYER_BUILD_SAFE_MARGIN) return true;
+    // Scoped to just the chunk keys this candidate's own footprint (plus
+    // the HOUSE_MIN_GAP margin) touches, instead of scanning the entire
+    // villageHouseFootprints map — registerBuildingFootprint already
+    // scatters every building across every chunk key within its own
+    // 20-block padded reach, comfortably more than HOUSE_MIN_GAP (15),
+    // so anything close enough to matter here is already registered
+    // under one of these few keys. Scanning the WHOLE map every time
+    // (every candidate, across 8 separate placement systems) got slower
+    // the more of the world got explored and built up — this was the
+    // real, unbounded-growth cause behind "still lagging, every
+    // generation", not a one-off cost.
+    const ccx0 = Math.floor((fx0 - HOUSE_MIN_GAP) / CHUNK_SIZE), ccx1 = Math.floor((fx1 + HOUSE_MIN_GAP) / CHUNK_SIZE);
+    const ccz0 = Math.floor((fz0 - HOUSE_MIN_GAP) / CHUNK_SIZE), ccz1 = Math.floor((fz1 + HOUSE_MIN_GAP) / CHUNK_SIZE);
     const seen = new Set(); // the same entry is now registered under several chunk keys — only ever check it once
-    for (const [, list] of villageHouseFootprints) {
-      for (const h of list) {
-        if (h.__ck === excludeCk || seen.has(h)) continue;
-        seen.add(h);
-        const dx = Math.max(0, fx0 - h.x1, h.x0 - fx1);
-        const dz = Math.max(0, fz0 - h.z1, h.z0 - fz1);
-        if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
+    for (let tcx = ccx0; tcx <= ccx1; tcx++) {
+      for (let tcz = ccz0; tcz <= ccz1; tcz++) {
+        const list = villageHouseFootprints.get(tcx + '_' + tcz);
+        if (!list) continue;
+        for (const h of list) {
+          if (h.__ck === excludeCk || seen.has(h)) continue;
+          seen.add(h);
+          const dx = Math.max(0, fx0 - h.x1, h.x0 - fx1);
+          const dz = Math.max(0, fz0 - h.z1, h.z0 - fz1);
+          if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
+        }
       }
     }
     return false;
@@ -7119,20 +7136,33 @@
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const rng = mulberry32(seedFromHash(cx*4001 + 601, cz*3001 + 701));
     // Combined keep+tower footprint is 24 wide x 15 deep, but the moat
-    // (see buildCastleMoat) reaches a further 6 blocks out beyond THAT —
-    // the search/level area has to cover the moat's own reach too, plus
-    // a small margin past it, or the moat ends up dug into whatever raw,
-    // uncleared terrain happened to be sitting there, which is exactly
-    // what was missing before.
+    // (see buildCastleMoat) reaches a further 6 blocks out beyond THAT.
+    // The STRICT search/variance check stays at just the 24x15 core —
+    // widening it to include the moat's reach (40x31) made it bigger
+    // than a whole chunk (32 wide), which meant the single-chunk bounds
+    // check could never be satisfied at all, ever, regardless of
+    // terrain — that's what was actually causing castles to never form.
+    // The wider levelling for the moat happens afterward instead,
+    // clamped to this chunk's own bounds, rather than being part of the
+    // strict search.
     const MOAT_REACH = 6, CASTLE_PAD = MOAT_REACH + 2;
-    const searchW = 24 + CASTLE_PAD*2, searchD = 15 + CASTLE_PAD*2; // 40x31
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, searchW, searchD, 0, 8, HOUSE_MAX_VARIANCE, rng, 5, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1); // fewer attempts than the others — this search area (40x31) is by far the biggest, so each attempt costs the most
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     castleRegionClaimed.add(regionKey);
-    const { sx0, sz0, sx1, sz1, floor } = site;
-    levelSite(sx0, sx1, sz0, sz1, floor, 25); // the keep's own towers reach well above a house or shop
-    const px0 = sx0 + CASTLE_PAD, pz0 = sz0 + CASTLE_PAD; // combined tower+keep's own top-left, inside the padding
-    const px1 = px0 + 23, pz1 = pz0 + 14; // 24x15
+    const { floor } = site;
+    const px0 = site.sx0, pz0 = site.sz0, px1 = site.sx1, pz1 = site.sz1; // the 24x15 core itself
+    // Widened leveling for the moat's own reach, clamped to this same
+    // chunk's bounds — the core (24x15) already fits safely within one
+    // chunk, but the moat's further 8-block reach on each side could
+    // spill past this chunk's edge if the core landed near it. Clamping
+    // (rather than letting it spill into a possibly-ungenerated
+    // neighbour) means the moat might be very slightly less levelled at
+    // that one edge in the rare case the core sits right at a chunk
+    // boundary — a small cosmetic trade-off, not a crash or a missing
+    // castle.
+    const levelX0 = Math.max(baseX, px0 - CASTLE_PAD), levelX1 = Math.min(baseX + CHUNK_SIZE - 1, px1 + CASTLE_PAD);
+    const levelZ0 = Math.max(baseZ, pz0 - CASTLE_PAD), levelZ1 = Math.min(baseZ + CHUNK_SIZE - 1, pz1 + CASTLE_PAD);
+    levelSite(levelX0, levelX1, levelZ0, levelZ1, floor, 25); // the keep's own towers reach well above a house or shop
     const tx0 = px0, tx1 = tx0 + 4, tz0 = pz0, tz1 = tz0 + 4; // tower, 5x5, west side
     const kx0 = tx0 + 5, kx1 = px1, kz0 = pz0, kz1 = pz1; // keep, 19x15
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
@@ -7162,10 +7192,10 @@
     function inCastle(x, z) {
       return (x >= kx0 && x <= kx1 && z >= kz0 && z <= kz1) || (x >= tx0 && x <= tx1 && z >= tz0 && z <= tz1);
     }
-    const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: 2, doorSide: 'south', standalone: true, shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } };
+    const entry = { x0: levelX0, x1: levelX1, z0: levelZ0, z1: levelZ1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: 2, doorSide: 'south', standalone: true, shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } };
     registerBuildingFootprint(entry, ck);
     villageRegistry.set(ck, reg);
-    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    resyncChunksInRange(levelX0 - 10, levelX1 + 10, levelZ0 - 10, levelZ1 + 10);
   }
   function teardownWindmill(ck) {
     removeWindmillSails(ck);
@@ -7349,16 +7379,11 @@
   }
   const SHIPWRECK_MIN_DEPTH = 5; // requested — shallower water doesn't qualify at all now
   const SHIPWRECK_MIN_GAP = 200; // deliberately much larger than HOUSE_MIN_GAP — a single large lake/ocean (which the terrain generation now makes fairly common) can easily span several unrelated SHIPWRECK_CHUNK_STRIDE regions, each unaware the others exist, so the ordinary building-to-building gap (15) did nothing to stop several regions from each independently finding water in the SAME lake and landing a ship in it — this is what was actually causing 5 wrecks in one lake.
+  const shipwreckCenters = []; // {x,z} per wreck placed this session — kept as its own small list rather than scanning villageHouseFootprints, since 200 is much bigger than the 20-block reach a building normally registers itself under, so a nearby-chunk-only scan (like houseTooCloseToExisting now does) would miss wrecks well within range. Shipwrecks are sparse enough (one per SHIPWRECK_CHUNK_STRIDE region at most) that this list stays small regardless of how much of the world gets explored.
   function shipwreckTooCloseToOtherWrecks(wcx, wcz) {
-    const seen = new Set();
-    for (const [, list] of villageHouseFootprints) {
-      for (const h of list) {
-        if (!h.isShipwreck || seen.has(h)) continue;
-        seen.add(h);
-        const hcx = (h.x0 + h.x1) / 2, hcz = (h.z0 + h.z1) / 2; // centre of that wreck's own pit, not this one's
-        const dx = wcx - hcx, dz = wcz - hcz;
-        if (Math.sqrt(dx*dx + dz*dz) < SHIPWRECK_MIN_GAP) return true;
-      }
+    for (const c of shipwreckCenters) {
+      const dx = wcx - c.x, dz = wcz - c.z;
+      if (Math.sqrt(dx*dx + dz*dz) < SHIPWRECK_MIN_GAP) return true;
     }
     return false;
   }
@@ -7402,11 +7427,12 @@
       if (!waterCheckPoints.every(([x,z]) => hasDeepWaterAt(x,z,SHIPWRECK_MIN_DEPTH))) continue;
       if (shipwreckTooCloseToOtherWrecks(wcx, wcz)) continue;
       if (houseTooCloseToExisting(padX0, padX1, padZ0, padZ1, ck)) continue;
-      spot = {hx0,hx1,hz0,hz1,padX0,padX1,padZ0,padZ1}; break;
+      spot = {hx0,hx1,hz0,hz1,padX0,padX1,padZ0,padZ1,wcx,wcz}; break;
     }
     if (!spot) return; // nothing suitable in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     shipwreckRegionClaimed.add(regionKey);
-    const { hx0, hx1, hz0, hz1, padX0, padX1, padZ0, padZ1 } = spot;
+    const { hx0, hx1, hz0, hz1, padX0, padX1, padZ0, padZ1, wcx, wcz } = spot;
+    shipwreckCenters.push({ x: wcx, z: wcz });
     const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
     buildShipwreckHull(hx0, hx1, hz0, hz1, ck, reg);
     shipwreckRegs.set(ck, reg);

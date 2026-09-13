@@ -14552,9 +14552,35 @@
     const r = player.radius;
     const test = (x,y,z) => isSolid(x,y,z) || isSolid(x-r,y,z) || isSolid(x+r,y,z) || isSolid(x,y,z-r) || isSolid(x,y,z+r);
     let {x,y,z} = player.pos;
-    if (!test(newPos.x,y,z)) x = newPos.x;
+    // If horizontal movement is blocked at the player's current height,
+    // try lifting a little before giving up on it. This is what was
+    // missing and caused the actual reported bug: unlike walking's
+    // tryMove, this had no step-up allowance at all, so the player's own
+    // collision radius could keep clipping the shelf/floor edge right
+    // where shallow water drops into deep — exactly where you're
+    // standing the moment you become "submerged" — and since nothing
+    // about ordinary swimming (weightless, no vertical input) ever moved
+    // them clear of it, that one lingering solid neighbour behind them
+    // walled off ALL further horizontal movement until a jump's vertical
+    // boost happened to lift them past it. Swimming is weightless, so
+    // gliding up and over a low obstruction like that should never
+    // actually require a jump.
+    let liftedY = y;
+    if (test(newPos.x, y, z) || test(x, y, newPos.z)) {
+      for (let lift = 0.1; lift <= 1.2; lift += 0.1) {
+        const ly = y + lift;
+        if (!test(newPos.x, ly, z) && !test(x, ly, newPos.z)) { liftedY = ly; break; }
+      }
+    }
+    if (!test(newPos.x, liftedY, z)) x = newPos.x;
+    if (!test(x, liftedY, newPos.z)) z = newPos.z;
+    // Vertical resolves last, against wherever x/z actually ended up —
+    // still driven entirely by the caller's own intended y (normal swim
+    // rise/sink, or the surface clamp); the lift above only ever exists
+    // to get horizontal movement past a snag, never to override where
+    // the caller wants to end up vertically.
+    y = liftedY;
     if (!test(x,newPos.y,z)) y = newPos.y;
-    if (!test(x,y,newPos.z)) z = newPos.z;
     player.pos.set(x,y,z);
   }
 

@@ -7208,8 +7208,20 @@
   // moat) far below or above what "this column is part of a lake/ocean"
   // actually means.
   function hasNaturalWaterAt(x, z) {
-    for (let y = SEA_LEVEL; y >= MIN_TERRAIN_HEIGHT; y--) { if (waterBlocks.has(key(x, y, z))) return true; } // was SEA_LEVEL-12, tuned for the old ~14-block max depth — widened to cover the full new depth range so shipwrecks can still land in a genuinely deep basin
-    return false;
+    // Every candidate point maybeBuildShipwreck checks always falls
+    // within the chunk that's CURRENTLY being generated (the pit's own
+    // padding is smaller than the span the candidate search keeps
+    // candidates away from the chunk's own edge by), and groundHeightOnly
+    // for that whole chunk is already fully populated by the time this
+    // runs (maybeBuildShipwreck is called after the chunk's own column
+    // loop finishes) — so this can just read the height already computed
+    // instead of re-scanning up to 40 blocks of waterBlocks per point.
+    // That rescan was cheap for the one chunk per 49 this used to run
+    // for, but got called for potentially every chunk once any chunk in
+    // its region could claim a shipwreck (see maybeBuildShipwreck) —
+    // this is what turned that into a real, noticeable generation stall.
+    const gh = groundHeightOnly.get(x + ',' + z);
+    return gh !== undefined && gh < SEA_LEVEL;
   }
   const shipwreckRegionClaimed = new Set(); // "gx_gz" -> a shipwreck has already landed somewhere in this SHIPWRECK_CHUNK_STRIDE x STRIDE region this session — see maybeBuildShipwreck's own comment on why this replaced a single fixed "home chunk" per region
   function maybeBuildShipwreck(cx, cz) {
@@ -7247,10 +7259,15 @@
     }
     let spot = null;
     for (const [wcx, wcz] of candidates) {
+      // Water first, then proximity — water is now an O(1) lookup per
+      // point (see hasNaturalWaterAt) but houseTooCloseToExisting still
+      // scans every registered building, which only ever gets more
+      // expensive as a world fills up. Checking water first means the
+      // ~80% of chunks that are dry land skip that scan entirely,
+      // instead of paying for it on every single candidate regardless.
       const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
       const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
       const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
-      if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) continue;
       // Only ever land somewhere that was already a body of water —
       // depth doesn't matter (the pit still carves its own floor down to
       // a sensible depth regardless), but the whole footprint needs to
@@ -7259,7 +7276,9 @@
       // the centre plus all four corners is enough to confirm the whole
       // rectangle is submerged, not just clipping the edge of a pond.
       const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
-      if (waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) { spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break; }
+      if (!waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) continue;
+      if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) continue;
+      spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break;
     }
     if (!spot) return; // nothing suitable in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     shipwreckRegionClaimed.add(regionKey);

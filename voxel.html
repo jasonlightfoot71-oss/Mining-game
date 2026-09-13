@@ -3698,34 +3698,109 @@
     }
     return drained;
   }
+  // Per-chunk cache of already-computed water face geometry, keyed the
+  // same way chunk streaming already keys chunks (chunkKeyOf). Lets a
+  // rebuild skip the expensive per-cell occlusion work entirely for any
+  // chunk whose water hasn't changed since the last time this ran.
+  //
+  // waterBlocks itself stays exactly as-is here — it's still one flat
+  // map, mutated from ~30 different places across the file (mining,
+  // building, terrain generation, drain, fill, village/shipwreck
+  // construction...), and none of that changes. This cache is purely a
+  // rendering-side optimization built on top of it.
+  const waterChunkCache = new Map(); // chunkKey -> { signature, positions, normals }
+  const waterChunkSignatures = new Map(); // chunkKey -> signature as of the LAST rebuild (kept separately from the cache so a chunk can be checked for change even before its geometry is ever computed)
+  // A cheap, order-independent per-cell hash — doesn't need to be
+  // cryptographically strong, just extremely unlikely to collide across
+  // realistic combinations of edits within one chunk. Combined by
+  // addition (not XOR) across a chunk's cells so that, e.g., removing
+  // one cell and adding a different one nearby can't cancel out to the
+  // same signature. `|0` truncates to a 32-bit int at every step so
+  // this can't drift into floating-point imprecision as a chunk
+  // accumulates more water cells (a deep ocean column alone can have
+  // dozens).
+  function waterCellHash(x, y, z, h) {
+    return (((x*73856093) ^ (y*19349663) ^ (z*83492791) ^ (Math.round(h*4)*2654435761)) | 0);
+  }
   function rebuildWaterGeometry() {
-    const positions = [];
-    const normals = [];
+    // Pass 1: bucket every current water cell by chunk, and build up
+    // each chunk's own running signature as we go. Cheap relative to
+    // the actual face-culling work below — just a chunk-key lookup, a
+    // hash combine, and an array push per cell, no neighbour checks at
+    // all — and unavoidable regardless of caching, since this is how we
+    // find out which chunks even have water in them right now. This is
+    // the part whose cost still scales with total water cells in the
+    // loaded world (a deep ocean means more of them), but it's a small
+    // fraction of what the full per-cell occlusion pass used to cost
+    // for every single one of them, every single rebuild.
+    const cellsByChunk = new Map(); // chunkKey -> [[x,y,z,h], ...]
+    const signatures = new Map(); // chunkKey -> signature for THIS rebuild
     for (const [k, level] of waterBlocks) {
       const [x,y,z] = k.split(',').map(Number);
-      // Height fraction (1, 0.75, 0.5, 0.25 — see the water hotbar's
-      // partial-height entries, for manually shaping a shoreline now
-      // that automatic flow/spread is off). Anything else stored here —
-      // old integer "flow level" values from a save made before this,
-      // or 0 — just falls back to a full block. Occlusion below is
-      // unchanged and still treats any water neighbour as fully hiding
-      // a shared face regardless of height difference, so a small seam
-      // can show right at the boundary between two different heights —
-      // an acceptable trade-off for not needing full per-neighbour
-      // height comparisons here.
       const h = (typeof level === 'number' && level > 0 && level < 1) ? level : 1;
-      for (const face of WATER_FACES) {
-        const [dx,dy,dz] = face.d;
-        if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
-        const [a,b,c,d] = face.c;
-        // two triangles: a,b,c and a,c,d
-        for (const corner of [a,b,c, a,c,d]) {
-          const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
-          positions.push(x+corner[0], y+cy, z+corner[2]);
-          normals.push(dx, dy, dz);
-        }
-      }
+      const ck = chunkKeyOf(x, z);
+      let arr = cellsByChunk.get(ck);
+      if (!arr) { arr = []; cellsByChunk.set(ck, arr); }
+      arr.push([x, y, z, h]);
+      signatures.set(ck, ((signatures.get(ck) || 0) + waterCellHash(x, y, z, h)) | 0);
     }
+    // A chunk needs its faces actually recomputed if its own signature
+    // changed, OR if a direct neighbour's did — a water cell right at a
+    // chunk border can be occluded (or exposed) by a neighbour's cell
+    // on the other side of that border, so a change over there can
+    // still change what THIS chunk needs to draw even though none of
+    // its own cells moved. Everything else just reuses last rebuild's
+    // arrays untouched.
+    const dirty = new Set();
+    const allChunkKeys = new Set([...cellsByChunk.keys(), ...waterChunkSignatures.keys()]);
+    for (const ck of allChunkKeys) {
+      const [ccx, ccz] = ck.split('_').map(Number);
+      const neighborKeys = [ck, (ccx+1)+'_'+ccz, (ccx-1)+'_'+ccz, ccx+'_'+(ccz+1), ccx+'_'+(ccz-1)];
+      const changed = neighborKeys.some(nk => signatures.get(nk) !== waterChunkSignatures.get(nk));
+      if (changed) dirty.add(ck);
+    }
+    const positions = [];
+    const normals = [];
+    for (const [ck, cells] of cellsByChunk) {
+      let chunkGeom = waterChunkCache.get(ck);
+      if (dirty.has(ck) || !chunkGeom) {
+        // Height fraction (1, 0.75, 0.5, 0.25 — see the water hotbar's
+        // partial-height entries, for manually shaping a shoreline now
+        // that automatic flow/spread is off). Anything else stored here
+        // — old integer "flow level" values from a save made before
+        // this, or 0 — just falls back to a full block. Occlusion below
+        // is unchanged and still treats any water neighbour as fully
+        // hiding a shared face regardless of height difference, so a
+        // small seam can show right at the boundary between two
+        // different heights — an acceptable trade-off for not needing
+        // full per-neighbour height comparisons here.
+        const cp = [], cn = [];
+        for (const [x, y, z, h] of cells) {
+          for (const face of WATER_FACES) {
+            const [dx,dy,dz] = face.d;
+            if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
+            const [a,b,c,d] = face.c;
+            // two triangles: a,b,c and a,c,d
+            for (const corner of [a,b,c, a,c,d]) {
+              const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
+              cp.push(x+corner[0], y+cy, z+corner[2]);
+              cn.push(dx, dy, dz);
+            }
+          }
+        }
+        chunkGeom = { positions: cp, normals: cn };
+        waterChunkCache.set(ck, chunkGeom);
+      }
+      for (let i = 0; i < chunkGeom.positions.length; i++) positions.push(chunkGeom.positions[i]);
+      for (let i = 0; i < chunkGeom.normals.length; i++) normals.push(chunkGeom.normals[i]);
+    }
+    // Drop cached geometry/signatures for chunks that no longer have any
+    // water at all (fully drained, or unloaded) — otherwise stale
+    // entries pile up in these maps forever as the player explores.
+    for (const ck of waterChunkCache.keys()) { if (!cellsByChunk.has(ck)) waterChunkCache.delete(ck); }
+    waterChunkSignatures.clear();
+    for (const [ck, sig] of signatures) waterChunkSignatures.set(ck, sig);
+
     const geom = waterMesh.geometry;
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
@@ -6890,11 +6965,12 @@
   }
   // ── Shipwreck ───────────────────────────────────────────────────
   // A standalone structure like the windmill — its own placement grid,
-  // entirely separate from village generation — except it doesn't wait
-  // to find suitable terrain: it carves and floods its own basin
-  // wherever it lands, since naturally-generated water deep enough to
-  // hide a whole hull in is rare, and this needed to be reliably
-  // explorable rather than a lucky find.
+  // entirely separate from village generation. Only ever placed where
+  // there's already a natural body of water covering its whole
+  // footprint (see hasNaturalWaterAt/maybeBuildShipwreck below) — depth
+  // doesn't matter, since the pit still carves its own floor to a
+  // sensible depth regardless, but it no longer floods dry land into an
+  // artificial pool just to have somewhere to land.
   const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground
   function shipwreckGridHomeChunk(gx, gz) {
     const r = mulberry32(seedFromHash(gx * 4409 + 2113, gz * 3221 + 877));
@@ -7009,6 +7085,19 @@
     });
     maybeAddTreasure(hx1 - 2, floorY, hzMid, reg); // 10% chance, tucked at the stern end of the hold
   }
+  // True if there's already natural water sitting at (x,z) — i.e. this
+  // spot's terrain generation itself put water here, not the shipwreck's
+  // own basin-flooding. Only ever needs to look close to SEA_LEVEL,
+  // since that's the only band natural water ever occupies (terrain
+  // generation floods everything from the local ground height up to
+  // SEA_LEVEL, and nothing above it) — a wide search here would risk
+  // matching some other water feature (a pond dug elsewhere, a filled
+  // moat) far below or above what "this column is part of a lake/ocean"
+  // actually means.
+  function hasNaturalWaterAt(x, z) {
+    for (let y = SEA_LEVEL; y >= SEA_LEVEL - 12; y--) { if (waterBlocks.has(key(x, y, z))) return true; }
+    return false;
+  }
   function maybeBuildShipwreck(cx, cz) {
     const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
     const [hx, hz] = shipwreckGridHomeChunk(gx, gz);
@@ -7021,6 +7110,15 @@
     const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
     const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
     if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) return;
+    // Only ever land somewhere that was already a body of water —
+    // depth doesn't matter (the pit still carves its own floor down to
+    // a sensible depth regardless), but the whole footprint needs to
+    // already be sitting in existing water, not dry land the basin
+    // would otherwise have to carve and flood from scratch. Checking
+    // the center plus all four corners is enough to confirm the whole
+    // rectangle is submerged, not just clipping the edge of a pond.
+    const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
+    if (!waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) return;
     let waterlineY = SEA_LEVEL;
     for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }
     waterlineY = Math.max(SEA_LEVEL, waterlineY);
@@ -13421,18 +13519,6 @@
     o.connect(g).connect(audioCtx.destination);
     o.start(); o.stop(audioCtx.currentTime+0.05);
   }
-  function playSplash() {
-    if (!audioCtx) return;
-    const o = audioCtx.createOscillator();
-    const g = audioCtx.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(500, audioCtx.currentTime);
-    o.frequency.exponentialRampToValueAtTime(120, audioCtx.currentTime+0.25);
-    g.gain.setValueAtTime(0.14, audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.28);
-    o.connect(g).connect(audioCtx.destination);
-    o.start(); o.stop(audioCtx.currentTime+0.28);
-  }
   // Door creak — a rising sawtooth swept through a lowpass filter, so it
   // reads as wood/hinge friction rather than a clean synth tone. Opening
   // sweeps up, closing sweeps back down and ends with a soft low "thunk"
@@ -13590,7 +13676,6 @@
       });
     });
   }
-  window._voxelWasSubmerged = false;
 
   // ================= RAYCAST (voxel step) =================
   // skipWater lets the ray pass straight through water to whatever's
@@ -18740,8 +18825,6 @@
         player.onGround = false;
         touchJumpQueued = false;
 
-        if (!window._voxelWasSubmerged) playSplash();
-        window._voxelWasSubmerged = true;
         updateWaterMoveSound(dt, swimming ? 2 : 0); // only while actually swimming — this was playing constantly before, even floating dead still
         footstepTimer = 0;
       } else {
@@ -18787,9 +18870,6 @@
         // at the water's edge instead.
         tryMove(newPos, wasGrounded);
         if (player.pos.y < -10) { player.pos.set(0.5, WORLD_HEIGHT+5, 0.5); player.vel.set(0,0,0); }
-
-        if (submerged !== window._voxelWasSubmerged) { playSplash(); }
-        window._voxelWasSubmerged = submerged;
 
         // Depth-aware movement sound: genuinely swimming (2+ blocks of
         // water) or wading (less than 2) both get the continuous water-

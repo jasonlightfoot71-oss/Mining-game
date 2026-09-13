@@ -14689,19 +14689,32 @@
   const winterizedLeaves = new Map(); // "x,y,z" -> the type it was swapped to (a branch type, or 4 if the roll decided to leave it as ordinary Leaves — recorded either way so a later top-up scan never re-rolls the same block twice)
   const WINTER_BRANCH_POOL = [WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C];
   function scanForWinterBranchVariety() {
-    let changed = false;
+    const changedKeys = [];
     for (const [k, type] of blocks) {
       if (type !== 4 || winterizedLeaves.has(k)) continue;
       if (Math.random() < 0.55) {
         const variant = WINTER_BRANCH_POOL[Math.floor(Math.random() * WINTER_BRANCH_POOL.length)];
         blocks.set(k, variant);
         winterizedLeaves.set(k, variant);
-        changed = true;
+        changedKeys.push(k);
       } else {
         winterizedLeaves.set(k, 4);
       }
     }
-    if (changed) rebuildMeshes();
+    // Updates just the instances for the blocks that actually changed,
+    // in place — this used to call the full rebuildMeshes() here
+    // whenever anything changed, which resets and reprocesses the
+    // ENTIRE loaded world's mesh from scratch, not just the leaves that
+    // were actually touched. This runs every few seconds during winter
+    // (and again whenever new chunks stream in with untouched trees),
+    // so travelling through winter terrain meant the whole visible world
+    // kept vanishing and slowly rebuilding itself every few seconds —
+    // the exact same failure mode normal block placement already had to
+    // be fixed for (see handleLocalBlockChange's own comment above).
+    for (const k of changedKeys) {
+      const parts = k.split(',');
+      updateFullInstanceAt(Number(parts[0]), Number(parts[1]), Number(parts[2]));
+    }
   }
   let winterBranchScanTimer = 0;
   function applyWinterBranchVariety() {
@@ -14717,14 +14730,17 @@
   }
   function revertWinterBranchVariety() {
     if (!winterizedLeaves.size) return;
-    let changed = false;
+    const changedKeys = [];
     winterizedLeaves.forEach((variant, k) => {
       if (variant === 4) return;
-      if (blocks.get(k) === variant) { blocks.set(k, 4); changed = true; } // the === check is what leaves a block alone if the player mined/replaced it mid-winter instead of blindly reverting over whatever's there now
+      if (blocks.get(k) === variant) { blocks.set(k, 4); changedKeys.push(k); } // the === check is what leaves a block alone if the player mined/replaced it mid-winter instead of blindly reverting over whatever's there now
     });
     winterizedLeaves.clear();
     winterBranchScanTimer = 0; // next winter starts scanning immediately rather than waiting out whatever was left on the old timer
-    if (changed) rebuildMeshes();
+    for (const k of changedKeys) {
+      const parts = k.split(',');
+      updateFullInstanceAt(Number(parts[0]), Number(parts[1]), Number(parts[2]));
+    }
   }
 
   function isExposedToSky(x, y, z) {

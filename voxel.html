@@ -7126,7 +7126,7 @@
     // what was missing before.
     const MOAT_REACH = 6, CASTLE_PAD = MOAT_REACH + 2;
     const searchW = 24 + CASTLE_PAD*2, searchD = 15 + CASTLE_PAD*2; // 40x31
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, searchW, searchD, 0, 8, HOUSE_MAX_VARIANCE, rng, 12, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, searchW, searchD, 0, 8, HOUSE_MAX_VARIANCE, rng, 5, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1); // fewer attempts than the others — this search area (40x31) is by far the biggest, so each attempt costs the most
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     castleRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
@@ -7189,12 +7189,12 @@
   }
   // ── Shipwreck ───────────────────────────────────────────────────
   // A standalone structure like the windmill — its own placement grid,
-  // entirely separate from village generation. Only ever placed where
-  // there's already a natural body of water covering its whole
-  // footprint (see hasNaturalWaterAt/maybeBuildShipwreck below) — depth
-  // doesn't matter, since the pit still carves its own floor to a
-  // sensible depth regardless, but it no longer floods dry land into an
-  // artificial pool just to have somewhere to land.
+  // entirely separate from village generation. Floats directly on the
+  // water rather than carving a pit down into it — only ever placed
+  // where there's at least SHIPWRECK_MIN_DEPTH of natural water across
+  // its whole footprint (see hasDeepWaterAt/maybeBuildShipwreck below),
+  // with its keel sitting 2 blocks under the surface and everything
+  // above standing clear of the water entirely.
   const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground. Now the width of the region any one of its chunks can claim a shipwreck within (see maybeBuildShipwreck) rather than a single fixed chunk's own width.
   const shipwreckRegs = new Map(); // "cx_cz" -> { fixtureKeys, ladderKeys, treasureKeys }
   // Carves and floods a basin regardless of what's actually there —
@@ -7221,59 +7221,39 @@
   // (skipping just the bow's cut corners) is what left them as
   // untouched gaps last time — neither sand nor water nor hull ever
   // touched those specific cells.
-  function buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY) {
-    for (let x = pitX0; x <= pitX1; x++) {
-      for (let z = pitZ0; z <= pitZ1; z++) {
-        for (let y = floorY - 1; y < waterlineY; y++) {
-          blocks.delete(key(x, y, z));
-          if (y === floorY - 1) { blocks.set(key(x, y, z), 5); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); } // sandy seabed
-          else waterBlocks.set(key(x, y, z), 1);
-        }
-        // Anything the natural terrain had ABOVE the waterline within
-        // this footprint — a hillock, a slope, the edge of a rise —
-        // was never touched by the loop above, since that only ever
-        // worked downward from the waterline. Left in place, it stuck
-        // up out of the water right at the pit's own edge looking
-        // exactly like a built wall, when it was actually just
-        // whatever ground was already there before the pit carved
-        // around (but not through) it. Cleared out to open air instead,
-        // all the way to the world's own ceiling — the hull below
-        // rebuilds the one solid shape that's actually supposed to be
-        // sitting in this rectangle.
-        for (let y = waterlineY; y < WORLD_HEIGHT; y++) {
-          blocks.delete(key(x, y, z));
-          waterBlocks.delete(key(x, y, z));
-        }
-      }
-    }
-  }
   // The hull itself — floor, walls and a deck for its whole length, a
   // tapered bow over the first few columns (each column one narrower
   // than the last until it reaches full width), a flat stern at the
-  // back. Explorable rather than just a floating shell: the whole
-  // length below the deck is hollow (the hold), reached through a hole
-  // cut in the deck partway along, with a ladder down from it. Every
-  // solid or hollowed-dry cell it places also clears any water the pit
-  // above already flooded that same cell with — the hold in particular
-  // needs to end up dry, not still tagged as water underneath its own
-  // floor.
-  function buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg) {
+  // back. Sits directly at SEA_LEVEL (natural water always tops out
+  // there, so no need to scan for it) rather than in a carved pit — the
+  // keel sits 2 blocks under the surface, the rest of the hull and
+  // everything above stands clear of the water entirely, floating
+  // rather than sunk into the seabed. Explorable rather than just a
+  // floating shell: the whole length below the deck is hollow (the
+  // hold), reached through a hole cut in the deck partway along, with a
+  // ladder down from it. Every solid or hollowed-dry cell it places
+  // also clears any water that column already had, in case any of the
+  // hull's own footprint dipped as low as the natural water there.
+  function buildShipwreckHull(hx0, hx1, hz0, hz1, ck, reg) {
     const hzMid = Math.floor((hz0 + hz1) / 2);
     const halfW = Math.floor((hz1 - hz0) / 2);
-    const deckY = floorY + 4;
-    const HULL = 6; // Planks
+    const hullBottomY = SEA_LEVEL - 2; // the keel — 2 blocks under the surface, as requested
+    const deckY = hullBottomY + 4;
+    const HULL = 6, DAMAGED = 22; // Planks, Cracked Planks — scattered in among the ordinary planks for a genuinely storm-worn look, not randomly (a fixed pattern from each cell's own position, so it's the same every time this exact wreck regenerates)
     for (let x = hx0; x <= hx1; x++) {
       const localHalf = Math.min(halfW, x - hx0); // tapers in from the bow (hx0) over the first halfW columns, full width for the rest
       const z0 = hzMid - localHalf, z1 = hzMid + localHalf;
       for (let z = z0; z <= z1; z++) {
         const edge = (z === z0 || z === z1 || x === hx1); // side walls, plus a flat stern wall at the very back
-        blocks.set(key(x, floorY, z), HULL); waterBlocks.delete(key(x, floorY, z)); trackVillageHeight(x, z, floorY);
+        const worn = ((x*31 + z*17) % 7 === 0);
+        const mat = worn ? DAMAGED : HULL;
+        blocks.set(key(x, hullBottomY, z), mat); waterBlocks.delete(key(x, hullBottomY, z)); trackVillageHeight(x, z, hullBottomY);
         if (edge) {
-          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.set(key(x, y, z), HULL); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); }
+          for (let y = hullBottomY + 1; y <= deckY - 1; y++) { blocks.set(key(x, y, z), mat); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); }
         } else {
-          for (let y = floorY + 1; y <= floorY + 3; y++) { blocks.delete(key(x, y, z)); waterBlocks.delete(key(x, y, z)); } // hollow hold — dry, not flooded
+          for (let y = hullBottomY + 1; y <= deckY - 1; y++) { blocks.delete(key(x, y, z)); waterBlocks.delete(key(x, y, z)); } // hollow hold — dry, not flooded
         }
-        blocks.set(key(x, deckY, z), HULL); waterBlocks.delete(key(x, deckY, z)); trackVillageHeight(x, z, deckY); markVillageGround(x, z, deckY);
+        blocks.set(key(x, deckY, z), mat); waterBlocks.delete(key(x, deckY, z)); trackVillageHeight(x, z, deckY); markVillageGround(x, z, deckY);
       }
     }
     // Entry — a hole in the deck partway along (2 wide, so it's an
@@ -7282,52 +7262,92 @@
     // jumping the full height of the hold.
     const holeX = hx0 + Math.round((hx1 - hx0) * 0.45);
     [0, 1].forEach(dz => blocks.delete(key(holeX, deckY, hzMid + dz)));
-    for (let y = floorY + 1; y <= deckY - 1; y++) { const lk = addLadder(holeX - 1, y, hzMid, 1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
+    for (let y = hullBottomY + 1; y <= deckY - 1; y++) { const lk = addLadder(holeX - 1, y, hzMid, 1, 0, 0); if (lk) reg.ladderKeys.push(lk); }
     // A second, lower entrance — a breach in the side hull near the
     // stern, at the waterline, so the wreck can also be swum into
     // rather than only entered from above.
     const breachX = hx0 + Math.round((hx1 - hx0) * 0.75);
-    for (let y = floorY + 1; y <= floorY + 2; y++) blocks.delete(key(breachX, y, hz1));
-    // A broken mast — a plain log rather than anything elaborate,
-    // deliberately not perfectly vertical (leaning slightly) to read as
-    // storm-snapped rather than a mast still doing its job.
-    const mastX = hx0 + Math.round((hx1 - hx0) * 0.4);
-    for (let i = 0; i < 5; i++) {
-      const lean = Math.floor(i / 2);
-      blocks.set(key(mastX + lean, deckY + 1 + i, hzMid), 3); // Wood (log)
-      trackVillageHeight(mastX + lean, hzMid, deckY + 1 + i);
+    for (let y = hullBottomY + 1; y <= hullBottomY + 2; y++) blocks.delete(key(breachX, y, hz1));
+    // A second, smaller deck hole nearer the bow — storm damage, not
+    // another way in specifically, just visible wreckage.
+    const holeX2 = hx0 + Math.round((hx1 - hx0) * 0.15);
+    blocks.delete(key(holeX2, deckY, hzMid));
+
+    // ── Raised, storm-damaged aft cabin — a proper little structure at
+    // the stern rather than just a flat deck, deliberately not a clean
+    // box: some wall sections and roof tiles are simply missing.
+    const cabinX0 = hx1 - 5, cabinX1 = hx1 - 1;
+    const cabinHalf = Math.min(halfW, 2);
+    const cabinZ0 = hzMid - cabinHalf, cabinZ1 = hzMid + cabinHalf;
+    for (let x = cabinX0; x <= cabinX1; x++) {
+      for (let z = cabinZ0; z <= cabinZ1; z++) {
+        const edge = (x === cabinX0 || x === cabinX1 || z === cabinZ0 || z === cabinZ1);
+        if (!edge) continue;
+        const collapsed = (x + z) % 3 === 0; // missing wall sections, not a clean box
+        const cabinMat = (x + z) % 5 === 0 ? DAMAGED : HULL;
+        for (let y = deckY + 1; y <= deckY + 2; y++) {
+          if (collapsed && y === deckY + 2) continue; // top row partially open to the sky
+          blocks.set(key(x, y, z), cabinMat); trackVillageHeight(x, z, y);
+        }
+      }
     }
+    for (let x = cabinX0; x <= cabinX1; x++) {
+      for (let z = cabinZ0; z <= cabinZ1; z++) {
+        if ((x*13 + z*7) % 4 === 0) continue; // gaps in the roof — jagged, not intact
+        blocks.set(key(x, deckY + 3, z), DAMAGED);
+        trackVillageHeight(x, z, deckY + 3);
+      }
+    }
+
+    // ── Masts — a bow mast snapped off to a stump, and a taller,
+    // leaning main mast further back with a yard-arm and a torn sail
+    // hanging from it, instead of the single plain leaning log this
+    // used to be.
+    const stumpX = hx0 + Math.round((hx1 - hx0) * 0.15);
+    blocks.set(key(stumpX, deckY + 1, hzMid), 3); trackVillageHeight(stumpX, hzMid, deckY + 1); // Wood — snapped off just above the deck
+
+    const mastX = hx0 + Math.round((hx1 - hx0) * 0.45);
+    const mastBaseY = deckY + 1, mastHeight = 7;
+    for (let i = 0; i < mastHeight; i++) {
+      const lean = Math.floor(i / 3);
+      blocks.set(key(mastX + lean, mastBaseY + i, hzMid), 3);
+      trackVillageHeight(mastX + lean, hzMid, mastBaseY + i);
+    }
+    const yardY = mastBaseY + 4, yardLean = Math.floor(4 / 3);
+    const yardHalf = Math.min(halfW + 1, 3);
+    for (let dz = -yardHalf; dz <= yardHalf; dz++) {
+      blocks.set(key(mastX + yardLean, yardY, hzMid + dz), 3);
+      trackVillageHeight(mastX + yardLean, hzMid + dz, yardY);
+    }
+    // Tattered sail hanging below the yard-arm — narrower toward the
+    // bottom, with scattered gaps, so it reads as torn canvas rather
+    // than a clean rectangle. White Step (half-height) for the ragged
+    // bottom row specifically, White Concrete for the rest.
+    for (let dy = 0; dy < 4; dy++) {
+      const y = yardY - dy;
+      const rowHalf = Math.max(0, yardHalf - Math.floor(dy / 1.3));
+      for (let dz = -rowHalf; dz <= rowHalf; dz++) {
+        if ((dz + dy*3 + 15) % 5 === 0) continue; // torn gaps
+        const sailMat = (dy === 3) ? 43 : 31; // White Step / White Concrete
+        blocks.set(key(mastX + yardLean - 1, y, hzMid + dz), sailMat);
+        trackVillageHeight(mastX + yardLean - 1, hzMid + dz, y);
+      }
+    }
+
     // A couple of torches inside the hold — otherwise pitch black.
-    [[hx0 + 2, floorY + 2, hzMid - halfW, 0, 1, 0], [hx1 - 2, floorY + 2, hzMid + halfW, 0, -1, 0]].forEach(([bx, by, bz, nx, ny, nz]) => {
+    [[hx0 + 2, hullBottomY + 2, hzMid - halfW, 0, 1, 0], [hx1 - 2, hullBottomY + 2, hzMid + halfW, 0, -1, 0]].forEach(([bx, by, bz, nx, ny, nz]) => {
       if (fixtures.size < MAX_LIGHTS) { const fk = addFixture(bx, by, bz, nx, ny, nz); if (fk) reg.fixtureKeys.push(fk); }
     });
-    maybeAddTreasure(hx1 - 2, floorY, hzMid, reg); // 10% chance, tucked at the stern end of the hold
+    maybeAddTreasure(hx1 - 2, hullBottomY, hzMid, reg); // 10% chance, tucked at the stern end of the hold
   }
-  // True if there's already natural water sitting at (x,z) — i.e. this
-  // spot's terrain generation itself put water here, not the shipwreck's
-  // own basin-flooding. Only ever needs to look close to SEA_LEVEL,
-  // since that's the only band natural water ever occupies (terrain
-  // generation floods everything from the local ground height up to
-  // SEA_LEVEL, and nothing above it) — a wide search here would risk
-  // matching some other water feature (a pond dug elsewhere, a filled
-  // moat) far below or above what "this column is part of a lake/ocean"
-  // actually means.
-  function hasNaturalWaterAt(x, z) {
-    // Every candidate point maybeBuildShipwreck checks always falls
-    // within the chunk that's CURRENTLY being generated (the pit's own
-    // padding is smaller than the span the candidate search keeps
-    // candidates away from the chunk's own edge by), and groundHeightOnly
-    // for that whole chunk is already fully populated by the time this
-    // runs (maybeBuildShipwreck is called after the chunk's own column
-    // loop finishes) — so this can just read the height already computed
-    // instead of re-scanning up to 40 blocks of waterBlocks per point.
-    // That rescan was cheap for the one chunk per 49 this used to run
-    // for, but got called for potentially every chunk once any chunk in
-    // its region could claim a shipwreck (see maybeBuildShipwreck) —
-    // this is what turned that into a real, noticeable generation stall.
+  // True if there's a natural body of water at (x,z) at least minDepth
+  // blocks deep — natural water always tops out at SEA_LEVEL, so its
+  // depth is just how far below that the ground here actually is.
+  function hasDeepWaterAt(x, z, minDepth) {
     const gh = groundHeightOnly.get(x + ',' + z);
-    return gh !== undefined && gh < SEA_LEVEL;
+    return gh !== undefined && (SEA_LEVEL - gh) >= minDepth;
   }
+  const SHIPWRECK_MIN_DEPTH = 5; // requested — shallower water doesn't qualify at all now
   const SHIPWRECK_MIN_GAP = 200; // deliberately much larger than HOUSE_MIN_GAP — a single large lake/ocean (which the terrain generation now makes fairly common) can easily span several unrelated SHIPWRECK_CHUNK_STRIDE regions, each unaware the others exist, so the ordinary building-to-building gap (15) did nothing to stop several regions from each independently finding water in the SAME lake and landing a ship in it — this is what was actually causing 5 wrecks in one lake.
   function shipwreckTooCloseToOtherWrecks(wcx, wcz) {
     const seen = new Set();
@@ -7346,28 +7366,21 @@
   function maybeBuildShipwreck(cx, cz) {
     const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    // Used to lock onto one fixed, pre-determined chunk per region
-    // (shipwreckGridHomeChunk) and give up on the WHOLE region if THAT
-    // one chunk didn't happen to have water — which said nothing at all
-    // about whether the region actually had water somewhere else in it,
-    // and was the real reason large lakes/oceans could go without a
-    // single shipwreck: the one chunk the region was allowed to use was
-    // picked with no awareness of water at all. Now any chunk within the
-    // region can claim its one shipwreck — whichever chunk the player
-    // happens to explore first that turns out to have suitable water —
-    // so a shipwreck only fails to appear if genuinely nothing in the
-    // whole region ever does.
+    // Any chunk within the region can claim its one shipwreck —
+    // whichever chunk the player happens to explore first that turns
+    // out to have deep enough water — so a shipwreck only fails to
+    // appear if genuinely nothing in the whole region ever qualifies.
     if (shipwreckRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const hullLen = 16, hullWid = 7;
-    const halfSpanX = Math.floor(hullLen/2) + 4, halfSpanZ = Math.floor(hullWid/2) + 3; // matches the pit's own padding below — how far the footprint reaches from its own centre in each direction
+    const halfSpanX = Math.floor(hullLen/2) + 4, halfSpanZ = Math.floor(hullWid/2) + 3; // small registered margin around the hull, for spacing purposes only now — there's no pit to carve any more
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     // Try dead centre of THIS chunk first, then a handful of other
     // deterministic spots within its own bounds — a body of water
     // rarely lines up exactly with a chunk's own centre, so checking a
     // few different spots inside the one chunk being generated makes it
-    // much more likely to find one that's actually submerged.
+    // much more likely to find one that's actually deep enough.
     const rng = mulberry32(seedFromHash(cx*9001 + 13, cz*7907 + 29));
     const candidates = [[baseX + CHUNK_SIZE/2, baseZ + CHUNK_SIZE/2]];
     for (let i = 0; i < 8; i++) {
@@ -7378,42 +7391,28 @@
     }
     let spot = null;
     for (const [wcx, wcz] of candidates) {
-      // Water first, then proximity — water is now an O(1) lookup per
-      // point (see hasNaturalWaterAt) but houseTooCloseToExisting still
-      // scans every registered building, which only ever gets more
-      // expensive as a world fills up. Checking water first means the
-      // ~80% of chunks that are dry land skip that scan entirely,
-      // instead of paying for it on every single candidate regardless.
       const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
       const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
-      const pitX0 = hx0 - 4, pitX1 = hx1 + 4, pitZ0 = hz0 - 3, pitZ1 = hz1 + 3;
-      // Only ever land somewhere that was already a body of water —
-      // depth doesn't matter (the pit still carves its own floor down to
-      // a sensible depth regardless), but the whole footprint needs to
-      // already be sitting in existing water, not dry land the basin
-      // would otherwise have to carve and flood from scratch. Checking
-      // the centre plus all four corners is enough to confirm the whole
-      // rectangle is submerged, not just clipping the edge of a pond.
-      const waterCheckPoints = [[wcx,wcz],[pitX0,pitZ0],[pitX0,pitZ1],[pitX1,pitZ0],[pitX1,pitZ1]];
-      if (!waterCheckPoints.every(([x,z]) => hasNaturalWaterAt(x,z))) continue;
+      const padX0 = hx0 - 4, padX1 = hx1 + 4, padZ0 = hz0 - 3, padZ1 = hz1 + 3;
+      // Requires at least SHIPWRECK_MIN_DEPTH of water across the
+      // hull's own footprint (corners + centre), not just any water at
+      // all — the ship floats now rather than carving its own basin, so
+      // it needs real clearance under its keel, not just a wet surface.
+      const waterCheckPoints = [[wcx,wcz],[hx0,hz0],[hx0,hz1],[hx1,hz0],[hx1,hz1]];
+      if (!waterCheckPoints.every(([x,z]) => hasDeepWaterAt(x,z,SHIPWRECK_MIN_DEPTH))) continue;
       if (shipwreckTooCloseToOtherWrecks(wcx, wcz)) continue;
-      if (houseTooCloseToExisting(pitX0, pitX1, pitZ0, pitZ1, ck)) continue;
-      spot = {hx0,hx1,hz0,hz1,pitX0,pitX1,pitZ0,pitZ1,wcx,wcz}; break;
+      if (houseTooCloseToExisting(padX0, padX1, padZ0, padZ1, ck)) continue;
+      spot = {hx0,hx1,hz0,hz1,padX0,padX1,padZ0,padZ1}; break;
     }
     if (!spot) return; // nothing suitable in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     shipwreckRegionClaimed.add(regionKey);
-    const { hx0, hx1, hz0, hz1, pitX0, pitX1, pitZ0, pitZ1, wcx, wcz } = spot;
-    let waterlineY = SEA_LEVEL;
-    for (let y = WORLD_HEIGHT - 1; y >= 0; y--) { if (blocks.has(key(wcx, y, wcz))) { waterlineY = y; break; } }
-    waterlineY = Math.max(SEA_LEVEL, waterlineY);
-    const floorY = Math.max(1, waterlineY - 4);
-    buildShipwreckPit(pitX0, pitX1, pitZ0, pitZ1, waterlineY, floorY);
+    const { hx0, hx1, hz0, hz1, padX0, padX1, padZ0, padZ1 } = spot;
     const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
-    buildShipwreckHull(hx0, hx1, hz0, hz1, floorY, ck, reg);
+    buildShipwreckHull(hx0, hx1, hz0, hz1, ck, reg);
     shipwreckRegs.set(ck, reg);
-    const entry = { x0: pitX0, x1: pitX1, z0: pitZ0, z1: pitZ1, gy: waterlineY, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south', isShipwreck: true };
+    const entry = { x0: padX0, x1: padX1, z0: padZ0, z1: padZ1, gy: SEA_LEVEL, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south', isShipwreck: true, standalone: true };
     registerBuildingFootprint(entry, ck);
-    resyncChunksInRange(pitX0 - 10, pitX1 + 10, pitZ0 - 10, pitZ1 + 10);
+    resyncChunksInRange(padX0 - 10, padX1 + 10, padZ0 - 10, padZ1 + 10);
   }
   function teardownShipwreck(ck) {
     const reg = shipwreckRegs.get(ck);
@@ -8295,24 +8294,11 @@
   const VILLAGE_MIN_GAP = 250; // back from 1000 — that was specifically the multi-chunk settlement's own spacing target, no longer relevant once back to single-chunk
   let lastSettlementPos = { x: -Infinity, z: -Infinity }; // updated the moment a settlement is committed to, before it builds anything — same reasoning the old village system's lastVillageWorldPos had: this needs to be current before any knock-on chunk generation this settlement's own build might trigger, or that generation could see a stale position and misjudge its own distance check
   const houseRegionClaimed = new Set(); // "gx_gz" -> a settlement has already landed somewhere in this HOUSE_STANDALONE_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as shipwreckRegionClaimed
-  // Returns the floor height a house should sit at if (sx0,sz0) (top-left
-  // corner of the full 13x13 safeguarded area) qualifies, or null if it
-  // doesn't — either the height varies by more than HOUSE_MAX_VARIANCE
-  // across the site, or part of it hasn't generated yet. Reads
-  // groundHeightOnly specifically, not columnHeight — a tree standing
-  // anywhere in or near the site would otherwise inflate columnHeight
-  // and make an otherwise-flat spot look artificially steep (see
-  // groundHeightOnly's own declaration comment).
   // Finds a flat, dry site of the given size somewhere within
   // [minDist,maxDist] of an anchor point, at a random angle, trying up
-  // to `attempts` times. Used for the house itself (anchored on a
-  // coarsely-validated settlement centre, small radius) and for every
-  // other building clustered around it (shop/church/landmark/farm,
-  // anchored on the house, wider radii) — same search either way, just
-  // different sizes/distances. chunkX0/X1/Z0/Z1 optionally constrain the
-  // site to one chunk (pass -Infinity/Infinity to allow it to span
-  // several, which the settlement's own companions now do — see
-  // maybeBuildSettlement).
+  // to `attempts` times. Used by every standalone building's placement —
+  // same search either way, just different sizes/distances/attempt
+  // counts. chunkX0/X1/Z0/Z1 optionally constrain the site to one chunk.
   function findNearbyFlatSite(anchorX, anchorZ, sizeX, sizeZ, minDist, maxDist, maxVariance, rng, attempts, ck, chunkX0, chunkX1, chunkZ0, chunkZ1) {
     for (let i = 0; i < attempts; i++) {
       const angle = rng() * Math.PI * 2, dist = minDist + rng() * (maxDist - minDist);
@@ -8320,6 +8306,23 @@
       const sx0 = ccx - Math.floor(sizeX / 2), sz0 = ccz - Math.floor(sizeZ / 2);
       const sx1 = sx0 + sizeX - 1, sz1 = sz0 + sizeZ - 1;
       if (sx0 < chunkX0 || sx1 > chunkX1 || sz0 < chunkZ0 || sz1 > chunkZ1) continue;
+      // Cheap 5-point pre-check (4 corners + centre) before the full
+      // size*size scan below — this is what was actually causing lag on
+      // every single chunk generated, building or not: most candidates
+      // fail outright (water, a mountainside, an ungenerated neighbour),
+      // and checking 5 points first catches almost all of those without
+      // ever touching the full area. The full scan below still runs,
+      // unchanged, for whatever passes this — it's the only way to
+      // catch a candidate that looks fine at these 5 points but varies
+      // too much somewhere in the middle.
+      const midx = sx0 + Math.floor(sizeX/2), midz = sz0 + Math.floor(sizeZ/2);
+      const quickPts = [[sx0,sz0],[sx1,sz0],[sx0,sz1],[sx1,sz1],[midx,midz]];
+      let quickBad = false;
+      for (const [qx,qz] of quickPts) {
+        const qh = groundHeightOnly.get(qx + ',' + qz);
+        if (qh === undefined || qh < SEA_LEVEL) { quickBad = true; break; }
+      }
+      if (quickBad) continue;
       let lo = Infinity, hi = -Infinity, bad = false;
       outer: for (let x = sx0; x <= sx1; x++) {
         for (let z = sz0; z <= sz1; z++) {
@@ -8455,7 +8458,7 @@
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const rng = mulberry32(seedFromHash(cx*3541 + 331, cz*2711 + 431));
     const sizeX = 15 + HOUSE_SEARCH_PAD*2, sizeZ = 21 + HOUSE_SEARCH_PAD*2; // 19x25 — 15x21 church, cleared 2 beyond its own walls
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 12, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 12, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
     churchRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
@@ -8510,7 +8513,7 @@
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const rng = mulberry32(seedFromHash(cx*2657 + 71, cz*3319 + 211));
     const sizeX = 25 + HOUSE_SEARCH_PAD*2, sizeZ = 16 + HOUSE_SEARCH_PAD*2; // 29x20 — the whole complex, cleared 2 beyond its own outer edge
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 8, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
     farmRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;

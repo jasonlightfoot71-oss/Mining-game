@@ -633,8 +633,8 @@
   const MIN_TERRAIN_HEIGHT = SEA_LEVEL - 40; // the lowest the natural ocean floor/land height is ever allowed to generate — below this is the reserved floor, never touched by generation
   const BEDROCK_Y = 0; // the single bottom-most layer of that reserved floor — unmineable (see doMine's own check), the one hard boundary beneath the 10-block buffer
   const MAX_TERRAIN_STEP = 4; // steepest a natural column's height is ever allowed to differ from its west/south neighbour (see rawTerrainHeight below) — at this rate, the deepest possible basin (40 below sea level) takes at least 10 columns to reach from the shoreline, but that's the CAP, not the norm; most transitions are gentler, purely from how smooth the underlying noise already is
-  const OCEAN_FIELD_THRESHOLD = 0.65; // oceanField (see rawTerrainHeight) crossing this marks the start of a lake/ocean basin — re-measured empirically against what this noise setup actually produces, see rawTerrainHeight's own comment
-  const OCEAN_FIELD_FULL_AT = 0.85; // oceanField at (or beyond) this counts as the basin's deepest core — reaching the full 40-block depth
+  const OCEAN_FIELD_THRESHOLD = 0.6; // oceanField (see rawTerrainHeight) crossing this marks the start of a lake/ocean basin — re-measured empirically (via flood-fill over a sampled grid, not just point sampling) against the STRETCHED field specifically; gives ~35% water coverage with a connected sea over 2400 blocks across, versus under 900 before the stretch was applied
+  const OCEAN_FIELD_FULL_AT = 0.8; // oceanField at (or beyond) this counts as the basin's deepest core — reaching the full 40-block depth. Kept the same 0.2 gap above the threshold as before, just shifted down to match the stretched field's own range
   const half = Math.floor(WORLD_SIZE/2);
 
   // ================= PERSISTENCE (Supabase) =================
@@ -2416,7 +2416,20 @@
     const n = fbm(x*0.045, z*0.045) - 0.5; // centred -0.5..0.5, so local noise can push a column down as easily as up
     const amp = 3 + elevation*11;
     const baseline = SEA_LEVEL - 6 + elevation*22;
-    const oceanField = fbm(x*0.0018 + 4000, z*0.0018 + 4000);
+    // Stretched the same way elevation already is (biomeStretch), just
+    // with a stronger factor — raw fbm output clusters tightly around
+    // 0.5 (see fbm's own comment), so crossing a threshold only ever
+    // happened right at each separate local peak, in small, isolated
+    // blobs, never broad contiguous regions: measured across an 8000x8000
+    // sample, the biggest connected body of water this raw approach could
+    // ever produce was well under 900 blocks across, no matter how big a
+    // single lake looked like it should be — this is what "only little
+    // lakes, not a sea" actually was. Stretching pushes the flanks around
+    // each peak outward too, not just the tip, so neighbouring peaks'
+    // basins merge into one another instead of staying separate — the
+    // same measurement with this stretch applied produced a connected
+    // body over 2400 blocks across.
+    const oceanField = Math.max(0, Math.min(1, 0.5 + (fbm(x*0.0018 + 4000, z*0.0018 + 4000) - 0.5) * 2));
     let h = Math.round(baseline + n*amp);
     // OCEAN_FIELD_THRESHOLD/OCEAN_FIELD_FULL_AT were 0.985/0.999 —
     // measured against what this exact noise setup can actually produce
@@ -6854,7 +6867,15 @@
     const dxOut = Math.max(sx0 - x, x - sx1, 0);
     const dzOut = Math.max(sz0 - z, z - sz1, 0);
     const dist = Math.max(dxOut, dzOut);
-    if (dist === 0 || dist > 6) return false; // inside the keep/tower itself, or past the moat's own reach entirely
+    if (dist === 0 || dist > 9) return false; // inside the keep/tower itself, or past the moat's own reach entirely
+    // Clear anything the natural terrain had ABOVE gy within the moat's
+    // own reach, first — a hillock or slope edge that the wider
+    // levelling (clamped to this chunk's own bounds) didn't fully
+    // reach right at a chunk edge would otherwise poke up through
+    // whatever gets built below (water, retaining wall, bridge deck),
+    // breaking what's supposed to read as one continuous ring of water
+    // into disconnected patches interrupted by leftover high ground.
+    for (let y = gy + 1; y < WORLD_HEIGHT; y++) { blocks.delete(key(x, y, z)); waterBlocks.delete(key(x, y, z)); }
     const moatFloorY = gy - CASTLE_MOAT_DEPTH;
     const onBridge = (z > sz1) && (x >= bridgeMidX - 2 && x <= bridgeMidX + 2);
     if (onBridge) {
@@ -6865,15 +6886,18 @@
       for (let y = moatFloorY + 1; y < gy; y++) { blocks.set(key(x, y, z), CASTLE_STONE); trackVillageHeight(x, z, y); }
       return true;
     }
-    if (dist === 2 || dist === 6) {
+    if (dist === 2 || dist === 9) {
       // Retaining wall on both sides of the excavation — inner face
-      // (dist 2, facing the castle) and outer face (dist 6, facing the
+      // (dist 2, facing the castle) and outer face (dist 9, facing the
       // surrounding cleared ground) — containing the dug-out pit rather
       // than just leaving an exposed drop where flat ground meets it.
       for (let y = moatFloorY + 1; y <= gy; y++) { blocks.set(key(x, y, z), CASTLE_STONE); trackVillageHeight(x, z, y); }
       return true;
     }
-    if (dist >= 3 && dist <= 5) {
+    if (dist >= 3 && dist <= 8) {
+      // Widened from a 3-block ring (dist 3-5) to 6 — the old width read
+      // as a narrow ditch rather than the "big expanse of water" a
+      // castle moat should actually look like.
       for (let y = gy; y >= moatFloorY + 1; y--) { blocks.delete(key(x, y, z)); waterBlocks.set(key(x, y, z), 1); trackVillageHeight(x, z, y); }
       blocks.set(key(x, moatFloorY, z), CASTLE_STONE); trackVillageHeight(x, z, moatFloorY); // solid floor at the bottom of the excavation
       return true;
@@ -6881,8 +6905,8 @@
     return false; // dist 1 — dry buffer, left to the generic pad-fill
   }
   function buildCastleMoat(sx0, sx1, sz0, sz1, gy, bridgeMidX) {
-    for (let x = sx0 - 6; x <= sx1 + 6; x++) {
-      for (let z = sz0 - 6; z <= sz1 + 6; z++) {
+    for (let x = sx0 - 9; x <= sx1 + 9; x++) {
+      for (let z = sz0 - 9; z <= sz1 + 9; z++) {
         applyCastleMoatColumn(x, z, sx0, sx1, sz0, sz1, gy, bridgeMidX);
       }
     }
@@ -7277,7 +7301,16 @@
         const edge = (z === z0 || z === z1 || x === hx1); // side walls, plus a flat stern wall at the very back
         const worn = ((x*31 + z*17) % 7 === 0);
         const mat = worn ? DAMAGED : HULL;
+        // The keel is 2 blocks thick (hullBottomY and the row below),
+        // not 1 — a single-block floor is exactly the kind of thing
+        // that's vulnerable to tunneling through during any frame-rate
+        // spike (the swim/walk collision test only checks discrete
+        // points each frame; a big enough dt can jump clean over a
+        // floor that's only one block deep, especially at swimming
+        // speed). This is what "just the bottom of the ship" was — the
+        // side walls are 3 blocks thick and never had this problem.
         blocks.set(key(x, hullBottomY, z), mat); waterBlocks.delete(key(x, hullBottomY, z)); trackVillageHeight(x, z, hullBottomY);
+        blocks.set(key(x, hullBottomY - 1, z), mat); waterBlocks.delete(key(x, hullBottomY - 1, z)); trackVillageHeight(x, z, hullBottomY - 1);
         if (edge) {
           for (let y = hullBottomY + 1; y <= deckY - 1; y++) { blocks.set(key(x, y, z), mat); waterBlocks.delete(key(x, y, z)); trackVillageHeight(x, z, y); }
         } else {

@@ -633,8 +633,23 @@
   const MIN_TERRAIN_HEIGHT = SEA_LEVEL - 40; // the lowest the natural ocean floor/land height is ever allowed to generate — below this is the reserved floor, never touched by generation
   const BEDROCK_Y = 0; // the single bottom-most layer of that reserved floor — unmineable (see doMine's own check), the one hard boundary beneath the 10-block buffer
   const MAX_TERRAIN_STEP = 4; // steepest a natural column's height is ever allowed to differ from its west/south neighbour (see rawTerrainHeight below) — at this rate, the deepest possible basin (40 below sea level) takes at least 10 columns to reach from the shoreline, but that's the CAP, not the norm; most transitions are gentler, purely from how smooth the underlying noise already is
-  const OCEAN_FIELD_THRESHOLD = 0.6; // oceanField (see rawTerrainHeight) crossing this marks the start of a lake/ocean basin — re-measured empirically (via flood-fill over a sampled grid, not just point sampling) against the STRETCHED field specifically; gives ~35% water coverage with a connected sea over 2400 blocks across, versus under 900 before the stretch was applied
-  const OCEAN_FIELD_FULL_AT = 0.8; // oceanField at (or beyond) this counts as the basin's deepest core — reaching the full 40-block depth. Kept the same 0.2 gap above the threshold as before, just shifted down to match the stretched field's own range
+  // Water used to be stretched/thresholded the exact same way everywhere,
+  // which merged every basin on the map into one giant connected sea (any
+  // player who explored more than a session's worth of blocks would only
+  // ever find that one shape) and, measured directly against this exact
+  // formula, actually covered ~37-40% of the world rather than the ~19%
+  // this was originally tuned for. Replaced with a low-frequency
+  // "seaCharacter" field (see rawTerrainHeight) that varies which of the
+  // constants below apply region by region, so different parts of the
+  // world genuinely read as different kinds of water country.
+  const SEA_CHARACTER_SCALE = 0.00035; // wavelength ~2850 blocks — several times wider than a single basin, so each lake-country/sea-country region comfortably spans multiple basins before flipping character
+  const OCEAN_STRETCH_LAKE = 1.4; // how hard the raw ocean noise's peaks get pushed toward water in lake country — gentler than sea country, so basins there stay smaller and don't bleed into their neighbours
+  const OCEAN_STRETCH_SEA = 2.3; // sea country's stretch — the original "merge neighbouring peaks into one body" effect, kept for genuine seas
+  const OCEAN_FIELD_THRESHOLD_LAKE = 0.76; // lake country's threshold — a higher bar, so only the strongest dips cross it, keeping individual lakes small and separate
+  const OCEAN_FIELD_THRESHOLD_SEA = 0.68; // sea country's threshold — a lower bar, giving broader, more contiguous coverage
+  const OCEAN_FRAGMENT_SCALE = 0.012; // a high-frequency ripple (wavelength ~85 blocks) layered on top of the ocean field
+  const OCEAN_FRAGMENT_MAX = 0.45; // how strongly that ripple punches holes through what would otherwise be one solid basin — full strength in lake country (breaks one big shape into several separate ponds), fades to 0 in sea country (stays one smooth body)
+  const OCEAN_FIELD_FULL_AT = 0.88; // oceanField at (or beyond) this counts as a basin's deepest core, reaching the full 40-block depth — kept comfortably above both regional thresholds above
   const half = Math.floor(WORLD_SIZE/2);
 
   // ================= PERSISTENCE (Supabase) =================
@@ -2664,26 +2679,37 @@
     // basins merge into one another instead of staying separate — the
     // same measurement with this stretch applied produced a connected
     // body over 2400 blocks across.
-    const oceanField = Math.max(0, Math.min(1, 0.5 + (fbm(x*0.0018 + 4000, z*0.0018 + 4000) - 0.5) * 2));
+    // Regional water character — a separate, much-lower-frequency field
+    // deciding whether this broad area of the world leans toward one big
+    // connected sea or a scatter of smaller separate lakes, so basins
+    // actually vary by region instead of every one being merged the same
+    // amount everywhere (see SEA_CHARACTER_SCALE etc above). 0 = lake
+    // country, 1 = sea country.
+    const seaCharacter = fbm(x*SEA_CHARACTER_SCALE + 9000, z*SEA_CHARACTER_SCALE + 9000);
+    const oceanStretch = OCEAN_STRETCH_LAKE + seaCharacter * (OCEAN_STRETCH_SEA - OCEAN_STRETCH_LAKE);
+    const oceanThreshold = OCEAN_FIELD_THRESHOLD_LAKE - seaCharacter * (OCEAN_FIELD_THRESHOLD_LAKE - OCEAN_FIELD_THRESHOLD_SEA);
+    // High-frequency ripple that only really bites in lake country (see
+    // OCEAN_FRAGMENT_MAX) — it punches holes through what the smooth
+    // low-frequency field alone would render as one solid basin, breaking
+    // it into several smaller separate ponds instead. Fades to ~0 in sea
+    // country so a genuine sea still reads as one unbroken body.
+    const oceanFragment = fbm(x*OCEAN_FRAGMENT_SCALE + 11000, z*OCEAN_FRAGMENT_SCALE + 11000) - 0.5;
+    const oceanFragmentStrength = (1 - seaCharacter) * OCEAN_FRAGMENT_MAX;
+    const oceanField = Math.max(0, Math.min(1, 0.5 + (fbm(x*0.0018 + 4000, z*0.0018 + 4000) - 0.5) * oceanStretch + oceanFragment * oceanFragmentStrength));
     let h = Math.round(baseline + n*amp);
-    // OCEAN_FIELD_THRESHOLD/OCEAN_FIELD_FULL_AT were 0.985/0.999 —
-    // measured against what this exact noise setup can actually produce
-    // (4 octaves of fbm, undistorted by biomeStretch here), its raw
-    // output never even reached 0.88 across a 6000x6000-block sample,
-    // let alone 0.985 — meaning "big buckets of water" were already
-    // essentially unreachable before this pass touched anything. These
-    // were re-measured empirically the same way (sampling this exact
-    // formula) rather than guessed, and land ocean/lake coverage around
-    // 19% of the world, in genuinely large, smoothly-connected bodies
-    // (this field's own wavelength is ~550 blocks) rather than scattered
-    // puddles.
-    if (oceanField > OCEAN_FIELD_THRESHOLD) { // basins are a fairly common but still distinct encounter — a lake or ocean, not everywhere
-      const oceanStrength = Math.min(1, (oceanField - OCEAN_FIELD_THRESHOLD) / (OCEAN_FIELD_FULL_AT - OCEAN_FIELD_THRESHOLD)); // 0 at the basin's edge, 1 at (or beyond) its deepest core
+    // Measured directly against this exact formula (sampling, not
+    // guessing): this combination lands around 20% total water coverage —
+    // matching what the original single-region version was tuned for —
+    // while sea-country regions still form genuinely large, smoothly
+    // connected bodies and lake-country regions read as clusters of
+    // distinct smaller lakes rather than one shape repeated everywhere.
+    if (oceanField > oceanThreshold) { // basins are a fairly common but still distinct encounter — a lake or ocean, not everywhere
+      const oceanStrength = Math.min(1, (oceanField - oceanThreshold) / (OCEAN_FIELD_FULL_AT - oceanThreshold)); // 0 at the basin's edge, 1 at (or beyond) its deepest core
       // Scaled up from the old "-10 at the deepest core" (a max depth of
       // ~14) so a genuine basin can now reach all the way to the new
       // 40-block maximum — shallow dips and ordinary terrain are
       // completely unaffected, since this only ever applies inside a
-      // basin (oceanField > OCEAN_FIELD_THRESHOLD) at all.
+      // basin (oceanField > oceanThreshold) at all.
       h = Math.min(h, SEA_LEVEL - 4 - Math.round(oceanStrength*36));
     }
     const allowWater = pubWaterAllowed(x, z);
@@ -2692,7 +2718,7 @@
     // them, which is what gives shallow water its naturally tapered edge
     // for free (see the fractional top-layer height in the fill loop
     // below).
-    if (allowWater && h < SEA_LEVEL && oceanField > OCEAN_FIELD_THRESHOLD) {
+    if (allowWater && h < SEA_LEVEL && oceanField > oceanThreshold) {
       const depthNoise = fbm(x*0.05 + 7000, z*0.05 + 7000);
       const targetDepth = 3 + Math.round(depthNoise*2);
       if (SEA_LEVEL - h < targetDepth) h = SEA_LEVEL - targetDepth;

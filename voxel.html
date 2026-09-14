@@ -2731,6 +2731,7 @@
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     let minY = WORLD_HEIGHT, maxY = -1;
     let chunkAllWet = true, chunkAllDeep = true; // every column natural water, and none of it shallow (depth > 3) — see the classification at the end of this function for what this actually gates
+    let chunkHasAnyWater = false; // true the moment even ONE column here is natural water — see the dirty-marking at the end of this function for why this needs to be tracked separately from chunkAllWet
     // Buildings whose reach touches THIS chunk — an exact, direct lookup
     // now (see registerBuildingFootprint), not a fixed-radius guess
     // around wherever the owning village happened to originate. That's
@@ -3028,6 +3029,7 @@
           const depth = SEA_LEVEL - h;
           if (depth <= 3) chunkAllDeep = false;
           anyWaterTouchedThisStream = true;
+          chunkHasAnyWater = true;
         } else {
           chunkAllWet = false;
           chunkAllDeep = false;
@@ -3110,8 +3112,24 @@
     // even though nothing happened here directly.
     if (chunkAllWet && chunkAllDeep && !villageHouseFootprints.has(ck)) {
       pureOceanChunks.add(ck);
-      waterBlocks.dirtyChunks.add(ck); // nothing was ever waterBlocks.set() here (see the height/depth section above) — nothing would otherwise ever tell rebuildWaterGeometry this chunk exists at all
     }
+    // Any chunk that generated even one column of natural water needs its
+    // geometry built at least once — nothing else does this. A "mixed"
+    // chunk (a shoreline, or a whole small lake sitting entirely inside
+    // one chunk) never calls waterBlocks.set() for its natural cells (see
+    // the height/depth section above — that's deliberate, natural water
+    // costs zero stored entries), so without this it never entered
+    // dirtyChunks at all and rebuildWaterGeometry had no way to know it
+    // existed. It used to get pulled in anyway, as a side effect of being
+    // next to a genuinely huge, contiguous pureOceanChunks sea (rebuild
+    // also recomputes every dirty chunk's 4 neighbours) — fine when
+    // nearly all water belonged to one giant connected body, but a small
+    // lake with no pure-ocean neighbour at all — exactly what scattered
+    // lake-country ponds are — never got marked dirty by anything and
+    // rendered as an empty basin with no visible water, even though
+    // groundHeightOnly/_naturalLevel (and so movement/swimming, which
+    // reads the same data) were already completely correct.
+    if (chunkHasAnyWater) waterBlocks.dirtyChunks.add(ck);
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -6889,10 +6907,13 @@
     body.position.y = 0.55; g.add(body);
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.32, 0.32), mat);
     head.position.set(0, 0.6, 0.62); g.add(head);
+    const legs = []; // cached direct refs — updateVillageAnimals reads these instead of traverse()-ing every frame
     [[-0.22, -0.35], [0.22, -0.35], [-0.22, 0.35], [0.22, 0.35]].forEach(([x, z]) => {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.5, 0.14), mat);
       leg.position.set(x, 0.25, z); leg.name = 'animalLeg'; g.add(leg);
+      legs.push(leg);
     });
+    g.userData.legs = legs;
     return g;
   }
   function buildSheepModel() {
@@ -6903,10 +6924,13 @@
     body.position.y = 0.45; g.add(body);
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.26, 0.26), dark);
     head.position.set(0, 0.48, 0.5); g.add(head);
+    const legs = []; // cached direct refs — same as buildCowModel above
     [[-0.16, -0.28], [0.16, -0.28], [-0.16, 0.28], [0.16, 0.28]].forEach(([x, z]) => {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.4, 0.1), dark);
       leg.position.set(x, 0.2, z); leg.name = 'animalLeg'; g.add(leg);
+      legs.push(leg);
     });
+    g.userData.legs = legs;
     return g;
   }
   // Fenced pen — a plain wood-post perimeter (a post every column along
@@ -6951,9 +6975,10 @@
         }
       }
       const effBounds = w.escaped ? { xMin: w.bounds.xMin - 20, xMax: w.bounds.xMax + 20, zMin: w.bounds.zMin - 20, zMax: w.bounds.zMax + 20, y: w.bounds.y } : w.bounds;
+      const legs = w.mesh.userData.legs;
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
-        w.mesh.traverse(o => { if (o.name === 'animalLeg') o.rotation.x = 0; });
+        for (const leg of legs) leg.rotation.x = 0;
         return;
       }
       const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
@@ -6976,7 +7001,7 @@
       w.mesh.position.y = villageSurfaceY(nx, nz, effBounds.y - 1) + 1;
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t * 4) * 0.35;
-      w.mesh.traverse(o => { if (o.name === 'animalLeg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1); });
+      for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
     });
   }
   function buildAnimalPen(x0, x1, z0, z1, gy, rng, reg, ck) {
@@ -8009,9 +8034,11 @@
     if (villageNPCs.length === 0) return;
     const t = performance.now() * 0.005;
     villageNPCs.forEach(w => {
+      const legs = w.mesh.userData.legs, arms = w.mesh.userData.arms;
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
-        w.mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+        for (const leg of legs) leg.rotation.x = 0;
+        for (const arm of arms) arm.rotation.x = 0;
         return;
       }
       const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
@@ -8034,10 +8061,8 @@
       w.mesh.position.y = villageSurfaceY(nx, nz, w.bounds.y - 1) + 1;
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t * 4) * 0.5;
-      w.mesh.traverse(o => {
-        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
-        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
-      });
+      for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
+      for (const arm of arms) arm.rotation.x = -swing * (arm.position.x < 0 ? 1 : -1);
     });
   }
 
@@ -10316,22 +10341,26 @@
     // hips land right at stool-seat height (0.46) with feet still on the
     // floor, and shoulders stay full width instead of looking shrunken.
     const legHeight = seated ? 0.46 : 0.72;
+    const legs = []; // cached direct refs — updateVillageNPCs/updateWanderingCustomers/updateMultiplayer read these instead of traverse()-ing the group every frame
     [-0.11, 0.11].forEach(x => {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.19, legHeight, 0.19), pantsMat);
       leg.position.set(x, legHeight/2, 0);
       leg.name = 'leg';
       group.add(leg);
+      legs.push(leg);
     });
     const torsoY = legHeight + 0.29;
     const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.58, 0.22), shirtMat);
     torso.position.y = torsoY;
     group.add(torso);
     let rightArm = null;
+    const arms = []; // same caching as legs, above
     [-0.28, 0.28].forEach(x => {
       const arm = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.58, 0.19), shirtMat);
       arm.position.set(x, torsoY, 0);
       arm.name = 'arm';
       group.add(arm);
+      arms.push(arm);
       if (x > 0) rightArm = arm;
     });
     const headY = legHeight + 0.79;
@@ -10379,6 +10408,8 @@
       item.rotation.set(0.3, 0, 0);
       rightArm.add(item);
     }
+    group.userData.legs = legs;
+    group.userData.arms = arms;
     return group;
   }
   function placeCustomersAtTable(tx, ty, tz, area) {
@@ -10423,9 +10454,11 @@
   function updateWanderingCustomers(dt) {
     const t = performance.now()*0.005;
     wanderingCustomers.forEach(w => {
+      const legs = w.mesh.userData.legs, arms = w.mesh.userData.arms;
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
-        w.mesh.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; }); // standing still while waiting
+        for (const leg of legs) leg.rotation.x = 0; // standing still while waiting
+        for (const arm of arms) arm.rotation.x = 0;
         return;
       }
       const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
@@ -10449,10 +10482,8 @@
       w.mesh.position.z = nz;
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t*4) * 0.5;
-      w.mesh.traverse(o => {
-        if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
-        if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
-      });
+      for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
+      for (const arm of arms) arm.rotation.x = -swing * (arm.position.x < 0 ? 1 : -1);
     });
   }
   // Decorative extras that aren't part of the saved world data (kegs, pub
@@ -16915,14 +16946,14 @@
       // their last-known target position (i.e. actually moving) rather
       // than idle standing still waiting for the next update.
       const stillMoving = op.group.position.distanceTo(op.targetPos) > 0.05;
+      const opLegs = op.group.userData.legs, opArms = op.group.userData.arms;
       if (stillMoving) {
         const swing = Math.sin(walkT*4) * 0.5;
-        op.group.traverse(o => {
-          if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
-          if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
-        });
+        for (const leg of opLegs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
+        for (const arm of opArms) arm.rotation.x = -swing * (arm.position.x < 0 ? 1 : -1);
       } else {
-        op.group.traverse(o => { if (o.name === 'leg' || o.name === 'arm') o.rotation.x = 0; });
+        for (const leg of opLegs) leg.rotation.x = 0;
+        for (const arm of opArms) arm.rotation.x = 0;
       }
       // Shows a vehicle mesh in place of this player's own body the
       // moment their broadcast reports them riding one — same visual

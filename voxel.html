@@ -19785,7 +19785,8 @@
             // dig, same as a single tap on it always has — let next
             // frame's raycast pick up fresh from whatever's now revealed.
             waterBlocks.delete(currentKey);
-            needsRebuild = true;
+            recordWaterEdit(rr.hit.x, rr.hit.y, rr.hit.z, -1); // was missing here — this specific removal (moving onto new water while a mine is already held) never actually persisted without it
+            rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all. This used to set needsRebuild = true instead, triggering a full mesh rebuild (chunked, not a hard freeze, but still redoing far more than necessary) for something doMine's own single-tap water handling already did the cheap way — water being far more common now made this a real, regular cost every time this specific path (moving the crosshair onto new water while already mining) was hit
             playThud(220);
             mining = null; crackMesh.visible = false;
           } else {

@@ -444,17 +444,6 @@
 <div id="millCompass" style="display:none;position:fixed;top:80px;left:12px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;align-items:center;justify-content:center;">
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
-<button id="villageMapBtn" style="display:none;position:fixed;bottom:186px;right:22px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;">🗺️</button>
-<div id="villageMapModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
-  <div style="background:rgba(20,20,25,0.97);color:#fff;border-radius:10px;padding:18px;max-width:360px;width:90%;max-height:70vh;overflow-y:auto;font-family:-apple-system,sans-serif;box-sizing:border-box;">
-    <h3 style="margin:0 0 10px;font-size:16px;">🗺️ Discovered Villages</h3>
-    <div id="villageMapStatus" style="display:none;font-size:12px;color:#ffe27a;margin-bottom:8px;"></div>
-    <div id="villageMapList" style="display:flex;flex-direction:column;gap:6px;font-size:13px;"></div>
-    <div id="villageMapEmpty" style="display:none;opacity:0.65;font-size:13px;">Fly around and find one — they'll be listed here, in every world, since a village always generates at the same coordinates.</div>
-    <button id="villageMapClearBtn" style="margin-top:14px;background:rgba(190,60,50,0.35);border:1px solid rgba(255,120,110,0.5);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Clear discovered (keep ⭐ favourites)</button>
-    <button id="villageMapCloseBtn" style="margin-top:8px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;width:100%;">Close</button>
-  </div>
-</div>
 <div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
@@ -3093,7 +3082,7 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
-    maybeBuildSettlement(cx, cz); // replaces maybeBuildVillage (still defined below, just unused for now) — see its own comment for why
+    maybeBuildSettlement(cx, cz); // the old clustered, road-based village generator (buildVillageInChunk/maybeBuildVillage) this replaced has since been removed entirely, along with the village map that tracked it — see the "villages" cleanup
     maybeBuildShop(cx, cz);
     maybeBuildChurch(cx, cz);
     maybeBuildLandmark(cx, cz);
@@ -5909,28 +5898,9 @@
     { name: 'Desert Outpost',   wall: 27, trim: 41, roof: 32, floor: 5,  glass: 37, path: 28 },
     { name: 'Snow Village',     wall: 31, trim: 40, roof: 33, floor: 31, glass: 8,  path: 29 },
   ];
-  const VILLAGE_NAMES = ['Oakhaven','Millbrook','Stonebridge','Fernwood','Ashford','Briarcliff','Thistledown','Hollowmere','Copperfield','Wrenfield','Foxglove','Larkspur'];
-  const SHOP_NAMES   = ['General Store','Village Shop','Corner Store','Market Stall'];
-  const PUB_NAMES    = ["The Oak Arms","The Crown Inn","The Copper Kettle","The Wandering Sheep","The Stone Anchor"];
-  const FARM_NAMES   = ['Hillside Farm','Green Acres Farm','Old Barn Farm','Meadow Farm'];
-  const HOTEL_NAMES  = ['Grand Hotel',"The Traveller's Rest",'Riverside Hotel','The Golden Lodge'];
-  const CASTLE_NAMES = ['Stonewatch Castle','Ravenhold Castle','Ironkeep','Thornwall Castle'];
 
-  const VILLAGE_CHUNK_STRIDE = 50; // 50 chunks * 32 blocks = 1600 — widened 5x (from 10/320) so villages appear at ~20% of their previous rate, as requested. VILLAGE_FORCE_DISTANCE below is widened by the same 5x for the same reason — that backstop was already the dominant density driver at the old spacing (see its own comment), so leaving it at 300 here would have completely undone this change
-  const VILLAGE_SKIP_CHANCE = 0.05; // rarely skipped now, so they show up close to as often as the grid allows
+  const VILLAGE_CHUNK_STRIDE = 50; // 50 chunks * 32 blocks = 1600 — widened 5x (from 10/320) so villages appear at ~20% of their previous rate, as requested. Still used by HOUSE_STANDALONE_STRIDE below, which reuses this same density.
   const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
-  // Distance-based backstop on top of the stride grid above. The grid
-  // alone can go quiet for a long stretch — its candidate chunk still
-  // has to pass the ruggedness/protected-area checks in
-  // buildVillageInChunk, and a run of mountainous or blocked terrain
-  // can fail every candidate in a row with nothing to catch it. This
-  // tracks the world position of whichever village was actually built
-  // most recently (starts at spawn, ~(0,0), before the first one), and
-  // maybeBuildVillage uses it to force a one-off attempt on ANY chunk
-  // that streams in once it's got this far from that without a new one
-  // landing — see the fallback in maybeBuildVillage.
-  let lastVillageWorldPos = { x: 0, z: 0 };
-  const VILLAGE_FORCE_DISTANCE = 1500; // widened 5x alongside VILLAGE_CHUNK_STRIDE above, for the same "20% of the current rate" request — kept proportional so this backstop still plays the same relative role (a worst-case cap for a run of terrain that fails every grid candidate) rather than becoming either irrelevant or the new dominant driver
   // Every building's footprint — but keyed by every ACTUAL chunk its own
   // reach (its pad, wall, and escape stair, ±20 to be safe) can touch,
   // not by whichever chunk its village originated in. That distinction
@@ -5996,8 +5966,22 @@
       }
     }
   }
-  const HOUSE_MIN_GAP = 15;
-  const PLAYER_BUILD_SAFE_MARGIN = 15; // matches HOUSE_MIN_GAP — how far outside a proposed footprint the player needs to be standing before it's allowed to generate there at all
+  // This is the general "how close can any two UNRELATED structures be"
+  // guard — every standalone system (shops, churches, farms, landmarks,
+  // standalone houses, shipwrecks) and every village-vs-other-village
+  // check all go through houseTooCloseToExisting below, which uses this.
+  // It does NOT apply within a single village's own house-to-house
+  // layout (that's deliberately excluded — see the "not 15" comment at
+  // the house-plot loop). 15 was only really enough to stop literal
+  // overlap, not to keep two full, differently-sized structures (a
+  // church can be 15x21, a farm complex 25x16) from landing edge-to-edge
+  // of each other — widened so buildings from different, independently-
+  // gridded systems can no longer end up looking clustered together
+  // purely by chance, which is what was actually happening (building
+  // placement is otherwise fully deterministic — see the village map's
+  // own comments — there's no cross-world memory involved at all).
+  const HOUSE_MIN_GAP = 60;
+  const PLAYER_BUILD_SAFE_MARGIN = 15; // independent of HOUSE_MIN_GAP above — this only needs to be big enough that a structure never generates on top of the player, not big enough to keep unrelated buildings apart
   function houseTooCloseToExisting(fx0, fx1, fz0, fz1, excludeCk) {
     // The player being physically standing where a structure is about to
     // generate — walls, a pad, a moat, whatever — is treated exactly
@@ -6015,15 +5999,18 @@
     if (Math.sqrt(dpx * dpx + dpz * dpz) < PLAYER_BUILD_SAFE_MARGIN) return true;
     // Scoped to just the chunk keys this candidate's own footprint (plus
     // the HOUSE_MIN_GAP margin) touches, instead of scanning the entire
-    // villageHouseFootprints map — registerBuildingFootprint already
-    // scatters every building across every chunk key within its own
-    // 20-block padded reach, comfortably more than HOUSE_MIN_GAP (15),
-    // so anything close enough to matter here is already registered
-    // under one of these few keys. Scanning the WHOLE map every time
-    // (every candidate, across 8 separate placement systems) got slower
-    // the more of the world got explored and built up — this was the
-    // real, unbounded-growth cause behind "still lagging, every
-    // generation", not a one-off cost.
+    // villageHouseFootprints map. This works regardless of how HOUSE_MIN_GAP
+    // compares to registerBuildingFootprint's own 20-block registration
+    // pad: every building is always registered under the chunk(s)
+    // touching its own footprint at minimum (the pad only extends its
+    // reach further OUT into neighbouring chunks), and this search
+    // expands to cover HOUSE_MIN_GAP around the CANDIDATE — so anything
+    // within that distance necessarily has its own home chunk inside the
+    // search window, however the two margins compare. Scanning the WHOLE
+    // map every time (every candidate, across 8 separate placement
+    // systems) got slower the more of the world got explored and built up —
+    // this was the real, unbounded-growth cause behind "still lagging,
+    // every generation", not a one-off cost.
     const ccx0 = Math.floor((fx0 - HOUSE_MIN_GAP) / CHUNK_SIZE), ccx1 = Math.floor((fx1 + HOUSE_MIN_GAP) / CHUNK_SIZE);
     const ccz0 = Math.floor((fz0 - HOUSE_MIN_GAP) / CHUNK_SIZE), ccz1 = Math.floor((fz1 + HOUSE_MIN_GAP) / CHUNK_SIZE);
     const seen = new Set(); // the same entry is now registered under several chunk keys — only ever check it once
@@ -6237,41 +6224,6 @@
     carveHouseEscapeStair(gy, palette, backSide, escapeAt, padX0, padX1, padZ0, padZ1);
   }
   let villageNPCs = []; // flat list of every wandering villager currently in the world, for the per-frame update loop
-
-  // Exactly one candidate chunk per VILLAGE_CHUNK_STRIDE x STRIDE grid
-  // cell, jittered within it — this is what gives villages their
-  // roughly-300-blocks spacing without ever landing right on a grid line.
-  function villageGridHomeChunk(gx, gz) {
-    const r = mulberry32(seedFromHash(gx * 104729 + 11, gz * 105359 + 17));
-    const ox = 1 + Math.floor(r() * Math.max(1, VILLAGE_CHUNK_STRIDE - 2));
-    const oz = 1 + Math.floor(r() * Math.max(1, VILLAGE_CHUNK_STRIDE - 2));
-    return [gx * VILLAGE_CHUNK_STRIDE + ox, gz * VILLAGE_CHUNK_STRIDE + oz];
-  }
-  function villageInfoForChunk(cx, cz) {
-    const gx = Math.floor(cx / VILLAGE_CHUNK_STRIDE), gz = Math.floor(cz / VILLAGE_CHUNK_STRIDE);
-    const [hx, hz] = villageGridHomeChunk(gx, gz);
-    if (hx !== cx || hz !== cz) return null;
-    // Also respects the same minimum spacing as the force-distance
-    // backstop, not just its own grid spacing — two adjacent grid
-    // cells can still land their own candidates as little as a few
-    // chunks apart in the worst case (one near the far edge of its own
-    // cell, the next near the near edge of its neighbour), which on its
-    // own could still come in well under the requested 300. Checking
-    // against whatever was actually built last, the same way the
-    // backstop does, closes that gap without needing a second, separate
-    // distance system.
-    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const ddx = wcx - lastVillageWorldPos.x, ddz = wcz - lastVillageWorldPos.z;
-    if (Math.sqrt(ddx * ddx + ddz * ddz) < VILLAGE_FORCE_DISTANCE) return null;
-    // Actual overlap with The Mill / minigame zones is checked precisely
-    // against the real footprint in buildVillageInChunk (see checkPts) —
-    // that's a tight, accurate check, so there's no need for a coarse
-    // whole-grid-cell skip here too (that used to block a huge ~860-block
-    // radius around spawn, which is why villages weren't showing up).
-    const rng = mulberry32(seedFromHash(cx * 7349 + cz * 4201 + 99, cz * 8171 + cx * 1913 + 77));
-    if (rng() < VILLAGE_SKIP_CHANCE) return null;
-    return { rng };
-  }
 
   function trackVillageHeight(x, z, y) {
     const ck = x + ',' + z;
@@ -6720,7 +6672,7 @@
     blocks.set(key(altarX, gy + 2, altarZ), 12); trackVillageHeight(altarX, altarZ, gy + 2); // Mossy Stone top — a plain solid altar block, distinct from the walls around it
     churchAltars.push({ x: altarX + 0.5, y: gy + 3, z: altarZ + 0.5, triggered: false, ck });
 
-    return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h, shapeFn: inChurch };
+    return { x0: transx0, x1: transx1, z0: navez0, z1: navez1, gy, h, midX, midZ, shapeFn: inChurch };
   }
   // Water well — a low stone curb ring around a single water source,
   // with a simple wooden A-frame and crossbeam over the top. 3×3
@@ -8012,28 +7964,65 @@
     scene.add(g);
     return g;
   }
-  function spawnVillageNPCs(ck, bounds, count, rng) {
-    const created = [];
-    for (let i = 0; i < count; i++) {
-      const spot = pickVillageWanderTarget(bounds);
-      const colors = {
-        skinIdx: Math.floor(rng() * AVATAR_SKIN_TONES.length),
-        hairIdx: Math.floor(rng() * AVATAR_HAIR_TONES.length),
-        shirtIdx: Math.floor(rng() * AVATAR_SHIRT_TONES.length),
-        pantsIdx: Math.floor(rng() * AVATAR_PANTS_TONES.length),
-      };
-      const spawnY = villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1;
-      const mesh = placeVillageNpcMesh(spot.x, spawnY, spot.z, colors);
-      const w = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck };
-      villageNPCs.push(w);
-      created.push(w);
-    }
-    return created;
+  // Every standalone building's own builder (buildVillageHouse,
+  // buildVillageShop, buildVillageChurch, buildFarmhouse) returns a
+  // shell in the same shape ({x0,x1,z0,z1,gy,midX,midZ}) and places its
+  // door via placeShellDoor using this exact same doorSide-to-position
+  // mapping — this just recomputes it, plus the door's outward-facing
+  // normal, so a resident can be spawned just outside it and know which
+  // way "outside" is.
+  function shellDoorInfo(shell, doorSide) {
+    let bx, bz, nx, nz;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; nx = 0; nz = 1; }
+    else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; nx = 0; nz = -1; }
+    else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; nx = 1; nz = 0; }
+    else { bx = shell.x0; bz = shell.midZ; nx = -1; nz = 0; }
+    return { x: bx, z: bz, nx, nz, y: shell.gy };
+  }
+  const BUILDING_NPC_WANDER_RADIUS = 30; // how far from its own front door a standalone building's resident will stroll before heading back in
+  // One resident per standalone building (house/shop/church/farmhouse) —
+  // starts just outside its own door and wanders within
+  // BUILDING_NPC_WANDER_RADIUS of it, occasionally walking back to the
+  // door and going "inside" (there's no indoor navigation for NPCs, so
+  // this is simulated by hiding the mesh for a while) before coming back
+  // out again. Distinguished from a plain wanderer (like a castle guard)
+  // by having doorX/doorY/doorZ/state set at all — see updateVillageNPCs.
+  function spawnBuildingResident(shell, doorSide, ck, rng) {
+    const door = shellDoorInfo(shell, doorSide);
+    const outX = door.x + door.nx * 2, outZ = door.z + door.nz * 2; // a couple of blocks clear of the wall, not standing in the doorway
+    const roll = rng || Math.random;
+    const colors = {
+      skinIdx: Math.floor(roll() * AVATAR_SKIN_TONES.length),
+      hairIdx: Math.floor(roll() * AVATAR_HAIR_TONES.length),
+      shirtIdx: Math.floor(roll() * AVATAR_SHIRT_TONES.length),
+      pantsIdx: Math.floor(roll() * AVATAR_PANTS_TONES.length),
+    };
+    const bounds = { xMin: door.x - BUILDING_NPC_WANDER_RADIUS, xMax: door.x + BUILDING_NPC_WANDER_RADIUS, zMin: door.z - BUILDING_NPC_WANDER_RADIUS, zMax: door.z + BUILDING_NPC_WANDER_RADIUS, y: door.y + 1 };
+    const spawnY = villageSurfaceY(outX, outZ, bounds.y - 1) + 1;
+    const mesh = placeVillageNpcMesh(outX, spawnY, outZ, colors);
+    const w = { mesh, target: { x: outX, z: outZ }, waitTimer: 0.5 + roll() * 2, bounds, ck, doorX: door.x, doorZ: door.z, doorY: door.y, state: 'outside', insideTimer: 0 };
+    villageNPCs.push(w);
+    return w;
   }
   function updateVillageNPCs(dt) {
     if (villageNPCs.length === 0) return;
     const t = performance.now() * 0.005;
     villageNPCs.forEach(w => {
+      // Door-bound residents (see spawnBuildingResident) — everything
+      // else (castle guards, etc) has no doorX at all and falls straight
+      // through to the plain wander logic below, unchanged.
+      if (w.doorX !== undefined && w.state === 'inside') {
+        w.insideTimer -= dt;
+        if (w.insideTimer <= 0) {
+          w.state = 'outside';
+          w.mesh.visible = true;
+          const outY = villageSurfaceY(w.doorX, w.doorZ, w.bounds.y - 1) + 1;
+          w.mesh.position.set(w.doorX + 0.5, outY, w.doorZ + 0.5);
+          w.target = pickVillageWanderTarget(w.bounds);
+          w.waitTimer = 0.3 + Math.random();
+        }
+        return;
+      }
       const legs = w.mesh.userData.legs, arms = w.mesh.userData.arms;
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
@@ -8044,8 +8033,28 @@
       const dx = w.target.x - w.mesh.position.x, dz = w.target.z - w.mesh.position.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
       if (dist < 0.15) {
+        if (w.doorX !== undefined && w.state === 'toDoor') {
+          // Reached the door — "goes inside" for a while. There's no
+          // indoor navigation for NPCs, so this is simulated by hiding
+          // the mesh rather than actually pathing them through the
+          // building's own interior.
+          w.state = 'inside';
+          w.mesh.visible = false;
+          w.insideTimer = 6 + Math.random() * 10;
+          return;
+        }
+        // A resident occasionally heads home instead of picking another
+        // outdoor spot, so they're actually seen using their own door
+        // rather than only ever wandering outside it forever.
+        if (w.doorX !== undefined && Math.random() < 0.3) {
+          w.target = { x: w.doorX + 0.5, z: w.doorZ + 0.5 };
+          w.state = 'toDoor';
+          w.waitTimer = 0.2;
+          return;
+        }
         w.target = pickVillageWanderTarget(w.bounds);
         w.waitTimer = 1 + Math.random() * 3;
+        if (w.doorX !== undefined) w.state = 'outside';
         return;
       }
       const speed = 0.9;
@@ -8054,6 +8063,7 @@
       if (villageNpcBlocked(nx, nz, w.bounds)) {
         w.target = pickVillageWanderTarget(w.bounds);
         w.waitTimer = 0.4;
+        if (w.doorX !== undefined) w.state = 'outside';
         return;
       }
       w.mesh.position.x = nx;
@@ -8066,698 +8076,6 @@
     });
   }
 
-  // ── Assembly ────────────────────────────────────────────────────
-  function buildVillageInChunk(cx, cz, rng) {
-    // Widened from 24 to 30 (plots from 9 to 12 blocks wide, the gap
-    // between plots along the road from 1 row to 3) specifically so
-    // buildings have real breathing room around them instead of nearly
-    // touching their neighbours — origin is fixed rather than jittered.
-    // FS is pushed to the full 32-block chunk width now (was 30, with a
-    // 1-block margin each side) specifically to make room for a bigger
-    // gap between the two houses — see westX0/eastX1 below. This is
-    // the hard ceiling: a village literally cannot be wider than the
-    // one chunk it generates in without risking a neighbouring chunk's
-    // own terrain generation overwriting whatever spills into it later
-    // (see the comment on westX0/eastX1) — 32 is as far as that
-    // ceiling allows.
-    const FS = 32;
-    const originLocal = 0;
-    const wx0 = cx * CHUNK_SIZE + originLocal, wz0 = cz * CHUNK_SIZE + originLocal;
-    const wx1 = wx0 + FS - 1, wz1 = wz0 + FS - 1;
-    const vcx = Math.floor((wx0 + wx1) / 2), vcz = Math.floor((wz0 + wz1) / 2);
-    const ck = cx + '_' + cz;
-    // Set EARLY, not after this village finishes building — this is the
-    // actual cause of the freeze. Building a house now immediately
-    // force-generates its own back-side neighbouring chunk (see the
-    // call further down), which runs that neighbour's own
-    // maybeBuildVillage as part of its normal generation — and until
-    // this line moved up here, that ran while lastVillageWorldPos still
-    // held the PREVIOUS village's position. If this village only exists
-    // because the force-distance backstop had already tripped, that
-    // stale value was ALSO still far enough away to trip the backstop
-    // AGAIN for the neighbour being generated right now — which forces
-    // ITS OWN back-side neighbour, which does the same thing again, and
-    // so on: a fully synchronous chain of villages one chunk apart,
-    // each one triggering the next before any of them return, all
-    // inside a single call stack with nothing to stop it. Updating this
-    // the moment a village is actually committed to — before any of its
-    // houses or their neighbour-forcing ever run — means every one of
-    // those nested checks sees this village's real, current position
-    // immediately, correctly reporting "too close, don't build" instead
-    // of cascading.
-    lastVillageWorldPos = { x: vcx, z: vcz };
-    // Terrain-suitability gating removed entirely — villages are now
-    // allowed on any terrain: mountains, beaches, lake edges, forests,
-    // all of it. Two rounds of tuning this threshold (first 0.32, then
-    // a "relaxed" 0.85 for the force-distance backstop) still weren't
-    // enough — the underlying noise is smooth rather than per-chunk
-    // random, so failures cluster into long unbroken stretches, and no
-    // single cutoff reliably avoided that. The grading/terracing system
-    // further down (per-plot floor height, the gradual 1-block-step
-    // skirt, and the water retaining wall) is what actually keeps a
-    // village looking reasonable on rough ground — that's the real
-    // fix, not a gate that quietly stops anything from being built at
-    // all whenever the map doesn't cooperate.
-    const checkPts = [];
-    for (let gx = 0; gx <= 5; gx++) {
-      for (let gz = 0; gz <= 5; gz++) {
-        checkPts.push([wx0 + Math.round(gx * (FS - 1) / 5), wz0 + Math.round(gz * (FS - 1) / 5)]);
-      }
-    }
-    for (const [px, pz] of checkPts) { if (isProtectedGameArea(px, pz) || isPubColumn(px, pz)) return; }
-
-    const cornerHeights = checkPts.map(([px, pz]) => columnHeight.get(px + ',' + pz));
-    if (cornerHeights.some(h => h === undefined)) return; // a corner hasn't generated yet — shouldn't normally happen this late, but skip rather than guess
-
-
-    // Trees (and anything else terrain generation naturally scattered
-    // there) already exist across this whole area by the time a village
-    // gets built here — village generation runs strictly after the
-    // per-column terrain pass for this same chunk, terrain (including
-    // trees) is never generated afterward or on top. Without a pass
-    // like this, that meant leftover trunks/canopies and the odd puddle
-    // sitting untouched in the gaps between buildings and the road —
-    // each PLOT's own footprint got cleared for its own building, but
-    // nothing ever swept the space between them. This clears just tree
-    // material (trunk/leaves) and water specifically — by block TYPE,
-    // not by wiping every block in the area — so the actual ground
-    // itself (and its natural height/slope) is left completely alone;
-    // only what shouldn't still be standing here once a village exists
-    // is removed. Runs once, up front, before any road/plot/building
-    // work below.
-    for (let x = wx0; x <= wx1; x++) {
-      for (let z = wz0; z <= wz1; z++) {
-        const groundY = columnHeight.get(x + ',' + z);
-        if (groundY === undefined) continue;
-        // Raised from +12 to +30 — leftover chopped-looking tree trunks
-        // and canopy fragments were still visible after a village
-        // replaced the ground beneath a tall tree, since anything above
-        // the old, shorter cap was never touched at all.
-        for (let y = groundY - 1; y <= groundY + 30; y++) {
-          const k = key(x, y, z);
-          const t = blocks.get(k);
-          if (t === 3 || t === 4) { blocks.delete(k); stepRotations.delete(k); } // tree trunk (Wood) or leaves
-          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-        }
-        // columnHeight still reports whatever the TALLEST block here
-        // ever was — for a column that just had a tree stripped off it,
-        // that's the tree's own former canopy height, not the real
-        // ground underneath. Left uncorrected, that phantom height is
-        // exactly what could send a plot's own floor (see the
-        // footprint-max sampling further down) floating up to where a
-        // tree used to stand instead of the real terrain. Re-scanning
-        // down to the real topmost remaining block fixes it once, here,
-        // at the source, rather than every later system having to guess
-        // around it.
-        let realTop = groundY + 30;
-        while (realTop > 0 && !blocks.has(key(x, realTop, z))) realTop--;
-        columnHeight.set(x + ',' + z, realTop); // deliberately a direct set, not trackVillageHeight — this can and should LOWER the recorded height back down now that the tree is gone
-        // Same unconditional guaranteed-base-fill idea each plot's own
-        // floor now gets (see the plot loop further down), applied here
-        // too — this is the space BETWEEN buildings, road and gaps,
-        // which was still relying on the general terrain generator's
-        // own fill depth alone and could show the exact same invisible-
-        // block gap wherever that happened to fall short. Matches
-        // whatever's naturally on the surface at this column (sand
-        // stays sand-based, everything else gets Dirt) rather than
-        // switching it all to plain stone, so anywhere this IS ever
-        // exposed at an edge, it blends with what's actually around it
-        // instead of reading as a patch of quarry floor dropped into a
-        // field. Uses realTop now, not the old (possibly tree-inflated)
-        // groundY — filling relative to the phantom height was leaving a
-        // solid pillar of Dirt reaching up through where a tree used to
-        // be instead of stopping at the real ground.
-        const surfaceType = blocks.get(key(x, realTop, z));
-        const fillType = (surfaceType === 5) ? 5 : 1; // Sand(5) stays sand-based; grass/dirt/anything else gets Dirt(1) — a natural, neutral base that blends under any of them
-        for (let y = Math.max(0, realTop - 8); y < realTop; y++) blocks.set(key(x, y, z), fillType);
-      }
-    }
-
-
-    const centerKey = Math.floor((wx0 + wx1) / 2) + ',' + Math.floor((wz0 + wz1) / 2);
-    let roadY = columnHeight.get(centerKey);
-    if (roadY === undefined) roadY = SEA_LEVEL + 3;
-    roadY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(roadY))); // same sea-level floor as each plot below — the road shouldn't dip underwater either
-
-    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const villageName = VILLAGE_NAMES[Math.floor(rng() * VILLAGE_NAMES.length)];
-    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
-
-    // The road is the one part of the village that DOES stay a single
-    // flat grade — everything else below is deliberately NOT flattened
-    // as one whole pad any more (see each plot's own grading further
-    // down), but the street itself staying level and predictable is
-    // what makes it read as a road rather than just another gap.
-    for (let x = wx0 + 14; x <= wx0 + 17; x++) {
-      for (let z = wz0; z <= wz1; z++) {
-        // Clears all the way up to whatever natural terrain actually
-        // stood here, not a fixed +4 cap — a fixed cap left solid,
-        // completely untouched hillside directly overhanging the road
-        // wherever the real terrain ran taller than that, which is
-        // exactly what was reading as a wall/canyon cut into the
-        // landscape rather than an open street.
-        const existingH = columnHeight.get(x + ',' + z);
-        const clearTop = Math.max(roadY + 4, existingH !== undefined ? existingH : roadY);
-        for (let y = Math.max(0, roadY - 6); y <= clearTop; y++) {
-          const k = key(x, y, z);
-          blocks.delete(k); stepRotations.delete(k);
-          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-        }
-        for (let y = Math.max(0, roadY - 3); y < roadY; y++) blocks.set(key(x, y, z), 2);
-        blocks.set(key(x, roadY, z), palette.path);
-        trackVillageHeight(x, z, roadY);
-        markVillageGround(x, z, roadY);
-      }
-    }
-
-    // Support widened from a single 1×2 post to a proper 2×2 — the sign
-    // itself (sizeIdx 1, "Wide Sign") is 2 blocks wide, so a single
-    // column underneath was only ever holding up half of it.
-    const postX = wx0 + 14, postZ = wz0;
-    [postX, postX + 1].forEach(px => {
-      blocks.set(key(px, roadY + 1, postZ), palette.trim); trackVillageHeight(px, postZ, roadY + 1);
-      blocks.set(key(px, roadY + 2, postZ), palette.trim); trackVillageHeight(px, postZ, roadY + 2);
-    });
-    const sk0 = addSign(postX, roadY + 2, postZ, 0, 0, -1, 1, 'Welcome to ' + villageName);
-    if (sk0) reg.signKeys.push(sk0);
-
-    // Gaps widened a lot further (3 rows wasn't enough in practice —
-    // between roof overhangs, the connecting path's own dig-out radius,
-    // and plots at very different heights needing more run for their
-    // staircase, 3 was still letting buildings read as touching or
-    // overlapping). 6-row gaps between slices, which only leaves room
-    // for 3 slices — 6 plots — instead of 4/8, but that's the trade-off
-    // for buildings that are genuinely, comfortably separate rather
-    // than packed as densely as the chunk technically allows.
-    // Depth is 5 here, not 4 — 4 briefly caused a different bug: several
-    // buildings' interior furniture math assumes at least 3 usable rows
-    // inside the walls, and at depth 4 that shrinks to exactly 2, which
-    // pushed some furniture positions out past the last interior row and
-    // straight into the wall/doorway itself (the "furniture blocking
-    // doors" and pieces embedded in walls). 5 keeps a proper 3-row
-    // interior for everything the same size as it was before this gap
-    // change.
-    // Widened again — 6-row gaps still weren't reading as enough space.
-    // Down to 2 slices per side now (4 plots total, was 6) with a 9-row
-    // gap between them — a bigger cut to building count than any
-    // previous pass, but this is now genuinely generous room between
-    // buildings rather than the tightest margin that technically avoided
-    // overlap.
-    // Depth is 5 here, not 4 — 4 briefly caused a different bug: several
-    // buildings' interior furniture math assumes at least 3 usable rows
-    // inside the walls, and at depth 4 that shrinks to exactly 2, which
-    // pushed some furniture positions out past the last interior row and
-    // straight into the wall/doorway itself (the "furniture blocking
-    // doors" and pieces embedded in walls). 5 keeps a proper 3-row
-    // interior for everything the same size as it was before this gap
-    // change.
-    // Pushed back up to 3 slices (6 plots, was 2/4) with a moderate
-    // 4-row gap — a genuine architectural ceiling applies here that's
-    // worth being upfront about: everything has to fit inside ONE
-    // 32-block chunk (FS=32, using the full chunk width now), because a
-    // village that spilled into a neighbouring chunk would risk that
-    // chunk's own terrain generation later overwriting it when it
-    // streams in separately — a real class of bug, not just caution.
-    // Within that hard ceiling, 6 buildings with real (if not maximal)
-    // spacing is about as far as this can go without either cramming
-    // buildings edge-to-edge again or shrinking their footprint enough
-    // to visibly compress the larger types (pub/hotel/castle all want a
-    // proper 5-7 deep plot). 10 buildings would need villages that can
-    // genuinely span multiple chunks — a bigger, riskier change than
-    // this pass, given how much trouble this exact system has caused
-    // before.
-    // Depth bumped from 5 to 6 — partly for every building's own
-    // interior room, but mainly because the farm's field genuinely had
-    // nowhere to go: barnD(5) + a 1-row gap already equalled the whole
-    // plot depth(5), so fieldZ0 ended up past fieldZ1 and the "if
-    // (fieldZ1 >= fieldZ0)" guard silently skipped placing any field at
-    // all, every single time. Still a hard ceiling on how much land a
-    // farm can have — see the note above the slice/plot layout — but
-    // this at least guarantees real, visible field rather than none.
-    // RESET — villages are being rebuilt one building type at a time
-    // (see buildVillageHouse). While the house design is being tested
-    // on its own, every plot is sized for its fixed 11×11 footprint and
-    // the pool is house-only; shop/pub/farm/hotel/castle come back once
-    // this one is confirmed solid. Only room for a single slice (one
-    // house west, one east) at this depth within the FS=32 site.
-    const slices = [[9, 19]];
-    // Widened from an 8-block gap toward the requested 15 — 10 is as
-    // far as this can go while both houses still fit inside the single
-    // 32-block chunk this village generates in (11 + 10 + 11 = 32,
-    // using the FULL chunk width now, zero margin either side). Getting
-    // all the way to 15 needs 11 + 15 + 11 = 37 blocks, which doesn't
-    // fit in one chunk at all — that would mean the village spilling
-    // into a second, neighbouring chunk, which risks that chunk's own
-    // terrain generation later overwriting whatever spilled into it
-    // (a real bug class this file has hit before, not just caution).
-    // Doable properly, just a bigger change than this pass — say if you
-    // want it and I'll build the cross-chunk-safe version.
-    const westX0 = wx0, westX1 = wx0 + 10, eastX0 = wx0 + 21, eastX1 = wx0 + 31;
-    const plots = [];
-    slices.forEach(([zl0, zl1]) => {
-      plots.push({ x0: westX0, x1: westX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'west' });
-      plots.push({ x0: eastX0, x1: eastX1, z0: wz0 + zl0, z1: wz0 + zl1, side: 'east' });
-    });
-
-    let pool = ['house', 'house'];
-
-    // Every plot's own floor height, and the material it's capped with,
-    // are computed for ALL plots FIRST — from nothing but the terrain
-    // as it stood before any of them started grading — rather than
-    // computing and flattening one plot at a time in a single pass.
-    // That single-pass approach could let a plot processed later read
-    // ground a NEIGHBOURING plot's own grading had already nudged up
-    // moments earlier, quietly inflating its own peak sample with
-    // terrain that was never actually natural — a second, subtler
-    // version of the exact same "one bad sample" problem this whole
-    // rework exists to fix.
-    // Each ring now steps down just 1 block at a time (was 2) — the
-    // player can't jump higher than a single block, so anything steeper
-    // than that isn't a gradual slope, it's a wall you have to find
-    // stairs around. Rings doubled from 4 to 8 to cover roughly the
-    // same total drop as before, just spread over twice the distance.
-    const PEAK_SCAN_PAD = 3, SKIRT_RINGS = 8, SKIRT_STEP = 1;
-    // Factored out of the plots.map() below so the shop (see further
-    // down) can grade its own floor the exact same way, independently
-    // of the two houses — it doesn't sit on their fixed road slice at
-    // all, so it needs this available for an arbitrary footprint rather
-    // than just the two house plots.
-    function computePlotGrade(px0, px1, pz0, pz1, fallbackY) {
-      let maxNatural, baseSurfaceType = 0;
-      for (let x = px0 - PEAK_SCAN_PAD; x <= px1 + PEAK_SCAN_PAD; x++) {
-        for (let z = pz0 - PEAK_SCAN_PAD; z <= pz1 + PEAK_SCAN_PAD; z++) {
-          const eh = columnHeight.get(x + ',' + z);
-          if (eh === undefined) continue;
-          if (maxNatural === undefined || eh > maxNatural) {
-            maxNatural = eh;
-            const t = blocks.get(key(x, eh, z));
-            if (t !== undefined) baseSurfaceType = t;
-          }
-        }
-      }
-      let plotY = maxNatural !== undefined ? maxNatural : fallbackY;
-      plotY = Math.max(SEA_LEVEL, Math.min(WORLD_HEIGHT - 12, Math.round(plotY)));
-      const subFillType = (baseSurfaceType === 5 || baseSurfaceType === 2) ? baseSurfaceType : 1;
-      return { plotY, baseSurfaceType, subFillType };
-    }
-    const plotInfo = plots.map(plot => computePlotGrade(plot.x0, plot.x1, plot.z0, plot.z1, roadY));
-
-    let built = 0;
-    const newHouseFootprints = [];
-    plots.forEach((plot, i) => {
-      // Empty-plot chance disabled for now — while there's only one
-      // building type, always build it so it's reliable to find and test.
-      const type = pool[i];
-      const doorSide = plot.side === 'west' ? 'east' : 'west'; // always face the central road
-      const { plotY, baseSurfaceType, subFillType } = plotInfo[i];
-
-      // Overlap guard — plot.x0/z0 here always line up with the house's
-      // own footprint (buildVillageHouse anchors its 11×11 exactly on
-      // plot.x0/z0), so this can check the real footprint directly
-      // without waiting for the house itself to be built. Checked
-      // against every OTHER village's houses only (excludeCk is this
-      // village's own key, which has nothing registered yet at this
-      // point) — the two houses in this same village are meant to sit
-      // exactly HOUSE_MIN_GAP-ish apart on purpose, not 15, so they're
-      // never compared against each other here.
-      if (type === 'house') {
-        const fx0 = plot.x0, fx1 = plot.x0 + 10, fz0 = plot.z0, fz1 = plot.z0 + 10;
-        if (houseTooCloseToExisting(fx0, fx1, fz0, fz1, ck)) return; // too close to an already-built house — leave this plot empty rather than overlap it
-        clearSkyAroundHouse(fx0, fx1, fz0, fz1, plotY, baseSurfaceType, subFillType);
-        buildHouseEdgeWall(fx0, fx1, fz0, fz1, plotY, palette, doorSide);
-        newHouseFootprints.push({ x0: fx0, x1: fx1, z0: fz0, z1: fz1, gy: plotY, baseSurfaceType, subFillType, trim: palette.trim, doorSide });
-      }
-
-      // Both grading passes below are now skipped entirely for houses —
-      // clearSkyAroundHouse above already covers a wider area (10 blocks
-      // out vs. this padding's 1, and past the skirt's own 8-ring reach)
-      // with one flat, guaranteed-solid fill, so running this on top of
-      // it for a house would be pure wasted work. Left in place for
-      // shop/pub/farm/hotel/castle, which don't get the sky-clear/flush-
-      // fill treatment and still need it once they're back in rotation.
-      if (type !== 'house') {
-      for (let x = plot.x0 - 1; x <= plot.x1 + 1; x++) {
-        for (let z = plot.z0 - 1; z <= plot.z1 + 1; z++) {
-          // Everything above the floor is cleared based on the real
-          // existing terrain height at this column, same reasoning as
-          // before. Below the floor is different now: rather than only
-          // filling when the natural terrain was clearly BELOW plotY, a
-          // fixed-depth base is placed unconditionally, regardless of
-          // what the natural height here was. The gap in the previous
-          // version: when natural terrain was TALLER than plotY, nothing
-          // got filled at all, on the assumption the original terrain's
-          // own fill already reached down far enough — but that's not
-          // guaranteed. A tall column only ever fills CHUNK_FILL_DEPTH_
-          // CAP blocks deep from ITS OWN (taller) surface, which can
-          // fall well short of reaching all the way down to a much
-          // lower plotY, leaving exactly a gap directly under the new
-          // floor. This no longer depends on or trusts that assumption
-          // at all. Depth is 16 now that plotY can be graded
-          // considerably higher than this exact column's own natural
-          // terrain (see PEAK_SCAN_PAD above) — the gap beneath a low
-          // corner of the plot can genuinely run much deeper than it
-          // used to.
-          const existingH = columnHeight.get(x + ',' + z);
-          const clearTop = Math.max(plotY + 12, existingH !== undefined ? existingH : plotY);
-          for (let y = plotY + 1; y <= clearTop; y++) {
-            const k = key(x, y, z);
-            blocks.delete(k); stepRotations.delete(k);
-            if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-          }
-          for (let y = Math.max(0, plotY - 16); y < plotY; y++) blocks.set(key(x, y, z), subFillType);
-          blocks.set(key(x, plotY, z), baseSurfaceType);
-          trackVillageHeight(x, z, plotY);
-          markVillageGround(x, z, plotY);
-        }
-      }
-
-      // Terraced skirt: a pad graded straight to the footprint's own
-      // peak can still leave an abrupt little cliff wherever the
-      // natural ground just outside it was genuinely lower — the
-      // 1-block padding above only raises the immediate edge, nowhere
-      // near enough on a real slope. This steps the edge down gradually
-      // instead: a few rings further out, each one allowed to sit a bit
-      // lower than the last, but never lower than whatever was already
-      // standing there naturally — so it only ever fills in a low gap
-      // on the downhill side, and never touches ground that was already
-      // higher (which just keeps rising past the pad, exactly as it
-      // should).
-      for (let x = Math.max(wx0, plot.x0 - 1 - SKIRT_RINGS); x <= Math.min(wx1, plot.x1 + 1 + SKIRT_RINGS); x++) {
-        if (x >= wx0 + 14 && x <= wx0 + 17) continue; // never touches the shared road strip, which stays its own flat grade regardless
-        for (let z = Math.max(wz0, plot.z0 - 1 - SKIRT_RINGS); z <= Math.min(wz1, plot.z1 + 1 + SKIRT_RINGS); z++) {
-          const dx = x < plot.x0 - 1 ? (plot.x0 - 1 - x) : (x > plot.x1 + 1 ? x - (plot.x1 + 1) : 0);
-          const dz = z < plot.z0 - 1 ? (plot.z0 - 1 - z) : (z > plot.z1 + 1 ? z - (plot.z1 + 1) : 0);
-          const dist = Math.max(dx, dz);
-          if (dist === 0 || dist > SKIRT_RINGS) continue; // dist 0 is the already-graded core; beyond SKIRT_RINGS is past the skirt's own reach
-          const natural = columnHeight.get(x + ',' + z);
-          if (natural === undefined) continue;
-          const target = plotY - SKIRT_STEP * dist;
-          if (natural >= target) continue; // already at or above this ring's step — leave it alone, it's naturally rising past the pad
-          for (let y = natural + 1; y <= target; y++) blocks.set(key(x, y, z), subFillType);
-          trackVillageHeight(x, z, target);
-          markVillageGround(x, z, target);
-        }
-      }
-      }
-
-      let shell = null;
-      if (type === 'house') { shell = buildVillageHouse(plot, plotY, rng, palette, doorSide, reg); }
-      else if (type === 'pub') { shell = buildVillagePub(plot, plotY, rng, palette, doorSide, reg, PUB_NAMES[Math.floor(rng() * PUB_NAMES.length)]); }
-      else if (type === 'farm') { shell = buildVillageFarm(plot, plotY, rng, palette, doorSide, reg, FARM_NAMES[Math.floor(rng() * FARM_NAMES.length)]); }
-      else if (type === 'hotel') { shell = buildVillageHotel(plot, plotY, rng, palette, doorSide, reg, HOTEL_NAMES[Math.floor(rng() * HOTEL_NAMES.length)]); }
-      else if (type === 'castle') { shell = buildVillageCastle(plot, plotY, rng, palette, doorSide, reg, CASTLE_NAMES[Math.floor(rng() * CASTLE_NAMES.length)]); }
-      built++;
-    });
-    // Shop — freestanding, not part of the west/east road-slice layout
-    // above at all: 15-20 blocks of clear GAP from the house's own
-    // footprint (same meaning as every other village gap discussed —
-    // the empty space between the two buildings, not centre-to-centre),
-    // in a random direction, graded to its own independent floor height
-    // (computePlotGrade again, just centred on wherever this lands
-    // rather than the fixed plot slice) — it doesn't need to sit at the
-    // same level as the houses, or even face the road, since it isn't
-    // on it. Distance is offset by both buildings' own half-widths (5
-    // each) on top of the requested 15-20 so the actual gap along the
-    // dominant axis comes out right; an angled placement ends up with
-    // if anything a bit MORE clearance than that, never less. A few
-    // attempts with different random spots in case the first one lands
-    // too close to some other building — this village's own two houses
-    // included, checked directly since they're excluded from the
-    // general registry check below (siblings are allowed to sit closer
-    // to EACH OTHER than HOUSE_MIN_GAP, just not to the shop) — and if
-    // none of the attempts clear that, the village just goes without a
-    // shop this time rather than forcing an overlap.
-    const houseCx = wx0 + 5, houseCz = wz0 + 14; // the west house's own centre
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 25 + rng() * 5;
-      const scx = Math.round(houseCx + Math.cos(angle) * dist), scz = Math.round(houseCz + Math.sin(angle) * dist);
-      const sx0 = scx - 5, sx1 = scx + 5, sz0 = scz - 5, sz1 = scz + 5;
-      const overlapsOwnHouse = newHouseFootprints.some(h => {
-        const dx = Math.max(0, sx0 - h.x1, h.x0 - sx1), dz = Math.max(0, sz0 - h.z1, h.z0 - sz1);
-        return Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP;
-      });
-      if (overlapsOwnHouse || houseTooCloseToExisting(sx0, sx1, sz0, sz1, ck)) continue;
-      const { plotY: shopY, baseSurfaceType: shopBase, subFillType: shopSub } = computePlotGrade(sx0, sx1, sz0, sz1, roadY);
-      const shopDoorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
-      clearSkyAroundHouse(sx0, sx1, sz0, sz1, shopY, shopBase, shopSub);
-      buildHouseEdgeWall(sx0, sx1, sz0, sz1, shopY, palette, shopDoorSide);
-      buildVillageShop(sx0, sz0, shopY, palette, shopDoorSide, reg);
-      newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: shopY, baseSurfaceType: shopBase, subFillType: shopSub, trim: palette.trim, doorSide: shopDoorSide });
-      break;
-    }
-    // Church — same freestanding approach as the shop, checked against
-    // EVERY building already placed in this village so far (house(s)
-    // AND the shop, whichever of them actually exist), not just the
-    // house — a smaller requested gap (10, vs the shop's 15-20) since
-    // this is about not overlapping anything, not a deliberate spacing
-    // choice the way the shop's distance was. Its own bounding box (the
-    // cross's overall footprint, 15×21) is what gets checked/cleared/
-    // walled — a bit more generous than the cross shape's actual solid
-    // area, which just means a slightly larger, perfectly reasonable
-    // cleared yard around it.
-    const CHURCH_MIN_GAP = 10;
-    let churchPlaced = false;
-    for (let attempt = 0; attempt < 20 && !churchPlaced; attempt++) {
-      // Widened from 27-35 — that range only just cleared the required
-      // gap in the worst-case direction (the cross's own 21-long axis),
-      // which meant it was landing right at the edge often enough to
-      // still occasionally need the fallback below.
-      const angle = rng() * Math.PI * 2, dist = 32 + rng() * 16;
-      const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
-      const cbx0 = ccx - 7, cbx1 = ccx + 7, cbz0 = ccz - 10, cbz1 = ccz + 10;
-      // No fallback that skips this check any more — that was the
-      // actual cause of the church eating into other buildings: it
-      // guaranteed a church every time, at the cost of occasionally
-      // guaranteeing an overlap instead when every attempt failed. No
-      // church this village is a far smaller loss than one landing on
-      // top of a house.
-      const tooCloseToOwn = newHouseFootprints.some(hf => {
-        const dx = Math.max(0, cbx0 - hf.x1, hf.x0 - cbx1), dz = Math.max(0, cbz0 - hf.z1, hf.z0 - cbz1);
-        return Math.sqrt(dx * dx + dz * dz) < CHURCH_MIN_GAP;
-      });
-      if (tooCloseToOwn || houseTooCloseToExisting(cbx0, cbx1, cbz0, cbz1, ck)) continue;
-      const { plotY: churchY, baseSurfaceType: churchBase, subFillType: churchSub } = computePlotGrade(cbx0, cbx1, cbz0, cbz1, roadY);
-      clearSkyAroundHouse(cbx0, cbx1, cbz0, cbz1, churchY, churchBase, churchSub);
-      buildHouseEdgeWall(cbx0, cbx1, cbz0, cbz1, churchY, palette, 'north');
-      const churchShell = buildVillageChurch(cbx0, cbz0, churchY, palette, reg, ck);
-      newHouseFootprints.push({ x0: cbx0, x1: cbx1, z0: cbz0, z1: cbz1, gy: churchY, baseSurfaceType: churchBase, subFillType: churchSub, trim: palette.trim, doorSide: 'north', shapeFn: churchShell.shapeFn }); // shapeFn is what lets the reactive override (generateChunkTerrain) tell the cross's real shape apart from its own bounding box's corners — see there
-      churchPlaced = true;
-    }
-    // One small village landmark, chosen at random per village: a well,
-    // a statue, or the town bell. Same freestanding placement idea as
-    // the shop and church, just with a much smaller footprint (3×3) and
-    // gap requirement — these are little decorative touches, not full
-    // buildings, and don't need nearly as much room around them to read
-    // fine on their own.
-    const LANDMARK_MIN_GAP = 10;
-    const landmarkKind = ['well', 'statue', 'bell'][Math.floor(rng() * 3)];
-    for (let attempt = 0; attempt < 20; attempt++) {
-      // Widened from 16-26 to 18-32 specifically so a genuinely clear
-      // spot is available often enough that the fallback below never
-      // needs to fire — that fallback (skipping the overlap check on
-      // the last few attempts, to guarantee SOMETHING got placed) was
-      // the actual cause of landmarks turning up inside houses: it
-      // guaranteed a landmark every time, at the cost of occasionally
-      // guaranteeing an overlap instead. No landmark this village is a
-      // far smaller loss than one sitting inside someone's house.
-      const angle = rng() * Math.PI * 2, dist = 18 + rng() * 14;
-      const lcx = Math.round(houseCx + Math.cos(angle) * dist), lcz = Math.round(houseCz + Math.sin(angle) * dist);
-      const lx0 = lcx - 1, lx1 = lcx + 1, lz0 = lcz - 1, lz1 = lcz + 1; // 3×3
-      const tooCloseToOwn = newHouseFootprints.some(hf => {
-        const dx = Math.max(0, lx0 - hf.x1, hf.x0 - lx1), dz = Math.max(0, lz0 - hf.z1, hf.z0 - lz1);
-        return Math.sqrt(dx * dx + dz * dz) < LANDMARK_MIN_GAP;
-      });
-      if (tooCloseToOwn || houseTooCloseToExisting(lx0, lx1, lz0, lz1, ck)) continue;
-      const { plotY: lY, baseSurfaceType: lBase, subFillType: lSub } = computePlotGrade(lx0, lx1, lz0, lz1, roadY);
-      clearSkyAroundHouse(lx0, lx1, lz0, lz1, lY, lBase, lSub);
-      buildHouseEdgeWall(lx0, lx1, lz0, lz1, lY, palette, 'north'); // doorSide is meaningless for these (no door), 'north' just picks a consistent side for the escape stair if one's needed
-      if (landmarkKind === 'well') buildVillageWell(lx0, lz0, lY, palette, reg);
-      else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, lY, palette);
-      else buildVillageBell(lx0, lz0, lY, palette, reg);
-      newHouseFootprints.push({ x0: lx0, x1: lx1, z0: lz0, z1: lz1, gy: lY, baseSurfaceType: lBase, subFillType: lSub, trim: palette.trim, doorSide: 'north' });
-      break;
-    }
-    // Farm — a genuinely separate complex (farmhouse + two fields + a
-    // fenced pen, 25×16 overall), placed further out and given a bigger
-    // gap than everything else here given its own size. Same
-    // freestanding pattern throughout: independently graded, same
-    // clearing/wall treatment applied to its whole combined footprint
-    // at once (the fields and pen then lay their own ground type —
-    // tilled dirt, grass — straight over that same flattened pad).
-    const FARM_MIN_GAP = 12;
-    let farmPlaced = false;
-    for (let attempt = 0; attempt < 20 && !farmPlaced; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 40 + rng() * 15;
-      const fcx = Math.round(houseCx + Math.cos(angle) * dist), fcz = Math.round(houseCz + Math.sin(angle) * dist);
-      const fx0 = fcx - 5, fx1 = fx0 + 10, fz0 = fcz - 4, fz1 = fz0 + 8; // farmhouse, 11×9
-      const wx1 = fx0 - 1, wx0 = wx1 - 6, wz0 = fz0, wz1 = fz1; // wheat, west, 7 wide
-      const gx0 = fx1 + 1, gx1 = gx0 + 6, gz0 = fz0, gz1 = fz1; // cabbage, east, 7 wide
-      const pz1 = fz0 - 1, pz0 = pz1 - 6, px0 = wx0, px1 = gx1; // pen, north (behind), 7 deep
-      const bx0 = wx0, bx1 = gx1, bz0 = pz0, bz1 = fz1; // overall bounding box
-      // No fallback that skips this check — same fix as the church and
-      // castle below, and the landmarks before that. Guaranteeing a
-      // farm every time by occasionally guaranteeing an overlap instead
-      // was never actually worth it.
-      const tooCloseToOwn = newHouseFootprints.some(hf => {
-        const dx = Math.max(0, bx0 - hf.x1, hf.x0 - bx1), dz = Math.max(0, bz0 - hf.z1, hf.z0 - bz1);
-        return Math.sqrt(dx * dx + dz * dz) < FARM_MIN_GAP;
-      });
-      if (tooCloseToOwn || houseTooCloseToExisting(bx0, bx1, bz0, bz1, ck)) continue;
-      const { plotY: farmY, baseSurfaceType: farmBase, subFillType: farmSub } = computePlotGrade(bx0, bx1, bz0, bz1, roadY);
-      clearSkyAroundHouse(bx0, bx1, bz0, bz1, farmY, farmBase, farmSub);
-      buildHouseEdgeWall(bx0, bx1, bz0, bz1, farmY, palette, 'south');
-      buildFarmhouse(fx0, fz0, farmY, palette, reg);
-      buildCropField(wx0, wx1, wz0, wz1, farmY, buildWheatStalk, reg);
-      buildCropField(gx0, gx1, gz0, gz1, farmY, buildCabbageHead, reg);
-      buildAnimalPen(px0, px1, pz0, pz1, farmY, rng, reg, ck);
-      newHouseFootprints.push({ x0: bx0, x1: bx1, z0: bz0, z1: bz1, gy: farmY, baseSurfaceType: farmBase, subFillType: farmSub, trim: palette.trim, doorSide: 'south' });
-      farmPlaced = true;
-    }
-    // Castle — the last one, and the only one with its own minimum gap
-    // measured from ANY existing building, not just "a bit further out
-    // than the last one" — checked here exactly the same way as
-    // everything else (the registry, edge-to-edge, excluding this
-    // village's own siblings not yet registered), just with a much
-    // bigger number behind it. Back to attempting in every village —
-    // the 50% gate on top of villages already being 300+ blocks apart
-    // made it too rare to actually find in practice.
-    const CASTLE_MIN_GAP = 75 + rng() * 25; // 75-100, sampled once for this village
-    let castlePlaced = false;
-    // 40 attempts, not 16 — removing the overlap-skip fallback (see
-    // above) means a failed search now genuinely produces no castle
-    // rather than a guaranteed-but-overlapping one, so the search
-    // itself needs to actually succeed reliably instead of leaning on
-    // that fallback to paper over a low hit rate. With up to 6 other
-    // buildings potentially already scattered around the house, each
-    // one only blocking a narrow angular slice at this distance, more
-    // tries is what closes the gap the fallback used to cover.
-    for (let attempt = 0; attempt < 40 && !castlePlaced; attempt++) {
-      const angle = rng() * Math.PI * 2, dist = 100 + rng() * 60;
-      const ccx = Math.round(houseCx + Math.cos(angle) * dist), ccz = Math.round(houseCz + Math.sin(angle) * dist);
-      const kx0 = ccx - 9, kx1 = kx0 + 18, kz0 = ccz - 7, kz1 = kz0 + 14; // keep, 19×15
-      const tx0 = kx0 - 5, tx1 = kx0 - 1, tz0 = kz0, tz1 = kz0 + 4; // tower, attached west, 5×5
-      const sx0 = tx0, sx1 = kx1, sz0 = kz0, sz1 = kz1; // combined keep+tower footprint
-      // No fallback that skips this check — same fix as the church and
-      // farm above. The castle's own minimum gap is huge (75-100)
-      // precisely so it never lands anywhere near another building in
-      // the first place; skipping the check on a late attempt would
-      // have defeated that entirely.
-      const tooCloseToOwn = newHouseFootprints.some(hf => {
-        const dx = Math.max(0, sx0 - hf.x1, hf.x0 - sx1), dz = Math.max(0, sz0 - hf.z1, hf.z0 - sz1);
-        return Math.sqrt(dx * dx + dz * dz) < CASTLE_MIN_GAP;
-      });
-      if (tooCloseToOwn || houseTooCloseToExisting(sx0, sx1, sz0, sz1, ck)) continue;
-      const { plotY: castleY, baseSurfaceType: castleBase, subFillType: castleSub } = computePlotGrade(sx0, sx1, sz0, sz1, roadY);
-      clearSkyAroundHouse(sx0, sx1, sz0, sz1, castleY, castleBase, castleSub);
-      buildHouseEdgeWall(sx0, sx1, sz0, sz1, castleY, palette, 'south');
-      buildCastleTower(tx0, tz0, castleY, reg);
-      const keepShell = buildCastleKeep(kx0, kz0, castleY, reg);
-      buildCastleMoat(sx0, sx1, sz0, sz1, castleY, keepShell.doorX); // bridge centred on wherever the door actually ended up, not the keep's true centre
-      // Wrapped — these two are extras on top of the core castle (which
-      // must always succeed, moat and all): a bug in the dungeon or the
-      // guards should never take the whole castle, let alone the rest
-      // of this village, down with it. Logged rather than silently
-      // swallowed, so a real problem here is at least visible in the
-      // console instead of just quietly missing in-game.
-      try {
-        buildCastleDungeon(kx0, kz0, castleY, reg);
-        reg.npcs = reg.npcs.concat(spawnCastleGuards(kx0, kx1, kz0, kz1, castleY, ck, rng));
-      } catch (err) {
-        console.warn('castle dungeon/guards build error (recovered):', err);
-      }
-      // shapeFn (same reasoning as the church) — the keep+tower's real
-      // shape isn't the same as its bounding box either (the notch
-      // where neither one reaches), so the reactive override needs to
-      // be told the difference the same way. moat carries what's needed
-      // to reproduce the moat/bridge too, for the exact same reason —
-      // both are what actually fixes "ground generation doing what the
-      // church did", not just the shapeFn alone.
-      function inCastle(x, z) {
-        return (x >= kx0 && x <= kx1 && z >= kz0 && z <= kz1) || (x >= tx0 && x <= tx1 && z >= tz0 && z <= tz1);
-      }
-      newHouseFootprints.push({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: castleY, baseSurfaceType: castleBase, subFillType: castleSub, trim: palette.trim, doorSide: 'south', shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } });
-      castlePlaced = true;
-    }
-    newHouseFootprints.forEach(entry => registerBuildingFootprint(entry, ck)); // registered only now, after the whole village (houses, shop, church, landmark, farm, and castle, whichever of them actually got placed) is done, so nothing here was ever checked against a sibling still being built
-
-    // Forces a visual resync of every ALREADY-generated chunk this
-    // village actually wrote into. This is the real, root cause behind
-    // several things that looked like separate bugs: syncChunkInstances
-    // only ever runs automatically when a chunk is first generated —
-    // modifying an already-generated chunk's blocks directly (which the
-    // clearing, the retaining wall, the escape stair, the water wall,
-    // and now the freely-placed shop can all do to a NEIGHBOURING
-    // chunk) changes the actual world data correctly, but nothing ever
-    // tells that chunk's already-built visuals to catch up. It stays
-    // invisible until something else forces a resync — leaving and
-    // re-entering the world, or wandering far enough away to unload and
-    // reload it — which is exactly the pattern that kept getting
-    // reported. Newly-generated chunks don't need this (the normal
-    // streaming path already syncs those the moment they're built); this
-    // only ever does anything for a chunk that turns out to have already
-    // existed before this village did.
-    resyncChunksInRange(wx0 - 14, wx1 + 14, wz0 - 14, wz1 + 14); // the whole site, plus the water wall's own reach past its edge
-    for (const h of newHouseFootprints) resyncChunksInRange(h.x0 - 10, h.x1 + 10, h.z0 - 10, h.z1 + 10); // each building's own pad — covers the shop wherever it actually landed
-
-
-    // Retaining wall against any water still standing right outside the
-    // site. The very first pass in this function strips ALL water out
-    // of this whole 30×30 footprint (see the tree/water cleanup loop up
-    // top) — if that footprint used to overlap the edge of a lake or
-    // the coast, the water just outside the site now stops dead in a
-    // straight line at the boundary with nothing holding it back, which
-    // is exactly the "sheer wall of water" bug: real standing water
-    // can't just stop at a vertical face with nothing behind it. This
-    // walks the site's own outer edge and, only where a column is
-    // actually touching water within a few blocks outside it, builds an
-    // actual wall up to that water's own real surface height — nowhere
-    // else, and never taller than the water it's holding back.
-    const WATER_WALL_SCAN = 4;
-    function siteEdgeGround(x, z) {
-      const ck2 = x + ',' + z;
-      const g = villageGroundHeight.get(ck2);
-      return g !== undefined ? g : columnHeight.get(ck2);
-    }
-    function siteWaterTop(x, z, dx, dz, aroundY) {
-      for (let d = 1; d <= WATER_WALL_SCAN; d++) {
-        const cx2 = x + dx * d, cz2 = z + dz * d;
-        for (let y = aroundY + 8; y >= aroundY - 15; y--) {
-          if (waterBlocks.has(key(cx2, y, cz2))) return y;
-        }
-      }
-      return null;
-    }
-    function siteWaterWallColumn(x, z, dx, dz) {
-      const gy2 = siteEdgeGround(x, z);
-      if (gy2 === undefined) return;
-      const wTop = siteWaterTop(x, z, dx, dz, gy2);
-      if (wTop === null || wTop <= gy2) return; // not touching water, or water's no higher than this column already is — nothing to hold back
-      for (let y = gy2 + 1; y <= wTop; y++) { blocks.set(key(x, y, z), palette.trim); trackVillageHeight(x, z, y); }
-    }
-    for (let z = wz0; z <= wz1; z++) { siteWaterWallColumn(wx0, z, -1, 0); siteWaterWallColumn(wx1, z, 1, 0); }
-    for (let x = wx0; x <= wx1; x++) { siteWaterWallColumn(x, wz0, 0, -1); siteWaterWallColumn(x, wz1, 0, 1); }
-
-    // Was a flat 2-3 total per village regardless of its size, cut down
-    // from 5-7 specifically because each NPC's own per-frame cost
-    // (wander AI, animation) was too high at the time — see
-    // updateVillageNPCs/buildCustomerFigure, which no longer traverse()
-    // the whole mesh every frame to animate legs/arms, so that per-NPC
-    // cost is much lower now. Scaling with newHouseFootprints.length (the
-    // actual buildings this village ended up with — houses, shop,
-    // church, farm, landmark, castle, whichever combination it rolled)
-    // instead of a flat number means a bigger village reads as more
-    // populated rather than every village feeling equally (and rather
-    // sparsely) inhabited.
-    const npcCount = Math.min(7, 3 + newHouseFootprints.length);
-    // Kept close to the road rather than the whole footprint — plots
-    // now vary in height, and the wandering-NPC logic isn't terrain-
-    // aware enough to path between different plot elevations cleanly.
-    const bounds = { xMin: wx0 + 10, xMax: wx0 + 19, zMin: wz0 + 0.5, zMax: wz1 - 0.5, y: roadY + 1 };
-    reg.npcs = reg.npcs.concat(spawnVillageNPCs(ck, bounds, npcCount, rng)); // concat, not reassign — the castle's own guards (if a castle got placed this village) were already pushed onto reg.npcs above
-
-    villageRegistry.set(ck, reg);
-    recordVillageDiscovery(villageName, Math.floor((wx0 + wx1) / 2), Math.floor((wz0 + wz1) / 2));
-  }
   // Re-enabled — a brand new world ran fine with the exact same code,
   // which confirms this was never a village/furniture/water code bug at
   // all: it was accumulated stale data specific to the existing Mill
@@ -8900,7 +8218,8 @@
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const doorSide = ['north','south','east','west'][Math.floor(rng() * 4)]; // no road to face any more — any side is equally valid
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
-    buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
+    const houseShell = buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
+    reg.npcs.push(spawnBuildingResident(houseShell, doorSide, ck, rng));
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
     registerBuildingFootprint(entry, ck);
     villageRegistry.set(ck, reg);
@@ -8928,7 +8247,8 @@
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const doorSide = ['south','north','east','west'][Math.floor(rng()*4)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
-    buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    reg.npcs.push(spawnBuildingResident(shopShell, doorSide, ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
@@ -8953,6 +8273,7 @@
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const churchShell = buildVillageChurch(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, reg, ck);
+    reg.npcs.push(spawnBuildingResident(churchShell, 'north', ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
@@ -9012,59 +8333,14 @@
     const fpx0 = px0, fpx1 = px0 + 24, fpz0 = pz0, fpz1 = ffz0 - 1; // pen, north (behind), 7 deep
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
-    buildFarmhouse(ffx0, ffz0, floor, palette, reg);
+    const farmhouseShell = buildFarmhouse(ffx0, ffz0, floor, palette, reg);
+    reg.npcs.push(spawnBuildingResident(farmhouseShell, 'south', ck, rng));
     buildCropField(fwx0, fwx1, fwz0, fwz1, floor, buildWheatStalk, reg);
     buildCropField(fgx0, fgx1, fgz0, fgz1, floor, buildCabbageHead, reg);
     buildAnimalPen(fpx0, fpx1, fpz0, fpz1, floor, rng, reg, ck);
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'south', standalone: true }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
-  }
-  const VILLAGES_ENABLED = true;
-  function maybeBuildVillage(cx, cz) {
-    if (!VILLAGES_ENABLED) return;
-    const ck = cx + '_' + cz;
-    // An existing building's footprint (a castle, church, farm —
-    // anything already registered via registerBuildingFootprint) spans
-    // into this chunk. Forcing a brand new, unrelated village build
-    // here wouldn't just be guaranteed to fail its own placement checks
-    // — buildVillageInChunk's very first passes (stripping trees/water,
-    // then unconditionally carving a straight road) delete blocks
-    // across this whole chunk before any of those placement checks ever
-    // run, with no awareness that something is already standing here.
-    // That's what was silently gutting part of a castle — the roof,
-    // a wall, whatever the road strip happened to cross — the first
-    // time a chunk containing part of it (often far from the village's
-    // own "home" chunk the castle was actually built from) finally
-    // streamed in as a player approached, well after the structure
-    // itself had already been built and, from a distance, looked
-    // completely intact. This has to be checked before EITHER path
-    // below, not just the fallback one — a castle's registered
-    // footprint (±20 padding, easily a dozen-plus chunks) can just as
-    // easily land on top of some OTHER, unrelated village's own
-    // legitimate scheduled grid slot, and that path used to build
-    // completely unconditionally.
-    if (villageHouseFootprints.has(ck)) return;
-    const info = villageInfoForChunk(cx, cz);
-    if (info) { buildVillageInChunk(cx, cz, info.rng); return; }
-    // Fallback — this chunk wasn't the stride grid's own candidate for
-    // its cell (or it was and got skip-rolled), so the grid alone isn't
-    // going to build anything here. If it's also been more than
-    // VILLAGE_FORCE_DISTANCE since the last village that actually got
-    // built anywhere, force a one-off attempt on this chunk regardless
-    // of the grid — chunks only ever generate within a small radius of
-    // the player (see CHUNK_LOAD_RADIUS), so "whatever chunk is
-    // currently streaming in" is always close to wherever the player
-    // is heading. buildVillageInChunk's own site checks (ruggedness,
-    // protected areas) still apply, so this can still fail quietly on
-    // a bad site — it just tries again on the next chunk that streams
-    // in, rather than waiting for the grid's own next candidate, which
-    // could be another 160+ blocks away.
-    const wcx = cx * CHUNK_SIZE + CHUNK_SIZE / 2, wcz = cz * CHUNK_SIZE + CHUNK_SIZE / 2;
-    const dx = wcx - lastVillageWorldPos.x, dz = wcz - lastVillageWorldPos.z;
-    if (Math.sqrt(dx * dx + dz * dz) < VILLAGE_FORCE_DISTANCE) return;
-    const rng = mulberry32(seedFromHash(cx * 5303 + cz * 9127 + 401, cz * 2917 + cx * 6551 + 233));
-    buildVillageInChunk(cx, cz, rng);
   }
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);
@@ -9127,98 +8403,6 @@
       villageFootprintChunkKeys.delete(ck);
     }
   }
-
-  // ── Village map (discovered villages, saved locally) ──────────────
-  // Village placement is fully deterministic from world coordinates
-  // alone (see villageInfoForChunk) — the same village exists at the
-  // same spot in every world/save, not just the one it was found in.
-  // So a single global "villages I've found" list, persisted the same
-  // way the display name already is, makes sense regardless of which
-  // save happens to be open: finding one once puts it on the map for
-  // good, in any world.
-  const VILLAGE_LOG_KEY = 'voxelDiscoveredVillages';
-  const VILLAGE_MAX_FAVORITES = 10;
-  function loadVillageLog() {
-    try { return JSON.parse(localStorage.getItem(VILLAGE_LOG_KEY) || '[]'); } catch (e) { return []; }
-  }
-  function saveVillageLog(list) {
-    try { localStorage.setItem(VILLAGE_LOG_KEY, JSON.stringify(list)); } catch (e) {}
-  }
-  function recordVillageDiscovery(name, x, z) {
-    const list = loadVillageLog();
-    if (list.some(v => v.x === x && v.z === z)) return; // same village streaming back in on a later visit — already on the list
-    list.push({ name, x, z, foundAt: Date.now(), favorite: false });
-    saveVillageLog(list);
-  }
-  function setVillageMapStatus(text) {
-    const el = document.getElementById('villageMapStatus');
-    el.textContent = text;
-    el.style.display = text ? 'block' : 'none';
-    clearTimeout(setVillageMapStatus._timer);
-    if (text) setVillageMapStatus._timer = setTimeout(() => { el.style.display = 'none'; }, 3000);
-  }
-  function toggleVillageFavorite(x, z) {
-    const list = loadVillageLog();
-    const entry = list.find(v => v.x === x && v.z === z);
-    if (!entry) return;
-    if (!entry.favorite) {
-      const favCount = list.filter(v => v.favorite).length;
-      if (favCount >= VILLAGE_MAX_FAVORITES) {
-        setVillageMapStatus('⭐ Max ' + VILLAGE_MAX_FAVORITES + ' favourites — unstar one first');
-        return;
-      }
-    }
-    entry.favorite = !entry.favorite;
-    saveVillageLog(list);
-    renderVillageMap();
-  }
-  function renderVillageMap() {
-    // Favourites first (their own most-recently-favourited-last order
-    // isn't tracked, so this just keeps discovery order within each
-    // group), then everything else.
-    const list = loadVillageLog().sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || (a.foundAt - b.foundAt));
-    const container = document.getElementById('villageMapList');
-    const empty = document.getElementById('villageMapEmpty');
-    container.innerHTML = '';
-    empty.style.display = list.length ? 'none' : 'block';
-    list.forEach(v => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:10px;background:rgba(255,255,255,0.06);padding:7px 10px;border-radius:6px;';
-      const left = document.createElement('div');
-      left.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;';
-      const starBtn = document.createElement('button');
-      starBtn.textContent = v.favorite ? '⭐' : '☆';
-      starBtn.title = v.favorite ? 'Remove from favourites' : 'Add to favourites (max ' + VILLAGE_MAX_FAVORITES + ')';
-      starBtn.style.cssText = 'background:none;border:none;font-size:16px;cursor:pointer;padding:0;line-height:1;flex-shrink:0;';
-      starBtn.addEventListener('click', () => toggleVillageFavorite(v.x, v.z));
-      left.appendChild(starBtn);
-      const label = document.createElement('span');
-      label.textContent = v.name;
-      label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      left.appendChild(label);
-      row.appendChild(left);
-      const coords = document.createElement('span');
-      coords.style.cssText = 'opacity:0.75;font-variant-numeric:tabular-nums;white-space:nowrap;flex-shrink:0;';
-      coords.textContent = 'x ' + v.x + ', z ' + v.z;
-      row.appendChild(coords);
-      container.appendChild(row);
-    });
-  }
-  document.getElementById('villageMapBtn').addEventListener('click', () => {
-    renderVillageMap();
-    document.getElementById('villageMapModal').style.display = 'flex';
-  });
-  document.getElementById('villageMapClearBtn').addEventListener('click', () => {
-    const list = loadVillageLog();
-    const kept = list.filter(v => v.favorite);
-    const removedCount = list.length - kept.length;
-    saveVillageLog(kept);
-    renderVillageMap();
-    setVillageMapStatus(removedCount > 0 ? `Cleared ${removedCount} — favourites kept` : 'Nothing to clear');
-  });
-  document.getElementById('villageMapCloseBtn').addEventListener('click', () => {
-    document.getElementById('villageMapModal').style.display = 'none';
-  });
 
   // ================= VEHICLES =================
   // Rideable props, placed from their own hotbar slot exactly the way
@@ -12249,7 +11433,16 @@
     while (ambientFish.length < AMBIENT_FISH_MAX && deepCols.length) {
       const col = deepCols[Math.floor(Math.random()*deepCols.length)];
       const { group: mesh, tail } = buildFishMesh(FISH_COLORS[Math.floor(Math.random()*FISH_COLORS.length)]);
-      const swimY = col.minY + 0.6; // a bit up off the floor, comfortably below the surface
+      // Appears at the player's own current depth rather than always at
+      // the seafloor — clamped to what this particular column actually
+      // offers (col.minY+0.6 .. col.maxY-0.4), so a player deep in a
+      // wide trench but scanning a shallower nearby column still gets a
+      // sensible in-range depth rather than one outside that column's
+      // own water at all. That clamp is also what naturally keeps fish
+      // near the bottom on its own whenever the player themselves is
+      // already within the last few blocks of the floor — no separate
+      // case needed for that.
+      const swimY = Math.max(col.minY + 0.6, Math.min(col.maxY - 0.4, player.pos.y));
       mesh.position.set(col.x+0.5, swimY, col.z+0.5);
       scene.add(mesh);
       // cols is a shared reference to this scan's whole deep-column list
@@ -21380,7 +20573,6 @@
     document.getElementById('coinsDisplay').style.display = 'block';
     document.getElementById('coordsDisplay').style.display = 'block';
     document.getElementById('millCompass').style.display = 'flex';
-    document.getElementById('villageMapBtn').style.display = terrainStreamingActive ? 'block' : 'none'; // only meaningful in the infinite streamed world where villages actually generate
     document.getElementById('playerRadar').style.display = 'block';
     updateCoinsDisplay();
     updateRoleTag();

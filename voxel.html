@@ -5916,7 +5916,7 @@
   const HOTEL_NAMES  = ['Grand Hotel',"The Traveller's Rest",'Riverside Hotel','The Golden Lodge'];
   const CASTLE_NAMES = ['Stonewatch Castle','Ravenhold Castle','Ironkeep','Thornwall Castle'];
 
-  const VILLAGE_CHUNK_STRIDE = 10; // 10 chunks * 32 blocks = 320 — widened from 5 (160) specifically to bring the grid's own spacing up to the requested "at least 300 blocks apart" too, not just the force-distance backstop below
+  const VILLAGE_CHUNK_STRIDE = 50; // 50 chunks * 32 blocks = 1600 — widened 5x (from 10/320) so villages appear at ~20% of their previous rate, as requested. VILLAGE_FORCE_DISTANCE below is widened by the same 5x for the same reason — that backstop was already the dominant density driver at the old spacing (see its own comment), so leaving it at 300 here would have completely undone this change
   const VILLAGE_SKIP_CHANCE = 0.05; // rarely skipped now, so they show up close to as often as the grid allows
   const villageRegistry = new Map(); // chunkKey -> { furnitureKeys, doorKeys, signKeys, npcs }
   // Distance-based backstop on top of the stride grid above. The grid
@@ -5930,7 +5930,7 @@
   // that streams in once it's got this far from that without a new one
   // landing — see the fallback in maybeBuildVillage.
   let lastVillageWorldPos = { x: 0, z: 0 };
-  const VILLAGE_FORCE_DISTANCE = 300; // widened from 275 — villages were generating too often
+  const VILLAGE_FORCE_DISTANCE = 1500; // widened 5x alongside VILLAGE_CHUNK_STRIDE above, for the same "20% of the current rate" request — kept proportional so this backstop still plays the same relative role (a worst-case cap for a run of terrain that fails every grid candidate) rather than becoming either irrelevant or the new dominant driver
   // Every building's footprint — but keyed by every ACTUAL chunk its own
   // reach (its pad, wall, and escape stair, ±20 to be safe) can touch,
   // not by whichever chunk its village originated in. That distinction
@@ -7507,7 +7507,7 @@
     maybeAddTreasure(x0 + 1, gy, z1 - 1, reg); // 10% chance, tucked in a floor corner
     return { shell, reg };
   }
-  const WINDMILL_CHUNK_STRIDE = 8; // 8*32 = 256 blocks apart, jittered — was 30 (960 blocks), which combined with the elevation gate below worked out to an actual average gap of over 3000 blocks in practice (checked by simulation, not guessed) — nowhere near "flying past a few mountain tops" territory
+  const WINDMILL_CHUNK_STRIDE = 40; // 40*32 = 1280 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request for all buildings
   const windmillRegionClaimed = new Set(); // "gx_gz" -> a windmill has already landed somewhere in this WINDMILL_CHUNK_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as houseRegionClaimed/shipwreckRegionClaimed
   function maybeBuildWindmill(cx, cz) {
     const gx = Math.floor(cx / WINDMILL_CHUNK_STRIDE), gz = Math.floor(cz / WINDMILL_CHUNK_STRIDE);
@@ -7536,7 +7536,7 @@
     registerBuildingFootprint(entry, ck);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
-  const CASTLE_CHUNK_STRIDE = 20; // 20*32 = 640 blocks apart, jittered — meant to be a rarer, special find, unlike a windmill or a settlement
+  const CASTLE_CHUNK_STRIDE = 100; // 100*32 = 3200 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request; meant to be a rarer, special find, unlike a windmill or a settlement
   const castleRegionClaimed = new Set(); // same reasoning as windmillRegionClaimed/houseRegionClaimed
   function maybeBuildCastle(cx, cz) {
     const gx = Math.floor(cx / CASTLE_CHUNK_STRIDE), gz = Math.floor(cz / CASTLE_CHUNK_STRIDE);
@@ -7666,7 +7666,7 @@
   // its whole footprint (see hasDeepWaterAt/maybeBuildShipwreck below),
   // with its keel sitting 2 blocks under the surface and everything
   // above standing clear of the water entirely.
-  const SHIPWRECK_CHUNK_STRIDE = 7; // was 11 (too rare, nobody found one), then cut to 4 (too common) — this is the middle ground. Now the width of the region any one of its chunks can claim a shipwreck within (see maybeBuildShipwreck) rather than a single fixed chunk's own width.
+  const SHIPWRECK_CHUNK_STRIDE = 35; // widened 5x (from 7) per Jason's "20% of the current rate" request. Now the width of the region any one of its chunks can claim a shipwreck within (see maybeBuildShipwreck) rather than a single fixed chunk's own width.
   const shipwreckRegs = new Map(); // "cx_cz" -> { fixtureKeys, ladderKeys, treasureKeys }
   // Carves and floods a basin regardless of what's actually there —
   // deleting any existing block first, then either sand (seabed/rim) or
@@ -8737,7 +8737,18 @@
     for (let z = wz0; z <= wz1; z++) { siteWaterWallColumn(wx0, z, -1, 0); siteWaterWallColumn(wx1, z, 1, 0); }
     for (let x = wx0; x <= wx1; x++) { siteWaterWallColumn(x, wz0, 0, -1); siteWaterWallColumn(x, wz1, 0, 1); }
 
-    const npcCount = Math.min(3, 2 + Math.floor(rng() * 2)); // cut down from a 5-7 cap — villages are generating much more often now (see the force-distance backstop), so each one's own ongoing per-frame cost (wander AI, animation) needed to come down to compensate
+    // Was a flat 2-3 total per village regardless of its size, cut down
+    // from 5-7 specifically because each NPC's own per-frame cost
+    // (wander AI, animation) was too high at the time — see
+    // updateVillageNPCs/buildCustomerFigure, which no longer traverse()
+    // the whole mesh every frame to animate legs/arms, so that per-NPC
+    // cost is much lower now. Scaling with newHouseFootprints.length (the
+    // actual buildings this village ended up with — houses, shop,
+    // church, farm, landmark, castle, whichever combination it rolled)
+    // instead of a flat number means a bigger village reads as more
+    // populated rather than every village feeling equally (and rather
+    // sparsely) inhabited.
+    const npcCount = Math.min(7, 3 + newHouseFootprints.length);
     // Kept close to the road rather than the whole footprint — plots
     // now vary in height, and the wandering-NPC logic isn't terrain-
     // aware enough to path between different plot elevations cleanly.
@@ -8766,7 +8777,7 @@
   const HOUSE_SEARCH_PAD = 2; // was 1 — clearing needs to reach 2 blocks beyond the walls, not 1
   const HOUSE_SEARCH_SIZE = HOUSE_FOOTPRINT + HOUSE_SEARCH_PAD * 2; // 13 — the whole safeguarded area, registered as this house's footprint so nothing else can be placed inside it either
   const HOUSE_MAX_VARIANCE = 5; // raised from 3 — the multi-chunk settlement area (spanning several chunks, most of which are frequently still ungenerated at trigger time — only ~160 blocks around the player is ever actually loaded) essentially never found anywhere fully generated to check, which is what caused settlements to stop appearing at all. Reverted to the single-chunk approach below; this relaxation makes a few more single-chunk candidates qualify too.
-  const HOUSE_STANDALONE_STRIDE = VILLAGE_CHUNK_STRIDE; // reuses the density already tuned for the old village grid (roughly one every 320 blocks) — back from the ~1000-block SETTLEMENT_STRIDE, which was tied to the multi-chunk area that didn't work out
+  const HOUSE_STANDALONE_STRIDE = VILLAGE_CHUNK_STRIDE; // reuses whatever density VILLAGE_CHUNK_STRIDE is tuned to — now 1600 blocks apart after that was widened 5x — rather than its own separate constant
   const VILLAGE_MIN_GAP = 250; // back from 1000 — that was specifically the multi-chunk settlement's own spacing target, no longer relevant once back to single-chunk
   let lastSettlementPos = { x: -Infinity, z: -Infinity }; // updated the moment a settlement is committed to, before it builds anything — same reasoning the old village system's lastVillageWorldPos had: this needs to be current before any knock-on chunk generation this settlement's own build might trigger, or that generation could see a stale position and misjudge its own distance check
   const houseRegionClaimed = new Set(); // "gx_gz" -> a settlement has already landed somewhere in this HOUSE_STANDALONE_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as shipwreckRegionClaimed
@@ -8898,7 +8909,7 @@
   // ── Shop — fully independent of the house now, its own placement
   // grid entirely (see "let's just separate all buildings"), same
   // search-and-level approach throughout.
-  const SHOP_CHUNK_STRIDE = 12; // 12*32 = 384 blocks apart, jittered
+  const SHOP_CHUNK_STRIDE = 60; // 60*32 = 1920 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request
   const shopRegionClaimed = new Set();
   function maybeBuildShop(cx, cz) {
     const gx = Math.floor(cx / SHOP_CHUNK_STRIDE), gz = Math.floor(cz / SHOP_CHUNK_STRIDE);
@@ -8923,7 +8934,7 @@
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
   // ── Church — fully independent, own grid.
-  const CHURCH_CHUNK_STRIDE = 15; // 480 blocks apart
+  const CHURCH_CHUNK_STRIDE = 75; // 2400 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const churchRegionClaimed = new Set();
   function maybeBuildChurch(cx, cz) {
     const gx = Math.floor(cx / CHURCH_CHUNK_STRIDE), gz = Math.floor(cz / CHURCH_CHUNK_STRIDE);
@@ -8948,7 +8959,7 @@
   }
   // ── Landmark (well/statue/bell) — fully independent, own grid. Small
   // and common — a much tighter stride than the others.
-  const LANDMARK_CHUNK_STRIDE = 9; // 288 blocks apart
+  const LANDMARK_CHUNK_STRIDE = 45; // 1440 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const landmarkRegionClaimed = new Set();
   function maybeBuildLandmark(cx, cz) {
     const gx = Math.floor(cx / LANDMARK_CHUNK_STRIDE), gz = Math.floor(cz / LANDMARK_CHUNK_STRIDE);
@@ -8978,7 +8989,7 @@
   // ── Farm — fully independent, own grid. Combined 25x16 (farmhouse +
   // wheat + cabbage + pen) layout math is unchanged from before, just
   // anchored on this site's own sx0/sz0.
-  const FARM_CHUNK_STRIDE = 14; // 448 blocks apart
+  const FARM_CHUNK_STRIDE = 70; // 2240 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const farmRegionClaimed = new Set();
   function maybeBuildFarm(cx, cz) {
     const gx = Math.floor(cx / FARM_CHUNK_STRIDE), gz = Math.floor(cz / FARM_CHUNK_STRIDE);

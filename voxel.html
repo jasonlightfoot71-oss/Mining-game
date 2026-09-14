@@ -12212,26 +12212,28 @@
   }
   function scanAndSpawnAmbientFish() {
     if (ambientFish.length >= AMBIENT_FISH_MAX) return;
-    // Groups every water cell WITHIN FISH_SPAWN_RADIUS of the player by
-    // its (x,z) column to work out how deep the water actually is there
-    // — "deeper than a block" means at least 2 stacked water cells in
-    // the same column, not just a single shallow puddle layer. Scoping
-    // the scan to the player's own radius (rather than every water
-    // block currently loaded) is what makes this cheap enough to run
-    // often — it's a small, bounded area, not the whole loaded world.
+    // Scans groundHeightOnly directly for deep columns rather than
+    // waterBlocks.forEach — that only walks EXPLICIT entries (player
+    // edits/drains; see WaterBlockMap's own comments above), which is
+    // exactly right for the "count a whole ocean as free" optimization
+    // that redesign was for, but means it was silently never seeing any
+    // untouched natural water at all — fish could only ever spawn in a
+    // pool a player had already interacted with. groundHeightOnly is the
+    // one source that's always populated regardless, so this checks it
+    // for likely-deep columns first (cheap — skips dry/shallow land
+    // immediately) and then confirms against waterBlocks itself for the
+    // surface and floor cells, so a column that's since been drained (an
+    // explicit -1 override) correctly doesn't count as deep water.
     const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
-    const columns = new Map();
-    waterBlocks.forEach((level, k) => {
-      const parts = k.split(',');
-      const x = +parts[0], y = +parts[1], z = +parts[2];
-      if (Math.abs(x-px) > FISH_SPAWN_RADIUS || Math.abs(z-pz) > FISH_SPAWN_RADIUS) return;
-      const ck = x+','+z;
-      let col = columns.get(ck);
-      if (!col) columns.set(ck, { x, z, minY:y, maxY:y });
-      else { if (y < col.minY) col.minY = y; if (y > col.maxY) col.maxY = y; }
-    });
     const deepCols = [];
-    columns.forEach(col => { if (col.maxY - col.minY + 1 > 1) deepCols.push(col); });
+    for (let x = px - FISH_SPAWN_RADIUS; x <= px + FISH_SPAWN_RADIUS; x++) {
+      for (let z = pz - FISH_SPAWN_RADIUS; z <= pz + FISH_SPAWN_RADIUS; z++) {
+        const gh = groundHeightOnly.get(x + ',' + z);
+        if (gh === undefined || SEA_LEVEL - gh <= 1) continue; // dry land, or naturally too shallow to ever be "deep"
+        if (!waterBlocks.has(key(x, SEA_LEVEL, z)) || !waterBlocks.has(key(x, gh + 1, z))) continue; // drained or otherwise edited away since
+        deepCols.push({ x, z, minY: gh + 1, maxY: SEA_LEVEL });
+      }
+    }
     if (!deepCols.length) return;
     while (ambientFish.length < AMBIENT_FISH_MAX && deepCols.length) {
       const col = deepCols[Math.floor(Math.random()*deepCols.length)];

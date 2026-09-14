@@ -1989,7 +1989,56 @@
   scene.add(sun.target);
 
   // ================= WORLD DATA =================
-  const blocks = new Map();   // "x,y,z" -> typeIndex (0..8)
+  // A Map-compatible wrapper (same interface as a plain Map, so every
+  // existing call site — hundreds of them, everything from mining to
+  // terrain generation to collision — keeps working completely
+  // unchanged) that also maintains an incremental glassCells index as a
+  // side effect of every set/delete. rebuildGlassGeometry() used to scan
+  // every single block in the whole loaded world just to find the glass
+  // among them — the same "re-derive everything from scratch on every
+  // call" cost that made water freeze the game, just triggered
+  // reactively (mining/placing near glass) rather than on a timer. The
+  // per-call overhead added here is deliberately tiny — one Set lookup,
+  // and a glassCells update only on the rare occasions a cell actually
+  // becomes or stops being glass — specifically because `blocks` is
+  // read far more often, in much hotter paths (every collision check),
+  // than waterBlocks ever was, and couldn't take on the heavier
+  // per-chunk bucketing that fix needed without slowing those paths
+  // down.
+  class BlocksMap {
+    constructor() {
+      this._data = new Map();
+      this.glassCells = new Map(); // key -> type, glass cells only
+      this.leafCells = new Map(); // key -> type (always 4), plain Leaves only — lets the winter branch variety scan (see scanForWinterBranchVariety) check just the leaves instead of re-scanning every block in the loaded world every few seconds during winter
+    }
+    set(k, type) {
+      const old = this._data.get(k);
+      this._data.set(k, type);
+      if (GLASS_TYPE_SET.has(type)) this.glassCells.set(k, type);
+      else if (old !== undefined && GLASS_TYPE_SET.has(old)) this.glassCells.delete(k); // was glass, just got overwritten with something else
+      if (type === 4) this.leafCells.set(k, type);
+      else if (old === 4) this.leafCells.delete(k); // was plain Leaves, just got overwritten (winterized to a branch variant, mined, replaced, etc.)
+      return this;
+    }
+    delete(k) {
+      if (!this._data.has(k)) return false;
+      const old = this._data.get(k);
+      this._data.delete(k);
+      if (GLASS_TYPE_SET.has(old)) this.glassCells.delete(k);
+      if (old === 4) this.leafCells.delete(k);
+      return true;
+    }
+    has(k) { return this._data.has(k); }
+    get(k) { return this._data.get(k); }
+    get size() { return this._data.size; }
+    clear() { this._data.clear(); this.glassCells.clear(); this.leafCells.clear(); }
+    [Symbol.iterator]() { return this._data[Symbol.iterator](); }
+    entries() { return this._data.entries(); }
+    keys() { return this._data.keys(); }
+    values() { return this._data.values(); }
+    forEach(fn) { this._data.forEach(fn); }
+  }
+  const blocks = new BlocksMap();   // "x,y,z" -> typeIndex (0..8)
   const stepRotations = new Map(); // "x,y,z" -> 0..3, which way a Step block's riser faces (only set for .half block types)
   function snapYawToStepIndex(y) {
     const norm = ((y % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
@@ -3392,8 +3441,7 @@
     // way `blocks` already keys them — panel flood-fill (pass 2) and the
     // final per-cell face pass (pass 4) both look neighbours up in O(1)
     // against this rather than re-scanning the whole `blocks` map twice.
-    const glassCells = new Map(); // key -> type
-    for (const [k, type] of blocks) { if (GLASS_TYPE_SET.has(type)) glassCells.set(k, type); }
+    const glassCells = blocks.glassCells; // maintained incrementally by BlocksMap itself now — no need to scan every block in the loaded world to find the handful that are glass
 
     // Pass 2: flood-fill connected panels — any two glass cells (any
     // colour) that touch face-to-face belong to the same panel, matching
@@ -7246,7 +7294,16 @@
     // The wider levelling for the moat happens afterward instead,
     // clamped to this chunk's own bounds, rather than being part of the
     // strict search.
-    const MOAT_REACH = 6, CASTLE_PAD = MOAT_REACH + 2;
+    // MOAT_REACH must match the actual width built in
+    // applyCastleMoatColumn/buildCastleMoat (dist <= 9 there — outer
+    // retaining wall sits at dist 9, water at dist 3-8) — this was still
+    // 6, left over from before the moat was widened, so the levelled
+    // area stopped 3 blocks short of where the moat and bridge actually
+    // reach on every side. The bridge is what actually reaches furthest
+    // (all the way through the widened water band to connect with solid
+    // ground beyond it), so a mismatch this size showed up worst there —
+    // "not clearing terrain at the front, the bridge side" was this.
+    const MOAT_REACH = 9, CASTLE_PAD = MOAT_REACH + 3;
     const site = findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     castleRegionClaimed.add(regionKey);
@@ -7254,13 +7311,12 @@
     const px0 = site.sx0, pz0 = site.sz0, px1 = site.sx1, pz1 = site.sz1; // the 24x15 core itself
     // Widened leveling for the moat's own reach, clamped to this same
     // chunk's bounds — the core (24x15) already fits safely within one
-    // chunk, but the moat's further 8-block reach on each side could
-    // spill past this chunk's edge if the core landed near it. Clamping
-    // (rather than letting it spill into a possibly-ungenerated
-    // neighbour) means the moat might be very slightly less levelled at
-    // that one edge in the rare case the core sits right at a chunk
-    // boundary — a small cosmetic trade-off, not a crash or a missing
-    // castle.
+    // chunk, but the moat's further reach on each side could spill past
+    // this chunk's edge if the core landed near it. Clamping (rather
+    // than letting it spill into a possibly-ungenerated neighbour) means
+    // the moat might be very slightly less levelled at that one edge in
+    // the rare case the core sits right at a chunk boundary — a small
+    // cosmetic trade-off, not a crash or a missing castle.
     const levelX0 = Math.max(baseX, px0 - CASTLE_PAD), levelX1 = Math.min(baseX + CHUNK_SIZE - 1, px1 + CASTLE_PAD);
     const levelZ0 = Math.max(baseZ, pz0 - CASTLE_PAD), levelZ1 = Math.min(baseZ + CHUNK_SIZE - 1, pz1 + CASTLE_PAD);
     levelSite(levelX0, levelX1, levelZ0, levelZ1, floor, 25); // the keep's own towers reach well above a house or shop
@@ -15452,8 +15508,15 @@
   const WINTER_BRANCH_POOL = [WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C];
   function scanForWinterBranchVariety() {
     const changedKeys = [];
-    for (const [k, type] of blocks) {
-      if (type !== 4 || winterizedLeaves.has(k)) continue;
+    // Snapshot first — blocks.set() below mutates blocks.leafCells itself
+    // (a winterized cell stops being type 4), so iterating the live index
+    // directly while changing it mid-loop is exactly the kind of thing
+    // that's easy to get subtly wrong. A plain array copy costs nothing
+    // next to what this used to do (scan every block in the world).
+    const candidates = [...blocks.leafCells.keys()];
+    for (const k of candidates) {
+      if (winterizedLeaves.has(k)) continue;
+      if (blocks.get(k) !== 4) continue; // could have changed since the snapshot (mined, replaced) — double check before touching it
       if (Math.random() < 0.55) {
         const variant = WINTER_BRANCH_POOL[Math.floor(Math.random() * WINTER_BRANCH_POOL.length)];
         blocks.set(k, variant);
@@ -15487,7 +15550,7 @@
     if (currentSeason !== 0) return;
     winterBranchScanTimer -= dt;
     if (winterBranchScanTimer > 0) return;
-    winterBranchScanTimer = 4; // re-scan every 4s while winter's ongoing — cheap enough at this interval, and catches newly streamed-in trees without re-rolling ones already decided
+    winterBranchScanTimer = 4; // re-scan every 4s while winter's ongoing — catches newly streamed-in trees without re-rolling ones already decided. Only iterates blocks.leafCells now (see BlocksMap), not every block in the loaded world, so this stays cheap regardless of how much has been explored — it was the full-world scan that made this interval a real cost before, not the interval itself.
     scanForWinterBranchVariety();
   }
   function revertWinterBranchVariety() {

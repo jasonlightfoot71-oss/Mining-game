@@ -1077,6 +1077,16 @@
     return data;
   }
   async function deleteWorldRow(id) {
+    // Was only ever deleting the world's own row here — its actual
+    // terrain (every chunk's blocks/water, in the separate
+    // taskmill_voxel_chunks table this world's id points to) was never
+    // touched, left behind as orphaned rows forever. hardResetMillWorld
+    // just above already does this correctly for The Mill specifically;
+    // this is the same thing for an ordinary player world being deleted.
+    // New worlds get a fresh random uuid (see newWorldId), so this
+    // couldn't cause a NEW world to inherit old terrain — but it meant
+    // "deleted" worlds were never actually fully gone.
+    try { await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks?world_id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', headers: SB_HEADERS }); } catch(e) {}
     try { await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE', headers: SB_HEADERS }); } catch(e) {}
   }
   function newWorldId() {
@@ -7346,10 +7356,32 @@
     // chunk boundary — standalone:true otherwise keeps the reactive
     // path from doing anything outside this box at all (see its own
     // comment).
+    // Protects the moat's own full reach too, not just the keep+tower —
+    // this box can genuinely spill into a neighbouring chunk (the moat's
+    // construction below writes blocks at absolute coordinates up to
+    // MOAT_REACH beyond the core, regardless of chunk boundaries), and
+    // when that neighbour chunk hadn't generated yet and only later
+    // catches up, its own ordinary terrain generation had no idea any of
+    // this was already here — nothing protected the moat there, so it
+    // just got overwritten with whatever natural terrain would otherwise
+    // be at that spot. This was the real cause of the moat (and
+    // especially the bridge, which is the side that reaches furthest
+    // through it) looking like it was never cleared at all.
     function inCastle(x, z) {
-      return (x >= kx0 && x <= kx1 && z >= kz0 && z <= kz1) || (x >= tx0 && x <= tx1 && z >= tz0 && z <= tz1);
+      const dx = Math.max(px0 - x, x - px1, 0);
+      const dz = Math.max(pz0 - z, z - pz1, 0);
+      return Math.max(dx, dz) <= MOAT_REACH;
     }
-    const entry = { x0: levelX0, x1: levelX1, z0: levelZ0, z1: levelZ1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: 2, doorSide: 'south', standalone: true, shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } };
+    // Registered footprint now matches the moat's own TRUE reach
+    // (unclamped — registerBuildingFootprint is specifically built to
+    // scatter a registration across every chunk key a footprint like
+    // this touches, including ones not generated yet), not the
+    // chunk-clamped levelX0/X1/Z0/Z1 used only for the (separate, safe)
+    // levelling step above. Registering the smaller, clamped box was
+    // what let this same gap through: a neighbouring chunk the moat
+    // physically reaches into, but that this registration never told
+    // about, had nothing to protect it when it later generated.
+    const entry = { x0: px0 - MOAT_REACH, x1: px1 + MOAT_REACH, z0: pz0 - MOAT_REACH, z1: pz1 + MOAT_REACH, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: 2, doorSide: 'south', standalone: true, shapeFn: inCastle, moat: { bridgeMidX: keepShell.doorX } };
     registerBuildingFootprint(entry, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(levelX0 - 10, levelX1 + 10, levelZ0 - 10, levelZ1 + 10);

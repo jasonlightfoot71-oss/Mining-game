@@ -6240,8 +6240,24 @@
   const villageGroundHeight = new Map(); // "x,z" -> walkable surface y
   function markVillageGround(x, z, y) { villageGroundHeight.set(x + ',' + z, y); }
   function villageSurfaceY(x, z, fallback) {
-    const gy = villageGroundHeight.get(Math.floor(x) + ',' + Math.floor(z));
-    return gy === undefined ? fallback : gy;
+    const fx = Math.floor(x), fz = Math.floor(z);
+    const gy = villageGroundHeight.get(fx + ',' + fz);
+    if (gy !== undefined) return gy; // an actual graded/marked village pad column — the most authoritative source where it exists
+    // Building residents now wander up to 30 blocks from their own door
+    // (see spawnBuildingResident/BUILDING_NPC_WANDER_RADIUS) — far beyond
+    // the small graded pad immediately around the building itself, out
+    // into ordinary, un-levelled natural terrain that was never marked
+    // via markVillageGround at all. Falling straight to a frozen
+    // "fallback" constant there (as this used to) meant a resident's own
+    // Y position stopped tracking the ground the moment they stepped off
+    // their building's pad — walking on air over a dip, or clipping
+    // through a rise. groundHeightOnly holds the real generated terrain
+    // height for every column regardless of whether it's part of any
+    // village at all, so it's a far more accurate fallback than a
+    // constant — the constant is now only actually reached for truly
+    // ungenerated columns.
+    const gh = groundHeightOnly.get(fx + ',' + fz);
+    return gh !== undefined ? gh : fallback;
   }
   function addPyramidRoof(x0, x1, z0, z1, topY, palette, maxLayers) {
     let cx0 = x0 - 1, cx1 = x1 + 1, cz0 = z0 - 1, cz1 = z1 + 1, y = topY, layer = 0;

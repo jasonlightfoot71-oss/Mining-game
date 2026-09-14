@@ -765,9 +765,15 @@
     for (const ck of dirtyChunks) {
       const [cx, cz] = ck.split('_').map(Number);
       const blocksOut = [], waterOut = [];
-      for (const [k, type] of blockEdits) {
+      // Scoped to just this chunk's own edits (blockEdits.byChunk,
+      // waterEdits.byChunk — maintained incrementally by EditsMap
+      // itself) instead of scanning every edit ever made anywhere, once
+      // per dirty chunk — that nested pattern (every dirty chunk times
+      // every edit in the whole world) made this the worst instance of
+      // this bug in the file.
+      const chunkBlockEdits = blockEdits.byChunk.get(ck);
+      if (chunkBlockEdits) for (const [k, type] of chunkBlockEdits) {
         const parts = k.split(',');
-        if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
         const rot = stepRotEdits.get(k);
         blocksOut.push(rot ? [+parts[0], +parts[1], +parts[2], type, rot] : [+parts[0], +parts[1], +parts[2], type]);
       }
@@ -777,9 +783,9 @@
         if (chunkKeyOf(gx, gz) !== ck) continue;
         blocksOut.push([gx, -1, gz, GROUND_PIN_MARKER, gh]); // see groundPins declaration — smuggled through the blocks array, y=-1 marks it as a pin rather than a real block
       }
-      for (const [k, level] of waterEdits) {
+      const chunkWaterEdits = waterEdits.byChunk.get(ck);
+      if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
         const parts = k.split(',');
-        if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
         waterOut.push([+parts[0], +parts[1], +parts[2], level]);
       }
       rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: blocksOut, water: waterOut, updated_at: new Date().toISOString() });
@@ -1056,7 +1062,7 @@
     // are fully settled, right before beginPlaying().
     terrainStreamingActive = false;
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
-    generatedChunks.clear(); lastStreamChunkKey = null;
+    generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     if (infiniteWorldActive) {
       await loadWorldEditChunks(id);
       // data.blocks/data.water are deliberately left unset — there is no
@@ -2069,7 +2075,7 @@
   class WaterBlockMap {
     constructor() {
       this._data = new Map();
-      this.chunkCells = new Map(); // chunkKey -> Set of "x,y,z" keys
+      this.chunkCells = new Map(); // chunkKey -> Set of "x,y,z" keys — explicit entries only (edits/overrides), NOT every natural water cell any more, see has()/get()
       this.dirtyChunks = new Set(); // chunkKeys touched since last consumed
     }
     _chunkKeyForK(k) {
@@ -2078,6 +2084,21 @@
       const lastComma = k.lastIndexOf(',');
       const z = parseInt(k.slice(lastComma + 1), 10);
       return chunkKeyOf(x, z);
+    }
+    // Natural water's own level (or undefined if this cell naturally has
+    // none) — a pure function of groundHeightOnly and SEA_LEVEL, the
+    // exact same formula terrain generation itself used to compute once
+    // per cell and store; computed here on demand instead. This is the
+    // whole idea: an untouched ocean, however deep or however far it
+    // spans, needs zero stored entries at all — it's fully implied by
+    // ground height, which the game already tracks for every column for
+    // other reasons.
+    _naturalLevel(x, y, z) {
+      const gh = groundHeightOnly.get(x + ',' + z);
+      if (gh === undefined || gh >= SEA_LEVEL) return undefined; // ungenerated, or naturally dry land here
+      if (y <= gh || y > SEA_LEVEL) return undefined; // above the seabed's own solid ground, or above the surface
+      if (y === SEA_LEVEL) { const depth = SEA_LEVEL - gh; return depth <= 3 ? depth * 0.25 : 1; } // same tapered-shallows formula as generation used
+      return 1;
     }
     set(k, level) {
       const isNew = !this._data.has(k);
@@ -2089,19 +2110,65 @@
         set.add(k);
       }
       this.dirtyChunks.add(ck); // also covers a level-only change (height fraction) on an existing key — geometry can still differ
+      pureOceanChunks.delete(ck); // an explicit entry means this chunk no longer qualifies for the flat-plane fast path — see generateChunkTerrain's own classification
       return this;
     }
     delete(k) {
-      if (!this._data.has(k)) return false;
+      const hadExplicit = this._data.has(k);
+      // If this cell would naturally be water (per groundHeightOnly),
+      // simply removing any explicit entry isn't enough — has()/get()
+      // below fall back to that natural default, so it would silently
+      // reappear as water next time either is checked (exactly the
+      // "mined an air pocket, game thinks I'm swimming" bug this whole
+      // redesign is about avoiding). An explicit -1 override records
+      // "definitely not water here" instead, the same convention
+      // waterEdits already uses for exactly this. Every existing
+      // .delete() call site (mining, flow simulation, buildings clearing
+      // their own footprint, all ~20 of them) keeps working completely
+      // unchanged — this is handled once, here, rather than needing
+      // every one of them updated individually.
+      const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10), y = parseInt(k.slice(firstComma + 1, lastComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+      if (this._naturalLevel(x, y, z) !== undefined) {
+        const alreadyRemoved = hadExplicit && this._data.get(k) === -1;
+        if (!alreadyRemoved) this.set(k, -1);
+        return hadExplicit || true; // something is different after this call either way (now explicitly absent rather than implicitly present)
+      }
+      if (!hadExplicit) return false;
       this._data.delete(k);
       const ck = this._chunkKeyForK(k);
       const set = this.chunkCells.get(ck);
       if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
       this.dirtyChunks.add(ck);
+      pureOceanChunks.delete(ck); // defensive — shouldn't normally be in there (a non-naturally-wet cell means this chunk was never classified pure ocean to begin with), but costs nothing to be sure
       return true;
     }
-    has(k) { return this._data.has(k); }
-    get(k) { return this._data.get(k); }
+    // Removes this chunk's LIVE explicit water entries because the chunk
+    // itself is unloading — deliberately NOT the same as calling
+    // delete() on each one, which (correctly, for an actual player
+    // mine/drain) converts a naturally-wet cell into a permanent
+    // "explicitly removed" marker. An unload isn't a removal at all,
+    // just this chunk's data leaving memory temporarily; nothing here
+    // should look like a player edit, or simply walking away from the
+    // ocean and back would permanently mark it all as drained.
+    dropChunk(ck) {
+      const set = this.chunkCells.get(ck);
+      if (!set) return;
+      for (const k of set) this._data.delete(k);
+      this.chunkCells.delete(ck);
+    }
+    has(k) {
+      if (this._data.has(k)) return this._data.get(k) !== -1;
+      const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10), y = parseInt(k.slice(firstComma + 1, lastComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+      return this._naturalLevel(x, y, z) !== undefined;
+    }
+    get(k) {
+      if (this._data.has(k)) { const v = this._data.get(k); return v === -1 ? undefined : v; }
+      const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10), y = parseInt(k.slice(firstComma + 1, lastComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+      return this._naturalLevel(x, y, z);
+    }
     get size() { return this._data.size; }
     clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); }
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
@@ -2430,14 +2497,67 @@
   // already enough headroom for normal digging.
   const CHUNK_FILL_DEPTH_CAP = 9; // raised from 6 — terrain generation makes noticeably taller, more varied ground now than when this was originally tuned, so steep transitions between neighbouring columns are more common; each column only ever fills its own top N blocks, so a short cap made a tall column's fill more likely to fall short of reaching a much lower neighbour, leaving a real gap on the cliff face between them. Not a full guarantee at extreme height differences, but a meaningful margin without a large lag cost (still a small, capped depth per column, not filling all the way to bedrock everywhere).
   const generatedChunks = new Set(); // chunkKey -> currently populated in the live blocks/water maps
+  const pureOceanChunks = new Set(); // chunkKey -> every column here is natural, unedited, comfortably deep water with nothing built in it — qualifies for the flat-plane water rendering fast path (see rebuildWaterGeometry). Classified once, at the end of generateChunkTerrain; downgraded (removed) by registerBuildingFootprint if a building generated elsewhere later reaches into it (the castle's moat is the clearest example of a footprint spilling into a neighbouring chunk after that neighbour already generated).
   // Player edits, global (not grouped by chunk) — the actual source of
   // truth for what gets saved. -1 in either map means "explicitly empty
   // here", overriding whatever the procedural generator would otherwise
   // put in that cell (e.g. a player mining a hill flat, or draining a
   // lake). Reset whenever a different world is loaded.
-  const blockEdits = new Map();   // cellKey -> type (-1 = removed)
+  //
+  // Map-compatible wrapper (same interface, so recordBlockEdit,
+  // recordWaterEdit, loadWorldEditChunks, and the multiplayer edit
+  // receiver all keep working completely unchanged) that also maintains
+  // a byChunk index as a side effect of every set/delete. Without this,
+  // applying saved edits on top of freshly generated terrain (see
+  // generateChunkTerrain below) had to scan literally every edit the
+  // player has EVER made across their entire world, on every single
+  // chunk load, just to find the handful that belonged to that one
+  // chunk — a cost that grew with lifetime edit count (total blocks
+  // ever mined or placed), not with anything actually happening right
+  // now, and it ran on every chunk regardless. Same category of bug as
+  // the water/glass/leaf full-scans fixed earlier this session, just
+  // scoped to edits instead.
+  class EditsMap {
+    constructor() {
+      this._data = new Map();
+      this.byChunk = new Map(); // chunkKey -> Map(cellKey -> value)
+    }
+    _chunkKeyForK(k) {
+      const firstComma = k.indexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10);
+      const lastComma = k.lastIndexOf(',');
+      const z = parseInt(k.slice(lastComma + 1), 10);
+      return chunkKeyOf(x, z);
+    }
+    set(k, value) {
+      this._data.set(k, value);
+      const ck = this._chunkKeyForK(k);
+      let m = this.byChunk.get(ck);
+      if (!m) { m = new Map(); this.byChunk.set(ck, m); }
+      m.set(k, value);
+      return this;
+    }
+    delete(k) {
+      if (!this._data.has(k)) return false;
+      this._data.delete(k);
+      const ck = this._chunkKeyForK(k);
+      const m = this.byChunk.get(ck);
+      if (m) { m.delete(k); if (m.size === 0) this.byChunk.delete(ck); }
+      return true;
+    }
+    has(k) { return this._data.has(k); }
+    get(k) { return this._data.get(k); }
+    get size() { return this._data.size; }
+    clear() { this._data.clear(); this.byChunk.clear(); }
+    [Symbol.iterator]() { return this._data[Symbol.iterator](); }
+    entries() { return this._data.entries(); }
+    keys() { return this._data.keys(); }
+    values() { return this._data.values(); }
+    forEach(fn) { this._data.forEach(fn); }
+  }
+  const blockEdits = new EditsMap();   // cellKey -> type (-1 = removed)
   const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
-  const waterEdits = new Map();   // cellKey -> level (-1 = removed)
+  const waterEdits = new EditsMap();   // cellKey -> level (-1 = removed)
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
   // Freezes the terrain height under any column a player has ever built
   // or dug in, keyed "x,z" -> the natural height it had the very first
@@ -2584,6 +2704,7 @@
     if (generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     let minY = WORLD_HEIGHT, maxY = -1;
+    let chunkAllWet = true, chunkAllDeep = true; // every column natural water, and none of it shallow (depth > 3) — see the classification at the end of this function for what this actually gates
     // Buildings whose reach touches THIS chunk — an exact, direct lookup
     // now (see registerBuildingFootprint), not a fixed-radius guess
     // around wherever the owning village happened to originate. That's
@@ -2867,21 +2988,23 @@
           blocks.set(key(x,y,z), type);
         }
         if (allowWater && h < SEA_LEVEL) {
-          // The taper itself, in full — the only part of a real body of
-          // water that's ever a fraction of a block is its surface,
-          // everything beneath is a full block. A shallow column (depth
-          // 1-3) gets a fractional top layer instead of a full one,
-          // purely from how close ITS OWN natural height sits to sea
-          // level — no neighbour checks, no iteration, no separate pass.
-          // The "shoreline" effect falls straight out of the fact that
-          // this noise is already smooth from column to column: nearby
-          // columns naturally have similar, gradually-changing depths,
-          // which is exactly what a tapered edge actually looks like.
+          // Natural water is no longer stored per-cell here at all — see
+          // WaterBlockMap's _naturalLevel, which reproduces this exact
+          // depth/topFrac formula on demand from groundHeightOnly
+          // (already set above) instead. An untouched ocean, however
+          // deep or however far it spans, now costs zero stored entries
+          // regardless of size — this is the core of what "one big
+          // block, apart from water touching other terrain" actually
+          // means underneath. chunkAllDeep tracks whether every column
+          // here is comfortably deep (>3) — a chunk with any shallow
+          // water still needs the real per-column tapering, not a flat
+          // plane at full height.
           const depth = SEA_LEVEL - h;
-          const topFrac = depth <= 3 ? depth*0.25 : 1;
-          for (let y = h+1; y < SEA_LEVEL; y++) waterBlocks.set(key(x,y,z), 1);
-          waterBlocks.set(key(x, SEA_LEVEL, z), topFrac);
+          if (depth <= 3) chunkAllDeep = false;
           anyWaterTouchedThisStream = true;
+        } else {
+          chunkAllWet = false;
+          chunkAllDeep = false;
         }
         // Trees only take root in grass or mud — never on sand or bare
         // stone, which the old check let through occasionally in dry
@@ -2915,11 +3038,13 @@
     // Layer saved player edits on top of what was just generated — this
     // is what makes mining/building persist correctly across a chunk
     // being unloaded (walked away from) and later regenerated (walked
-    // back to).
-    for (const [k, type] of blockEdits) {
+    // back to). Scoped to just this chunk's own edits via
+    // blockEdits.byChunk (maintained incrementally by EditsMap itself)
+    // instead of scanning every edit ever made anywhere.
+    const chunkBlockEdits = blockEdits.byChunk.get(ck);
+    if (chunkBlockEdits) for (const [k, type] of chunkBlockEdits) {
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
       const ex = +k.slice(0,c1), ey = +k.slice(c1+1,c2), ez = +k.slice(c2+1);
-      if (chunkKeyOf(ex,ez) !== ck) continue;
       if (type === -1) blocks.delete(k); else blocks.set(k, type);
       const rot = stepRotEdits.get(k);
       if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
@@ -2929,9 +3054,8 @@
       const prevColH = columnHeight.get(colKey);
       if (type !== -1 && (prevColH === undefined || ey > prevColH)) columnHeight.set(colKey, ey); // a player-built tower can reach higher than whatever the terrain generator put there
     }
-    for (const [k, level] of waterEdits) {
-      const parts = k.split(',');
-      if (chunkKeyOf(+parts[0], +parts[2]) !== ck) continue;
+    const chunkWaterEdits = waterEdits.byChunk.get(ck);
+    if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
       if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
       anyWaterTouchedThisStream = true;
     }
@@ -2949,6 +3073,19 @@
     maybeBuildWindmill(cx, cz);
     maybeBuildCastle(cx, cz);
     maybeBuildShipwreck(cx, cz);
+    // Classified AFTER building placement, not before — a shipwreck
+    // specifically can land in what would otherwise qualify (buildings
+    // needing dry land never touch a chunk like this at all, but a
+    // shipwreck needs exactly the opposite). Only reached if nothing
+    // building-shaped actually claimed this chunk; registerBuildingFootprint
+    // itself handles the other direction — a building generated in a
+    // DIFFERENT chunk whose own reach spills into this one (the castle's
+    // moat is the clearest example) downgrades this chunk right then,
+    // even though nothing happened here directly.
+    if (chunkAllWet && chunkAllDeep && !villageHouseFootprints.has(ck)) {
+      pureOceanChunks.add(ck);
+      waterBlocks.dirtyChunks.add(ck); // nothing was ever waterBlocks.set() here (see the height/depth section above) — nothing would otherwise ever tell rebuildWaterGeometry this chunk exists at all
+    }
   }
   // Removes a chunk's terrain from the live maps (its edits stay recorded
   // in blockEdits/waterEdits regardless, so nothing is lost — this is
@@ -2973,27 +3110,6 @@
           const k = key(x,y,z);
           blocks.delete(k);
           stepRotations.delete(k);
-          if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-        }
-        // Natural water can extend far above this range — for a deep
-        // ocean column, columnHeight reflects the SEABED (the tallest
-        // solid block ever placed there), while the water above it
-        // reaches all the way up to SEA_LEVEL, which for a 40-block-deep
-        // column is well outside yMax. Left alone, that water never got
-        // cleared on unload at all — it just stayed in waterBlocks
-        // forever, chunk after chunk, growing without bound the more
-        // ocean got explored. This is what was actually behind
-        // rebuildWaterGeometry (which scans the ENTIRE waterBlocks map
-        // every call) getting slower over a session until it froze the
-        // game outright, and why it got dramatically worse right after
-        // making seas bigger. Only worth the extra loop for columns that
-        // actually reach underwater at all.
-        const naturalFloor = groundHeightOnly.get(colKey);
-        if (naturalFloor !== undefined && naturalFloor < SEA_LEVEL) {
-          for (let y = Math.max(yMax + 1, naturalFloor + 1); y <= SEA_LEVEL; y++) {
-            const k = key(x,y,z);
-            if (waterBlocks.has(k)) { waterBlocks.delete(k); anyWaterTouchedThisStream = true; }
-          }
         }
         // columnHeight is deliberately NOT cleared here — syncChunkInstances
         // (always called right after this, by the same caller) still needs
@@ -3006,6 +3122,18 @@
         // clearColumnHeightForChunk to clean up once sync has actually run.
       }
     }
+    // Water cleanup is a single whole-chunk operation now, not a
+    // per-column one — natural water was never stored per-cell to begin
+    // with (see WaterBlockMap), so there's nothing to walk a Y-range
+    // looking for any more. dropChunk (not delete()) specifically:
+    // delete() on a naturally-wet cell means "the player removed this",
+    // which would be exactly wrong here — this chunk isn't being
+    // drained, it's just leaving memory for a while.
+    waterBlocks.dropChunk(ck);
+    pureOceanChunks.delete(ck);
+    waterChunkCache.delete(ck);
+    waterChunkSignatures.delete(ck);
+    anyWaterTouchedThisStream = true;
     generatedChunks.delete(ck);
   }
   // Cleans up columnHeight bookkeeping for a chunk that's already been
@@ -3980,13 +4108,7 @@
     // over there can still change what an otherwise-untouched
     // neighbouring chunk needs to draw. Every other chunk's
     // last-computed geometry is still exactly correct and gets reused
-    // untouched below. This is what actually lets this function's cost
-    // scale with how much changed since last time, not with how much
-    // water exists in the whole loaded world — re-deriving the full
-    // per-chunk bucketing from every water cell, on every single call,
-    // regardless of what actually changed, was the real reason this got
-    // slower and slower (and eventually froze the game) the more of the
-    // world got explored, quite apart from the separate unload leak.
+    // untouched below.
     const toRecompute = new Set();
     for (const ck of waterBlocks.dirtyChunks) {
       toRecompute.add(ck);
@@ -3995,8 +4117,94 @@
       toRecompute.add(ccx+'_'+(ccz+1)); toRecompute.add(ccx+'_'+(ccz-1));
     }
     for (const ck of toRecompute) {
-      const cellKeys = waterBlocks.chunkCells.get(ck);
-      if (!cellKeys || cellKeys.size === 0) {
+      if (pureOceanChunks.has(ck)) {
+        // Fast path — every column in this chunk is natural, unedited,
+        // comfortably deep water (see generateChunkTerrain's own
+        // classification), so its geometry is always exactly the same
+        // shape: one flat quad at the surface, spanning the whole
+        // chunk. This is the entire reason for the classification —
+        // an untouched ocean interior needed a thousand-plus individual
+        // per-cell quads before (one per column, since every one of
+        // them is a separate 1x1 top face) for something that's
+        // visually just one flat plane. depth is always > 3 here
+        // (chunkAllDeep), so the top fraction is always the full 1 —
+        // no tapering to account for.
+        const [ccx, ccz] = ck.split('_').map(Number);
+        const x0 = ccx * CHUNK_SIZE, z0 = ccz * CHUNK_SIZE, x1 = x0 + CHUNK_SIZE, z1 = z0 + CHUNK_SIZE;
+        const y = SEA_LEVEL + 1; // matches the per-cell path's own math: a cell's own y is SEA_LEVEL, its rendered top corner is y + topFrac (1 here)
+        const cp = [x0,y,z0,  x0,y,z1,  x1,y,z1,  x0,y,z0,  x1,y,z1,  x1,y,z0];
+        const cn = [0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0];
+        waterChunkCache.set(ck, { positions: cp, normals: cn });
+        waterChunkSignatures.set(ck, 1); // constant — this chunk's geometry only ever changes shape by being downgraded out of pureOceanChunks entirely (which clears this entry via the mixed path below instead), never while still classified this way
+        continue;
+      }
+      // Mixed chunk — touches a shoreline, has been built on, or has any
+      // player edits. Needs real per-column geometry: natural water is
+      // still never stored per-cell (walk each column's own natural
+      // range instead, same depth/topFrac formula as generation used —
+      // see WaterBlockMap._naturalLevel), combined with whatever
+      // explicit overrides this chunk actually has (waterBlocks.get()
+      // already correctly merges the two for any single cell). This is
+      // the same per-cell face-culling as before, just driven by a
+      // computed range instead of requiring every cell to already exist
+      // as a literal map entry.
+      const explicitKeys = waterBlocks.chunkCells.get(ck);
+      const [ccx, ccz] = ck.split('_').map(Number);
+      const cx0 = ccx * CHUNK_SIZE, cz0 = ccz * CHUNK_SIZE;
+      const cp = [], cn = [];
+      let signature = 0, anyWater = false;
+      const consideredExplicit = explicitKeys ? new Set() : null;
+      for (let x = cx0; x < cx0 + CHUNK_SIZE; x++) {
+        for (let z = cz0; z < cz0 + CHUNK_SIZE; z++) {
+          const gh = groundHeightOnly.get(x + ',' + z);
+          if (gh === undefined || gh >= SEA_LEVEL) continue; // ungenerated, or naturally dry here
+          for (let y = gh + 1; y <= SEA_LEVEL; y++) {
+            const k = key(x, y, z);
+            const h = waterBlocks.get(k); // natural default or explicit override, already correctly combined
+            if (h === undefined) continue; // explicitly removed here
+            if (consideredExplicit) consideredExplicit.add(k);
+            anyWater = true;
+            signature = (signature + waterCellHash(x, y, z, h)) | 0;
+            for (const face of WATER_FACES) {
+              const [dx,dy,dz] = face.d;
+              if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue;
+              const [a,b,c,d] = face.c;
+              for (const corner of [a,b,c, a,c,d]) {
+                const cy = corner[1] === 1 ? h : corner[1];
+                cp.push(x+corner[0], y+cy, z+corner[2]);
+                cn.push(dx, dy, dz);
+              }
+            }
+          }
+        }
+      }
+      // Explicit water outside any natural range at all — a rooftop
+      // pool, or anywhere else a player placed water with no natural
+      // seabed under it. Rare, but the natural-range loop above only
+      // ever looks within [gh+1, SEA_LEVEL], so anything outside that
+      // needs its own pass.
+      if (explicitKeys) {
+        for (const k of explicitKeys) {
+          if (consideredExplicit.has(k)) continue;
+          const h = waterBlocks.get(k);
+          if (h === undefined) continue;
+          const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+          const x = parseInt(k.slice(0, firstComma), 10), y = parseInt(k.slice(firstComma + 1, lastComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+          anyWater = true;
+          signature = (signature + waterCellHash(x, y, z, h)) | 0;
+          for (const face of WATER_FACES) {
+            const [dx,dy,dz] = face.d;
+            if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue;
+            const [a,b,c,d] = face.c;
+            for (const corner of [a,b,c, a,c,d]) {
+              const cy = corner[1] === 1 ? h : corner[1];
+              cp.push(x+corner[0], y+cy, z+corner[2]);
+              cn.push(dx, dy, dz);
+            }
+          }
+        }
+      }
+      if (!anyWater) {
         // No water left in this chunk at all (fully drained, or
         // unloaded) — drop any stale cache/signature for it, rather
         // than letting it pile up forever as the player explores.
@@ -4004,48 +4212,29 @@
         waterChunkSignatures.delete(ck);
         continue;
       }
-      const cp = [], cn = [];
-      let signature = 0;
-      for (const k of cellKeys) {
-        const level = waterBlocks.get(k);
-        const commaIdx = k.indexOf(','), lastComma = k.lastIndexOf(',');
-        const x = parseInt(k.slice(0, commaIdx), 10);
-        const y = parseInt(k.slice(commaIdx + 1, lastComma), 10);
-        const z = parseInt(k.slice(lastComma + 1), 10);
-        // Height fraction (1, 0.75, 0.5, 0.25 — see the water hotbar's
-        // partial-height entries, for manually shaping a shoreline now
-        // that automatic flow/spread is off). Anything else stored here
-        // — old integer "flow level" values from a save made before
-        // this, or 0 — just falls back to a full block.
-        const h = (typeof level === 'number' && level > 0 && level < 1) ? level : 1;
-        signature = (signature + waterCellHash(x, y, z, h)) | 0;
-        for (const face of WATER_FACES) {
-          const [dx,dy,dz] = face.d;
-          if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue; // hidden internal face — skip
-          const [a,b,c,d] = face.c;
-          // two triangles: a,b,c and a,c,d
-          for (const corner of [a,b,c, a,c,d]) {
-            const cy = corner[1] === 1 ? h : corner[1]; // scale only the "top" corners (originally 1) down to this block's actual height; "bottom" corners (0) stay put
-            cp.push(x+corner[0], y+cy, z+corner[2]);
-            cn.push(dx, dy, dz);
-          }
-        }
-      }
       waterChunkCache.set(ck, { positions: cp, normals: cn });
       waterChunkSignatures.set(ck, signature);
     }
     waterBlocks.dirtyChunks.clear();
     // Assemble the final merged buffers from every chunk that currently
-    // has water — cheap array concatenation over however many chunks
-    // have water at all (hundreds, typically), not over every
-    // individual cell (hundreds of thousands) the way Pass 1 used to.
+    // has water — pure-ocean chunks (one flat quad each) plus every
+    // mixed chunk with any cached geometry. Cheap array concatenation
+    // over however many chunks have water at all, not over every
+    // individual cell.
     const positions = [];
     const normals = [];
-    for (const ck of waterBlocks.chunkCells.keys()) {
-      const chunkGeom = waterChunkCache.get(ck);
-      if (!chunkGeom) continue; // shouldn't normally happen (would mean a chunk has cells but was never recomputed), but guard rather than crash
-      for (let i = 0; i < chunkGeom.positions.length; i++) positions.push(chunkGeom.positions[i]);
-      for (let i = 0; i < chunkGeom.normals.length; i++) normals.push(chunkGeom.normals[i]);
+    const seen = new Set();
+    for (const ck of pureOceanChunks) {
+      const g = waterChunkCache.get(ck);
+      if (!g) continue; // classified but not yet rendered this session — will be picked up once dirty (see generateChunkTerrain, which marks it dirty at classification time)
+      seen.add(ck);
+      for (let i = 0; i < g.positions.length; i++) positions.push(g.positions[i]);
+      for (let i = 0; i < g.normals.length; i++) normals.push(g.normals[i]);
+    }
+    for (const [ck, g] of waterChunkCache) {
+      if (seen.has(ck)) continue;
+      for (let i = 0; i < g.positions.length; i++) positions.push(g.positions[i]);
+      for (let i = 0; i < g.normals.length; i++) normals.push(g.normals[i]);
     }
 
     const geom = waterMesh.geometry;
@@ -5730,6 +5919,18 @@
         if (!list) { list = []; villageHouseFootprints.set(tck, list); }
         list.push(entry);
         touched.push(tck);
+        // A footprint reaching into an already-generated chunk that was
+        // previously classified as pure open ocean (see
+        // generateChunkTerrain) means that classification is now stale —
+        // something's actually built there. Downgrading it here, rather
+        // than only ever classifying once at generation time, is what
+        // makes this correct for exactly the castle-moat case: the moat
+        // reaches into a neighbour chunk that may already have generated
+        // (and already been marked pure ocean) before the castle's own
+        // chunk ever ran. Marked dirty too, so the next water rebuild
+        // actually redraws this chunk with real per-column geometry
+        // instead of continuing to show the flat plane.
+        if (pureOceanChunks.has(tck)) { pureOceanChunks.delete(tck); waterBlocks.dirtyChunks.add(tck); }
       }
     }
   }
@@ -12595,7 +12796,7 @@
     // so the streaming system never regenerated it: a permanent hole
     // right around the building. Turned on only at the very end instead,
     // once position and world state are fully settled.
-    generatedChunks.clear(); lastStreamChunkKey = null;
+    generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
@@ -12637,7 +12838,7 @@
     currentWorldId = PUB_WORLD_ID;
     currentWorldName = "The Mill";
     infiniteWorldActive = true; // see visitPub()'s own comment — the building always regenerates fresh, only the open ground needs saving
-    generatedChunks.clear(); lastStreamChunkKey = null;
+    generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
@@ -21351,7 +21552,7 @@
       infiniteWorldActive = true;
       terrainStreamingActive = true;
       blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
-      generatedChunks.clear(); lastStreamChunkKey = null;
+      generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
       blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
       clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();
       clearPubExtras(); // in case the last thing loaded was the community pub

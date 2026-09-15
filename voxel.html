@@ -787,6 +787,9 @@
         if (chunkKeyOf(gx, gz) !== ck) continue;
         blocksOut.push([gx, -1, gz, GROUND_PIN_MARKER, gh]); // see groundPins declaration — smuggled through the blocks array, y=-1 marks it as a pin rather than a real block
       }
+      if (lockedStructureChunks.has(ck)) {
+        blocksOut.push([cx * CHUNK_SIZE, -1, cz * CHUNK_SIZE, LOCKED_STRUCTURE_MARKER, 0]); // see lockedStructureChunks declaration — same smuggling trick as groundPins, distinguished by its own marker type
+      }
       const chunkWaterEdits = waterEdits.byChunk.get(ck);
       if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
         const parts = k.split(',');
@@ -816,6 +819,7 @@
       for (const row of rows) {
         for (const [x,y,z,t,rot] of (row.blocks||[])) {
           if (t === GROUND_PIN_MARKER) { groundPins.set(x+','+z, rot); continue; } // see groundPins declaration — not a real block edit
+          if (t === LOCKED_STRUCTURE_MARKER) { lockedStructureChunks.add(chunkKeyOf(x, z)); continue; } // see lockedStructureChunks declaration — not a real block edit
           const k = key(x,y,z);
           blockEdits.set(k, t);
           if (rot) stepRotEdits.set(k, rot);
@@ -1488,6 +1492,50 @@
     ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   }
 
+  // Wallpaper pattern generators — each returns a makeCanvasTexture draw
+  // function. Kept as small parametrized helpers rather than one bespoke
+  // draw call per colour so 20 wallpapers (10 plain, 10 patterned) can
+  // share a handful of pattern styles instead of hand-drawing each one.
+  function wallpaperStripe(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } };
+  }
+  function wallpaperCheckPattern(base, alt) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.fillStyle=alt; const cell=4; for (let y=0;y<s;y+=cell) for (let x=0;x<s;x+=cell) if (((x/cell)+(y/cell))%2===0) ctx.fillRect(x,y,cell,cell); };
+  }
+  function wallpaperDotPattern(base, dot) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.fillStyle=dot; for (let y=2;y<s;y+=4) for (let x=2;x<s;x+=4) { ctx.beginPath(); ctx.arc(x,y,1.1,0,Math.PI*2); ctx.fill(); } };
+  }
+  function wallpaperDiagonalPattern(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; ctx.lineWidth=1; for (let d=-s; d<s*2; d+=4) { ctx.beginPath(); ctx.moveTo(d,0); ctx.lineTo(d+s,s); ctx.stroke(); } };
+  }
+  function wallpaperTrellisPattern(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; ctx.lineWidth=1; for (let d=-s; d<s*2; d+=5) { ctx.beginPath(); ctx.moveTo(d,0); ctx.lineTo(d+s,s); ctx.stroke(); ctx.beginPath(); ctx.moveTo(d+s,0); ctx.lineTo(d,s); ctx.stroke(); } };
+  }
+  function wallpaperChevronPattern(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; ctx.lineWidth=1.2; const step=4; for (let y=-step; y<s+step; y+=step) { ctx.beginPath(); for (let x=0;x<=s;x+=step) { ctx.lineTo(x, y + (Math.floor(x/step)%2===0?0:step)); } ctx.stroke(); } };
+  }
+  function wallpaperFloralPattern(base, stem, bloom) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s);
+      const spots = [[3,3],[11,3],[3,11],[11,11],[7,7]];
+      spots.forEach(([x,y]) => { ctx.fillStyle=stem; ctx.fillRect(x,y+1,1,2); ctx.fillStyle=bloom; ctx.beginPath(); ctx.arc(x,y,1.4,0,Math.PI*2); ctx.fill(); });
+    };
+  }
+  function wallpaperPlaidPattern(base, line1, line2) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line1; ctx.lineWidth=1.4; for (let x=2;x<s;x+=6){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } ctx.strokeStyle=line2; ctx.lineWidth=1; for (let y=2;y<s;y+=6){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(s,y); ctx.stroke(); } };
+  }
+  function wallpaperHerringbonePattern(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; ctx.lineWidth=1.2; for (let y=0;y<s;y+=4){ for (let x=0;x<s;x+=4){ const flip=((x/4)+(y/4))%2===0; ctx.beginPath(); if (flip){ ctx.moveTo(x,y+4); ctx.lineTo(x+4,y);} else { ctx.moveTo(x,y); ctx.lineTo(x+4,y+4);} ctx.stroke(); } } };
+  }
+  function wallpaperDamaskPattern(base, line) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.strokeStyle=line; ctx.lineWidth=1;
+      const cx=s/2, cy=s/2, r=6;
+      ctx.beginPath(); ctx.moveTo(cx,cy-r); ctx.lineTo(cx+r,cy); ctx.lineTo(cx,cy+r); ctx.lineTo(cx-r,cy); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle=line; ctx.beginPath(); ctx.arc(cx,cy,1.3,0,Math.PI*2); ctx.fill();
+    };
+  }
+  function wallpaperHoundstoothPattern(base, alt) {
+    return (ctx,s) => { ctx.fillStyle=base; ctx.fillRect(0,0,s,s); ctx.fillStyle=alt; const cell=2; for (let y=0;y<s;y+=cell) for (let x=0;x<s;x+=cell) { const offset = (Math.floor(y/cell)%2===0) ? 0 : 1; if ((Math.floor(x/cell)+offset)%2===0) ctx.fillRect(x,y,cell,cell); } };
+  }
   const TEX = {
     grassTop: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#5aa845',['#6fc25a','#4f9a3d','#79cf63'],0.55)),
     grassSide: makeCanvasTexture((ctx,s) => {
@@ -1675,14 +1723,37 @@
     acaciaLogSide: makeCanvasTexture((ctx,s) => { ctx.fillStyle='#8a5030'; ctx.fillRect(0,0,s,s); ctx.fillStyle='#6f3d22'; for (let x=0;x<s;x+=3) ctx.fillRect(x,0,1,s); }),
     acaciaLogTop:  makeCanvasTexture((ctx,s) => { ctx.fillStyle='#c9835a'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='#8a5a3a'; ctx.lineWidth=1; for (let r=2;r<8;r+=2){ ctx.beginPath(); ctx.arc(8,8,r,0,7); ctx.stroke(); } }),
 
-    // Wallpaper — 5 colours, a subtle vertical stripe rather than a flat
-    // fill so it still reads as a covering material up close, not just a
-    // plain colour square.
-    wallpaperCream:    makeCanvasTexture((ctx,s) => { ctx.fillStyle='#f0e9d8'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.06)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
-    wallpaperSage:     makeCanvasTexture((ctx,s) => { ctx.fillStyle='#a8c0a0'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.08)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
-    wallpaperSky:      makeCanvasTexture((ctx,s) => { ctx.fillStyle='#a8c4d8'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.08)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
-    wallpaperBlush:    makeCanvasTexture((ctx,s) => { ctx.fillStyle='#dcaab0'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(0,0,0,0.08)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
-    wallpaperCharcoal: makeCanvasTexture((ctx,s) => { ctx.fillStyle='#4a4a4e'; ctx.fillRect(0,0,s,s); ctx.strokeStyle='rgba(255,255,255,0.06)'; for (let x=1;x<s;x+=4){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,s); ctx.stroke(); } }),
+    // Wallpaper — 20 total: 10 plain (a subtle vertical stripe rather
+    // than a flat fill, so it still reads as a covering material up
+    // close, not just a plain colour square) plus 10 patterned. The
+    // first 5 plain entries (Cream/Sage/Sky/Blush/Charcoal) keep their
+    // original names/colours/array position exactly — WALLPAPER_COLORS
+    // below is indexed by colorIdx, and that index is what's actually
+    // saved per placed wallpaper, so reordering or renaming any of the
+    // existing 5 would repaint everyone's already-placed wallpaper the
+    // wrong colour. Everything new is appended after them instead.
+    wallpaperCream:    makeCanvasTexture(wallpaperStripe('#f0e9d8', 'rgba(0,0,0,0.06)')),
+    wallpaperSage:     makeCanvasTexture(wallpaperStripe('#a8c0a0', 'rgba(0,0,0,0.08)')),
+    wallpaperSky:      makeCanvasTexture(wallpaperStripe('#a8c4d8', 'rgba(0,0,0,0.08)')),
+    wallpaperBlush:    makeCanvasTexture(wallpaperStripe('#dcaab0', 'rgba(0,0,0,0.08)')),
+    wallpaperCharcoal: makeCanvasTexture(wallpaperStripe('#4a4a4e', 'rgba(255,255,255,0.06)')),
+    // 5 more plain colours (indices 5-9)
+    wallpaperTerracotta: makeCanvasTexture(wallpaperStripe('#c67a52', 'rgba(0,0,0,0.08)')),
+    wallpaperNavy:       makeCanvasTexture(wallpaperStripe('#2c3a58', 'rgba(255,255,255,0.07)')),
+    wallpaperMustard:    makeCanvasTexture(wallpaperStripe('#d4ac3a', 'rgba(0,0,0,0.08)')),
+    wallpaperLilac:      makeCanvasTexture(wallpaperStripe('#c3aed6', 'rgba(0,0,0,0.07)')),
+    wallpaperForest:     makeCanvasTexture(wallpaperStripe('#3f5c42', 'rgba(255,255,255,0.06)')),
+    // 10 patterned wallpapers (indices 10-19)
+    wallpaperGingham:     makeCanvasTexture(wallpaperCheckPattern('#f4f1e6', '#8fa8c2')),
+    wallpaperPolkaDot:    makeCanvasTexture(wallpaperDotPattern('#f0e6d2', '#7a5a3a')),
+    wallpaperCandyStripe: makeCanvasTexture(wallpaperDiagonalPattern('#f6e9ec', '#c46a7a')),
+    wallpaperTrellis:     makeCanvasTexture(wallpaperTrellisPattern('#eef1e6', '#7d9a72')),
+    wallpaperChevron:     makeCanvasTexture(wallpaperChevronPattern('#e8eef4', '#3f6a94')),
+    wallpaperFloral:      makeCanvasTexture(wallpaperFloralPattern('#f5f0e4', '#6a8a52', '#c96a86')),
+    wallpaperTartan:      makeCanvasTexture(wallpaperPlaidPattern('#efe6d8', '#8a2e2e', '#3a5a3a')),
+    wallpaperHerringbone: makeCanvasTexture(wallpaperHerringbonePattern('#e6e2da', '#8a8478')),
+    wallpaperDamask:      makeCanvasTexture(wallpaperDamaskPattern('#f2e8cf', '#a8863c')),
+    wallpaperHoundstooth: makeCanvasTexture(wallpaperHoundstoothPattern('#f0f0ee', '#28282a')),
 
     // Iron bars — a mostly-transparent pane with a few solid vertical
     // bars plus top/bottom braces, the way real cell bars read from a
@@ -2635,6 +2706,91 @@
   // column/table just for this.
   const groundPins = new Map();
   const GROUND_PIN_MARKER = -99;
+  // A chunk whose generated building got "locked in" (see
+  // maybeLockStructureNearManualBuild below) because it landed within
+  // MANUAL_STRUCTURE_LOCK_RADIUS of something the player actually
+  // built. Persisted the same smuggled-through-the-blocks-array way
+  // groundPins are — LOCKED_STRUCTURE_MARKER rides at y=-1 just like
+  // GROUND_PIN_MARKER does, distinguished by its own sentinel type —
+  // so generateChunkTerrain knows, even after a full reload, never to
+  // attempt maybeBuildSettlement/Shop/Church/etc. here again. Without
+  // this, a locked building's own BLOCKS survive fine (they're real
+  // edits now), but nothing stopped a second, different building from
+  // also trying to generate in the same chunk on top of them.
+  const lockedStructureChunks = new Set();
+  const LOCKED_STRUCTURE_MARKER = -98;
+  // How many of the player's OWN placed blocks (recorded edits, not
+  // generated ones) need to sit inside a candidate area before it's
+  // treated as "there's a real manual structure here" — a single
+  // stray placed torch or one dug-out block a long time ago shouldn't
+  // be enough to sterilize a whole 13x13 house site forever, but an
+  // actual built structure will clear this easily.
+  const MANUAL_STRUCTURE_EDIT_THRESHOLD = 6;
+  const MANUAL_STRUCTURE_LOCK_RADIUS = 50;
+  function countManualPlacementsInBox(x0, x1, z0, z1) {
+    let count = 0;
+    const ckx0 = Math.floor(x0 / CHUNK_SIZE), ckx1 = Math.floor(x1 / CHUNK_SIZE);
+    const ckz0 = Math.floor(z0 / CHUNK_SIZE), ckz1 = Math.floor(z1 / CHUNK_SIZE);
+    for (let ccx = ckx0; ccx <= ckx1; ccx++) {
+      for (let ccz = ckz0; ccz <= ckz1; ccz++) {
+        const m = blockEdits.byChunk.get(ccx + '_' + ccz);
+        if (!m) continue;
+        for (const [k, type] of m) {
+          if (type === -1) continue; // a removal (mined block), not something placed — doesn't indicate a structure
+          const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+          const x = parseInt(k.slice(0, firstComma), 10);
+          const z = parseInt(k.slice(lastComma + 1), 10);
+          if (x >= x0 && x <= x1 && z >= z0 && z <= z1) {
+            count++;
+            if (count >= MANUAL_STRUCTURE_EDIT_THRESHOLD) return count; // early out — callers only ever compare this against the threshold anyway
+          }
+        }
+      }
+    }
+    return count;
+  }
+  function overlapsManualStructure(x0, x1, z0, z1) {
+    return countManualPlacementsInBox(x0, x1, z0, z1) >= MANUAL_STRUCTURE_EDIT_THRESHOLD;
+  }
+  function chunksTouchedByBox(x0, x1, z0, z1) {
+    const set = new Set();
+    const ckx0 = Math.floor(x0 / CHUNK_SIZE), ckx1 = Math.floor(x1 / CHUNK_SIZE);
+    const ckz0 = Math.floor(z0 / CHUNK_SIZE), ckz1 = Math.floor(z1 / CHUNK_SIZE);
+    for (let ccx = ckx0; ccx <= ckx1; ccx++) for (let ccz = ckz0; ccz <= ckz1; ccz++) set.add(ccx + '_' + ccz);
+    return set;
+  }
+  // Called right after a generated building registers its footprint. If
+  // it landed within 50 blocks of something the player actually built
+  // by hand, this "locks it in": every block it just placed gets
+  // recorded as a real persisted edit (recordBlockEdit) exactly as if
+  // the player had placed it, so unloading and reloading this area
+  // always brings back this EXACT building rather than potentially
+  // re-rolling a different (or overlapping) one the next time this
+  // chunk regenerates. This is what fixes a generated house near a
+  // manual build disappearing on reload, or a new one generating
+  // inside a manual structure later — both were caused by generated
+  // buildings never being anything more than a one-off, non-persisted
+  // side effect of chunk generation.
+  function maybeLockStructureNearManualBuild(entry, ck) {
+    const pad = MANUAL_STRUCTURE_LOCK_RADIUS;
+    if (!overlapsManualStructure(entry.x0 - pad, entry.x1 + pad, entry.z0 - pad, entry.z1 + pad)) return;
+    const yLo = entry.gy - 9, yHi = entry.gy + 20; // comfortably covers foundation fill below and walls/roof above for any current building type
+    for (let x = entry.x0; x <= entry.x1; x++) {
+      for (let z = entry.z0; z <= entry.z1; z++) {
+        for (let y = yLo; y <= yHi; y++) {
+          const k = key(x, y, z);
+          if (blockEdits.has(k)) continue; // already a real edit — don't overwrite whatever the player actually did there
+          const t = blocks.get(k);
+          if (t === undefined) continue;
+          recordBlockEdit(x, y, z, t, stepRotations.get(k) || 0);
+        }
+      }
+    }
+    for (const tck of chunksTouchedByBox(entry.x0, entry.x1, entry.z0, entry.z1)) {
+      lockedStructureChunks.add(tck);
+      dirtyChunks.add(tck);
+    }
+  }
   function recordBlockEdit(x, y, z, type, rot) {
     // Gated on terrainStreamingActive rather than checking currentWorldId
     // directly — The Mill now sets both this and infiniteWorldActive, so
@@ -3137,14 +3293,21 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
-    maybeBuildSettlement(cx, cz); // the old clustered, road-based village generator (buildVillageInChunk/maybeBuildVillage) this replaced has since been removed entirely, along with the village map that tracked it — see the "villages" cleanup
-    maybeBuildShop(cx, cz);
-    maybeBuildChurch(cx, cz);
-    maybeBuildLandmark(cx, cz);
-    maybeBuildFarm(cx, cz);
-    maybeBuildWindmill(cx, cz);
-    maybeBuildCastle(cx, cz);
-    maybeBuildShipwreck(cx, cz);
+    // A chunk whose generated building was already locked in near a
+    // manual structure (see maybeLockStructureNearManualBuild) skips
+    // every generation attempt below entirely — its blocks are already
+    // correct, restored as real edits just above, and re-running these
+    // could otherwise plant a second, different building right on top.
+    if (!lockedStructureChunks.has(ck)) {
+      maybeBuildSettlement(cx, cz); // the old clustered, road-based village generator (buildVillageInChunk/maybeBuildVillage) this replaced has since been removed entirely, along with the village map that tracked it — see the "villages" cleanup
+      maybeBuildShop(cx, cz);
+      maybeBuildChurch(cx, cz);
+      maybeBuildLandmark(cx, cz);
+      maybeBuildFarm(cx, cz);
+      maybeBuildWindmill(cx, cz);
+      maybeBuildCastle(cx, cz);
+      maybeBuildShipwreck(cx, cz);
+    }
     // Classified AFTER building placement, not before — a shipwreck
     // specifically can land in what would otherwise qualify (buildings
     // needing dry land never touch a chunk like this at all, but a
@@ -3182,6 +3345,28 @@
   function unloadChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (!generatedChunks.has(ck)) return;
+    // A building's footprint can reach into a chunk that isn't its own
+    // origin — registerBuildingFootprint registers a footprint under
+    // every chunk its reach actually touches, not just the one it
+    // started in (a castle's moat is the clearest example). teardownVillage
+    // already knows to leave a village's furniture/NPCs alone if any
+    // OTHER chunk its footprint touches is still loaded (see its own
+    // siblingKeys check) — but this function was wiping THIS chunk's
+    // own block data unconditionally regardless, even when it holds
+    // real structure (walls, a wing of the castle, part of the moat)
+    // that's still alive elsewhere. That mismatch — blocks deleted here,
+    // furniture/NPCs correctly left in place by teardownVillage — is
+    // exactly what caused furniture, ladders, and lights to be seen
+    // floating with no building around them. If any footprint reaching
+    // into this chunk still has a loaded sibling, leave this chunk's
+    // blocks (and its "generated" status) alone entirely; whichever
+    // chunk unloads last will be the one that actually tears everything
+    // down together correctly.
+    const reachingFootprints = villageHouseFootprints.get(ck);
+    if (reachingFootprints && reachingFootprints.some(entry => {
+      const siblingKeys = villageFootprintChunkKeys.get(entry.__ck);
+      return siblingKeys && siblingKeys.some(tck => tck !== ck && generatedChunks.has(tck));
+    })) return;
     teardownVillage(ck);
     teardownWindmill(ck);
     teardownShipwreck(ck);
@@ -4539,11 +4724,31 @@
   // purely a visual covering, not something that blocks movement.
   const wallpapers = new Map(); // "bx,by,bz|nx,ny,nz" -> { mesh, bx,by,bz,nx,ny,nz, colorIdx }
   const WALLPAPER_COLORS = [
+    // Indices 0-4 are the original 5 — order preserved exactly (see the
+    // TEX wallpaper* comment above for why: colorIdx is what's actually
+    // persisted per placed wallpaper).
     { name: 'Cream Wallpaper',    tex: 'wallpaperCream' },
     { name: 'Sage Wallpaper',     tex: 'wallpaperSage' },
     { name: 'Sky Wallpaper',      tex: 'wallpaperSky' },
     { name: 'Blush Wallpaper',    tex: 'wallpaperBlush' },
     { name: 'Charcoal Wallpaper', tex: 'wallpaperCharcoal' },
+    // 5 more plain colours (indices 5-9)
+    { name: 'Terracotta Wallpaper', tex: 'wallpaperTerracotta' },
+    { name: 'Navy Wallpaper',       tex: 'wallpaperNavy' },
+    { name: 'Mustard Wallpaper',    tex: 'wallpaperMustard' },
+    { name: 'Lilac Wallpaper',      tex: 'wallpaperLilac' },
+    { name: 'Forest Wallpaper',     tex: 'wallpaperForest' },
+    // 10 patterned wallpapers (indices 10-19)
+    { name: 'Gingham Wallpaper',     tex: 'wallpaperGingham' },
+    { name: 'Polka Dot Wallpaper',   tex: 'wallpaperPolkaDot' },
+    { name: 'Candy Stripe Wallpaper',tex: 'wallpaperCandyStripe' },
+    { name: 'Trellis Wallpaper',     tex: 'wallpaperTrellis' },
+    { name: 'Chevron Wallpaper',     tex: 'wallpaperChevron' },
+    { name: 'Floral Wallpaper',      tex: 'wallpaperFloral' },
+    { name: 'Tartan Wallpaper',      tex: 'wallpaperTartan' },
+    { name: 'Herringbone Wallpaper', tex: 'wallpaperHerringbone' },
+    { name: 'Damask Wallpaper',      tex: 'wallpaperDamask' },
+    { name: 'Houndstooth Wallpaper', tex: 'wallpaperHoundstooth' },
   ];
   let wallpaperColorIdx = 0; // which colour is currently selected for placing — changed via the hotbar popup, same idea as familyChoice
 
@@ -6537,36 +6742,105 @@
 
     // Split the single room into four: living room, kitchen, bathroom,
     // bedroom. Two full-height dividers cross through the middle (one
-    // along X at midX, one along Z at midZ), each with a gap near both
-    // of its own ends so every room connects to its neighbours — and,
-    // just as importantly, so the front door is never walking straight
-    // into a dead-end wall. The door is always centred on its own wall,
-    // which always lines up with one of these two dividers; an end gap
-    // sits close enough to that entrance on every orientation to walk
-    // straight in regardless of which side doorSide put it on.
+    // along X at midX, one along Z at midZ). Each divider gets a proper
+    // doorway (2 blocks tall, same height as the front door) at both of
+    // its gap points rather than a full-height opening — the wall above
+    // that doorway is filled in with trim, finishing it off the same way
+    // the exterior door's own wall is finished above IT (see
+    // carveDoorGap, which only ever removes the bottom 2 rows). An
+    // actual door object sits in each gap too. This also still keeps
+    // every room connected to its neighbours, and the front door still
+    // never walks straight into a dead-end wall — same reasoning as
+    // before, just no longer leaving the whole room-height gap open.
     const vGapA = z0 + 2, vGapB = z1 - 2; // gaps in the vertical (X=midX) divider
     for (let z = z0 + 1; z <= z1 - 1; z++) {
-      if (z === vGapA || z === vGapB) continue;
-      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(midX, y, z), palette.trim); trackVillageHeight(midX, z, y); }
+      const isGap = (z === vGapA || z === vGapB);
+      for (let y = gy + 1; y <= gy + h; y++) {
+        if (isGap && y <= gy + 2) continue; // the doorway opening itself
+        blocks.set(key(midX, y, z), palette.trim); trackVillageHeight(midX, z, y);
+      }
     }
     const hGapA = x0 + 2, hGapB = x1 - 2; // gaps in the horizontal (Z=midZ) divider
     for (let x = x0 + 1; x <= x1 - 1; x++) {
-      if (x === hGapA || x === hGapB) continue;
-      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(x, y, midZ), palette.trim); trackVillageHeight(x, midZ, y); }
+      const isGap = (x === hGapA || x === hGapB);
+      for (let y = gy + 1; y <= gy + h; y++) {
+        if (isGap && y <= gy + 2) continue;
+        blocks.set(key(x, y, midZ), palette.trim); trackVillageHeight(x, midZ, y);
+      }
     }
+    // Interior doors — Wood Door, same as any placeable one. rot 1 for
+    // the vertical divider (its wall runs along Z, same orientation as
+    // the east/west exterior walls); rot 0 for the horizontal divider
+    // (runs along X, same orientation as the south/north exterior walls).
+    [vGapA, vGapB].forEach(gz => { const dk = addDoor(midX, gy, gz, 1, 0); if (dk) reg.doorKeys.push(dk); });
+    [hGapA, hGapB].forEach(gx => { const dk = addDoor(gx, gy, midZ, 0, 0); if (dk) reg.doorKeys.push(dk); });
 
-    // NW — Living Room (couch + coffee table against the north wall)
-    addFurnitureTracked(x0 + 2, gy, z0 + 2, HOUSE_SIDE_ROT.north, 0, reg); // Couch
-    addFurnitureTracked(x0 + 2, gy, z0 + 3, HOUSE_SIDE_ROT.north, 2, reg); // Coffee Table
-    // NE — Kitchen (sink + oven along the north wall)
-    addFurnitureTracked(x0 + 7, gy, z0 + 2, HOUSE_SIDE_ROT.north, 19, reg); // Kitchen Sink
-    addFurnitureTracked(x0 + 8, gy, z0 + 2, HOUSE_SIDE_ROT.north, 21, reg); // Oven
-    // SW — Bathroom (toilet + sink along the south wall)
-    addFurnitureTracked(x0 + 2, gy, z1 - 2, HOUSE_SIDE_ROT.south, 6, reg); // Toilet
-    addFurnitureTracked(x0 + 3, gy, z1 - 2, HOUSE_SIDE_ROT.south, 7, reg); // Sink
-    // SE — Bedroom (bed against the south wall, wardrobe against the east wall)
-    addFurnitureTracked(x0 + 7, gy, z1 - 3, HOUSE_SIDE_ROT.south, 28, reg); // Single Bed (2×2 footprint)
-    addFurnitureTracked(x1 - 1, gy, z1 - 2, HOUSE_SIDE_ROT.east, 30, reg); // Wardrobe
+    // Which room you actually walk into first depends on which wall the
+    // front door is on — it used to always be the NW quadrant
+    // regardless, so a door on the south or east wall meant your first
+    // room was the bathroom or kitchen, not the living room. This picks
+    // whichever quadrant the front door actually opens into instead:
+    // north/west doors open into NW, south into SW, east into NE (the
+    // door is always offset 2 off-centre toward the NW side — see the
+    // doorShell comment above — which is what fixes this to exactly
+    // these three quadrants and never SE).
+    const entryQuadrant = doorSide === 'south' ? 'SW' : doorSide === 'east' ? 'NE' : 'NW';
+    // Each quadrant is described by its own two OUTER (exterior) walls —
+    // cx0/cz0 is the corner where they meet, dx/dz point from that
+    // corner inward across the room. Every room's furniture below is
+    // written once, generically, in terms of this corner + direction,
+    // so the exact same formula produces the mirror-image layout in
+    // whichever quadrant that room type ends up assigned to.
+    const QUADRANTS = {
+      NW: { cx0: x0, cz0: z0, dx: 1,  dz: 1 },
+      NE: { cx0: x1, cz0: z0, dx: -1, dz: 1 },
+      SW: { cx0: x0, cz0: z1, dx: 1,  dz: -1 },
+      SE: { cx0: x1, cz0: z1, dx: -1, dz: -1 },
+    };
+    const wallRotZ = dz => HOUSE_SIDE_ROT[dz > 0 ? 'north' : 'south']; // a piece backed onto this quadrant's Z-side outer wall
+    const wallRotX = dx => HOUSE_SIDE_ROT[dx > 0 ? 'west' : 'east'];  // a piece backed onto this quadrant's X-side outer wall
+    // Rooms fill the entry quadrant plus the other three, in a fixed
+    // clockwise order starting right after the entry room — always the
+    // same relative layout (living room, then kitchen, bathroom, bedroom
+    // walking clockwise round the house) regardless of which physical
+    // corner the door happened to put the living room in.
+    const CLOCKWISE = ['NW', 'NE', 'SE', 'SW'];
+    const startIdx = CLOCKWISE.indexOf(entryQuadrant);
+    const roomOrder = ['living', 'kitchen', 'bathroom', 'bedroom'];
+    const quadrantOf = {};
+    for (let i = 0; i < 4; i++) quadrantOf[roomOrder[i]] = CLOCKWISE[(startIdx + i) % 4];
+
+    // Living room — 2-seat sofa flush against the back (non-door) outer
+    // wall, coffee table directly in front of it, armchair tucked into
+    // the room's back corner (by the dividers, away from both outer
+    // walls) facing back toward the front door.
+    {
+      const { cx0, cz0, dx, dz } = QUADRANTS[quadrantOf.living];
+      addFurnitureTracked(cx0 + dx * 2, gy, cz0 + dz * 2, wallRotZ(dz), 0, reg); // 2-Seater Couch
+      addFurnitureTracked(cx0 + dx * 2, gy, cz0 + dz * 3, wallRotZ(dz), 2, reg); // Coffee Table
+      // Chair faces whichever outer wall the front door is actually on.
+      const doorOnZWall = (doorSide === 'north' || doorSide === 'south');
+      const chairRot = doorOnZWall ? wallRotZ(-dz) : wallRotX(-dx); // "backed onto the OPPOSITE side from the door" = facing the door
+      addFurnitureTracked(cx0 + dx * 4, gy, cz0 + dz * 4, chairRot, 4, reg); // Armchair
+    }
+    // Kitchen — sink + oven along the same outer Z-wall style as before.
+    {
+      const { cx0, cz0, dx, dz } = QUADRANTS[quadrantOf.kitchen];
+      addFurnitureTracked(cx0 + dx * 3, gy, cz0 + dz * 2, wallRotZ(dz), 19, reg); // Kitchen Sink
+      addFurnitureTracked(cx0 + dx * 2, gy, cz0 + dz * 2, wallRotZ(dz), 21, reg); // Oven
+    }
+    // Bathroom — toilet + sink along the outer Z-wall.
+    {
+      const { cx0, cz0, dx, dz } = QUADRANTS[quadrantOf.bathroom];
+      addFurnitureTracked(cx0 + dx * 2, gy, cz0 + dz * 2, wallRotZ(dz), 6, reg); // Toilet
+      addFurnitureTracked(cx0 + dx * 3, gy, cz0 + dz * 2, wallRotZ(dz), 7, reg); // Sink
+    }
+    // Bedroom — bed along the outer Z-wall, wardrobe along the outer X-wall.
+    {
+      const { cx0, cz0, dx, dz } = QUADRANTS[quadrantOf.bedroom];
+      addFurnitureTracked(cx0 + dx * 3, gy, cz0 + dz * 3, wallRotZ(dz), 28, reg); // Single Bed (2×2 footprint)
+      addFurnitureTracked(cx0 + dx * 1, gy, cz0 + dz * 2, wallRotX(dx), 30, reg); // Wardrobe
+    }
 
     return shell;
   }
@@ -8210,6 +8484,7 @@
       }
       if (bad || hi - lo > maxVariance) continue;
       if (houseTooCloseToExisting(sx0, sx1, sz0, sz1, ck)) continue;
+      if (overlapsManualStructure(sx0, sx1, sz0, sz1)) continue; // never generate on top of something the player actually built
       return { sx0, sz0, sx1, sz1, floor: Math.round((lo + hi) / 2) };
     }
     return null; // nothing suitable found nearby — this building is just skipped for this settlement, same "fit in as many as possible" idea as everything else here
@@ -8272,6 +8547,7 @@
       const ddx = ccx - lastSettlementPos.x, ddz = ccz - lastSettlementPos.z;
       if (Math.sqrt(ddx*ddx + ddz*ddz) < VILLAGE_MIN_GAP) continue;
       if (houseTooCloseToExisting(sx0, sx1, sz0, sz1, ck)) continue;
+      if (overlapsManualStructure(sx0, sx1, sz0, sz1)) continue; // never generate on top of something the player actually built
       site = { sx0, sz0, sx1, sz1, floor: Math.round((lo + hi) / 2) }; break;
     }
     if (!site) return; // nothing flat/far enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
@@ -8293,6 +8569,7 @@
     reg.npcs.push(spawnBuildingResident(houseShell, doorSide, ck, rng));
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
     registerBuildingFootprint(entry, ck);
+    maybeLockStructureNearManualBuild(entry, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
@@ -8321,6 +8598,7 @@
     const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
     reg.npcs.push(spawnBuildingResident(shopShell, doorSide, ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
@@ -8346,6 +8624,7 @@
     const churchShell = buildVillageChurch(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, reg, ck);
     reg.npcs.push(spawnBuildingResident(churchShell, 'north', ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
+    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
@@ -8375,6 +8654,7 @@
     else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, floor, palette);
     else buildVillageBell(lx0, lz0, floor, palette, reg);
     registerBuildingFootprint({ x0: sx0, x1: site.sx1, z0: sz0, z1: site.sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true }, ck);
+    maybeLockStructureNearManualBuild({ x0: sx0, x1: site.sx1, z0: sz0, z1: site.sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, site.sx1 + 10, sz0 - 10, site.sz1 + 10);
   }
@@ -8410,6 +8690,7 @@
     buildCropField(fgx0, fgx1, fgz0, fgz1, floor, buildCabbageHead, reg);
     buildAnimalPen(fpx0, fpx1, fpz0, fpz1, floor, rng, reg, ck);
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'south', standalone: true }, ck);
+    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
   }
@@ -14435,7 +14716,22 @@
       waterBlocks.delete(k); // displace any water that was there
       let placedRot = 0;
       if (type && type.half) {
-        placedRot = snapYawToStepIndex(yaw);
+        // Face the riser away from wherever the player is actually
+        // standing, rather than snapping to the camera's current look
+        // direction. This is what a staircase actually needs: whichever
+        // side you were standing on when you placed a step is the side
+        // it needs to be climbable from. Camera yaw can wobble a little
+        // from block to block even while your feet stay in the same
+        // spot (the normal case while building a staircase one step at
+        // a time) — that wobble was enough to occasionally rotate one
+        // block (almost always the first, placed from a slightly
+        // different stance before the climb began) so its solid
+        // quarter ended up facing the very side being approached from,
+        // meaning that one specific step needed a jump while every
+        // other one — placed with the same stance as the step before
+        // it — didn't.
+        const pdx = player.pos.x - (x + 0.5), pdz = player.pos.z - (z + 0.5);
+        placedRot = Math.abs(pdx) >= Math.abs(pdz) ? (pdx > 0 ? 0 : 2) : (pdz > 0 ? 3 : 1);
         stepRotations.set(k, placedRot);
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
@@ -14903,7 +15199,14 @@
         // evaluated at this raised height) correctly stops that
         // specific case on its own, without needing to gate the attempt
         // itself in advance.
-        const targetType = blocks.get(key(Math.floor(newPos.x), Math.floor(y), Math.floor(newPos.z)));
+        // Small epsilon on the current-height lookup — y is never
+        // hard-snapped to a clean integer when grounded (see this
+        // block's own comments above), so on rare occasions it can rest
+        // a hair below the exact cell boundary; floor()'ing that as-is
+        // would find the WRONG cell (the one below the actual step) and
+        // miss the shortcut below entirely, falling through to the
+        // slower clearUpThere/groundToLandOn check instead.
+        const targetType = blocks.get(key(Math.floor(newPos.x), Math.floor(y + 0.01), Math.floor(newPos.z)));
         const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half;
         if (targetIsStep) {
           y = raisedY;
@@ -15143,10 +15446,19 @@
     // open sky (the common case, since it can never short-circuit early)
     // scan the full 200-block range — expensive enough across a whole
     // world's worth of grass blocks to occasionally block the main thread
-    // long enough to trip the render-loop stall warning. 48 is a good
-    // middle ground: comfortably taller than anything in The Mill (roof
-    // at y=5) or any realistic player build, at a quarter of the cost.
-    for (let yy = y+1; yy < 48; yy++) if (blocks.has(key(x,yy,z))) return false;
+    // long enough to trip the render-loop stall warning. 48 blocks above
+    // the point being checked is a good middle ground: comfortably taller
+    // than anything in The Mill (roof at y=5) or any realistic player
+    // build, at a quarter of the cost of the old 200 scan. This must stay
+    // relative to `y` (y+48), not an absolute world height — SEA_LEVEL
+    // itself is 50, so an absolute cap of 48 meant this loop's own
+    // `yy < 48` end condition was already false before it ever started
+    // for anyone standing at or near ordinary ground level, making every
+    // roof in the game invisible to this check and every house "exposed
+    // to sky" regardless of how solid its roof actually was — this is
+    // what let rain/snow fall and settle straight through any roof.
+    const skyScanTop = y + 48;
+    for (let yy = y+1; yy < skyScanTop; yy++) if (blocks.has(key(x,yy,z))) return false;
     return true;
   }
   // Thin white caps on every block exposed to open sky — deliberately not
@@ -19939,7 +20251,11 @@
     closeFamilyPopup();
     const rect = slotEl.getBoundingClientRect();
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;`;
+    // flex-wrap + a fixed max-height turns this into a scrollable
+    // multi-column grid once it has more entries than fit in one column
+    // (20 colours now, up from the original 5) — without this it just
+    // kept growing upward off the top of the screen.
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;flex-wrap:wrap;gap:4px;z-index:50;max-height:80vh;overflow-y:auto;padding:2px;`;
     WALLPAPER_COLORS.forEach((c, idx) => {
       const btn = document.createElement('div');
       btn.className = 'slot';

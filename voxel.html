@@ -2759,6 +2759,50 @@
     for (let ccx = ckx0; ccx <= ckx1; ccx++) for (let ccz = ckz0; ccz <= ckz1; ccz++) set.add(ccx + '_' + ccz);
     return set;
   }
+  // ── Locked-structure ground recovery ──────────────────────────────────
+  // A locked building (see maybeLockStructureNearManualBuild) is restored
+  // purely from its recorded edits: every SOLID block in the window
+  // [gy-9, gy+20] over its footprint. Air was never recorded — a wall's
+  // door/window openings, the room above the floor, whatever levelSite
+  // cleared out of a hillside — it was simply "whatever generation left
+  // empty". That only stays empty on reload if terrain generation never
+  // fills it back in, which needs two things:
+  //   (a) the column's ground pin sits at the FLOOR (gy). The old lock
+  //       pinned columnHeight instead — the TALLEST block ever placed in
+  //       the column (wall/roof top; levelSite also only ever raises it,
+  //       so a cut-down hillside kept its old height) — so every reload
+  //       filled the whole interior with terrain up to roof level, with
+  //       grass on top for trees to root in.
+  //   (b) no natural trees regrow inside the footprint. A reloaded locked
+  //       chunk never re-registers a footprint, so the per-column
+  //       "already built" handling driven by villageHouseFootprints
+  //       doesn't apply, and tree placement (deterministic per column)
+  //       just runs again.
+  // structureFloorAt() recovers gy for columns locked by the OLD code too
+  // (existing saved worlds), from the one signature levelSite always
+  // leaves: 8 solid fill blocks (dirt, or sand on a sandy site) directly
+  // under the floor, all recorded as edits by the lock. Natural terrain is
+  // never recorded, so an ordinary player-edited column doesn't match.
+  // Returns the floor y, or -1 if this isn't a locked-structure column.
+  function structureFloorAt(x, z, pin) {
+    if (pin === undefined) return -1;
+    if (!lockedStructureChunks.has(chunkKeyOf(x, z))) return -1;
+    for (let s = Math.max(0, pin - 60); s <= pin - 8; s++) {
+      const t = blockEdits.get(key(x, s, z));
+      if (t !== 1 && t !== 5) continue;
+      let run = 1;
+      while (run < 8 && blockEdits.get(key(x, s + run, z)) === t) run++;
+      if (run < 8) continue;
+      const floorT = blockEdits.get(key(x, s + 8, z));
+      if (floorT === undefined || floorT === -1) continue; // no recorded floor block on top of the fill — not a levelSite column
+      return s + 8;
+    }
+    return -1;
+  }
+  function isStructureColumn(x, z) {
+    const pin = groundPins.get(x + ',' + z);
+    return pin !== undefined && structureFloorAt(x, z, pin) >= 0;
+  }
   // Called right after a generated building registers its footprint. If
   // it landed within 50 blocks of something the player actually built
   // by hand, this "locks it in": every block it just placed gets
@@ -2775,6 +2819,16 @@
     const pad = MANUAL_STRUCTURE_LOCK_RADIUS;
     if (!overlapsManualStructure(entry.x0 - pad, entry.x1 + pad, entry.z0 - pad, entry.z1 + pad)) return;
     const yLo = entry.gy - 9, yHi = entry.gy + 20; // comfortably covers foundation fill below and walls/roof above for any current building type
+    // Pin every footprint column's ground at the FLOOR, explicitly and
+    // before any recordBlockEdit below can auto-pin it. recordBlockEdit's
+    // own first-touch pin reads columnHeight, which for a building is the
+    // wall/roof top (or a cut-down hillside's old height) — reloading with
+    // that as "the ground" refills the whole interior with terrain. See
+    // structureFloorAt above. Overwrites any earlier pin on purpose: the
+    // building's own levelSite already changed this ground.
+    for (let x = entry.x0; x <= entry.x1; x++) {
+      for (let z = entry.z0; z <= entry.z1; z++) groundPins.set(x + ',' + z, entry.gy);
+    }
     for (let x = entry.x0; x <= entry.x1; x++) {
       for (let z = entry.z0; z <= entry.z1; z++) {
         for (let y = yLo; y <= yHi; y++) {
@@ -2930,6 +2984,7 @@
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     let minY = WORLD_HEIGHT, maxY = -1;
     let chunkAllWet = true, chunkAllDeep = true; // every column natural water, and none of it shallow (depth > 3) — see the classification at the end of this function for what this actually gates
+    let healedStructurePins = 0; // locked-structure columns re-pinned from roof height to floor height this call — logged once below, see structureFloorAt
     let chunkHasAnyWater = false; // true the moment even ONE column here is natural water — see the dirty-marking at the end of this function for why this needs to be tracked separately from chunkAllWet
     // Buildings whose reach touches THIS chunk — an exact, direct lookup
     // now (see registerBuildingFootprint), not a fixed-radius guess
@@ -2984,7 +3039,17 @@
         // sitting properly on terrain across sessions, even after the
         // generation formula above gets tuned again later.
         const groundPin = groundPins.get(x+','+z);
-        if (groundPin !== undefined) h = groundPin;
+        let structureColumn = false; // this column belongs to a locked generated building — see structureFloorAt
+        if (groundPin !== undefined) {
+          const sFloor = structureFloorAt(x, z, groundPin);
+          if (sFloor >= 0) {
+            structureColumn = true;
+            h = sFloor; // the building's floor, NOT the wall/roof-top height older locks pinned here
+            if (sFloor !== groundPin) { groundPins.set(x+','+z, sFloor); healedStructurePins++; } // heals a world saved by the old lock; persists with this chunk's next save
+          } else {
+            h = groundPin;
+          }
+        }
         // Near The Mill, taper generated height down toward the pad's
         // own fixed ground level (y=0) instead of cutting off abruptly —
         // this is what actually lets you walk straight from the
@@ -3238,14 +3303,14 @@
         // stone, which the old check let through occasionally in dry
         // biomes (low-moisture ground generates as sand, and treeChance
         // was still nonzero there).
-        if (treeChance && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && chunkTreeRoll(x,z,0) < treeChance) {
+        if (treeChance && !structureColumn && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
           for (let lx2=-1; lx2<=1; lx2++)
             for (let lz2=-1; lz2<=1; lz2++)
               for (let ly=0; ly<=1; ly++)
-                if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
+                if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8 && !isStructureColumn(x+lx2, z+lz2)) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
           blocks.set(key(x, topY+2, z), 4);
           if (topY+2 > maxY) maxY = topY+2;
           // A tree's canopy spills 1 column into each neighbour, so their
@@ -3293,6 +3358,7 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
+    if (healedStructurePins) console.info('[voxel] chunk ' + ck + ': re-pinned ' + healedStructurePins + ' locked-building columns to floor level (saved with roof-height pins by the old lock)');
     // A chunk whose generated building was already locked in near a
     // manual structure (see maybeLockStructureNearManualBuild) skips
     // every generation attempt below entirely — its blocks are already

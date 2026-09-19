@@ -790,6 +790,9 @@
       if (lockedStructureChunks.has(ck)) {
         blocksOut.push([cx * CHUNK_SIZE, -1, cz * CHUNK_SIZE, LOCKED_STRUCTURE_MARKER, 0]); // see lockedStructureChunks declaration — same smuggling trick as groundPins, distinguished by its own marker type
       }
+      for (const f of lockedFootprints) {
+        if (chunkKeyOf(f.x0, f.z0) === ck) blocksOut.push([f.x0, -1, f.z0, LOCKED_FOOTPRINT_MARKER, packFootprint(f)]); // see lockedFootprints declaration
+      }
       const chunkWaterEdits = waterEdits.byChunk.get(ck);
       if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
         const parts = k.split(',');
@@ -820,6 +823,7 @@
         for (const [x,y,z,t,rot] of (row.blocks||[])) {
           if (t === GROUND_PIN_MARKER) { groundPins.set(x+','+z, rot); continue; } // see groundPins declaration — not a real block edit
           if (t === LOCKED_STRUCTURE_MARKER) { lockedStructureChunks.add(chunkKeyOf(x, z)); continue; } // see lockedStructureChunks declaration — not a real block edit
+          if (t === LOCKED_FOOTPRINT_MARKER) { addLockedFootprint(x, z, x + Math.floor(rot / 1048576), z + (Math.floor(rot / 1024) % 1024), rot % 1024); continue; } // see lockedFootprints declaration — not a real block edit
           const k = key(x,y,z);
           blockEdits.set(k, t);
           if (rot) stepRotEdits.set(k, rot);
@@ -1070,6 +1074,14 @@
     // are fully settled, right before beginPlaying().
     terrainStreamingActive = false;
     blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    structureSpecs.clear(); pendingStructureReplays.length = 0;
+    // Session-only placement state that was never reset between worlds either.
+    houseRegionClaimed.clear(); shopRegionClaimed.clear(); churchRegionClaimed.clear(); landmarkRegionClaimed.clear(); farmRegionClaimed.clear();
+    windmillRegionClaimed.clear(); castleRegionClaimed.clear(); shipwreckRegionClaimed.clear(); shipwreckCenters.length = 0; lastSettlementPos = { x: -Infinity, z: -Infinity };
+    if (infiniteWorldActive && id !== PUB_WORLD_ID && Array.isArray(data.structures)) {
+      for (const sp of data.structures) { if (sp && sp.ck && sp.t) { structureSpecs.set(sp.ck, sp); claimRegionForSpec(sp); } }
+    }
+    groundPins.clear(); lockedStructureChunks.clear(); lockedFootprints.length = 0; // these were never reset between worlds, so a previous world's pins/locks leaked into the next one loaded in the same session
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     if (infiniteWorldActive) {
       await loadWorldEditChunks(id);
@@ -1235,6 +1247,7 @@
     return {
       chunked: !infiniteWorldActive, // legacy full-content chunk flag — only set for the old finite system (Mill, pre-existing worlds); infinite worlds use chunkMode instead
       chunkMode: infiniteWorldActive ? 'edits' : undefined, // tells loadWorldData() this world's terrain is procedural + edit-diffs, not a stored snapshot
+      structures: (infiniteWorldActive && currentWorldId !== PUB_WORLD_ID) ? Array.from(structureSpecs.values()) : undefined, // generated buildings the host has decided on — see structureSpecs
       lights: lightsArr, ladders: laddersArr,
       wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr, vehicles: vehiclesArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
@@ -2707,7 +2720,7 @@
   const groundPins = new Map();
   const GROUND_PIN_MARKER = -99;
   // A chunk whose generated building got "locked in" (see
-  // maybeLockStructureNearManualBuild below) because it landed within
+  // the legacy structure lock (superseded by structureSpecs, still read for worlds saved with it) below) because it landed within
   // MANUAL_STRUCTURE_LOCK_RADIUS of something the player actually
   // built. Persisted the same smuggled-through-the-blocks-array way
   // groundPins are — LOCKED_STRUCTURE_MARKER rides at y=-1 just like
@@ -2719,6 +2732,172 @@
   // also trying to generate in the same chunk on top of them.
   const lockedStructureChunks = new Set();
   const LOCKED_STRUCTURE_MARKER = -98;
+  // The bounding box (+ floor level) of every locked generated structure.
+  // lockedStructureChunks only says "skip generation in this chunk" — it
+  // knows nothing about WHERE the structure is, so after a reload nothing
+  // else could tell a building stood there: a new house could be placed
+  // right beside a locked castle, and terrain/trees had to guess which
+  // columns belonged to it. This is that missing record. Persisted through
+  // the same smuggled-blocks-array trick as the two markers above:
+  // [x0, -1, z0, LOCKED_FOOTPRINT_MARKER, packed] where packed encodes
+  // width, depth and floor y (each < 1024) — see packFootprint.
+  const lockedFootprints = []; // {x0,x1,z0,z1,gy,ck?}
+  const LOCKED_FOOTPRINT_MARKER = -97;
+  function packFootprint(f) { return ((f.x1 - f.x0) * 1024 + (f.z1 - f.z0)) * 1024 + f.gy; }
+  function addLockedFootprint(x0, z0, x1, z1, gy, ck) {
+    for (const f of lockedFootprints) if (f.x0 === x0 && f.z0 === z0 && f.x1 === x1 && f.z1 === z1) return f;
+    const f = { x0, x1, z0, z1, gy, ck };
+    lockedFootprints.push(f);
+    return f;
+  }
+  function lockedFootprintAt(x, z) {
+    for (let i = 0; i < lockedFootprints.length; i++) {
+      const f = lockedFootprints[i];
+      if (x >= f.x0 && x <= f.x1 && z >= f.z0 && z <= f.z1) return f;
+    }
+    return null;
+  }
+
+  // ── Structure specs: the host decides, everyone else replays ─────────────
+  // Generated buildings used to be re-derived from scratch on every load
+  // by whichever client generated the chunk, and the decision depended on
+  // things that differ between clients and sessions (where the player was
+  // standing, what that client had already generated, session-only region
+  // claims, nearby edits). So the same world could show a different house
+  // — or no castle at all — from one load to the next, and two players in
+  // one world could see different buildings.
+  //
+  // Now the decision is made ONCE, by the host (the world's owner, i.e.
+  // not visitMode), and recorded as a small spec: what was built, which
+  // chunk it belongs to, its site/floor, and the generator's RNG state at
+  // the moment the site was chosen. Every client — the host on later
+  // loads, and visitors — then just replays that spec through the same
+  // builder code with the search skipped, which recreates the building
+  // AND everything that belongs to it (furniture, doors, signs, lights,
+  // props, chests, altars, villagers, animals), because those are all
+  // created by the builders and were never saved separately. A visitor
+  // never decides anything: with no spec for a chunk, nothing generates.
+  //
+  // Specs live in the world row (data.structures), so a visitor gets them
+  // when they load the world, and the host also broadcasts each new one
+  // live ('structure' event) so a visitor already connected sees it appear.
+  // Only custom infinite worlds use this; The Mill and legacy finite worlds
+  // are untouched.
+  const structureSpecs = new Map(); // home chunkKey -> spec
+  const pendingStructureReplays = []; // live specs waiting for the player to step away from the site
+  function structureSpecsActive() {
+    return !!(terrainStreamingActive && infiniteWorldActive && currentWorldId && currentWorldId !== PUB_WORLD_ID);
+  }
+  function regionKeyFor(ck, stride) {
+    const parts = ck.split('_');
+    return Math.floor(+parts[0] / stride) + '_' + Math.floor(+parts[1] / stride);
+  }
+  // Marks the spec's region as taken the moment the world loads — not
+  // when its chunk happens to generate — so that on the host, some OTHER
+  // chunk in the same region generating first can't decide on a second
+  // building of that kind. (Region claims used to be session-only, so a
+  // reload could produce a second castle elsewhere in the same region.)
+  function claimRegionForSpec(spec) {
+    switch (spec.t) {
+      case 'house': houseRegionClaimed.add(regionKeyFor(spec.ck, HOUSE_STANDALONE_STRIDE)); lastSettlementPos = { x: spec.site.sx0 + HOUSE_SEARCH_SIZE / 2, z: spec.site.sz0 + HOUSE_SEARCH_SIZE / 2 }; break;
+      case 'shop': shopRegionClaimed.add(regionKeyFor(spec.ck, SHOP_CHUNK_STRIDE)); break;
+      case 'church': churchRegionClaimed.add(regionKeyFor(spec.ck, CHURCH_CHUNK_STRIDE)); break;
+      case 'landmark': landmarkRegionClaimed.add(regionKeyFor(spec.ck, LANDMARK_CHUNK_STRIDE)); break;
+      case 'farm': farmRegionClaimed.add(regionKeyFor(spec.ck, FARM_CHUNK_STRIDE)); break;
+      case 'windmill': windmillRegionClaimed.add(regionKeyFor(spec.ck, WINDMILL_CHUNK_STRIDE)); break;
+      case 'castle': castleRegionClaimed.add(regionKeyFor(spec.ck, CASTLE_CHUNK_STRIDE)); break;
+      case 'shipwreck':
+        shipwreckRegionClaimed.add(regionKeyFor(spec.ck, SHIPWRECK_CHUNK_STRIDE));
+        if (!shipwreckCenters.some(c => c.x === spec.spot.wcx && c.z === spec.spot.wcz)) shipwreckCenters.push({ x: spec.spot.wcx, z: spec.spot.wcz });
+        break;
+    }
+  }
+  let structureSaveTimer = null;
+  // Host only. Called by each generator right after it builds something
+  // fresh (never on a replay).
+  function recordStructureSpec(spec) {
+    if (!structureSpecsActive() || visitMode) return;
+    structureSpecs.set(spec.ck, spec);
+    console.info('[voxel] host recorded structure: ' + spec.t + ' in chunk ' + spec.ck);
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'structure', payload: spec }); } catch (e) {}
+    }
+    // Saved promptly rather than waiting for the next autosave, so a
+    // visitor loading the world a moment later — or the host reloading
+    // after a crash — still finds this building's record.
+    if (!structureSaveTimer) structureSaveTimer = setTimeout(() => { structureSaveTimer = null; if (!visitMode) saveWorld(); }, 2500);
+  }
+  // Layers saved player edits back on top of a structure that was just
+  // (re)built. Terrain generation layers edits BEFORE it builds
+  // structures, and a structure's own construction overwrites whatever is
+  // inside its site — so without this, anything the player had changed
+  // inside or on a building would be wiped every time it replayed.
+  function reapplyEditsAroundStructure(ck) {
+    const touched = villageFootprintChunkKeys.get(ck);
+    if (!touched) return;
+    const seen = new Set();
+    for (const tck of touched) {
+      if (seen.has(tck) || !generatedChunks.has(tck)) continue;
+      seen.add(tck);
+      const be = blockEdits.byChunk.get(tck), we = waterEdits.byChunk.get(tck);
+      if (!be && !we) continue;
+      if (be) for (const [k, type] of be) {
+        if (type === -1) blocks.delete(k); else blocks.set(k, type);
+        const rot = stepRotEdits.get(k);
+        if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+        if (type !== -1) {
+          const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+          const colK = k.slice(0, c1) + ',' + k.slice(c2 + 1), ey = +k.slice(c1 + 1, c2);
+          const prev = columnHeight.get(colK);
+          if (prev === undefined || ey > prev) columnHeight.set(colK, ey);
+        }
+      }
+      if (we) for (const [k, level] of we) {
+        if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+        anyWaterTouchedThisStream = true;
+      }
+      const parts = tck.split('_');
+      syncChunkInstances(+parts[0], +parts[1]);
+    }
+  }
+  function replayStructureSpec(spec) {
+    console.info('[voxel] replaying ' + spec.t + ' in chunk ' + spec.ck + (visitMode ? ' (from host)' : ''));
+    const parts = spec.ck.split('_');
+    const cx = +parts[0], cz = +parts[1];
+    switch (spec.t) {
+      case 'house': maybeBuildSettlement(cx, cz, spec); break;
+      case 'shop': maybeBuildShop(cx, cz, spec); break;
+      case 'church': maybeBuildChurch(cx, cz, spec); break;
+      case 'landmark': maybeBuildLandmark(cx, cz, spec); break;
+      case 'farm': maybeBuildFarm(cx, cz, spec); break;
+      case 'windmill': maybeBuildWindmill(cx, cz, spec); break;
+      case 'castle': maybeBuildCastle(cx, cz, spec); break;
+      case 'shipwreck': maybeBuildShipwreck(cx, cz, spec); break;
+      default: return;
+    }
+    reapplyEditsAroundStructure(spec.ck);
+  }
+  // A spec that arrives live for a chunk this client already generated:
+  // the natural terrain is already there, so build the structure onto it
+  // exactly as the host did — but not while the player is standing on the
+  // site (the same reason generation itself refuses to build within
+  // PLAYER_BUILD_SAFE_MARGIN of the player), so wait until they step away.
+  function queueStructureReplay(spec) { pendingStructureReplays.push(spec); }
+  function processPendingStructureReplays() {
+    for (let i = pendingStructureReplays.length - 1; i >= 0; i--) {
+      const spec = pendingStructureReplays[i];
+      if (villageFootprintChunkKeys.has(spec.ck) || !generatedChunks.has(spec.ck) || structureSpecs.get(spec.ck) !== spec) {
+        pendingStructureReplays.splice(i, 1); // already built, or its chunk isn't loaded (it will replay when it generates), or superseded
+        continue;
+      }
+      const b = spec.spot ? { x0: spec.spot.padX0, x1: spec.spot.padX1, z0: spec.spot.padZ0, z1: spec.spot.padZ1 } : { x0: spec.site.sx0, x1: spec.site.sx1, z0: spec.site.sz0, z1: spec.site.sz1 };
+      const m = (spec.t === 'castle' ? 9 : 0) + 16;
+      if (player.pos.x >= b.x0 - m && player.pos.x <= b.x1 + m && player.pos.z >= b.z0 - m && player.pos.z <= b.z1 + m) continue; // still standing there — try again next tick
+      pendingStructureReplays.splice(i, 1);
+      try { replayStructureSpec(spec); } catch (e) { console.warn('[voxel] structure replay failed', spec.t, spec.ck, e); }
+    }
+  }
+  setInterval(() => { if (pendingStructureReplays.length) processPendingStructureReplays(); }, 1000);
   // How many of the player's OWN placed blocks (recorded edits, not
   // generated ones) need to sit inside a candidate area before it's
   // treated as "there's a real manual structure here" — a single
@@ -2760,7 +2939,7 @@
     return set;
   }
   // ── Locked-structure ground recovery ──────────────────────────────────
-  // A locked building (see maybeLockStructureNearManualBuild) is restored
+  // A locked building (see the legacy structure lock (superseded by structureSpecs, still read for worlds saved with it)) is restored
   // purely from its recorded edits: every SOLID block in the window
   // [gy-9, gy+20] over its footprint. Air was never recorded — a wall's
   // door/window openings, the room above the floor, whatever levelSite
@@ -2785,7 +2964,9 @@
   // never recorded, so an ordinary player-edited column doesn't match.
   // Returns the floor y, or -1 if this isn't a locked-structure column.
   function structureFloorAt(x, z, pin) {
-    if (pin === undefined) return -1;
+    const fp = lockedFootprintAt(x, z); // exact answer for anything locked since footprints were persisted
+    if (fp) return fp.gy;
+    if (pin === undefined) return -1; // everything below is the fallback for locks saved BEFORE footprints existed
     if (!lockedStructureChunks.has(chunkKeyOf(x, z))) return -1;
     for (let s = Math.max(0, pin - 60); s <= pin - 8; s++) {
       const t = blockEdits.get(key(x, s, z));
@@ -2800,6 +2981,7 @@
     return -1;
   }
   function isStructureColumn(x, z) {
+    if (lockedFootprintAt(x, z)) return true;
     const pin = groundPins.get(x + ',' + z);
     return pin !== undefined && structureFloorAt(x, z, pin) >= 0;
   }
@@ -2815,36 +2997,6 @@
   // inside a manual structure later — both were caused by generated
   // buildings never being anything more than a one-off, non-persisted
   // side effect of chunk generation.
-  function maybeLockStructureNearManualBuild(entry, ck) {
-    const pad = MANUAL_STRUCTURE_LOCK_RADIUS;
-    if (!overlapsManualStructure(entry.x0 - pad, entry.x1 + pad, entry.z0 - pad, entry.z1 + pad)) return;
-    const yLo = entry.gy - 9, yHi = entry.gy + 20; // comfortably covers foundation fill below and walls/roof above for any current building type
-    // Pin every footprint column's ground at the FLOOR, explicitly and
-    // before any recordBlockEdit below can auto-pin it. recordBlockEdit's
-    // own first-touch pin reads columnHeight, which for a building is the
-    // wall/roof top (or a cut-down hillside's old height) — reloading with
-    // that as "the ground" refills the whole interior with terrain. See
-    // structureFloorAt above. Overwrites any earlier pin on purpose: the
-    // building's own levelSite already changed this ground.
-    for (let x = entry.x0; x <= entry.x1; x++) {
-      for (let z = entry.z0; z <= entry.z1; z++) groundPins.set(x + ',' + z, entry.gy);
-    }
-    for (let x = entry.x0; x <= entry.x1; x++) {
-      for (let z = entry.z0; z <= entry.z1; z++) {
-        for (let y = yLo; y <= yHi; y++) {
-          const k = key(x, y, z);
-          if (blockEdits.has(k)) continue; // already a real edit — don't overwrite whatever the player actually did there
-          const t = blocks.get(k);
-          if (t === undefined) continue;
-          recordBlockEdit(x, y, z, t, stepRotations.get(k) || 0);
-        }
-      }
-    }
-    for (const tck of chunksTouchedByBox(entry.x0, entry.x1, entry.z0, entry.z1)) {
-      lockedStructureChunks.add(tck);
-      dirtyChunks.add(tck);
-    }
-  }
   function recordBlockEdit(x, y, z, type, rot) {
     // Gated on terrainStreamingActive rather than checking currentWorldId
     // directly — The Mill now sets both this and infiniteWorldActive, so
@@ -3040,15 +3192,13 @@
         // generation formula above gets tuned again later.
         const groundPin = groundPins.get(x+','+z);
         let structureColumn = false; // this column belongs to a locked generated building — see structureFloorAt
-        if (groundPin !== undefined) {
-          const sFloor = structureFloorAt(x, z, groundPin);
-          if (sFloor >= 0) {
-            structureColumn = true;
-            h = sFloor; // the building's floor, NOT the wall/roof-top height older locks pinned here
-            if (sFloor !== groundPin) { groundPins.set(x+','+z, sFloor); healedStructurePins++; } // heals a world saved by the old lock; persists with this chunk's next save
-          } else {
-            h = groundPin;
-          }
+        const sFloor = structureFloorAt(x, z, groundPin);
+        if (sFloor >= 0) {
+          structureColumn = true;
+          h = sFloor; // the building's floor, NOT the wall/roof-top height older locks pinned here
+          if (sFloor !== groundPin) { groundPins.set(x+','+z, sFloor); healedStructurePins++; } // heals a world saved by the old lock; persists with this chunk's next save
+        } else if (groundPin !== undefined) {
+          h = groundPin;
         }
         // Near The Mill, taper generated height down toward the pad's
         // own fixed ground level (y=0) instead of cutting off abruptly —
@@ -3360,19 +3510,28 @@
     generatedChunks.add(ck);
     if (healedStructurePins) console.info('[voxel] chunk ' + ck + ': re-pinned ' + healedStructurePins + ' locked-building columns to floor level (saved with roof-height pins by the old lock)');
     // A chunk whose generated building was already locked in near a
-    // manual structure (see maybeLockStructureNearManualBuild) skips
+    // manual structure (see the legacy structure lock (superseded by structureSpecs, still read for worlds saved with it)) skips
     // every generation attempt below entirely — its blocks are already
     // correct, restored as real edits just above, and re-running these
     // could otherwise plant a second, different building right on top.
     if (!lockedStructureChunks.has(ck)) {
-      maybeBuildSettlement(cx, cz); // the old clustered, road-based village generator (buildVillageInChunk/maybeBuildVillage) this replaced has since been removed entirely, along with the village map that tracked it — see the "villages" cleanup
-      maybeBuildShop(cx, cz);
-      maybeBuildChurch(cx, cz);
-      maybeBuildLandmark(cx, cz);
-      maybeBuildFarm(cx, cz);
-      maybeBuildWindmill(cx, cz);
-      maybeBuildCastle(cx, cz);
-      maybeBuildShipwreck(cx, cz);
+      // A structure recorded for this chunk (by the host, now or in an
+      // earlier session) is replayed as-is. With none recorded, only the
+      // host may decide to build one — a visitor generates nothing and
+      // simply waits for the host's spec (see structureSpecs).
+      const structSpec = structureSpecsActive() ? structureSpecs.get(ck) : null;
+      if (structSpec) {
+        replayStructureSpec(structSpec);
+      } else if (!(visitMode && structureSpecsActive())) {
+        maybeBuildSettlement(cx, cz);
+        maybeBuildShop(cx, cz);
+        maybeBuildChurch(cx, cz);
+        maybeBuildLandmark(cx, cz);
+        maybeBuildFarm(cx, cz);
+        maybeBuildWindmill(cx, cz);
+        maybeBuildCastle(cx, cz);
+        maybeBuildShipwreck(cx, cz);
+      }
     }
     // Classified AFTER building placement, not before — a shipwreck
     // specifically can land in what would otherwise qualify (buildings
@@ -6204,12 +6363,18 @@
   // signs, and NPCs are all tracked per-chunk so nothing is left behind.
   function mulberry32(seed) {
     let a = seed >>> 0;
-    return function() {
+    const next = function() {
       a |= 0; a = (a + 0x6D2B79F5) | 0;
       let t = Math.imul(a ^ (a >>> 15), 1 | a);
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    // The whole generator state is this one 32-bit integer, so
+    // mulberry32(rng.state()) continues the exact same sequence. That is
+    // what lets a generated building be replayed identically from a
+    // small saved record (see structureSpecs) instead of re-deciding it.
+    next.state = function() { return a >>> 0; };
+    return next;
   }
   function seedFromHash(a, b) { return Math.floor(hash(a, b) * 4294967296) >>> 0; }
 
@@ -6352,6 +6517,18 @@
           if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
         }
       }
+    }
+    // Locked structures restored from a save (or locked this session) —
+    // villageHouseFootprints above only knows what was generated THIS
+    // session, and a locked chunk skips generation entirely on reload, so
+    // without this nothing new would know a locked castle/house stood
+    // there and could be placed right beside it.
+    for (let i = 0; i < lockedFootprints.length; i++) {
+      const f = lockedFootprints[i];
+      if (f.ck !== undefined && f.ck === excludeCk) continue;
+      const dx = Math.max(0, fx0 - f.x1, f.x0 - fx1);
+      const dz = Math.max(0, fz0 - f.z1, f.z0 - fz1);
+      if (Math.sqrt(dx * dx + dz * dz) < HOUSE_MIN_GAP) return true;
     }
     return false;
   }
@@ -7872,24 +8049,25 @@
   }
   const WINDMILL_CHUNK_STRIDE = 40; // 40*32 = 1280 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request for all buildings
   const windmillRegionClaimed = new Set(); // "gx_gz" -> a windmill has already landed somewhere in this WINDMILL_CHUNK_STRIDE x STRIDE region this session — any chunk in the region gets a chance, not just one fixed one, same reasoning as houseRegionClaimed/shipwreckRegionClaimed
-  function maybeBuildWindmill(cx, cz) {
+  function maybeBuildWindmill(cx, cz, replay) {
     const gx = Math.floor(cx / WINDMILL_CHUNK_STRIDE), gz = Math.floor(cz / WINDMILL_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (windmillRegionClaimed.has(regionKey)) return;
+    if (!replay && windmillRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const elevation = biomeStretch(fbm((baseX+16) * 0.008, (baseZ+16) * 0.008));
-    if (elevation < 0.5) return; // not mountainous enough here at all — skip outright, no point even searching this chunk. Same threshold as before, still a cheap single fbm call ahead of anything else
-    const rng = mulberry32(seedFromHash(cx*5303 + 911, cz*7919 + 433));
+    if (!replay && elevation < 0.5) return; // not mountainous enough here at all — skip outright, no point even searching this chunk. Same threshold as before, still a cheap single fbm call ahead of anything else
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*5303 + 911, cz*7919 + 433));
     // Same flat/dry search every other standalone building now uses,
     // instead of the old unconditional build-wherever-and-wall-it-in —
     // kept to one chunk (a windmill doesn't need to span several the
     // way a whole settlement does). Search size is the 7x7 windmill plus
     // 2 blocks cleared beyond its own walls on every side.
     const size = 7 + HOUSE_SEARCH_PAD*2; // 11
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    const spec = replay || { t: 'windmill', ck, site, rs: rng.state() };
     windmillRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 20); // windmill is tall (h=9, plus roof, plus sails) — clears generously
@@ -7898,17 +8076,18 @@
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: WINDMILL_PALETTE.trim, doorSide: 'north', standalone: true };
     registerBuildingFootprint(entry, ck);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   const CASTLE_CHUNK_STRIDE = 100; // 100*32 = 3200 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request; meant to be a rarer, special find, unlike a windmill or a settlement
   const castleRegionClaimed = new Set(); // same reasoning as windmillRegionClaimed/houseRegionClaimed
-  function maybeBuildCastle(cx, cz) {
+  function maybeBuildCastle(cx, cz, replay) {
     const gx = Math.floor(cx / CASTLE_CHUNK_STRIDE), gz = Math.floor(cz / CASTLE_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (castleRegionClaimed.has(regionKey)) return;
+    if (!replay && castleRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*4001 + 601, cz*3001 + 701));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*4001 + 601, cz*3001 + 701));
     // Combined keep+tower footprint is 24 wide x 15 deep, but the moat
     // (see buildCastleMoat) reaches a further 6 blocks out beyond THAT.
     // The STRICT search/variance check stays at just the 24x15 core —
@@ -7929,8 +8108,9 @@
     // ground beyond it), so a mismatch this size showed up worst there —
     // "not clearing terrain at the front, the bridge side" was this.
     const MOAT_REACH = 9, CASTLE_PAD = MOAT_REACH + 3;
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    const spec = replay || { t: 'castle', ck, site, rs: rng.state() };
     castleRegionClaimed.add(regionKey);
     const { floor } = site;
     const px0 = site.sx0, pz0 = site.sz0, px1 = site.sx1, pz1 = site.sz1; // the 24x15 core itself
@@ -8000,6 +8180,7 @@
     registerBuildingFootprint(entry, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(levelX0 - 10, levelX1 + 10, levelZ0 - 10, levelZ1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   function teardownWindmill(ck) {
     removeWindmillSails(ck);
@@ -8201,14 +8382,14 @@
     return false;
   }
   const shipwreckRegionClaimed = new Set(); // "gx_gz" -> a shipwreck has already landed somewhere in this SHIPWRECK_CHUNK_STRIDE x STRIDE region this session — see maybeBuildShipwreck's own comment on why this replaced a single fixed "home chunk" per region
-  function maybeBuildShipwreck(cx, cz) {
+  function maybeBuildShipwreck(cx, cz, replay) {
     const gx = Math.floor(cx / SHIPWRECK_CHUNK_STRIDE), gz = Math.floor(cz / SHIPWRECK_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
     // Any chunk within the region can claim its one shipwreck —
     // whichever chunk the player happens to explore first that turns
     // out to have deep enough water — so a shipwreck only fails to
     // appear if genuinely nothing in the whole region ever qualifies.
-    if (shipwreckRegionClaimed.has(regionKey)) return;
+    if (!replay && shipwreckRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
     const hullLen = 16, hullWid = 7;
@@ -8227,8 +8408,8 @@
       const czOff = halfSpanZ + (spanZ > 0 ? Math.floor(rng()*spanZ) : 0);
       candidates.push([baseX + cxOff, baseZ + czOff]);
     }
-    let spot = null;
-    for (const [wcx, wcz] of candidates) {
+    let spot = replay ? replay.spot : null;
+    if (!replay) for (const [wcx, wcz] of candidates) {
       const hx0 = wcx - Math.floor(hullLen / 2), hx1 = hx0 + hullLen - 1;
       const hz0 = wcz - Math.floor(hullWid / 2), hz1 = hz0 + hullWid - 1;
       const padX0 = hx0 - 4, padX1 = hx1 + 4, padZ0 = hz0 - 3, padZ1 = hz1 + 3;
@@ -8243,15 +8424,17 @@
       spot = {hx0,hx1,hz0,hz1,padX0,padX1,padZ0,padZ1,wcx,wcz}; break;
     }
     if (!spot) return; // nothing suitable in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    const spec = replay || { t: 'shipwreck', ck, spot, rs: 0 };
     shipwreckRegionClaimed.add(regionKey);
     const { hx0, hx1, hz0, hz1, padX0, padX1, padZ0, padZ1, wcx, wcz } = spot;
-    shipwreckCenters.push({ x: wcx, z: wcz });
+    if (!shipwreckCenters.some(c => c.x === wcx && c.z === wcz)) shipwreckCenters.push({ x: wcx, z: wcz });
     const reg = { fixtureKeys: [], ladderKeys: [], treasureKeys: [] };
     buildShipwreckHull(hx0, hx1, hz0, hz1, ck, reg);
     shipwreckRegs.set(ck, reg);
     const entry = { x0: padX0, x1: padX1, z0: padZ0, z1: padZ1, gy: SEA_LEVEL, baseSurfaceType: 5, subFillType: 5, trim: 5, doorSide: 'south', isShipwreck: true, standalone: true };
     registerBuildingFootprint(entry, ck);
     resyncChunksInRange(padX0 - 10, padX1 + 10, padZ0 - 10, padZ1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   function teardownShipwreck(ck) {
     const reg = shipwreckRegs.get(ck);
@@ -8578,14 +8761,14 @@
       }
     }
   }
-  function maybeBuildSettlement(cx, cz) {
+  function maybeBuildSettlement(cx, cz, replay) {
     const gx = Math.floor(cx / HOUSE_STANDALONE_STRIDE), gz = Math.floor(cz / HOUSE_STANDALONE_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (houseRegionClaimed.has(regionKey)) return;
+    if (!replay && houseRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return; // something (a settlement from a reload, or another structure's padded reach) is already registered touching this chunk
+    if (replay ? villageFootprintChunkKeys.has(ck) : villageHouseFootprints.has(ck)) return; // replay: only skip if THIS structure is already built; a neighbour's registered reach was already accounted for when the host decided
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*7919 + 31, cz*6113 + 71));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*7919 + 31, cz*6113 + 71));
     // Searching for the house's own precise (<=5 variance) site directly
     // within this one chunk. Shop/church/landmark/farm are now fully
     // separate standalone systems (see maybeBuildShop etc. below) rather
@@ -8595,7 +8778,7 @@
     // extra buildings.
     const maxOffset = CHUNK_SIZE - HOUSE_SEARCH_SIZE;
     let site = null;
-    for (let i = 0; i < 10; i++) {
+    if (replay) site = replay.site; else for (let i = 0; i < 10; i++) {
       const sx0 = baseX + Math.floor(rng() * (maxOffset + 1));
       const sz0 = baseZ + Math.floor(rng() * (maxOffset + 1));
       const sx1 = sx0 + HOUSE_SEARCH_SIZE - 1, sz1 = sz0 + HOUSE_SEARCH_SIZE - 1;
@@ -8617,6 +8800,7 @@
       site = { sx0, sz0, sx1, sz1, floor: Math.round((lo + hi) / 2) }; break;
     }
     if (!site) return; // nothing flat/far enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
+    const spec = replay || { t: 'house', ck, site, rs: rng.state() };
     houseRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     const houseCx = sx0 + HOUSE_SEARCH_SIZE/2, houseCz = sz0 + HOUSE_SEARCH_SIZE/2;
@@ -8635,26 +8819,27 @@
     reg.npcs.push(spawnBuildingResident(houseShell, doorSide, ck, rng));
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
     registerBuildingFootprint(entry, ck);
-    maybeLockStructureNearManualBuild(entry, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   // ── Shop — fully independent of the house now, its own placement
   // grid entirely (see "let's just separate all buildings"), same
   // search-and-level approach throughout.
   const SHOP_CHUNK_STRIDE = 60; // 60*32 = 1920 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request
   const shopRegionClaimed = new Set();
-  function maybeBuildShop(cx, cz) {
+  function maybeBuildShop(cx, cz, replay) {
     const gx = Math.floor(cx / SHOP_CHUNK_STRIDE), gz = Math.floor(cz / SHOP_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (shopRegionClaimed.has(regionKey)) return;
+    if (!replay && shopRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return;
+    if (replay ? villageFootprintChunkKeys.has(ck) : villageHouseFootprints.has(ck)) return;
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*3079 + 151, cz*2953 + 251));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*3079 + 151, cz*2953 + 251));
     const size = 11 + HOUSE_SEARCH_PAD*2; // 15 — 11x11 shop, cleared 2 blocks beyond its own walls
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
+    const spec = replay || { t: 'shop', ck, site, rs: rng.state() };
     shopRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 12);
@@ -8664,24 +8849,25 @@
     const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
     reg.npcs.push(spawnBuildingResident(shopShell, doorSide, ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
-    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   // ── Church — fully independent, own grid.
   const CHURCH_CHUNK_STRIDE = 75; // 2400 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const churchRegionClaimed = new Set();
-  function maybeBuildChurch(cx, cz) {
+  function maybeBuildChurch(cx, cz, replay) {
     const gx = Math.floor(cx / CHURCH_CHUNK_STRIDE), gz = Math.floor(cz / CHURCH_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (churchRegionClaimed.has(regionKey)) return;
+    if (!replay && churchRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return;
+    if (replay ? villageFootprintChunkKeys.has(ck) : villageHouseFootprints.has(ck)) return;
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*3541 + 331, cz*2711 + 431));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*3541 + 331, cz*2711 + 431));
     const sizeX = 15 + HOUSE_SEARCH_PAD*2, sizeZ = 21 + HOUSE_SEARCH_PAD*2; // 19x25 — 15x21 church, cleared 2 beyond its own walls
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 12, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 12, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
+    const spec = replay || { t: 'church', ck, site, rs: rng.state() };
     churchRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 15); // taller (h=10) plus roof
@@ -8690,25 +8876,26 @@
     const churchShell = buildVillageChurch(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, reg, ck);
     reg.npcs.push(spawnBuildingResident(churchShell, 'north', ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
-    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   // ── Landmark (well/statue/bell) — fully independent, own grid. Small
   // and common — a much tighter stride than the others.
   const LANDMARK_CHUNK_STRIDE = 45; // 1440 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const landmarkRegionClaimed = new Set();
-  function maybeBuildLandmark(cx, cz) {
+  function maybeBuildLandmark(cx, cz, replay) {
     const gx = Math.floor(cx / LANDMARK_CHUNK_STRIDE), gz = Math.floor(cz / LANDMARK_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (landmarkRegionClaimed.has(regionKey)) return;
+    if (!replay && landmarkRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return;
+    if (replay ? villageFootprintChunkKeys.has(ck) : villageHouseFootprints.has(ck)) return;
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*2081 + 91, cz*2437 + 181));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*2081 + 91, cz*2437 + 181));
     const size = 3 + HOUSE_SEARCH_PAD*2; // 7 — 3x3 landmark, cleared 2 beyond its own edge
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, size, size, 0, 14, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
+    const spec = replay || { t: 'landmark', ck, site, rs: rng.state() };
     landmarkRegionClaimed.add(regionKey);
     const { sx0, sz0, floor } = site;
     levelSite(sx0, site.sx1, sz0, site.sz1, floor, 8);
@@ -8720,26 +8907,27 @@
     else if (landmarkKind === 'statue') buildVillageStatue(lx0, lz0, floor, palette);
     else buildVillageBell(lx0, lz0, floor, palette, reg);
     registerBuildingFootprint({ x0: sx0, x1: site.sx1, z0: sz0, z1: site.sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true }, ck);
-    maybeLockStructureNearManualBuild({ x0: sx0, x1: site.sx1, z0: sz0, z1: site.sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, site.sx1 + 10, sz0 - 10, site.sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   // ── Farm — fully independent, own grid. Combined 25x16 (farmhouse +
   // wheat + cabbage + pen) layout math is unchanged from before, just
   // anchored on this site's own sx0/sz0.
   const FARM_CHUNK_STRIDE = 70; // 2240 blocks apart — widened 5x per Jason's "20% of the current rate" request
   const farmRegionClaimed = new Set();
-  function maybeBuildFarm(cx, cz) {
+  function maybeBuildFarm(cx, cz, replay) {
     const gx = Math.floor(cx / FARM_CHUNK_STRIDE), gz = Math.floor(cz / FARM_CHUNK_STRIDE);
     const regionKey = gx + '_' + gz;
-    if (farmRegionClaimed.has(regionKey)) return;
+    if (!replay && farmRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
-    if (villageHouseFootprints.has(ck)) return;
+    if (replay ? villageFootprintChunkKeys.has(ck) : villageHouseFootprints.has(ck)) return;
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
-    const rng = mulberry32(seedFromHash(cx*2657 + 71, cz*3319 + 211));
+    const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*2657 + 71, cz*3319 + 211));
     const sizeX = 25 + HOUSE_SEARCH_PAD*2, sizeZ = 16 + HOUSE_SEARCH_PAD*2; // 29x20 — the whole complex, cleared 2 beyond its own outer edge
-    const site = findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 8, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, sizeX, sizeZ, 0, 8, HOUSE_MAX_VARIANCE, rng, 6, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
     if (!site) return;
+    const spec = replay || { t: 'farm', ck, site, rs: rng.state() };
     farmRegionClaimed.add(regionKey);
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 14);
@@ -8756,9 +8944,9 @@
     buildCropField(fgx0, fgx1, fgz0, fgz1, floor, buildCabbageHead, reg);
     buildAnimalPen(fpx0, fpx1, fpz0, fpz1, floor, rng, reg, ck);
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'south', standalone: true }, ck);
-    maybeLockStructureNearManualBuild({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+    if (!replay) recordStructureSpec(spec);
   }
   function teardownVillage(ck) {
     const v = villageRegistry.get(ck);
@@ -16206,6 +16394,18 @@
         const prevColH = columnHeight.get(colKey);
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
+      });
+      // The host just built something new (see recordStructureSpec). Take
+      // its spec; if this client already has that chunk's terrain, build
+      // the structure onto it now, otherwise it replays when the chunk
+      // generates. Ignored if this client is itself deciding structures.
+      channel.on('broadcast', { event: 'structure' }, ({ payload }) => {
+        if (!payload || !payload.ck || !payload.t) return;
+        if (currentWorldId !== mpConnectedWorldId || !structureSpecsActive() || !visitMode) return;
+        if (structureSpecs.has(payload.ck)) return;
+        structureSpecs.set(payload.ck, payload);
+        claimRegionForSpec(payload);
+        if (generatedChunks.has(payload.ck)) queueStructureReplay(payload);
       });
       // The football — see updateFootballBall's own comment on why this
       // is a "snap toward the last broadcast" sync rather than anything

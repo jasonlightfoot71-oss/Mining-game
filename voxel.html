@@ -1251,7 +1251,7 @@
       lights: lightsArr, ladders: laddersArr,
       wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr, vehicles: vehiclesArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
-      yaw, pitch, flying: ridingVehicle ? vehiclePrevFlying : flying, selectedSlot, dayTime
+      yaw, pitch, flying: ridingVehicle ? vehiclePrevFlying : flying, selectedSlot, slotLayout: 2, dayTime
     };
   }
   async function saveWorld() {
@@ -1336,7 +1336,11 @@
     if (typeof data.yaw === 'number') yaw = data.yaw;
     if (typeof data.pitch === 'number') pitch = data.pitch;
     if (typeof data.flying === 'boolean') flying = data.flying;
-    if (typeof data.selectedSlot === 'number') selectSlot(data.selectedSlot);
+    if (typeof data.selectedSlot === 'number') {
+      // slotLayout 2 = numbered with the Slope block in the list. An older save's
+      // special slots (Water, Light, ...) are one lower than they are now.
+      selectSlot(data.slotLayout === 2 || data.selectedSlot < BLOCK_TYPE_COUNT_BEFORE_SLOPE ? data.selectedSlot : data.selectedSlot + 1);
+    }
     if (typeof data.dayTime === 'number') dayTime = data.dayTime;
     needsRebuild = true;
   }
@@ -1932,15 +1936,30 @@
     { name: 'Winter Branch A', mats: TEX.winterBranchA, cost: 4, isVariant: true },
     { name: 'Winter Branch B', mats: TEX.winterBranchB, cost: 4, isVariant: true },
     { name: 'Winter Branch C', mats: TEX.winterBranchC, cost: 4, isVariant: true },
+    // Slope — like the Step, but a smooth ramp instead of a stair: full height
+    // along one edge, falling away to nothing along the opposite one. Same
+    // stone as the Step. Sits in the Step's own family popup (see
+    // BLOCK_FAMILIES). MUST stay appended at the END of this list: saved
+    // worlds store block types by number.
+    { name: 'Slope', mats: TEX.stone, slope: true, cost: 4, isVariant: true },
   ];
-  // The index Bars actually landed at — computed rather than hand-
-  // counted, so it stays correct even if more entries get appended
-  // above it later.
-  const BARS_TYPE = BLOCK_TYPES.length - 9;
-  const GREY_SLAB_TYPE = BLOCK_TYPES.length - 8;
-  const WINTER_BRANCH_A = BLOCK_TYPES.length - 3;
-  const WINTER_BRANCH_B = BLOCK_TYPES.length - 2;
-  const WINTER_BRANCH_C = BLOCK_TYPES.length - 1;
+  // Blocks in the list before Slope existed. Every hotbar slot after the
+  // block list (Water, Light, ...) is numbered from BLOCK_TYPES.length, so
+  // adding a block type moved each of them up by one; a world saved before
+  // that stored the OLD number as its selected slot — see the restore in
+  // applyWorldData, which shifts those.
+  const BLOCK_TYPE_COUNT_BEFORE_SLOPE = 60;
+  // Looked up by NAME. These used to be counted back from the END of the
+  // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
+  // one of them at the wrong block the moment anything was appended after
+  // them — Slope is exactly that.
+  const typeIndexByName = name => BLOCK_TYPES.findIndex(e => e.name === name);
+  const BARS_TYPE = typeIndexByName('Bars');
+  const GREY_SLAB_TYPE = typeIndexByName('Grey Path Slab'); // first of the five consecutive path slabs
+  const WINTER_BRANCH_A = typeIndexByName('Winter Branch A');
+  const WINTER_BRANCH_B = typeIndexByName('Winter Branch B');
+  const WINTER_BRANCH_C = typeIndexByName('Winter Branch C');
+  const SLOPE_TYPE = typeIndexByName('Slope');
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1966,6 +1985,9 @@
   // rather than getting their own slots, since they're mostly meant to
   // appear automatically each winter rather than be hand-placed.
   BLOCK_FAMILIES[3].push(WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C);
+  // The Slope is offered from the Step's own popup — it's the step's smooth
+  // sibling, in the same stone.
+  BLOCK_FAMILIES[9].push(SLOPE_TYPE);
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -2198,7 +2220,7 @@
     forEach(fn) { this._data.forEach(fn); }
   }
   const blocks = new BlocksMap();   // "x,y,z" -> typeIndex (0..8)
-  const stepRotations = new Map(); // "x,y,z" -> 0..3, which way a Step block's riser faces (only set for .half block types)
+  const stepRotations = new Map(); // "x,y,z" -> 0..3, which way a Step block's riser (or a Slope's high edge) faces (only set for .half and .slope block types)
   function snapYawToStepIndex(y) {
     const norm = ((y % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
     return Math.round(norm / (Math.PI/2)) % 4;
@@ -3942,6 +3964,27 @@
   const stepLowerGeometry = new THREE.BoxGeometry(1, 0.5, 1);   // full footprint, half height
   const stepUpperGeometry = new THREE.BoxGeometry(0.5, 0.5, 1); // quarter footprint (rot=0 shape), half height
 
+  // Slope block — a wedge: full height along its -X edge (the "high" side,
+  // where a Step's riser is at rot 0), sloping smoothly down to nothing at
+  // its +X edge. Built from the same BoxGeometry every other block uses,
+  // NOT hand-written vertices — the Step's own note above records that two
+  // custom-geometry attempts came out broken in ways that couldn't be
+  // diagnosed blind. Here the +X edge's two top vertices are simply pulled
+  // down to the bottom: the box's sloping top face is then the ramp, its
+  // two ±Z faces become triangles, and its +X face collapses to zero
+  // height (nothing drawn). The topology, UVs and material groups stay
+  // exactly as BoxGeometry made them; only the normals are recomputed
+  // (each face has its own vertices, so they stay flat per-face). Rotated
+  // per instance by rot * 90 degrees, same convention as the Step.
+  const slopeGeometry = (() => {
+    const g = new THREE.BoxGeometry(1, 1, 1);
+    const pos = g.attributes.position;
+    for (let i = 0; i < pos.count; i++) if (pos.getX(i) > 0 && pos.getY(i) > 0) pos.setY(i, -0.5);
+    pos.needsUpdate = true;
+    g.computeVertexNormals();
+    return g;
+  })();
+
   const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
   const meshes = BLOCK_TYPES.map((entry, i) => {
     const mat = buildMaterialArray(entry);
@@ -3950,7 +3993,7 @@
     // permanently empty, so it only needs a minimal starting buffer
     // rather than the full MAX_INSTANCES every real block type gets.
     const cap = GLASS_TYPE_SET.has(i) ? 1 : MAX_INSTANCES;
-    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : geometry, mat, cap);
+    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : geometry), mat, cap);
     m.castShadow = !entry.transparent; m.receiveShadow = true;
     m.count = 0;
     scene.add(m);
@@ -4143,7 +4186,7 @@
     if (nt === undefined) return false;
     const nEntry = BLOCK_TYPES[nt];
     if (nEntry && (nEntry.name||'').includes('Glass')) return true;
-    return !(nEntry && nEntry.half);
+    return !(nEntry && (nEntry.half || nEntry.slope));
   }
   // Unit-cube faces are axis-aligned, so the two in-plane coordinates of
   // each corner (the ones NOT along the face's own normal) already run
@@ -4297,7 +4340,7 @@
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
-    dummy.rotation.set(0,0,0);
+    dummy.rotation.set(0, (BLOCK_TYPES[type] && BLOCK_TYPES[type].slope) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // a Slope faces the way it was placed; every other full block is symmetric
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     mesh.count = idx+1;
@@ -4488,7 +4531,17 @@
       // needs to be drawn, or it'd vanish behind the water's transparency
       // even though the player can clearly see through to where it should be.
       const t = blocks.get(k);
-      return t !== undefined && !(BLOCK_TYPES[t] && BLOCK_TYPES[t].half);
+      // Neither half-height blocks nor TRANSPARENT ones (Bars, and every
+      // Glass type) count as hiding what's behind them. Half-height
+      // because they don't fill their cell. Transparent because you can
+      // see straight through them: a block whose six neighbours "are all
+      // there" but one of them is a bar or a pane is very much visible
+      // through it, so skipping it draws a hole. That's exactly what
+      // happened around the dungeon cell — the floor block under the bars,
+      // the ceiling block over them, and the wall blocks at their ends all
+      // had every neighbour present (one of them a bar), so none of them
+      // were drawn, and the cell looked cut out of the room.
+      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].transparent)); // a Slope only fills half its cell, like a Step
     };
     return solidAt(x+1,y,z) && solidAt(x-1,y,z) && solidAt(x,y+1,z) && solidAt(x,y-1,z) && solidAt(x,y,z+1) && solidAt(x,y,z-1);
   }
@@ -4574,7 +4627,7 @@
         reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
-        dummy.rotation.set(0,0,0);
+        dummy.rotation.set(0, (BLOCK_TYPES[type] && BLOCK_TYPES[type].slope) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // same rotation as addFullInstance gives a Slope
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
         if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -4622,7 +4675,7 @@
     const nk = key(nx,ny,nz);
     if (waterBlocks.has(nk)) return true;
     const t = blocks.get(nk);
-    return t !== undefined && !(BLOCK_TYPES[t] && BLOCK_TYPES[t].half);
+    return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope));
   }
   // Flood-fills outward from one water cell through every water cell
   // connected to it (6-directionally) and removes them all in one go —
@@ -7896,15 +7949,18 @@
     // (z = midZ). Measured along the wall's own inside face, so each room
     // gets its window clear of the divider rather than butting up to it,
     // which is where the previous 3-wide frames, centred on the divider
-    // itself, sat. They start at gy+3 so they clear both the 2-high doors
-    // (the front door shares a column with the south wall's west-hand
-    // window: the window is the block pair directly above the door) and
+    // itself, sat. They start at gy+3 so they clear the 2-high doors, and
     // stay level with the room torches, which sit two blocks clear of them.
     const windowY = gy + 3;
     const putWindow = (wx, wz) => {
       for (let dy = 0; dy < 2; dy++) { blocks.set(key(wx, windowY + dy, wz), 8); trackVillageHeight(wx, wz, windowY + dy); } // 8 = Glass
     };
-    [midX - CASTLE_WINDOW_OFFSET, midX + CASTLE_WINDOW_OFFSET].forEach(wx => { putWindow(wx, kz0); putWindow(wx, kz1); });
+    [midX - CASTLE_WINDOW_OFFSET, midX + CASTLE_WINDOW_OFFSET].forEach(wx => putWindow(wx, kz0)); // north wall: both
+    // South wall: the west-hand window would land in the same column as the
+    // front door (doorX = midX - 2), directly above it. It's moved 2 blocks
+    // further west instead — to the left as you face the entrance from outside.
+    putWindow(doorX - 2, kz1);
+    putWindow(midX + CASTLE_WINDOW_OFFSET, kz1);
     [midZ - CASTLE_WINDOW_OFFSET, midZ + CASTLE_WINDOW_OFFSET].forEach(wz => { putWindow(kx0, wz); putWindow(kx1, wz); });
     // Doorway through to the tower, carved on both sides of the shared
     // boundary — the tower sits immediately west of the keep, touching
@@ -14888,7 +14944,7 @@
     }
     heldMesh.visible = true;
     heldStepGroup.visible = false;
-    heldMesh.geometry = heldGeom;
+    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : heldGeom; // the Slope shows as a wedge in your hand
     if (i === WATER_SLOT) {
       heldMesh.material = new THREE.MeshPhongMaterial({ map: TEX.water, transparent: true, opacity: 0.7, shininess: 0 });
     } else if (i === LIGHT_SLOT) {
@@ -16108,7 +16164,7 @@
       blocks.set(k, selectedSlot);
       waterBlocks.delete(k); // displace any water that was there
       let placedRot = 0;
-      if (type && type.half) {
+      if (type && (type.half || type.slope)) { // a Slope rises away from you, same as a Step's riser
         // Face the riser away from wherever the player is actually
         // standing, rather than snapping to the camera's current look
         // direction. This is what a staircase actually needs: whichever
@@ -16574,8 +16630,27 @@
       if (rot === 2) return localX > 0;
       return localZ < 0; // rot === 3
     }
+    if (entry && entry.slope) {
+      // A Slope is solid below its surface, which rises linearly from 0 at
+      // its low edge to 1 at its high edge (the direction a Step's riser
+      // would face at this rot: -X, +Z, +X, -Z for rot 0..3).
+      const rot = stepRotations.get(k) || 0;
+      const localX = (x - bx) - 0.5, localZ = (z - bz) - 0.5;
+      const along = rot === 0 ? -localX : rot === 1 ? localZ : rot === 2 ? localX : -localZ; // -0.5 at the low edge .. +0.5 at the high edge
+      return (y - by) < (along + 0.5) - SLOPE_COLLISION_INSET;
+    }
     return true;
   }
+  // The player is tested at points 0.3 out to each side of centre (their
+  // radius), so on a 45 degree ramp the uphill corners meet the surface 0.3
+  // higher than the centre does — and the player would hover 0.3 above it.
+  // Lowering the solid surface by the player's radius cancels that exactly,
+  // leaving them resting at the same depth into the surface at their centre
+  // (feet 0.05 below it, since the foot points are tested 0.05 up) as they
+  // do on flat ground — so stepping from the ground onto a ramp doesn't
+  // lift or drop them.
+  const SLOPE_COLLISION_INSET = 0.3;
+  const SLOPE_MAX_MOVE_PER_FRAME = 0.12; // the most a slope lifts or lowers the player in one frame — see smoothLift in tryMove
   const STEP_HEIGHT = 0.55; // a touch more than the step block's own 0.5, so it clears comfortably
   function tryMove(newPos, wasGrounded) {
     const r = player.radius;
@@ -16588,6 +16663,42 @@
       return pts.some(p => isSolid(p[0],p[1],p[2]));
     };
     let {x,y,z} = player.pos;
+    // Slope handling (see isSolid): everything below only triggers when a
+    // Slope block is right there, so walking on anything else is exactly as
+    // it always was.
+    const slopeAt = (px, py, pz) => { const t = blocks.get(key(Math.floor(px), Math.floor(py), Math.floor(pz))); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].slope); };
+    const nearSlope = (px, pz) => {
+      // Looks 0.1 ABOVE the feet, not at them: standing on flat ground the
+      // game rests the player ~0.05 below the surface (foot collision points
+      // are tested 0.05 up), so their feet are still in the block's own cell
+      // — one below a slope sitting on it.
+      for (const [ox, oz] of [[0,0],[r,r],[-r,r],[r,-r],[-r,-r]]) if (slopeAt(px+ox, y+0.1, pz+oz) || slopeAt(px+ox, y-0.05, pz+oz)) return true;
+      return false;
+    };
+    // Steps up by the SMALLEST amount that clears whatever's in the way, up
+    // to STEP_HEIGHT — the ordinary step-up below jumps the full 0.55 and
+    // needs solid ground exactly there, which is right for a stair block
+    // but would bounce the player up 0.55 for every 0.07 of ramp they climb.
+    //
+    // The total needed can be larger than the ramp itself rises in a frame:
+    // the player's leading foot reaches a full-height ledge at the top of a
+    // ramp while their centre is still a few tenths below it. Applying all
+    // of that at once is a visible pop, so it's spread over a few frames
+    // (SLOPE_MAX_MOVE_PER_FRAME each) — they stay flagged as on the ground
+    // meanwhile, so next frame's call carries on where this one left off.
+    let slopeMoved = false, slopeLifted = false;
+    const smoothLift = () => {
+      for (let lift = 0.03; lift <= STEP_HEIGHT + 1e-9; lift += 0.03) {
+        if (!test(newPos.x, y + lift, z) && !test(x, y + lift, newPos.z)) {
+          const applied = Math.min(lift, SLOPE_MAX_MOVE_PER_FRAME);
+          y += applied;
+          newPos.y += applied; // the vertical move below is resolved from newPos.y, worked out by the caller BEFORE this lift — without this it would put y straight back
+          slopeMoved = slopeLifted = true;
+          return true;
+        }
+      }
+      return false;
+    };
 
     // Auto step-up — walking only (never while flying, never mid-air):
     // if the horizontal move is blocked at the current height, but the
@@ -16607,7 +16718,9 @@
     // reading it directly here would always see false and never trigger.
     if (!flying && wasGrounded) {
       const blockedHere = test(newPos.x, y, z) || test(x, y, newPos.z);
-      if (blockedHere) {
+      if (blockedHere && (nearSlope(x, z) || nearSlope(newPos.x, newPos.z)) && smoothLift()) {
+        // climbed the slope (or stepped from it onto the ledge at its top) by the smallest amount needed
+      } else if (blockedHere) {
         const raisedY = y + STEP_HEIGHT;
         // A step/slab's lower half is ALWAYS exactly 0.5 tall regardless
         // of rotation, so stepping up onto one is always geometrically
@@ -16646,6 +16759,18 @@
     if (!test(newPos.x,y,z)) x = newPos.x;
     if (!test(x,newPos.y,z)) { y = newPos.y; } else { if (newPos.y < y) player.onGround = true; player.vel.y = 0; }
     if (!test(x,y,newPos.z)) z = newPos.z;
+    // Walking DOWN a slope: the surface falls away as fast as you walk, but
+    // gravity only builds up gradually — left alone you'd leave the surface
+    // and fall down it in a series of hops. So if you were on the ground,
+    // aren't rising, and there's ground within a step's height below you on
+    // a slope, stay on it.
+    if (!flying && wasGrounded && !slopeLifted && !player.onGround && player.vel.y <= 0 && nearSlope(x, z)) { // (not on a frame that just lifted them — that would undo it)
+      for (let drop = 0; drop <= STEP_HEIGHT + 1e-9; drop += 0.03) {
+        if (test(x, y - drop, z)) break;
+        if (test(x, y - drop - 0.03, z)) { if (drop > 0) y -= Math.min(drop, SLOPE_MAX_MOVE_PER_FRAME); slopeMoved = true; break; } // a bigger drop (stepping off a ledge onto the ramp) is taken over a few frames, not in one
+      }
+    }
+    if (slopeMoved) { player.onGround = true; player.vel.y = 0; } // still riding the ground while a lift/drop plays out over several frames
     player.pos.set(x,y,z);
   }
   // A dedicated, much simpler collision resolver for swimming — same
@@ -16923,7 +17048,7 @@
     startBackgroundMapScan(blocks, (k, t) => {
       if (count >= MAX_INSTANCES) return true;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || type.transparent) return false;
+      if (!type || type.half || type.slope || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as
@@ -21406,6 +21531,23 @@
     ctx.restore();
     return c;
   }
+  // The Slope's icon: the same stone texture cut to a wedge — full height
+  // at the left, sloping down to nothing at the right.
+  function slopeSwatchCanvas(entry) {
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const texSrc = entry.mats.top || entry.mats.side || entry.mats;
+    ctx.imageSmoothingEnabled = false;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(0,0); ctx.lineTo(34,34); ctx.lineTo(0,34);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(texSrc.image, 0,0,34,34);
+    ctx.restore();
+    return c;
+  }
+  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : swatchCanvas(entry);
   // A simple teardrop instead of a flat texture square, for the same
   // "actually looks like the thing" reason as the step icon above.
   function waterDropCanvas() {
@@ -21498,7 +21640,7 @@
     const old = slotEl.querySelector('canvas.swatch');
     if (old) old.remove();
     const anchor = slotEl.querySelector('.family-badge');
-    slotEl.insertBefore(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry), anchor);
+    slotEl.insertBefore(blockSwatchCanvas(entry), anchor);
     const oldPrice = slotEl.querySelector('.price-badge');
     if (oldPrice) oldPrice.remove();
     if (entry.cost) {
@@ -21536,7 +21678,7 @@
       btn.className = 'slot';
       btn.style.position = 'relative';
       btn.title = entry.name + costLabel(entry.cost);
-      btn.appendChild(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry));
+      btn.appendChild(blockSwatchCanvas(entry));
       if (entry.cost) {
         const priceBadge = document.createElement('span');
         priceBadge.className = 'price-badge';
@@ -21578,7 +21720,7 @@
     slot.title = entry.name + costLabel(entry.cost);
     const key = document.createElement('span'); key.className='key'; key.textContent = (i+1 <= 9) ? (i+1) : '';
     slot.appendChild(key);
-    slot.appendChild(entry.half ? stepSwatchCanvas(entry) : swatchCanvas(entry));
+    slot.appendChild(blockSwatchCanvas(entry));
     slot.style.position = 'relative';
     if (entry.cost) {
       // Visible price tag on the icon itself — the title tooltip alone

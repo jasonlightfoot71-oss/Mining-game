@@ -1251,7 +1251,7 @@
       lights: lightsArr, ladders: laddersArr,
       wallpapers: wallpapersArr, signs: signsArr, doors: doorsArr, furniture: furnitureArr, vehicles: vehiclesArr,
       player: { x: player.pos.x, y: player.pos.y, z: player.pos.z },
-      yaw, pitch, flying: ridingVehicle ? vehiclePrevFlying : flying, selectedSlot, slotLayout: 2, dayTime
+      yaw, pitch, flying: ridingVehicle ? vehiclePrevFlying : flying, selectedSlot, slotLayout: SLOT_LAYOUT, dayTime
     };
   }
   async function saveWorld() {
@@ -1337,9 +1337,9 @@
     if (typeof data.pitch === 'number') pitch = data.pitch;
     if (typeof data.flying === 'boolean') flying = data.flying;
     if (typeof data.selectedSlot === 'number') {
-      // slotLayout 2 = numbered with the Slope block in the list. An older save's
-      // special slots (Water, Light, ...) are one lower than they are now.
-      selectSlot(data.slotLayout === 2 || data.selectedSlot < BLOCK_TYPE_COUNT_BEFORE_SLOPE ? data.selectedSlot : data.selectedSlot + 1);
+      // Shift a slot number saved under an older numbering (see SLOT_LAYOUT).
+      const savedCount = SLOT_LAYOUT_BLOCK_COUNTS[data.slotLayout || 1] || BLOCK_TYPES.length;
+      selectSlot(data.selectedSlot >= savedCount ? data.selectedSlot + (BLOCK_TYPES.length - savedCount) : data.selectedSlot);
     }
     if (typeof data.dayTime === 'number') dayTime = data.dayTime;
     needsRebuild = true;
@@ -1942,13 +1942,21 @@
     // BLOCK_FAMILIES). MUST stay appended at the END of this list: saved
     // worlds store block types by number.
     { name: 'Slope', mats: TEX.stone, slope: true, cost: 4, isVariant: true },
+    // The Slope in the same four extra materials the Step comes in.
+    { name: 'White Slope', mats: TEX.concreteWhite, slope: true, cost: 4, isVariant: true },
+    { name: 'Brick Slope',  mats: TEX.brick,   slope: true, cost: 4, isVariant: true },
+    { name: 'Wood Slope',   mats: TEX.planks,  slope: true, cost: 4, isVariant: true },
+    { name: 'Sand Slope',   mats: TEX.sand,    slope: true, cost: 4, isVariant: true },
   ];
-  // Blocks in the list before Slope existed. Every hotbar slot after the
-  // block list (Water, Light, ...) is numbered from BLOCK_TYPES.length, so
-  // adding a block type moved each of them up by one; a world saved before
-  // that stored the OLD number as its selected slot — see the restore in
-  // applyWorldData, which shifts those.
-  const BLOCK_TYPE_COUNT_BEFORE_SLOPE = 60;
+  // Every hotbar slot after the block list (Water, Light, ...) is numbered
+  // from BLOCK_TYPES.length, so adding block types moves each of them up. A
+  // save records which numbering it used (slotLayout) so its selected slot
+  // can be shifted to match — see the restore in applyWorldData. Layout 1
+  // (no slotLayout field) had 60 block types, layout 2 had 61 (Slope), and
+  // the current layout 3 has them all. ADDING ANOTHER BLOCK TYPE means
+  // bumping SLOT_LAYOUT and recording the old count here.
+  const SLOT_LAYOUT = 3;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -1960,6 +1968,7 @@
   const WINTER_BRANCH_B = typeIndexByName('Winter Branch B');
   const WINTER_BRANCH_C = typeIndexByName('Winter Branch C');
   const SLOPE_TYPE = typeIndexByName('Slope');
+  const SLOPE_VARIANT_TYPES = ['White Slope', 'Brick Slope', 'Wood Slope', 'Sand Slope'].map(typeIndexByName);
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1987,7 +1996,7 @@
   BLOCK_FAMILIES[3].push(WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C);
   // The Slope is offered from the Step's own popup — it's the step's smooth
   // sibling, in the same stone.
-  BLOCK_FAMILIES[9].push(SLOPE_TYPE);
+  BLOCK_FAMILIES[9].push(SLOPE_TYPE, ...SLOPE_VARIANT_TYPES);
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of

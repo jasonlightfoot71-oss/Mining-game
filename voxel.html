@@ -3016,8 +3016,19 @@
     // digging a basement) must never move an already-frozen ground.
     const colKeyPin = x + ',' + z;
     if (!groundPins.has(colKeyPin)) {
-      const natural = columnHeight.get(colKeyPin);
-      if (natural !== undefined) groundPins.set(colKeyPin, natural);
+      // groundHeightOnly, NOT columnHeight. columnHeight is the tallest
+      // block ever recorded in the column, and that includes a tree's
+      // canopy (which spills into all 8 neighbouring columns, up to ~6
+      // above the ground), a generated building's roof, and any player
+      // build reloaded on top. Pinning THAT froze "the ground" several
+      // blocks too high: every reload then filled the column solid up to
+      // the canopy/roof height — a pillar of dirt/stone beside the build —
+      // and the steep step from it turned the surface to bare stone and
+      // dragged the neighbouring columns up into a bank. groundHeightOnly
+      // is precisely this column's own terrain height (see its declaration).
+      const ground = groundHeightOnly.get(colKeyPin);
+      const pinH = ground !== undefined ? ground : columnHeight.get(colKeyPin);
+      if (pinH !== undefined) groundPins.set(colKeyPin, pinH);
     }
     dirtyChunks.add(chunkKeyOf(x, z));
     // Broadcasts this one edit live to anyone else currently in this same
@@ -3131,12 +3142,61 @@
     }
     return Math.max(MIN_TERRAIN_HEIGHT, Math.min(WORLD_HEIGHT-2, h));
   }
+  // ── Repairing ground pins that were frozen too high ─────────────────
+  // Worlds saved before recordBlockEdit was fixed (see it) can hold pins
+  // frozen too high, at one of two things: a tree's canopy (the pin is 2-10
+  // above what today's formula gives, AND a natural tree could really be
+  // rooted within one column), or the top of the player's own wall/roof
+  // (a block the player placed sits exactly at the pinned height — see
+  // isInflatedPin). A pin that's merely different — the formula was
+  // retuned since — is left alone: that's exactly what pins are for.
+  function treeCandidateNear(x, z) {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const tx = x + dx, tz = z + dz;
+        const moisture = biomeStretch(fbm(tx*0.006 + 500, tz*0.006 + 500));
+        const chance = moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0; // same tiers as the generator's own treeChance; dry ground is sand and grows nothing
+        if (chance && chunkTreeRoll(tx, tz, 0) < chance) return true;
+      }
+    }
+    return false;
+  }
+  function isInflatedPin(x, z, pin, naturalH) {
+    const d = pin - naturalH;
+    if (d < 1) return false; // at or below the natural ground: an ordinary pin
+    // A block the PLAYER placed sits exactly at the pinned height. A real
+    // ground pin is the terrain surface itself, and the player never has a
+    // placed block AT that height unless they replaced the surface block.
+    // A pin frozen at the top of a wall or roof always does — it was
+    // recorded as "the tallest block here", which was the player's own
+    // build. Older saves did this to any column that already had edits but
+    // no pin (built before pins existed) the first time it was touched
+    // again, since reloading those edits raises the column's tallest block
+    // to its wall/roof top. The result is what you see: terrain filled up
+    // to wall height, trees rooted on top of the wall, and bare stone
+    // banked against it.
+    const placed = blockEdits.get(key(x, pin, z));
+    if (placed !== undefined && placed !== -1) return true;
+    return d >= 2 && d <= 10 && treeCandidateNear(x, z); // canopy: no block of the player's at that height, but a tree could have been
+  }
+  // The columns a replayed structure rebuilds (its levelSite reaches this
+  // far). A pin inside it is ignored: the structure's own levelling sets
+  // the ground there, and a pin frozen at a wall/roof top (older saves
+  // did that whenever you mined or placed something on a generated
+  // building) otherwise refilled the surroundings up to roof height and
+  // banked terrain against its walls.
+  function structureSpecBox(spec) {
+    if (!spec || !spec.site) return null; // a shipwreck floats in natural water — its ground is the seabed
+    const pad = spec.t === 'castle' ? 12 : 0; // the castle's levelSite reaches well past its core
+    return { x0: spec.site.sx0 - pad, x1: spec.site.sx1 + pad, z0: spec.site.sz0 - pad, z1: spec.site.sz1 + pad };
+  }
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (generatedChunks.has(ck)) return;
     const x0 = cx*CHUNK_SIZE, z0 = cz*CHUNK_SIZE;
     let minY = WORLD_HEIGHT, maxY = -1;
     let chunkAllWet = true, chunkAllDeep = true; // every column natural water, and none of it shallow (depth > 3) — see the classification at the end of this function for what this actually gates
+    let healedInflatedPins = 0; // pins frozen at a canopy or wall-top height, restored to the ground this call — see isInflatedPin
     let healedStructurePins = 0; // locked-structure columns re-pinned from roof height to floor height this call — logged once below, see structureFloorAt
     let chunkHasAnyWater = false; // true the moment even ONE column here is natural water — see the dirty-marking at the end of this function for why this needs to be tracked separately from chunkAllWet
     // Buildings whose reach touches THIS chunk — an exact, direct lookup
@@ -3150,6 +3210,8 @@
     // is one Map lookup, not per column, and the per-column check below
     // short-circuits instantly whenever it's empty.
     const nearbyHouses = villageHouseFootprints.get(cx + '_' + cz) || [];
+    const specHere = structureSpecsActive() ? structureSpecs.get(ck) : null;
+    const specBox = specHere ? structureSpecBox(specHere) : null; // the footprint a replayed structure is about to rebuild in this chunk — see structureSpecBox
     for (let lx = 0; lx < CHUNK_SIZE; lx++) {
       for (let lz = 0; lz < CHUNK_SIZE; lz++) {
         const x = x0+lx, z = z0+lz;
@@ -3191,6 +3253,7 @@
         // would produce. This is what keeps a manually built structure
         // sitting properly on terrain across sessions, even after the
         // generation formula above gets tuned again later.
+        const hNatural = h; // what the formula (plus the neighbour clamp) gives for this column with NO pin applied
         const groundPin = groundPins.get(x+','+z);
         let structureColumn = false; // this column belongs to a locked generated building — see structureFloorAt
         const sFloor = structureFloorAt(x, z, groundPin);
@@ -3199,7 +3262,14 @@
           h = sFloor; // the building's floor, NOT the wall/roof-top height older locks pinned here
           if (sFloor !== groundPin) { groundPins.set(x+','+z, sFloor); healedStructurePins++; } // heals a world saved by the old lock; persists with this chunk's next save
         } else if (groundPin !== undefined) {
-          h = groundPin;
+          if (specBox && x >= specBox.x0 && x <= specBox.x1 && z >= specBox.z0 && z <= specBox.z1) {
+            // inside a replayed building's footprint: leave h natural — its own levelSite sets the ground, and player edits are re-applied on top afterwards
+          } else if (isInflatedPin(x, z, groundPin, hNatural)) {
+            h = hNatural; // a pin frozen at canopy height, not the ground — ignore it, and correct it so the next save keeps the fix
+            groundPins.set(x+','+z, hNatural); dirtyChunks.add(ck); healedInflatedPins++;
+          } else {
+            h = groundPin;
+          }
         }
         // Near The Mill, taper generated height down toward the pad's
         // own fixed ground level (y=0) instead of cutting off abruptly —
@@ -3509,6 +3579,22 @@
     // directly in this same function's own height/depth section above,
     // which handles it with no extra step needed.
     generatedChunks.add(ck);
+    if (healedInflatedPins) console.info('[voxel] chunk ' + ck + ': ' + healedInflatedPins + ' ground pin(s) had been frozen too high (at a tree canopy or the top of a wall) instead of at the ground — restored (this is what raised terrain, bare stone and trees beside builds)');
+    { // Diagnostic: built columns with NO saved ground pin (from before pins existed). Their ground follows today's terrain formula, so it can differ from when they were built.
+      const ceD = blockEdits.byChunk.get(ck);
+      if (ceD) {
+        const seenCols = new Set(); let pinless = 0;
+        for (const [k, type] of ceD) {
+          if (type === -1) continue;
+          const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+          const col = k.slice(0, c1) + ',' + k.slice(c2 + 1);
+          if (seenCols.has(col)) continue;
+          seenCols.add(col);
+          if (!groundPins.has(col)) pinless++;
+        }
+        if (pinless) console.info('[voxel] chunk ' + ck + ': ' + pinless + ' built column(s) have no saved ground pin (built before pins existed) — their ground follows the current terrain formula');
+      }
+    }
     if (healedStructurePins) console.info('[voxel] chunk ' + ck + ': re-pinned ' + healedStructurePins + ' locked-building columns to floor level (saved with roof-height pins by the old lock)');
     // A chunk whose generated building was already locked in near a
     // manual structure (see the legacy structure lock (superseded by structureSpecs, still read for worlds saved with it)) skips
@@ -3534,6 +3620,7 @@
         maybeBuildShipwreck(cx, cz);
       }
     }
+    grassScanChunk(ck); // natural dirt already touching grass starts growing over straight away — see GRASS SPREAD (after the structure block above, so a generated building's footprint is known and left alone)
     // Classified AFTER building placement, not before — a shipwreck
     // specifically can land in what would otherwise qualify (buildings
     // needing dry land never touch a chunk like this at all, but a
@@ -4389,6 +4476,7 @@
     // safe to call on every edit.
     const s = getSeasonState().season;
     if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s);
+    grassNoteAround(x, y, z); // dirt/mud beside or beneath whatever just changed may now qualify (or stop qualifying) to turn to grass — see GRASS SPREAD
   }
 
 
@@ -10016,7 +10104,7 @@
         if (!glassNear && GLASS_TYPE_SET.has(blocks.get(nk))) glassNear = true;
       }
     }
-    for (const c of touched.values()) updateFullInstanceAt(c[0], c[1], c[2]);
+    for (const c of touched.values()) { updateFullInstanceAt(c[0], c[1], c[2]); grassNote(c[0], c[1], c[2]); } // dirt exposed by a crater edge can start to grass over
     rebuildWaterGeometry();
     if (glassNear) rebuildGlassGeometry();
     const season = getSeasonState().season;
@@ -10679,6 +10767,136 @@
   function cycleWeapon() {
     weaponTypeIdx = (weaponTypeIdx + 1) % WEAPON_TYPES.length;
     if (typeof updateWeaponSlotIcon === 'function') updateWeaponSlotIcon();
+  }
+
+  // ================= GRASS SPREAD =================
+  // A Dirt or Mud block that touches grass turns into grass after a
+  // little while. "Touches" means the four blocks beside it at the SAME
+  // height (north/south/east/west) — not above, below or diagonal. The
+  // more of them that are grass, the sooner:
+  //     4 grass neighbours -> 1s     3 -> 2s     2 -> 3s     1 -> 4s
+  // The dirt also has to be open to the sky above it (no block on top, no
+  // water): grass doesn't grow under a roof, a floor or a lake.
+  //
+  // Event-driven rather than a sweep of the whole world: a block is only
+  // looked at when something near it changed (a block placed or mined, a
+  // chunk generating, a neighbour turning to grass). Anything that
+  // qualifies goes into grassPending with a due time; updateGrassGrowth
+  // (run each frame, throttled) converts whatever has come due, checking
+  // the conditions still hold first — so covering it over, or removing
+  // the grass beside it, cancels the change. Each new grass block wakes
+  // its own neighbours, which is what makes it spread outward.
+  //
+  // Persistence: a natural terrain block that turns to grass isn't
+  // recorded (it would put a save entry on every bit of dirt in the world;
+  // it simply spreads again next time the terrain generates). A block the
+  // PLAYER placed IS recorded — as the same edit, now grass — so their
+  // garden stays as it grew. Nothing happens in The Mill, in protected game
+  // structures, or on generated buildings (a farm's soil should stay soil).
+  const GRASS_BLOCK = 0;
+  const GRASS_SPREADS_ONTO = new Set([1, 24]); // Dirt, Mud. Coarse Dirt, Podzol and Clay are deliberately left alone.
+  const GRASS_STEP_MS = 1000;                  // delay = (5 - grass neighbours) * this
+  const GRASS_TICK_MS = 100;
+  const GRASS_MAX_PER_TICK = 40;               // caps a burst (e.g. coming back to a hidden tab) so it can't hitch a frame
+  const GRASS_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const grassPending = new Map();              // "x,y,z" -> { x, y, z, due, n }
+  let grassLastTick = 0;
+
+  function grassGrassNeighbours(x, y, z) {
+    let n = 0;
+    for (const d of GRASS_DIRS) if (blocks.get(key(x + d[0], y, z + d[1])) === GRASS_BLOCK) n++;
+    return n;
+  }
+  // 0 = not eligible right now, otherwise how many grass neighbours it has.
+  function grassEligibleCount(x, y, z) {
+    if (!GRASS_SPREADS_ONTO.has(blocks.get(key(x, y, z)))) return 0;
+    if (blocks.has(key(x, y + 1, z)) || waterBlocks.has(key(x, y + 1, z))) return 0; // covered, or underwater
+    return grassGrassNeighbours(x, y, z);
+  }
+  function grassBlockedHere(x, y, z) {
+    if (currentWorldId === PUB_WORLD_ID) return true;
+    if (!canEditAt(x, z)) return true;
+    if (isProtectedStructuralBlock(x, y, z)) return true;
+    if (lockedFootprintAt(x, z)) return true;
+    const list = villageHouseFootprints.get(chunkKeyOf(x, z));
+    if (list) for (const e of list) if (x >= e.x0 && x <= e.x1 && z >= e.z0 && z <= e.z1) return true; // generated building/farm — leave it as designed
+    return false;
+  }
+  // Looks at one cell and (re)schedules or cancels it.
+  function grassNote(x, y, z) {
+    const k = key(x, y, z);
+    const n = grassEligibleCount(x, y, z);
+    if (n === 0 || grassBlockedHere(x, y, z)) { if (grassPending.size) grassPending.delete(k); return; }
+    const due = performance.now() + (5 - n) * GRASS_STEP_MS;
+    const cur = grassPending.get(k);
+    if (!cur) grassPending.set(k, { x, y, z, due, n });
+    else if (n > cur.n) { cur.due = Math.min(cur.due, due); cur.n = n; } // more grass has arrived: it can only get sooner, never later
+    else if (n < cur.n) { cur.due = due; cur.n = n; }                    // some was lost: the countdown starts over at the slower rate
+  }
+  // Something at (x,y,z) just changed: re-check it, the block that may
+  // have just been uncovered beneath it, and the four beside it (whose
+  // neighbour count just changed).
+  function grassNoteAround(x, y, z) {
+    grassNote(x, y, z);
+    grassNote(x, y - 1, z);
+    for (const d of GRASS_DIRS) grassNote(x + d[0], y, z + d[1]);
+  }
+  function convertToGrass(x, y, z) {
+    const k = key(x, y, z);
+    blocks.set(k, GRASS_BLOCK);
+    if (!visitMode && blockEdits.get(k) !== undefined) recordBlockEdit(x, y, z, GRASS_BLOCK, 0); // player-placed: keep it (see the header); natural terrain: not saved
+    updateFullInstanceAt(x, y, z); // solid -> solid, so only this one block's texture needs swapping
+  }
+  function updateGrassGrowth() {
+    if (grassPending.size === 0) return;
+    const now = performance.now();
+    if (now - grassLastTick < GRASS_TICK_MS) return;
+    grassLastTick = now;
+    const converted = [];
+    for (const [k, e] of grassPending) {
+      if (now < e.due) continue;
+      grassPending.delete(k);
+      const n = grassEligibleCount(e.x, e.y, e.z);
+      if (n === 0) continue;                                       // covered over / grass removed since it was scheduled
+      if (n < e.n) { grassNote(e.x, e.y, e.z); continue; }         // fewer neighbours than when scheduled — not yet
+      convertToGrass(e.x, e.y, e.z);
+      converted.push(e);
+      if (converted.length >= GRASS_MAX_PER_TICK) break;           // the rest are still pending and simply come due next tick
+    }
+    if (!converted.length) return;
+    for (const e of converted) for (const d of GRASS_DIRS) grassNote(e.x + d[0], e.y, e.z + d[1]); // spread outward
+    const season = getSeasonState().season;
+    if (season === 0 || season === 1 || season === 2) scheduleOverlayRebuild(season); // flowers/snow follow grass — see handleLocalBlockChange
+  }
+  // Called once for each chunk as it finishes generating: finds the natural
+  // dirt that already borders grass (which starts it growing straight
+  // away), plus any dirt/mud the player placed in this chunk.
+  function grassScanChunk(ck) {
+    if (currentWorldId === PUB_WORLD_ID) return;
+    const parts = ck.split('_'), x0 = +parts[0] * CHUNK_SIZE, z0 = +parts[1] * CHUNK_SIZE;
+    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+        const x = x0 + lx, z = z0 + lz;
+        const h = groundHeightOnly.get(x + ',' + z);
+        if (h === undefined) continue;
+        const t = blocks.get(key(x, h, z));
+        if (t === GRASS_BLOCK) {
+          // Wakes dirt beside this grass — but only across a chunk border. Dirt inside
+          // this chunk gets checked by its own branch below; across the border, the
+          // neighbouring chunk's own scan may already have run before this grass existed.
+          if (lx === 0) grassNote(x - 1, h, z);
+          if (lx === CHUNK_SIZE - 1) grassNote(x + 1, h, z);
+          if (lz === 0) grassNote(x, h, z - 1);
+          if (lz === CHUNK_SIZE - 1) grassNote(x, h, z + 1);
+        } else if (GRASS_SPREADS_ONTO.has(t)) grassNote(x, h, z);
+      }
+    }
+    const ce = blockEdits.byChunk.get(ck);
+    if (ce) for (const [k, t] of ce) {
+      if (!GRASS_SPREADS_ONTO.has(t)) continue;
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+      grassNote(+k.slice(0, c1), +k.slice(c1 + 1, c2), +k.slice(c2 + 1));
+    }
   }
 
   let lastVehicleFireTime = 0;
@@ -16060,6 +16278,7 @@
     refresh.forEach(rk => {
       const parts = rk.split(',');
       updateFullInstanceAt(Number(parts[0]), Number(parts[1]), Number(parts[2]));
+      grassNote(Number(parts[0]), Number(parts[1]), Number(parts[2])); // fill bypasses handleLocalBlockChange, so tell the grass system directly
     });
     rebuildWaterGeometry();
     rebuildGlassGeometry();
@@ -17306,6 +17525,7 @@
         if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
         dirtyChunks.add(chunkKeyOf(x, z));
         const colKey = x+','+z;
+        if (!groundPins.has(colKey)) { const g = groundHeightOnly.get(colKey); if (g !== undefined) groundPins.set(colKey, g); } // another player's build should freeze its ground here just like a local edit does (see recordBlockEdit) — this handler never did
         const prevColH = columnHeight.get(colKey);
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
@@ -20953,6 +21173,7 @@
     updateLightVisibility(); // throttled internally — see its own comment
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
+    try { updateGrassGrowth(); } catch (err) { console.warn('updateGrassGrowth error (recovered):', err); }
     try { updateWeapons(dt); } catch (err) { console.warn('updateWeapons error (recovered):', err); } // weapon in hand, lives regen/HUD — guarded like the vehicle camera: a bug here must never freeze the frame loop
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateFootballAiAvatarFigure(dt); // no-ops immediately unless a computer opponent is actually in play

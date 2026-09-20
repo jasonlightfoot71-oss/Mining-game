@@ -370,7 +370,7 @@
       <div id="worldSelectMsg">Loading your saved worlds…</div>
       <div id="worldList"></div>
       <div id="newWorldRow">
-        <input id="newWorldName" type="text" placeholder="New world name…" maxlength="40">
+        <input id="newWorldName" type="text" placeholder="New world name…" maxlength="40" enterkeyhint="go" autocomplete="off">
         <button id="newWorldBtn">＋ Create</button>
       </div>
     </div>
@@ -15954,12 +15954,18 @@
   // Trying every axis costs nothing extra one cell at a time — at most
   // two of the three ever get anywhere before hitting solid material —
   // and removes the aiming precision requirement entirely.
+  //
+  // When more than one axis closes it takes the SMALLEST region, not the
+  // first axis in x/y/z order. Inside a sealed room the room's own cross-
+  // section closes on some axis too (walls, floor and ceiling bound it),
+  // and being first in the list it used to win over the actual hole.
   function findFillRegionAnyAxis(sx, sy, sz) {
+    let best = null;
     for (const axis of FILL_AXES) {
       const cells = findFillRegion(sx, sy, sz, axis);
-      if (cells) return cells;
+      if (cells && (!best || cells.length < best.length)) best = cells;
     }
-    return null;
+    return best;
   }
 
   // Resolves what's currently under the crosshair into a fillable cell
@@ -15980,10 +15986,34 @@
     if (ridingVehicle || bsPlacing) return null; // fill isn't meaningful mid-vehicle-gun or mid-ship-placement
     const type = BLOCK_TYPES[selectedSlot];
     if (!type) return null; // only ordinary blocks are fillable material — not water, furniture, fixtures, vehicles, etc.
+    // 1. What you're actually pointing at. The highlighted block is the
+    // one voxelRaycast hits, and the cell where a normal placement would
+    // go is the open cell right in front of it. If THAT cell sits in a
+    // sealed pocket, that's the pocket you meant — e.g. looking down at
+    // the bottom of a hole in a floor. Without this, fill went straight to
+    // step 2 and took whichever sealed layer was nearest your EYES, which
+    // indoors is the room's own head-height cross-section: it walked past
+    // the hole you were aiming at and filled the room instead.
+    const aim = voxelRaycast(false, true);
+    if (aim && !aim.isWater && aim.before) {
+      const ax = aim.before.x, ay = aim.before.y, az = aim.before.z;
+      if (!blockOverlapsPlayer(ax, ay, az) && isOpenForFill(key(ax, ay, az))) {
+        if (!canEditAt(ax, az)) return null; // view only
+        if (isProtectedGameArea(ax, az) && !landscapeModeEnabled) return null;
+        const aimed = findFillRegionAnyAxis(ax, ay, az);
+        if (aimed && aimed.length) return aimed;
+      }
+    }
+    // 2. Nothing fillable right at the crosshair — e.g. aiming through the
+    // open middle of a frame at nothing solid behind it, or through a hole
+    // over open air. Walk the sightline and consider every open cell on
+    // the way, but take the SMALLEST sealed pocket found rather than the
+    // first: a hole is small, while the nearest sealed layer to your eyes
+    // is usually the surrounding room's.
     const dir = new THREE.Vector3(0,0,-1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
     const origin = camera.getWorldPosition(new THREE.Vector3());
     const step = 0.06;
-    let lastKey = null;
+    let lastKey = null, best = null;
     for (let t=0; t<10; t+=step) {
       const p = origin.clone().addScaledVector(dir, t);
       const vx=Math.floor(p.x), vy=Math.floor(p.y), vz=Math.floor(p.z);
@@ -15995,9 +16025,9 @@
       if (!canEditAt(vx, vz)) return null; // view only
       if (isProtectedGameArea(vx, vz) && !landscapeModeEnabled) return null;
       const cells = findFillRegionAnyAxis(vx, vy, vz);
-      if (cells && cells.length) return cells; // first bounded pocket found along your line of sight
+      if (cells && cells.length && (!best || cells.length < best.length)) best = cells; // ties keep the nearer one, since it was found first
     }
-    return null;
+    return best;
   }
 
   function fillTargetAvailable() {
@@ -22438,8 +22468,21 @@
   document.getElementById('visitPubBtn').addEventListener('click', () => { visitPub(); });
   document.getElementById('createPubBtn').addEventListener('click', () => { createPub(); });
 
-  document.getElementById('newWorldBtn').addEventListener('click', async () => {
+  // One function for both the Create button and pressing Enter in the name
+  // box. Enter used to do nothing at all, and neither path ever took focus
+  // off the text field — so the on-screen keyboard stayed up over the
+  // world it had just started. The field is now blurred first thing (which
+  // is what dismisses the keyboard on phones/tablets), from inside the tap
+  // or key press itself, since browsers only let focus/keyboard changes
+  // like that happen in response to a real gesture. The in-flight guard
+  // stops a double tap, or Enter followed by Create, making two worlds.
+  let creatingWorld = false;
+  async function createWorldFromNameInput() {
+    if (creatingWorld) return;
+    creatingWorld = true;
     const input = document.getElementById('newWorldName');
+    input.blur();
+    window.scrollTo(0, 0); // some mobile browsers leave the page nudged up after the keyboard closes
     const name = (input.value || 'My World').trim().slice(0,40) || 'My World';
     currentWorldId = newWorldId();
     currentWorldName = name;
@@ -22478,8 +22521,14 @@
       updateIdentityDebugNotice();
       showSaveStatus('⚠ Something went wrong creating the world', true);
     } finally {
-      await saveWorld(); // guaranteed to at least be attempted regardless of what happened above — was previously skippable entirely if anything earlier in this handler threw
+      try { await saveWorld(); } finally { creatingWorld = false; } // guaranteed to at least be attempted regardless of what happened above — was previously skippable entirely if anything earlier in this handler threw
     }
+  }
+  document.getElementById('newWorldBtn').addEventListener('click', createWorldFromNameInput);
+  document.getElementById('newWorldName').addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.isComposing) return; // isComposing: Enter that's just confirming an IME candidate (Japanese/Chinese/Korean keyboards) shouldn't submit
+    e.preventDefault();
+    createWorldFromNameInput();
   });
 
   if (playerUid) {

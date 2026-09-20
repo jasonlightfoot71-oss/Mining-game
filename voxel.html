@@ -2002,6 +2002,7 @@
   const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
   const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
   const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
+  const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -9803,6 +9804,883 @@
     clearTimeout(el._hideTimer);
     el._hideTimer = setTimeout(() => { el.style.opacity = '0'; }, 1800);
   }
+  // ================= WEAPONS & LIVES =================
+  // Five hand weapons chosen from the hotbar's Weapons slot (Q also
+  // selects it, and cycles weapons if it's already selected): sword,
+  // gun, laser gun, bazooka, thrown dynamite. Both mouse buttons (and
+  // both touch buttons) fire whichever is equipped — see doMine's and
+  // doPlace's interceptions. Holding a weapon is visible to everyone:
+  // the model is in the local first-person hand and in the hand of that
+  // player's avatar on everyone else's screen, with the arm posed to
+  // match (see updateAvatarWeapon), driven by the weapon index the
+  // 'pos' broadcast now carries.
+  //
+  // TERRAIN — the same rules the vehicle gun already follows (see
+  // destroyBlockAt): damage is applied live on every connected client but
+  // deliberately NEVER recorded in blockEdits, so nothing here survives
+  // leaving and returning to a world. Same limits as well: no weapons in
+  // The Mill, nothing in a protected game structure (unless landscaping
+  // mode is on), and nothing at BEDROCK_Y. A blast can remove hundreds of
+  // blocks at once, so it goes through destroyBlocksBatch (one mesh
+  // refresh, one attachment sweep) rather than the per-block path.
+  //
+  // MULTIPLAYER — the shooter sends ONE small 'weaponBlast' message per
+  // explosion/laser and every client derives the exact same set of blocks
+  // from it (the crater edge is ragged from a per-cell hash, so it is
+  // identical everywhere). Damage to players follows the existing
+  // shooter-requests / victim-applies split ('weaponHit' → the victim's
+  // own client subtracts lives); explosions are applied by each client to
+  // itself, by its own distance from the blast.
+  //
+  // LIVES — 10, only while other players are actually in the world.
+  // They regenerate slowly once nobody has hurt you for a while.
+  const WEAPON_TYPES = [
+    { name: 'Sword',     kind: 'sword',    emoji: '⚔️', cooldown: 420,  range: 3.6, damage: 2 },
+    { name: 'Gun',       kind: 'gun',      emoji: '🔫', cooldown: 200,  range: 70,  damage: 1 },
+    { name: 'Laser Gun', kind: 'laser',    emoji: '⚡', cooldown: 650,  range: 25,  damage: 2 },
+    { name: 'Bazooka',   kind: 'bazooka',  emoji: '🚀', cooldown: 1800, range: 120, damage: 6, radius: 7, speed: 55 },
+    { name: 'Dynamite',  kind: 'dynamite', emoji: '🧨', cooldown: 1300, damage: 5, radius: 6, fuse: 2.4 },
+  ];
+  let weaponTypeIdx = 1;
+  const LIVES_MAX = 10;
+  const LIVES_REGEN_DELAY_MS = 6000;   // how long after the last hit before regeneration starts
+  const LIVES_REGEN_PER_SEC = 0.125;   // ~1 life per 8s once it does
+  const RESPAWN_DELAY_MS = 2500, RESPAWN_INVULN_MS = 3000;
+  const SELF_BLAST_FACTOR = 0.5;       // your own explosions hurt you, at half strength
+  const VEHICLE_HIT_DAMAGE = 0.5;      // the helicopter/vehicle gun now costs lives too, per hit
+  let lives = LIVES_MAX, lastDamageAt = -1e9, invulnUntil = 0, playerDead = false;
+  let lastWeaponFireTime = 0;
+  const OFF7 = [[0,0,0],[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+
+  function livesActive() {
+    return !!(mpChannel && currentWorldId === mpConnectedWorldId && currentWorldId !== PUB_WORLD_ID && otherPlayers.size > 0);
+  }
+  function terrainDamageAllowed() {
+    // In an infinite world, weapon damage never touches the saved diff,
+    // so it's automatically never saved. In a legacy finite world the live
+    // block map IS what gets saved, so terrain damage is switched off
+    // there rather than break the "never saved" rule.
+    return !!infiniteWorldActive && currentWorldId !== PUB_WORLD_ID;
+  }
+  function weaponEquipped() {
+    return selectedSlot === WEAPON_SLOT && !ridingVehicle && !currentWorkHeldKind;
+  }
+  function sendWeaponMsg(event, payload) {
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      // uid rides along on everything so receivers know whose avatar to animate
+      try { mpChannel.send({ type: 'broadcast', event, payload: Object.assign({ uid: playerUid }, payload) }); } catch (e) {}
+    }
+  }
+  const vecArr = v => [Math.round(v.x * 1000) / 1000, Math.round(v.y * 1000) / 1000, Math.round(v.z * 1000) / 1000];
+
+  // ── Lives ────────────────────────────────────────────────────────
+  let livesHudEl = null, livesHudShown = false, livesHudLast = -1;
+  function ensureLivesHud() {
+    if (livesHudEl) return;
+    livesHudEl = document.createElement('div');
+    livesHudEl.id = 'livesHud';
+    livesHudEl.style.cssText = 'position:fixed;top:50px;left:50%;transform:translateX(-50%);z-index:10;display:none;pointer-events:none;background:rgba(0,0,0,0.4);padding:2px 9px;border-radius:12px;font-size:18px;line-height:1.3;white-space:nowrap;';
+    for (let i = 0; i < LIVES_MAX; i++) {
+      const h = document.createElement('span');
+      h.textContent = '♥';
+      h.style.cssText = 'display:inline-block;margin:0 1px;color:transparent;-webkit-text-fill-color:transparent;-webkit-background-clip:text;background-clip:text;';
+      livesHudEl.appendChild(h);
+    }
+    document.body.appendChild(livesHudEl);
+  }
+  function updateLivesHud() {
+    const active = livesActive();
+    ensureLivesHud();
+    if (active !== livesHudShown) { livesHudShown = active; livesHudEl.style.display = active ? 'block' : 'none'; livesHudLast = -1; }
+    if (!active) return;
+    const q = Math.round(lives * 10);
+    if (q === livesHudLast) return; // only touches the DOM when the displayed value actually changed
+    livesHudLast = q;
+    for (let i = 0; i < LIVES_MAX; i++) {
+      const fill = Math.max(0, Math.min(1, lives - i)) * 100;
+      livesHudEl.children[i].style.backgroundImage = 'linear-gradient(90deg,#ff3b4a ' + fill + '%,#4a4a52 ' + fill + '%)';
+    }
+  }
+  function flashDamage() {
+    let el = document.getElementById('damageFlash');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'damageFlash';
+      el.style.cssText = 'position:fixed;inset:0;z-index:9;pointer-events:none;opacity:0;background:radial-gradient(ellipse at center,rgba(255,0,0,0) 40%,rgba(220,20,20,0.6) 100%);';
+      document.body.appendChild(el);
+    }
+    el.style.transition = 'none'; el.style.opacity = '1';
+    void el.offsetWidth; // forces the browser to apply the instant jump to 1 before the fade back starts
+    el.style.transition = 'opacity 0.55s ease-out'; el.style.opacity = '0';
+  }
+  function damageMe(amount, byName) {
+    if (!livesActive() || playerDead || !(amount > 0)) return;
+    const now = performance.now();
+    if (now < invulnUntil) return;
+    lives = Math.max(0, lives - amount);
+    lastDamageAt = now;
+    flashDamage();
+    playThud(200);
+    if (lives <= 0) dieFromDamage(byName);
+  }
+  function findRespawnPoint(fromX, fromZ) {
+    for (let i = 0; i < 20; i++) {
+      const ang = Math.random() * Math.PI * 2, dist = 25 + Math.random() * 35;
+      const x = Math.floor(fromX + Math.cos(ang) * dist), z = Math.floor(fromZ + Math.sin(ang) * dist);
+      if (!generatedChunks.has(chunkKeyOf(x, z))) continue; // only somewhere that's already loaded — never drop the player into ungenerated terrain
+      for (let y = WORLD_HEIGHT + 4; y > BEDROCK_Y; y--) {
+        if (!blocks.has(key(x, y, z))) continue;
+        if (waterBlocks.has(key(x, y + 1, z)) || blocks.has(key(x, y + 1, z)) || blocks.has(key(x, y + 2, z))) break; // water surface or a roofed/blocked spot — try another
+        return { x: x + 0.5, y: y + 1, z: z + 0.5 };
+      }
+    }
+    return null;
+  }
+  function respawnMe(deathX, deathZ) {
+    const pt = findRespawnPoint(deathX, deathZ);
+    if (pt) { player.pos.set(pt.x, pt.y + 2.5, pt.z); player.vel.set(0, 0, 0); } else spawnDefault();
+    lives = LIVES_MAX; playerDead = false;
+    lastDamageAt = performance.now(); invulnUntil = lastDamageAt + RESPAWN_INVULN_MS;
+    showBriefMessage('Respawned — protected for a few seconds');
+  }
+  function dieFromDamage(byName) {
+    playerDead = true;
+    const dx = player.pos.x, dz = player.pos.z;
+    if (ridingVehicle) { try { exitVehicle(); } catch (e) {} }
+    showBriefMessage(byName ? ('💀 Taken out by ' + byName + ' — respawning…') : '💀 You were taken out — respawning…');
+    sendWeaponMsg('playerDown', { uid: playerUid, name: getMyDisplayName(), by: byName || '' });
+    showChatLogLine('💀', getMyDisplayName() + (byName ? ' was taken out by ' + byName : ' was taken out'));
+    setTimeout(() => respawnMe(dx, dz), RESPAWN_DELAY_MS);
+  }
+  function updateLives(dt) {
+    if (!livesActive()) {
+      if (!playerDead) lives = LIVES_MAX; // nobody else here — nothing can hurt you, so there's nothing to regenerate
+    } else if (!playerDead && lives < LIVES_MAX && performance.now() - lastDamageAt > LIVES_REGEN_DELAY_MS) {
+      lives = Math.min(LIVES_MAX, lives + LIVES_REGEN_PER_SEC * dt);
+    }
+    updateLivesHud();
+  }
+
+  // ── Batched terrain damage ───────────────────────────────────────
+  // Everything destroyBlockAt does for ONE block, done for a whole set at
+  // once: remove them all first, sweep the attachment maps once each (the
+  // per-block removeXForBlock helpers scan a whole map per call — fine
+  // for one block, far too slow for several hundred), refresh each
+  // affected mesh cell exactly once, then rebuild water/glass/overlays
+  // once. Like destroyBlockAt this is deliberately NOT recordBlockEdit
+  // and not broadcast per block: nothing here is ever saved, and the
+  // caller sends one message for the whole event instead.
+  function destroyBlocksBatch(cells) {
+    const removed = [];
+    const destroyedKeys = new Set();
+    let anyGlass = false;
+    const landscape = landscapeModeEnabled;
+    for (const c of cells) {
+      const bx = c[0], by = c[1], bz = c[2];
+      if (by <= BEDROCK_Y) continue;
+      const k = key(bx, by, bz);
+      const t = blocks.get(k);
+      if (t === undefined) continue;
+      if (!canEditAt(bx, bz)) continue;
+      if (!landscape && isProtectedStructuralBlock(bx, by, bz)) continue;
+      blocks.delete(k); stepRotations.delete(k);
+      destroyedKeys.add(k);
+      removed.push(c);
+      if (GLASS_TYPE_SET.has(t)) anyGlass = true;
+    }
+    if (!removed.length) return 0;
+    // Water pours into the hole, session-only like destroyBlockAt's.
+    // Top-down, so a crater under a lake fills from the surface down.
+    removed.sort((a, b) => b[1] - a[1]);
+    for (const c of removed) {
+      const bx = c[0], by = c[1], bz = c[2];
+      if (!pubWaterAllowed(bx, bz)) continue;
+      const above = waterBlocks.has(key(bx, by + 1, bz));
+      const side = !above && (waterBlocks.has(key(bx + 1, by, bz)) || waterBlocks.has(key(bx - 1, by, bz)) || waterBlocks.has(key(bx, by, bz + 1)) || waterBlocks.has(key(bx, by, bz - 1)));
+      if (above || side) waterBlocks.set(key(bx, by, bz), 1);
+    }
+    for (const [fk, f] of Array.from(fixtures.entries())) if (destroyedKeys.has(key(f.bx, f.by, f.bz))) removeFixture(fk);
+    for (const [lk, l] of Array.from(ladders.entries())) if (destroyedKeys.has(key(l.bx, l.by, l.bz))) removeLadder(lk);
+    for (const [wk, w] of Array.from(wallpapers.entries())) if (destroyedKeys.has(key(w.bx, w.by, w.bz))) removeWallpaper(wk);
+    for (const [sk, s] of Array.from(signs.entries())) if (destroyedKeys.has(key(s.bx, s.by, s.bz))) removeSign(sk);
+    for (const [dk, d] of Array.from(doors.entries())) if (destroyedKeys.has(key(d.bx, d.by, d.bz))) removeDoor(dk);
+    for (const fk of destroyedKeys) if (furniture.has(fk)) removeFurniture(fk);
+    const touched = new Map();
+    let glassNear = anyGlass;
+    for (const c of removed) {
+      for (let i = 0; i < 7; i++) {
+        const nx = c[0] + OFF7[i][0], ny = c[1] + OFF7[i][1], nz = c[2] + OFF7[i][2];
+        const nk = key(nx, ny, nz);
+        if (touched.has(nk)) continue;
+        touched.set(nk, [nx, ny, nz]);
+        if (!glassNear && GLASS_TYPE_SET.has(blocks.get(nk))) glassNear = true;
+      }
+    }
+    for (const c of touched.values()) updateFullInstanceAt(c[0], c[1], c[2]);
+    rebuildWaterGeometry();
+    if (glassNear) rebuildGlassGeometry();
+    const season = getSeasonState().season;
+    if (season === 0 || season === 1 || season === 2) scheduleOverlayRebuild(season);
+    return removed.length;
+  }
+  // The cells a blast removes. The edge is ragged (each cell's own radius
+  // is jittered by a hash of its position) so it reads as a crater rather
+  // than a perfect sphere — and because the jitter depends only on the
+  // cell's coordinates, every client computes exactly the same set.
+  function explosionCells(cx, cy, cz, r) {
+    const cells = [];
+    const R = Math.ceil(r * 1.2);
+    const x0 = Math.floor(cx), y0 = Math.floor(cy), z0 = Math.floor(cz);
+    for (let dx = -R; dx <= R; dx++) {
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dz = -R; dz <= R; dz++) {
+          const x = x0 + dx, y = y0 + dy, z = z0 + dz;
+          const ax = x + 0.5 - cx, ay = y + 0.5 - cy, az = z + 0.5 - cz;
+          const rr = r * (0.8 + 0.4 * hash3(x, y, z));
+          if (ax * ax + ay * ay + az * az <= rr * rr) cells.push([x, y, z]);
+        }
+      }
+    }
+    return cells;
+  }
+  // Every cell along the beam — the laser goes through everything, so
+  // unlike a bullet it doesn't stop at the first block.
+  function laserCells(o, d, len) {
+    const cells = [], seen = new Set();
+    for (let t = 0; t <= len; t += 0.25) {
+      const x = Math.floor(o.x + d.x * t), y = Math.floor(o.y + d.y * t), z = Math.floor(o.z + d.z * t);
+      const k = key(x, y, z);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      cells.push([x, y, z]);
+    }
+    return cells;
+  }
+  function killEntitiesInRadius(center, radius) {
+    let shown = 0;
+    const strike = (rec, destroyFn) => {
+      if (!rec.mesh) return;
+      if (rec.mesh.position.distanceTo(center) > radius) return;
+      if (shown++ < 5) showImpactExplosion(rec.mesh.position.clone().add(new THREE.Vector3(0, 0.8, 0))); // capped — a blast in a crowd shouldn't spawn dozens of particle bursts
+      destroyFn(rec);
+    };
+    Array.from(villageNPCs).forEach(n => strike(n, destroyVillageNPC));
+    Array.from(villageAnimals).forEach(a => strike(a, destroyVillageAnimal));
+    Array.from(ambientFish).forEach(f => strike(f, destroyAmbientFish));
+  }
+
+  // ── Sounds ───────────────────────────────────────────────────────
+  // Filtered noise with soft attack, per the same lesson the footstep and
+  // splash sounds already learned — bare oscillators come out thin or
+  // inaudible on phone speakers. Everything routes through the shared
+  // limiter the gunshot already uses so overlapping blasts compress
+  // instead of clipping.
+  function playNoiseBurst(dur, filterType, f0, f1, peak, vol, q) {
+    if (!audioCtx) return;
+    ensureVehicleGunBus();
+    const t = audioCtx.currentTime, n = Math.max(8, Math.floor(audioCtx.sampleRate * dur));
+    const buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate), data = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) { const e = 1 - i / n; data[i] = (Math.random() * 2 - 1) * e * e; }
+    const src = audioCtx.createBufferSource(); src.buffer = buf;
+    const f = audioCtx.createBiquadFilter(); f.type = filterType; f.Q.value = q || 0.7;
+    f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(peak * vol, t + 0.012); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f); f.connect(g); g.connect(vehicleGunBus || audioCtx.destination);
+    src.start(t);
+  }
+  function playBoom(vol) {
+    if (!audioCtx) return;
+    playNoiseBurst(1.5, 'lowpass', 2600, 140, 1.2, vol, 0.7);
+    const t = audioCtx.currentTime;
+    const o = audioCtx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(150, t); o.frequency.exponentialRampToValueAtTime(45, t + 0.5);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.9 * vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    o.connect(g); g.connect(vehicleGunBus || audioCtx.destination);
+    o.start(t); o.stop(t + 0.65);
+  }
+  function playLaserZap(vol) {
+    if (!audioCtx) return;
+    ensureVehicleGunBus();
+    const t = audioCtx.currentTime;
+    const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(1500, t); o.frequency.exponentialRampToValueAtTime(220, t + 0.28);
+    const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 1100; f.Q.value = 1.5;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.32 * vol, t + 0.01); g.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+    o.connect(f); f.connect(g); g.connect(vehicleGunBus || audioCtx.destination);
+    o.start(t); o.stop(t + 0.32);
+    playNoiseBurst(0.2, 'bandpass', 3000, 900, 0.25, vol, 1.2); // a fizz on top so it isn't a pure tone on a phone speaker
+  }
+  function playSwordSwing(vol) { playNoiseBurst(0.2, 'bandpass', 700, 2600, 0.55, vol == null ? 1 : vol, 1.0); }
+  function playRocketLaunch(vol) { playNoiseBurst(0.7, 'lowpass', 1400, 250, 0.9, vol == null ? 1 : vol, 0.8); playThud(110); }
+  function weaponSoundVol(x, y, z) {
+    const d = camera.getWorldPosition(new THREE.Vector3()).distanceTo(new THREE.Vector3(x, y, z));
+    return Math.max(0.08, Math.min(1, 1 / (1 + d / 30)));
+  }
+
+  // ── Effects ──────────────────────────────────────────────────────
+  function showBigExplosion(center, r) {
+    const fire = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), new THREE.MeshBasicMaterial({ color: 0xff8a1f, transparent: true, opacity: 0.95, depthWrite: false }));
+    const core = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 1, depthWrite: false }));
+    fire.position.copy(center); core.position.copy(center);
+    scene.add(fire); scene.add(core);
+    const smokeCount = 36;
+    const smokePos = new Float32Array(smokeCount * 3), smokeVel = [];
+    for (let i = 0; i < smokeCount; i++) {
+      const th = Math.random() * Math.PI * 2, ph = Math.acos(2 * Math.random() - 1), sp = (0.3 + Math.random() * 0.7) * r * 0.5;
+      smokePos[i * 3] = center.x; smokePos[i * 3 + 1] = center.y; smokePos[i * 3 + 2] = center.z;
+      smokeVel.push(new THREE.Vector3(Math.sin(ph) * Math.cos(th) * sp, Math.abs(Math.cos(ph)) * sp * 1.2 + 0.8, Math.sin(ph) * Math.sin(th) * sp));
+    }
+    const smokeGeo = new THREE.BufferGeometry();
+    smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
+    const smokeMat = new THREE.PointsMaterial({ color: 0x3a3a3a, size: 1.7, transparent: true, opacity: 0.6, depthWrite: false });
+    const smoke = new THREE.Points(smokeGeo, smokeMat);
+    smoke.frustumCulled = false; // its bounding sphere is computed once from the start positions; the points then fly well outside it
+    scene.add(smoke);
+    for (let i = 0; i < 6; i++) { // debris bursts scattered through the volume
+      const off = new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.3), (Math.random() - 0.5)).multiplyScalar(r * 0.9);
+      showExplosionAt(center.clone().add(off));
+    }
+    const t0 = performance.now(), FIRE = 550, SMOKE = 2200;
+    (function anim() {
+      const el = performance.now() - t0;
+      const fs = Math.min(1, el / FIRE);
+      const ease = 1 - (1 - fs) * (1 - fs);
+      fire.scale.setScalar(Math.max(0.01, r * (0.35 + 0.85 * ease)));
+      core.scale.setScalar(Math.max(0.01, r * 0.5 * (0.3 + 0.7 * ease) * (1 - fs * 0.6)));
+      fire.material.opacity = Math.max(0, 0.95 * (1 - fs));
+      core.material.opacity = Math.max(0, 1 - fs * 1.6);
+      fire.material.color.setHex(fs < 0.5 ? 0xff8a1f : 0xc0501a);
+      const es = el / 1000;
+      const p = smokeGeo.attributes.position.array;
+      for (let i = 0; i < smokeCount; i++) {
+        p[i * 3] = center.x + smokeVel[i].x * es; p[i * 3 + 1] = center.y + smokeVel[i].y * es; p[i * 3 + 2] = center.z + smokeVel[i].z * es;
+      }
+      smokeGeo.attributes.position.needsUpdate = true;
+      smokeMat.opacity = Math.max(0, 0.6 * (1 - el / SMOKE));
+      if (fs >= 1 && fire.parent) { scene.remove(fire); fire.geometry.dispose(); fire.material.dispose(); scene.remove(core); core.geometry.dispose(); core.material.dispose(); }
+      if (el >= SMOKE) { scene.remove(smoke); smokeGeo.dispose(); smokeMat.dispose(); return; }
+      requestAnimationFrame(anim);
+    })();
+  }
+  function laserMuzzleFrom(o, d) {
+    const right = new THREE.Vector3(-d.z, 0, d.x);
+    if (right.lengthSq() < 1e-6) right.set(1, 0, 0);
+    right.normalize();
+    return o.clone().addScaledVector(d, 0.6).addScaledVector(right, 0.28).add(new THREE.Vector3(0, -0.2, 0));
+  }
+  function showLaserBeam(o, d, len) {
+    const from = laserMuzzleFrom(o, d), to = o.clone().addScaledVector(d, len);
+    const dv = to.clone().sub(from), L = dv.length();
+    if (L < 0.05) return;
+    dv.normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    const mk = (radius, color, opacity) => {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, L, 8, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.position.copy(from).addScaledVector(dv, L / 2);
+      m.quaternion.setFromUnitVectors(up, dv);
+      scene.add(m);
+      return m;
+    };
+    const outer = mk(0.09, 0x33e6ff, 0.55), inner = mk(0.035, 0xffffff, 0.95);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), new THREE.MeshBasicMaterial({ color: 0x9ffbff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+    tip.position.copy(to); scene.add(tip);
+    const t0 = performance.now(), DUR = 220;
+    (function fade() {
+      const s = (performance.now() - t0) / DUR;
+      if (s >= 1) {
+        [outer, inner, tip].forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
+        return;
+      }
+      outer.material.opacity = 0.55 * (1 - s); inner.material.opacity = 0.95 * (1 - s);
+      tip.material.opacity = 0.9 * (1 - s); tip.scale.setScalar(1 + s);
+      requestAnimationFrame(fade);
+    })();
+  }
+
+  // ── Weapon models ────────────────────────────────────────────────
+  // Same low-poly box-built approach as the vehicle gun. Every model
+  // points along -Z with the hand at the origin (the dynamite is upright).
+  // The same builder serves the first-person hand and the avatar's hand.
+  function cylZ(g, rFront, rBack, len, mat, x, y, z) {
+    // CylinderGeometry runs along Y; turned onto Z its "top" end lands at +Z (rear) and its "bottom" at -Z (front).
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rBack, rFront, len, 10), mat);
+    m.rotation.x = Math.PI / 2; m.position.set(x, y, z); g.add(m); return m;
+  }
+  function boxAt(g, w, h, d, mat, x, y, z) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); g.add(m); return m;
+  }
+  function buildWeaponModel(kind) {
+    const g = new THREE.Group();
+    const L = (c, e) => new THREE.MeshLambertMaterial({ color: c, emissive: e || 0x000000 });
+    const B = c => new THREE.MeshBasicMaterial({ color: c });
+    g.userData.kind = kind;
+    if (kind === 'sword') {
+      boxAt(g, 0.10, 0.035, 0.95, L(0xdfe8f2, 0x1a222c), 0, 0, -0.55);       // blade
+      boxAt(g, 0.06, 0.03, 0.12, L(0xdfe8f2, 0x1a222c), 0, 0, -1.08);        // tip
+      boxAt(g, 0.028, 0.045, 0.78, B(0xa8ecff), 0, 0, -0.55);                // bright fuller so it glints at a distance
+      boxAt(g, 0.36, 0.06, 0.07, L(0xd6a935, 0x2a2005), 0, 0, -0.05);        // crossguard
+      boxAt(g, 0.06, 0.06, 0.24, L(0x5a3a22), 0, 0, 0.12);                   // grip
+      boxAt(g, 0.09, 0.09, 0.06, L(0xd6a935, 0x2a2005), 0, 0, 0.26);         // pommel
+    } else if (kind === 'gun') {
+      boxAt(g, 0.11, 0.16, 0.42, L(0x2b2f33), 0, 0, -0.05);                  // body
+      boxAt(g, 0.09, 0.05, 0.44, L(0x4a525a), 0, 0.10, -0.05);               // slide
+      boxAt(g, 0.06, 0.06, 0.18, L(0x1d2024), 0, 0.02, -0.34);               // barrel
+      boxAt(g, 0.075, 0.075, 0.03, B(0xff8a1f), 0, 0.02, -0.44);             // orange muzzle so it reads as armed from afar
+      const grip = boxAt(g, 0.10, 0.24, 0.11, L(0x3a2a1f), 0, -0.18, 0.10); grip.rotation.x = 0.3;
+    } else if (kind === 'laser') {
+      boxAt(g, 0.13, 0.15, 0.46, L(0xd0d8e0, 0x10161c), 0, 0, -0.02);        // body
+      boxAt(g, 0.06, 0.04, 0.36, B(0x33e6ff), 0, 0.095, -0.05);              // glowing top rail
+      cylZ(g, 0.035, 0.045, 0.30, L(0x20262c), 0, 0.01, -0.36);              // barrel
+      cylZ(g, 0.055, 0.055, 0.05, B(0x66ffff), 0, 0.01, -0.53);              // glowing emitter
+      boxAt(g, 0.11, 0.09, 0.14, B(0x22e6ff), 0, -0.01, 0.10);               // energy cell
+      boxAt(g, 0.02, 0.11, 0.16, B(0x33e6ff), 0.08, 0.05, -0.02);            // fins
+      boxAt(g, 0.02, 0.11, 0.16, B(0x33e6ff), -0.08, 0.05, -0.02);
+      const grip = boxAt(g, 0.10, 0.22, 0.11, L(0x2a3036), 0, -0.17, 0.14); grip.rotation.x = 0.3;
+    } else if (kind === 'bazooka') {
+      cylZ(g, 0.115, 0.115, 1.30, L(0x556b2f), 0, 0, -0.10);                 // tube
+      cylZ(g, 0.16, 0.12, 0.14, L(0x3d4d22), 0, 0, -0.78);                   // front flare
+      cylZ(g, 0.0, 0.10, 0.26, L(0xd6342a, 0x3a0a08), 0, 0, -0.93);          // rocket warhead
+      cylZ(g, 0.12, 0.17, 0.12, L(0x2e3a1a), 0, 0, 0.60);                    // rear flare
+      cylZ(g, 0.125, 0.125, 0.06, L(0xe0c020), 0, 0, -0.40);                 // yellow band
+      boxAt(g, 0.08, 0.24, 0.09, L(0x2a2a2a), 0, -0.18, -0.05);              // grip
+      boxAt(g, 0.07, 0.20, 0.08, L(0x2a2a2a), 0, -0.17, -0.45);              // foregrip
+      boxAt(g, 0.04, 0.08, 0.10, L(0x2a2a2a), 0, 0.14, -0.20);               // sight
+    } else if (kind === 'dynamite') {
+      const red = L(0xc62828, 0x2a0505), tan = L(0xd9c9a0);
+      [[-0.05, 0, 0], [0.05, 0, 0], [0, 0, -0.085]].forEach(([x, y, z]) => {
+        const s = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.36, 10), red); s.position.set(x, y, z); g.add(s);
+      });
+      [0.06, -0.08].forEach(y => { const b = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.045, 10), tan); b.position.set(0, y, -0.03); g.add(b); });
+      const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.18, 6), L(0x222222)); fuse.position.set(0, 0.27, -0.03); g.add(fuse);
+      const spark = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), B(0xffdd33)); spark.position.set(0, 0.37, -0.03); g.add(spark);
+      g.userData.spark = spark;
+    }
+    return g;
+  }
+  function buildRocketMesh() {
+    const g = new THREE.Group();
+    const L = (c, e) => new THREE.MeshLambertMaterial({ color: c, emissive: e || 0x000000 });
+    cylZ(g, 0.07, 0.07, 0.55, L(0x8a9098), 0, 0, 0);
+    cylZ(g, 0.0, 0.07, 0.2, L(0xd6342a, 0x3a0a08), 0, 0, -0.37);
+    boxAt(g, 0.02, 0.2, 0.12, L(0x555a60), 0, 0, 0.22); boxAt(g, 0.2, 0.02, 0.12, L(0x555a60), 0, 0, 0.22);
+    const flame = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffa030 }));
+    flame.position.set(0, 0, 0.36); g.add(flame); g.userData.flame = flame;
+    return g;
+  }
+
+  // ── First-person hand ────────────────────────────────────────────
+  const WEAPON_VIEW_POSE = {
+    // Tuned from rendered previews: the gun/laser/dynamite are raised and
+    // pulled back so the whole model (grip included) is in frame, and the
+    // bazooka is angled across toward the crosshair so it reads as a tube
+    // on the shoulder instead of being seen end-on.
+    sword:    { pos: [0.42, -0.30, -0.62], rot: [0.75, 0.25, 0.30], scale: 0.85 },
+    gun:      { pos: [0.30, -0.18, -0.72], rot: [0.03, 0.10, 0.0],  scale: 1.0 },
+    laser:    { pos: [0.30, -0.18, -0.72], rot: [0.03, 0.10, 0.0],  scale: 1.0 },
+    bazooka:  { pos: [0.42, -0.30, -0.55], rot: [0.03, 0.22, 0.0],  scale: 0.8 },
+    dynamite: { pos: [0.34, -0.14, -0.62], rot: [0.0, 0.0, 0.0],    scale: 1.1 },
+  };
+  const WEAPON_MUZZLE_LOCAL = { gun: [0.30, -0.22, -1.0], laser: [0.30, -0.20, -1.1], bazooka: [0.28, -0.18, -1.35], dynamite: [0.36, -0.18, -0.7], sword: [0.4, -0.3, -0.8] };
+  let weaponViewGroup = null, wvBuiltKind = null, wvKick = 0, wvSwingT = -1, wvThrowT = -1;
+  function ensureWeaponView() {
+    if (weaponViewGroup) return;
+    weaponViewGroup = new THREE.Group();
+    weaponViewGroup.visible = false;
+    camera.add(weaponViewGroup);
+  }
+  function getWeaponMuzzleWorld(kind) {
+    camera.updateMatrixWorld();
+    const l = WEAPON_MUZZLE_LOCAL[kind] || WEAPON_MUZZLE_LOCAL.gun;
+    return camera.localToWorld(new THREE.Vector3(l[0], l[1], l[2]));
+  }
+  function updateWeaponViewmodel(dt) {
+    if (!weaponEquipped()) { if (weaponViewGroup) weaponViewGroup.visible = false; return; }
+    ensureWeaponView();
+    const w = WEAPON_TYPES[weaponTypeIdx];
+    if (wvBuiltKind !== w.kind) {
+      while (weaponViewGroup.children.length) { const ch = weaponViewGroup.children[0]; weaponViewGroup.remove(ch); disposeObject3D(ch); }
+      const m = buildWeaponModel(w.kind);
+      weaponViewGroup.add(m); weaponViewGroup.userData.model = m; wvBuiltKind = w.kind;
+      if (w.kind === 'gun') ensureVehicleGunshotBuffer();
+    }
+    heldMesh.visible = false; heldStepGroup.visible = false; // the block-in-hand preview gives way to the weapon
+    const pose = WEAPON_VIEW_POSE[w.kind], now = performance.now();
+    let px = pose.pos[0], py = pose.pos[1] + Math.sin(now * 0.0023) * 0.004, pz = pose.pos[2];
+    let rx = pose.rot[0], ry = pose.rot[1], rz = pose.rot[2];
+    wvKick = Math.max(0, wvKick - dt * 5);
+    const kickScale = w.kind === 'bazooka' ? 0.2 : w.kind === 'gun' ? 0.08 : w.kind === 'laser' ? 0.06 : 0;
+    pz += wvKick * kickScale; rx += wvKick * kickScale * 0.9;
+    if (wvSwingT >= 0) { // sword chop: down across the screen and back
+      const s = (now - wvSwingT) / 320;
+      if (s >= 1) wvSwingT = -1; else { const a = Math.sin(s * Math.PI); rx -= a * 1.5; rz += a * 0.5; px -= a * 0.18; py -= a * 0.06; }
+    }
+    let vis = true;
+    if (wvThrowT >= 0) { // dynamite: the stick leaves the hand, then a fresh one comes back
+      const s = (now - wvThrowT) / 750;
+      if (s >= 1) wvThrowT = -1; else if (s < 0.2) { py += s * 0.9; pz -= s * 0.6; } else vis = false;
+    }
+    weaponViewGroup.visible = vis;
+    weaponViewGroup.position.set(px, py, pz);
+    weaponViewGroup.rotation.set(rx, ry, rz);
+    weaponViewGroup.scale.setScalar(pose.scale);
+    const sp = weaponViewGroup.userData.model && weaponViewGroup.userData.model.userData.spark;
+    if (sp) sp.scale.setScalar(0.7 + Math.random() * 0.9);
+  }
+  let weaponBtnLabelSet = false;
+  function updateWeaponBtnLabel() {
+    const btn = document.getElementById('btnPlace');
+    if (!btn) return;
+    if (weaponEquipped()) {
+      const em = WEAPON_TYPES[weaponTypeIdx].emoji;
+      if (btn.textContent !== em) btn.textContent = em; // the touch build button IS the fire button while a weapon is out
+      weaponBtnLabelSet = true;
+    } else if (weaponBtnLabelSet) {
+      if (!ridingVehicle) btn.textContent = '🧱';
+      weaponBtnLabelSet = false;
+    }
+  }
+  function updateWeapons(dt) {
+    updateWeaponViewmodel(dt);
+    updateWeaponBtnLabel();
+    updateLives(dt);
+  }
+
+  // ── What OTHER players' avatars look like when armed ─────────────
+  // The figure's arms are boxes centred on the shoulder, so raising one
+  // means moving it as well as rotating it: the arm's shoulder end stays
+  // put and its centre swings out along the aim direction. e is the
+  // elevation above horizontal (rotation.x = -(PI/2 + e) points the arm
+  // along (0, sin e, cos e) on the figure's +Z front).
+  const AVATAR_WEAPON_SCALE = { sword: 0.85, gun: 1.35, laser: 1.35, bazooka: 1.0, dynamite: 1.4 };
+  function poseAvatarArm(arm, rest, e) {
+    arm.rotation.x = -(Math.PI / 2 + e);
+    const shY = rest.y + 0.27, len = 0.29;
+    arm.position.set(rest.x, shY + Math.sin(e) * len, Math.cos(e) * len);
+    return { x: rest.x, y: shY + Math.sin(e) * 0.58, z: Math.cos(e) * 0.58 }; // where the hand ends up
+  }
+  function restoreAvatarArms(op) {
+    const arms = op.group.userData.arms;
+    if (op.armRest && arms) arms.forEach((a, i) => { a.position.copy(op.armRest[i]); a.rotation.x = 0; });
+    op.armsPosed = false;
+  }
+  function updateAvatarWeapon(op, now) {
+    const arms = op.group.userData.arms;
+    const idx = (op.vehicleType >= 0 || typeof op.weapon !== 'number') ? -1 : op.weapon;
+    const w = idx >= 0 ? WEAPON_TYPES[idx] : null;
+    if (!w || !arms || arms.length < 2) {
+      if (op.weaponHolder) op.weaponHolder.visible = false;
+      if (op.armsPosed) restoreAvatarArms(op);
+      return;
+    }
+    if (!op.armRest) op.armRest = arms.map(a => a.position.clone());
+    if (op.weaponBuilt !== idx) {
+      if (op.weaponHolder) { op.group.remove(op.weaponHolder); disposeObject3D(op.weaponHolder); }
+      const holder = new THREE.Group();
+      const model = buildWeaponModel(w.kind);
+      holder.add(model); holder.userData.model = model;
+      holder.scale.setScalar(AVATAR_WEAPON_SCALE[w.kind] || 1);
+      op.group.add(holder);
+      op.weaponHolder = holder; op.weaponBuilt = idx;
+    }
+    const holder = op.weaponHolder;
+    holder.visible = true;
+    op.pitchS = (op.pitchS || 0) + ((op.pitchTarget || 0) - (op.pitchS || 0)) * 0.3;
+    const aimE = Math.max(-0.6, Math.min(1.0, op.pitchS));
+    const swingDur = w.kind === 'sword' ? 320 : 280;
+    const s = op.swingT ? Math.min(1, (now - op.swingT) / swingDur) : 1; // 0..1 through a swing/throw, 1 when idle
+    const R = arms[0], Lf = arms[1]; // arms[0] sits at x=-0.28: the figure's own right hand when facing +Z
+    holder.rotation.order = 'YXZ';
+    let hand;
+    if (w.kind === 'gun' || w.kind === 'laser') {
+      const e = aimE * 0.9 + 0.05;
+      hand = poseAvatarArm(R, op.armRest[0], e);
+      holder.position.set(hand.x + 0.03, hand.y, hand.z);
+      holder.rotation.set(e, Math.PI, 0);
+    } else if (w.kind === 'sword') {
+      const base = 0.7 + aimE * 0.4;
+      const e = base - Math.sin(s * Math.PI) * 1.9; // raised, chops down, comes back
+      hand = poseAvatarArm(R, op.armRest[0], e);
+      holder.position.set(hand.x + 0.03, hand.y, hand.z);
+      holder.rotation.set(e + 0.25, Math.PI, 0); // blade angled up in front of the wielder, not straight up over their head
+    } else if (w.kind === 'bazooka') {
+      const e = aimE * 0.9;
+      poseAvatarArm(R, op.armRest[0], e);
+      poseAvatarArm(Lf, op.armRest[1], e);
+      const shY = op.armRest[0].y + 0.27;
+      holder.position.set(op.armRest[0].x + 0.02, shY + 0.10 + Math.sin(e) * 0.2, 0.10 + Math.cos(e) * 0.1);
+      holder.rotation.set(e, Math.PI, 0); // tube rests on the shoulder, both arms forward under it
+    } else { // dynamite
+      const el = op.swingT ? now - op.swingT : 1e9;
+      let e = 1.15;                                                          // cocked high beside the head
+      if (el < 280) e = 1.15 - Math.sin((el / 280) * Math.PI * 0.5) * 1.6;   // thrown forward and down
+      else if (el < 900) e = -0.45;                                          // follow-through, then back up
+      hand = poseAvatarArm(R, op.armRest[0], e);
+      holder.position.set(hand.x, hand.y + 0.05, hand.z + 0.02);
+      holder.rotation.set(0, 0, 0);
+      holder.visible = !(el > 98 && el < 900); // gone once thrown, back a moment later
+      const sp = holder.userData.model.userData.spark;
+      if (sp) sp.scale.setScalar(0.7 + Math.random() * 0.9);
+    }
+    op.armsPosed = true;
+  }
+
+  // ── Firing ───────────────────────────────────────────────────────
+  function getAim() {
+    return {
+      dir: new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ')),
+      origin: camera.getWorldPosition(new THREE.Vector3()),
+    };
+  }
+  function weaponResolveHit(maxDist) {
+    const blockHit = vehicleGunBlockRaycast(maxDist);
+    const entityHit = vehicleGunEntityRaycast(maxDist);
+    if (entityHit && (!blockHit || entityHit.dist < blockHit.dist)) return entityHit;
+    if (blockHit) return Object.assign({ kind: blockHit.isWater ? 'water' : 'block' }, blockHit);
+    return null;
+  }
+  // Every entity along the ray, not just the first — for the laser, which
+  // goes through everything.
+  function weaponEntityRaycastAll(maxDist) {
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    const raycaster = new THREE.Raycaster(origin, dir, 0, maxDist);
+    raycaster.camera = camera; // see vehicleGunEntityRaycast — required for the Sprite children on other players
+    const candidates = [], ownerOf = new Map();
+    villageNPCs.forEach(n => { if (n.mesh) { candidates.push(n.mesh); ownerOf.set(n.mesh, { kind: 'npc', rec: n }); } });
+    villageAnimals.forEach(a => { if (a.mesh) { candidates.push(a.mesh); ownerOf.set(a.mesh, { kind: 'animal', rec: a }); } });
+    ambientFish.forEach(f => { if (f.mesh) { candidates.push(f.mesh); ownerOf.set(f.mesh, { kind: 'fish', rec: f }); } });
+    otherPlayers.forEach(p => { if (p.group) { candidates.push(p.group); ownerOf.set(p.group, { kind: 'player', rec: p }); } });
+    if (!candidates.length) return [];
+    const out = [], seen = new Set();
+    for (const h of raycaster.intersectObjects(candidates, true)) {
+      let root = h.object;
+      while (root && !ownerOf.has(root)) root = root.parent;
+      if (!root || seen.has(root)) continue;
+      seen.add(root);
+      out.push(Object.assign({ dist: h.distance, point: h.point }, ownerOf.get(root)));
+    }
+    return out;
+  }
+  function applyEntityDamage(hit, dmg, weaponKind) {
+    if (hit.kind === 'npc') destroyVillageNPC(hit.rec);
+    else if (hit.kind === 'animal') destroyVillageAnimal(hit.rec);
+    else if (hit.kind === 'fish') destroyAmbientFish(hit.rec);
+    else if (hit.kind === 'player') {
+      if (hit.rec && hit.rec.uid) sendWeaponMsg('weaponHit', { targetUid: hit.rec.uid, shooterUid: playerUid, shooterName: getMyDisplayName(), dmg, w: weaponKind });
+    } else return;
+    showImpactExplosion(hit.point);
+    playThud(hit.kind === 'player' ? 200 : 180);
+  }
+  // One event, run identically on every client (see the header comment).
+  function runWeaponBlast(p) {
+    if (p.k === 'boom') {
+      if (p.id && activeDynamite.has(p.id)) activeDynamite.get(p.id).remove(); // the visual stick everyone else was watching
+      const c = new THREE.Vector3(p.x, p.y, p.z);
+      showBigExplosion(c, p.r);
+      ensureAudio(); playBoom(weaponSoundVol(p.x, p.y, p.z));
+      if (terrainDamageAllowed()) destroyBlocksBatch(explosionCells(p.x, p.y, p.z, p.r));
+      killEntitiesInRadius(c, p.r * 1.15);
+      const body = new THREE.Vector3(player.pos.x, player.pos.y + 0.9, player.pos.z);
+      const d = body.distanceTo(c), reach = p.r * 1.6;
+      if (d < reach) damageMe(p.dmg * (1 - d / reach) * (p.by === playerUid ? SELF_BLAST_FACTOR : 1), p.byName);
+    } else if (p.k === 'laser') {
+      const o = new THREE.Vector3(p.o[0], p.o[1], p.o[2]), d = new THREE.Vector3(p.d[0], p.d[1], p.d[2]);
+      showLaserBeam(o, d, p.len);
+      ensureAudio(); playLaserZap(weaponSoundVol(o.x, o.y, o.z));
+      if (terrainDamageAllowed()) destroyBlocksBatch(laserCells(o, d, p.len));
+    }
+  }
+  function broadcastAndRunBlast(p) {
+    runWeaponBlast(p);
+    sendWeaponMsg('weaponBlast', p);
+  }
+  function fireWeapon() {
+    if (!weaponEquipped()) return;
+    if (currentWorldId === PUB_WORLD_ID) { showBriefMessage('Weapons aren\u2019t allowed in The Mill'); return; } // a social space, same rule as the vehicle gun
+    if (playerDead) return;
+    const w = WEAPON_TYPES[weaponTypeIdx];
+    const now = performance.now();
+    if (now - lastWeaponFireTime < w.cooldown) return;
+    lastWeaponFireTime = now;
+    ensureAudio();
+    if (w.kind === 'sword') fireSword(w);
+    else if (w.kind === 'gun') fireGunWeapon(w);
+    else if (w.kind === 'laser') fireLaser(w);
+    else if (w.kind === 'bazooka') fireBazooka(w);
+    else if (w.kind === 'dynamite') throwDynamite(w);
+  }
+  function fireSword(w) {
+    wvSwingT = performance.now();
+    playSwordSwing(1);
+    sendWeaponMsg('weaponFx', { k: 'swing', kind: 'sword' });
+    const entityHit = vehicleGunEntityRaycast(w.range), blockHit = vehicleGunBlockRaycast(w.range);
+    if (entityHit && (!blockHit || entityHit.dist < blockHit.dist)) applyEntityDamage(entityHit, w.damage, 'sword');
+    else if (blockHit && !blockHit.isWater) playThud(320); // a clang against the wall — the sword never damages terrain
+  }
+  function fireGunWeapon(w) {
+    wvKick = 1;
+    playVehicleGunshot();
+    const a = getAim();
+    const winner = weaponResolveHit(w.range);
+    const end = winner ? winner.point.clone() : a.origin.clone().addScaledVector(a.dir, w.range);
+    const muzzle = getWeaponMuzzleWorld('gun');
+    showTracer(muzzle, end);
+    sendWeaponMsg('weaponFx', { k: 'shot', a: vecArr(muzzle), b: vecArr(end) });
+    if (!winner) return;
+    if (winner.kind === 'water') { showWaterSplash(winner.point); playWaterSplash(); }
+    else if (winner.kind === 'block') {
+      // Exactly the vehicle gun's own rule for terrain — see destroyBlockAt.
+      if (!canEditAt(winner.x, winner.z)) return;
+      if (isProtectedStructuralBlock(winner.x, winner.y, winner.z) && !landscapeModeEnabled) return;
+      if (winner.y <= BEDROCK_Y) return;
+      if (terrainDamageAllowed()) destroyBlockAt(winner.x, winner.y, winner.z);
+      showBlockExplosion(winner.x, winner.y, winner.z);
+      playThud(150);
+    } else applyEntityDamage(winner, w.damage, 'gun');
+  }
+  function fireLaser(w) {
+    wvKick = 1;
+    const a = getAim();
+    const len = w.range;
+    // Everything along the beam is hit, not just the first thing — it goes
+    // through terrain and through whoever is standing behind it.
+    for (const hit of weaponEntityRaycastAll(len)) applyEntityDamage(hit, w.damage, 'laser');
+    broadcastAndRunBlast({ k: 'laser', o: vecArr(a.origin), d: vecArr(a.dir), len, by: playerUid, byName: getMyDisplayName() });
+  }
+  let weaponFxCounter = 0;
+  function newWeaponFxId() { return playerUid + '_' + (++weaponFxCounter); }
+  const activeDynamite = new Map(); // id -> { remove() } — visual sticks in flight, so the matching blast can clear them
+  function spawnRocketVisual(from, to, speed, onArrive) {
+    const dv = to.clone().sub(from), total = dv.length();
+    if (total < 0.05) { if (onArrive) onArrive(); return; }
+    dv.normalize();
+    const g = buildRocketMesh();
+    g.position.copy(from);
+    g.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dv);
+    scene.add(g);
+    const N = 26, tp = new Float32Array(N * 3);
+    const tgeo = new THREE.BufferGeometry();
+    tgeo.setAttribute('position', new THREE.BufferAttribute(tp, 3));
+    const tmat = new THREE.PointsMaterial({ color: 0xd8d8d8, size: 0.5, transparent: true, opacity: 0.55, depthWrite: false });
+    const trail = new THREE.Points(tgeo, tmat);
+    trail.frustumCulled = false;
+    scene.add(trail);
+    const t0 = performance.now();
+    (function fly() {
+      const el = (performance.now() - t0) / 1000;
+      const travelled = Math.min(total, speed * el);
+      g.position.copy(from).addScaledVector(dv, travelled);
+      g.userData.flame.scale.setScalar(0.7 + Math.random() * 0.7);
+      for (let i = 0; i < N; i++) {
+        const back = Math.min(travelled, i * 0.34 + 0.3);
+        tp[i * 3] = from.x + dv.x * (travelled - back) + Math.sin(i * 2.3 + el * 9) * 0.05 * i * 0.2;
+        tp[i * 3 + 1] = from.y + dv.y * (travelled - back) + Math.cos(i * 1.7 + el * 7) * 0.05 * i * 0.2;
+        tp[i * 3 + 2] = from.z + dv.z * (travelled - back);
+      }
+      tgeo.attributes.position.needsUpdate = true;
+      if (travelled >= total) {
+        scene.remove(g); disposeObject3D(g);
+        scene.remove(trail); tgeo.dispose(); tmat.dispose();
+        if (onArrive) onArrive();
+        return;
+      }
+      requestAnimationFrame(fly);
+    })();
+  }
+  function fireBazooka(w) {
+    wvKick = 1;
+    const a = getAim();
+    const winner = weaponResolveHit(w.range);
+    const dist = winner ? Math.max(1.5, winner.dist - 0.35) : w.range; // stops just short of what it hits; explodes at max range if it hits nothing
+    const impact = a.origin.clone().addScaledVector(a.dir, dist);
+    const muzzle = getWeaponMuzzleWorld('bazooka');
+    playRocketLaunch(1);
+    const id = newWeaponFxId();
+    sendWeaponMsg('weaponFx', { k: 'rocket', a: vecArr(muzzle), b: vecArr(impact), speed: w.speed });
+    spawnRocketVisual(muzzle, impact, w.speed, () => {
+      broadcastAndRunBlast({ k: 'boom', id, x: impact.x, y: impact.y, z: impact.z, r: w.radius, dmg: w.damage, by: playerUid, byName: getMyDisplayName() });
+    });
+  }
+  function spawnDynamiteSim(cfg) {
+    const model = buildWeaponModel('dynamite');
+    model.scale.setScalar(1.3);
+    model.position.copy(cfg.pos);
+    scene.add(model);
+    const pos = cfg.pos.clone(), vel = cfg.vel.clone();
+    let removed = false;
+    const remove = () => { if (removed) return; removed = true; scene.remove(model); disposeObject3D(model); activeDynamite.delete(cfg.id); };
+    activeDynamite.set(cfg.id, { remove });
+    const t0 = performance.now();
+    let last = t0;
+    (function tick() {
+      if (removed) return;
+      const now = performance.now();
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+      const el = (now - t0) / 1000;
+      vel.y -= 22 * dt;
+      let nx = pos.x + vel.x * dt;
+      if (isSolid(nx, pos.y, pos.z)) { vel.x *= -0.35; nx = pos.x; }
+      pos.x = nx;
+      let nz = pos.z + vel.z * dt;
+      if (isSolid(pos.x, pos.y, nz)) { vel.z *= -0.35; nz = pos.z; }
+      pos.z = nz;
+      let ny = pos.y + vel.y * dt;
+      if (isSolid(pos.x, ny - 0.12, pos.z) && vel.y < 0) { vel.y = -vel.y * 0.3; if (Math.abs(vel.y) < 0.8) vel.y = 0; vel.x *= 0.7; vel.z *= 0.7; ny = pos.y; }
+      else if (isSolid(pos.x, ny + 0.12, pos.z) && vel.y > 0) { vel.y *= -0.3; ny = pos.y; }
+      pos.y = ny;
+      model.position.copy(pos);
+      model.rotation.x += vel.z * dt * 2; model.rotation.z -= vel.x * dt * 2;
+      const sp = model.userData.spark;
+      if (sp) sp.scale.setScalar(0.7 + Math.random() * 1.0);
+      const blink = Math.floor(el * 6) % 2 === 0; // flashes faster as the fuse runs down
+      model.children.forEach(ch => { if (ch.material && ch.material.emissive) ch.material.emissive.setHex(blink && el > cfg.fuse * 0.5 ? 0x661111 : 0x2a0505); });
+      if (cfg.owner && (el >= cfg.fuse || pos.y < BEDROCK_Y - 3)) {
+        remove();
+        broadcastAndRunBlast({ k: 'boom', id: cfg.id, x: pos.x, y: pos.y + 0.2, z: pos.z, r: cfg.radius, dmg: cfg.dmg, by: playerUid, byName: getMyDisplayName() });
+        return;
+      }
+      if (!cfg.owner && el > cfg.fuse + 2) { remove(); return; } // the blast message never arrived (sender left?) — don't leave a stick lying there forever
+      requestAnimationFrame(tick);
+    })();
+  }
+  function throwDynamite(w) {
+    wvThrowT = performance.now();
+    playSwordSwing(0.6);
+    const a = getAim();
+    const start = getWeaponMuzzleWorld('dynamite');
+    const vel = a.dir.clone().multiplyScalar(15).add(new THREE.Vector3(0, 3.5, 0));
+    const id = newWeaponFxId();
+    sendWeaponMsg('weaponFx', { k: 'dyn', id, a: vecArr(start), v: vecArr(vel), fuse: w.fuse });
+    sendWeaponMsg('weaponFx', { k: 'swing', kind: 'dynamite' });
+    spawnDynamiteSim({ id, pos: start, vel, fuse: w.fuse, radius: w.radius, dmg: w.damage, owner: true });
+  }
+  // Fx from other players — purely visual (their damage arrives separately
+  // as 'weaponBlast' / 'weaponHit').
+  function applyRemoteWeaponFx(p, senderUid) {
+    if (p.k === 'shot') {
+      showTracer(new THREE.Vector3(p.a[0], p.a[1], p.a[2]), new THREE.Vector3(p.b[0], p.b[1], p.b[2]));
+    } else if (p.k === 'rocket') {
+      spawnRocketVisual(new THREE.Vector3(p.a[0], p.a[1], p.a[2]), new THREE.Vector3(p.b[0], p.b[1], p.b[2]), p.speed || 55, null);
+    } else if (p.k === 'dyn') {
+      spawnDynamiteSim({ id: p.id, pos: new THREE.Vector3(p.a[0], p.a[1], p.a[2]), vel: new THREE.Vector3(p.v[0], p.v[1], p.v[2]), fuse: p.fuse || 2.4, radius: 0, dmg: 0, owner: false });
+    } else if (p.k === 'swing') {
+      const op = senderUid && otherPlayers.get(senderUid);
+      if (op) op.swingT = performance.now();
+    }
+  }
+  // Decodes the gunshot sample ahead of the first shot (the vehicle path does
+  // the same in enterVehicle) so it isn't silent. Only ever called from a
+  // real key press / click — ensureAudio must not run outside a user gesture.
+  function warmWeaponAudio() { ensureAudio(); ensureVehicleGunshotBuffer(); }
+  function cycleWeapon() {
+    weaponTypeIdx = (weaponTypeIdx + 1) % WEAPON_TYPES.length;
+    if (typeof updateWeaponSlotIcon === 'function') updateWeaponSlotIcon();
+  }
+
   let lastVehicleFireTime = 0;
   const VEHICLE_FIRE_COOLDOWN = 180; // ms between shots
   function fireVehicleGun() {
@@ -13704,6 +14582,7 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
+    if (e.code === 'KeyQ') { warmWeaponAudio(); if (selectedSlot === WEAPON_SLOT) cycleWeapon(); selectSlot(WEAPON_SLOT); } // Q selects weapons; pressing it again cycles to the next one
     if (e.code === 'KeyF') selectSlot(FIRE_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
@@ -13730,7 +14609,8 @@
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
-      const total = BLOCK_TYPES.length + 13; // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture, +1 Vehicles
+      const total = WEAPON_SLOT + 1; // was BLOCK_TYPES.length + 13, which stopped short of Drain and Fire and would have missed Weapons too
+      // // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture, +1 Vehicles
       let s = selectedSlot + (e.deltaY > 0 ? 1 : -1);
       s = ((s % total) + total) % total;
       selectSlot(s);
@@ -13741,6 +14621,7 @@
     document.querySelectorAll('.slot.active').forEach(el => el.classList.remove('active'));
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
     if (slotElByIndex[highlightIdx]) slotElByIndex[highlightIdx].classList.add('active');
+    if (i === WEAPON_SLOT) { heldMesh.visible = false; heldStepGroup.visible = false; return; } // the weapon model itself is shown/positioned every frame — see updateWeaponViewmodel
     if (BLOCK_TYPES[i] && BLOCK_TYPES[i].half) {
       heldMesh.visible = false;
       heldStepGroup.visible = true;
@@ -14605,6 +15486,7 @@
   const PLACE_COOLDOWN = 220; // ms — minimum gap between continuous placements, so a fast sweep doesn't wall you in instantly
 
   function doMine() {
+    if (weaponEquipped()) { fireWeapon(); return; } // a weapon in hand turns mine into fire — see WEAPONS & LIVES (held mine auto-repeats through this too; the weapon's own cooldown paces it)
     // Battleship firing intercepts a normal mine-click when a battle is
     // actually underway and the player is looking at their own grid —
     // reuses the same input rather than adding a whole separate control,
@@ -14755,6 +15637,7 @@
     // action" idea as the minigame interceptions below, just gated on
     // the vehicle instead of a minigame being active.
     if (ridingVehicle) { fireVehicleGun(); return; }
+    if (weaponEquipped()) { fireWeapon(); return; } // same for build
     // Battleship ship placement intercepts a normal place-click while
     // actively placing a ship — look at your starting square and press
     // build, then look in the direction you want the ship to extend and
@@ -16358,6 +17241,8 @@
         op.targetYaw = payload.yaw;
         op.lastUpdate = performance.now();
         op.vehicleType = typeof payload.vehicleType === 'number' ? payload.vehicleType : -1;
+        op.weapon = typeof payload.w === 'number' ? payload.w : -1; // which weapon (if any) this player is holding — see updateAvatarWeapon
+        op.pitchTarget = typeof payload.pit === 'number' ? payload.pit : 0;
       });
       channel.on('broadcast', { event: 'chat' }, ({ payload }) => {
         if (!payload) return;
@@ -16520,6 +17405,26 @@
         blocks.delete(k); stepRotations.delete(k);
         handleLocalBlockChange(x, y, z, removedType);
       });
+      // Weapons — see the WEAPONS & LIVES section. Blast/fx are run
+      // identically on every client from one small message; hits and
+      // deaths follow the same shooter-requests / victim-applies split the
+      // vehicle gun uses.
+      channel.on('broadcast', { event: 'weaponBlast' }, ({ payload }) => {
+        if (!payload || currentWorldId !== mpConnectedWorldId || currentWorldId === PUB_WORLD_ID) return;
+        try { runWeaponBlast(payload); } catch (err) { console.warn('weapon blast error (recovered):', err); }
+      });
+      channel.on('broadcast', { event: 'weaponFx' }, ({ payload }) => {
+        if (!payload || currentWorldId !== mpConnectedWorldId || currentWorldId === PUB_WORLD_ID) return;
+        try { applyRemoteWeaponFx(payload, payload.uid); } catch (err) { console.warn('weapon fx error (recovered):', err); }
+      });
+      channel.on('broadcast', { event: 'weaponHit' }, ({ payload }) => {
+        if (!payload || payload.targetUid !== playerUid || currentWorldId !== mpConnectedWorldId) return;
+        damageMe(payload.dmg, payload.shooterName);
+      });
+      channel.on('broadcast', { event: 'playerDown' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid || currentWorldId !== mpConnectedWorldId) return;
+        showChatLogLine('💀', (payload.name || 'A player') + (payload.by ? ' was taken out by ' + payload.by : ' was taken out'));
+      });
       channel.on('broadcast', { event: 'vehicleHit' }, ({ payload }) => {
         if (!payload || payload.targetUid !== playerUid) return;
         if (ridingVehicle) {
@@ -16530,10 +17435,11 @@
           if (wreck && mpChannel && currentWorldId === mpConnectedWorldId) {
             try { mpChannel.send({ type: 'broadcast', event: 'vehicleWreck', payload: wreck }); } catch (e) {}
           }
-        } else {
-          player.pos.y += 25; // same fall-and-recover safety margin used elsewhere in this file, not a real "death" — there's no health/lives system here to hook into
+        } else if (!livesActive()) {
+          player.pos.y += 25; // the old placeholder knockback — only still used when there's no lives system running to take the hit instead
           player.vel.set(0, 0, 0);
         }
+        damageMe(VEHICLE_HIT_DAMAGE, payload.shooterName); // vehicle-gun hits cost lives now too (no-ops unless other players are actually in the world)
         playThud(220);
         showBriefMessage(payload.shooterName ? ('Shot down by ' + payload.shooterName + '!') : 'Shot down!');
       });
@@ -16784,7 +17690,7 @@
       const now = performance.now();
       if (now - mpLastBroadcast > 150) {
         mpLastBroadcast = now;
-        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1 } }); } catch(e) {}
+        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1, w: weaponEquipped() ? weaponTypeIdx : -1, pit: pitch } }); } catch(e) {}
       }
     }
     const now2 = performance.now();
@@ -16844,6 +17750,7 @@
           op.group.children.forEach(c => { c.visible = true; });
         }
       } catch (err) { console.warn('other-player vehicle render error (recovered):', err); } // same reasoning as the local player's own try/catch above — must never freeze the frame loop
+      try { updateAvatarWeapon(op, now2); } catch (err) { console.warn('other-player weapon pose error (recovered):', err); }
       if (op.chatHideAt && now2 > op.chatHideAt) { op.chatSprite.visible = false; op.chatHideAt = 0; }
       if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
     });
@@ -20016,6 +20923,7 @@
     updateLightVisibility(); // throttled internally — see its own comment
     updateHudExtras(); // throttled internally — see its own comment
     updateMultiplayer(dt); // throttled internally — see its own comment
+    try { updateWeapons(dt); } catch (err) { console.warn('updateWeapons error (recovered):', err); } // weapon in hand, lives regen/HUD — guarded like the vehicle camera: a bug here must never freeze the frame loop
     updateFootballBall(dt); // no-ops immediately unless currently in The Mill with a ball spawned
     updateFootballAiAvatarFigure(dt); // no-ops immediately unless a computer opponent is actually in play
     updateTennisBall(dt);
@@ -20906,6 +21814,90 @@
     slot.addEventListener('click', (e) => { e.stopPropagation(); showVehiclePopup(slot); });
     slotElByIndex[VEHICLE_SLOT] = slot;
     addSlotLabel(slot, 'Vehicle');
+    hotbar.appendChild(slot);
+  }
+
+  // ── Weapons hotbar slot ──────────────────────────────────────────
+  function weaponIconCanvas(idx) {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#1f2630'; ctx.fillRect(0, 0, 34, 34);
+    const kind = WEAPON_TYPES[idx].kind;
+    ctx.lineCap = 'round';
+    if (kind === 'sword') {
+      ctx.strokeStyle = '#dfe8f2'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(12, 22); ctx.lineTo(28, 6); ctx.stroke();
+      ctx.strokeStyle = '#d6a935'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(7, 17); ctx.lineTo(17, 27); ctx.stroke();
+      ctx.strokeStyle = '#7a5230'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(11, 23); ctx.lineTo(6, 28); ctx.stroke();
+    } else if (kind === 'gun') {
+      ctx.fillStyle = '#8a95a3'; ctx.fillRect(5, 11, 22, 7);
+      ctx.fillStyle = '#5b6572'; ctx.fillRect(5, 9, 22, 3);
+      ctx.fillStyle = '#ff8a1f'; ctx.fillRect(27, 12, 4, 4);
+      ctx.fillStyle = '#7a5230'; ctx.fillRect(8, 18, 6, 10);
+    } else if (kind === 'laser') {
+      ctx.fillStyle = '#d0d8e0'; ctx.fillRect(5, 11, 20, 8);
+      ctx.fillStyle = '#33e6ff'; ctx.fillRect(7, 9, 16, 2); ctx.fillRect(25, 13, 8, 4);
+      ctx.fillStyle = '#7a8794'; ctx.fillRect(8, 19, 6, 9);
+    } else if (kind === 'bazooka') {
+      ctx.fillStyle = '#5c7a34'; ctx.fillRect(3, 13, 25, 8);
+      ctx.fillStyle = '#e0c020'; ctx.fillRect(12, 13, 3, 8);
+      ctx.fillStyle = '#d6342a'; ctx.beginPath(); ctx.moveTo(28, 12); ctx.lineTo(33, 17); ctx.lineTo(28, 22); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#2a2a2a'; ctx.fillRect(13, 21, 4, 8);
+    } else { // dynamite
+      ctx.fillStyle = '#c62828'; [8, 14, 20].forEach(x => ctx.fillRect(x, 11, 6, 19));
+      ctx.fillStyle = '#d9c9a0'; ctx.fillRect(7, 18, 20, 3);
+      ctx.strokeStyle = '#dddddd'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(17, 11); ctx.lineTo(20, 5); ctx.stroke();
+      ctx.fillStyle = '#ffdd33'; ctx.beginPath(); ctx.arc(20, 4, 2.5, 0, Math.PI * 2); ctx.fill();
+    }
+    return c;
+  }
+  function updateWeaponSlotIcon() {
+    const slotEl = slotElByIndex[WEAPON_SLOT];
+    if (!slotEl) return;
+    const old = slotEl.querySelector('canvas.swatch');
+    if (old) old.remove();
+    slotEl.insertBefore(weaponIconCanvas(weaponTypeIdx), slotEl.querySelector('.family-badge'));
+  }
+  function showWeaponPopup(slotEl) {
+    closeFamilyPopup();
+    const rect = slotEl.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    WEAPON_TYPES.forEach((t, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item';
+      btn.title = t.name;
+      btn.appendChild(weaponIconCanvas(idx));
+      const label = document.createElement('span');
+      label.className = 'popup-item-label';
+      label.textContent = t.name;
+      btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        weaponTypeIdx = idx;
+        warmWeaponAudio();
+        updateWeaponSlotIcon();
+        selectSlot(WEAPON_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    document.body.appendChild(popup);
+    openFamilyPopup = popup;
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Weapons — sword, gun, laser gun, bazooka, dynamite. Q selects it (press again to cycle). Not usable in The Mill; all damage to the terrain is temporary.';
+    const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = 'Q';
+    slot.appendChild(keyEl);
+    slot.appendChild(weaponIconCanvas(weaponTypeIdx));
+    const badge = document.createElement('span'); badge.className = 'family-badge'; badge.textContent = '▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); warmWeaponAudio(); showWeaponPopup(slot); });
+    slotElByIndex[WEAPON_SLOT] = slot;
+    addSlotLabel(slot, 'Weapons');
     hotbar.appendChild(slot);
   }
 

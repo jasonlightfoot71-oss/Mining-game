@@ -16791,7 +16791,13 @@
     const walkT = now2*0.005;
     otherPlayers.forEach(op => {
       op.group.position.lerp(op.targetPos, Math.min(1, dt*8));
-      let dyaw = op.targetYaw - op.group.rotation.y;
+      // The figure's face is on its local +Z (see buildCustomerFigure), but
+      // a player's yaw points their camera along (-sin, -cos) — the OPPOSITE
+      // way. Using yaw as-is put every remote player's face on the back of
+      // their head: you'd see it when they walked away from you and only
+      // their back when they walked toward you. Turn the figure a half
+      // turn so its +Z (front) lines up with where that player is looking.
+      let dyaw = (op.targetYaw + Math.PI) - op.group.rotation.y;
       while (dyaw > Math.PI) dyaw -= Math.PI*2;
       while (dyaw < -Math.PI) dyaw += Math.PI*2;
       op.group.rotation.y += dyaw * Math.min(1, dt*8);
@@ -16828,7 +16834,7 @@
           if (op.vehicleGroup) {
             op.vehicleGroup.visible = true;
             op.vehicleGroup.position.copy(op.group.position);
-            op.vehicleGroup.rotation.y = op.group.rotation.y + Math.PI;
+            op.vehicleGroup.rotation.y = op.group.rotation.y; // group.rotation.y is already yaw + PI (see above), which is exactly the yaw + PI a vehicle needs — same as the local one
             if (op.vehicleGroup.userData.rotor) op.vehicleGroup.userData.rotor.rotation.y += dt*40;
             if (op.vehicleGroup.userData.tailRotor) op.vehicleGroup.userData.tailRotor.rotation.x += dt*50;
           }

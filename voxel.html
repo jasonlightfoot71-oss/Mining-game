@@ -7662,8 +7662,7 @@
   // stays true if the whole thing doesn't randomly rotate.
   const CASTLE_STONE = 13, CASTLE_TRIM = 12, CASTLE_FLOOR = 11; // Cracked Stone, Mossy Stone, Cobblestone
   // Adjustments from play-testing the keep (each is used, with its reasoning, where it applies below):
-  const CASTLE_ROOF_STAIR_EXTRA_STEPS = 2; // the roof staircase stopped short of the roof — see buildCastleKeep
-  const CASTLE_WINDOW_SHIFT = 2;           // windows sat exactly where an interior divider meets the outer wall
+  const CASTLE_WINDOW_OFFSET = 2;          // windows go this many blocks either side of each divider, along the outer wall — see buildCastleKeep
   const CASTLE_DOORWAY_INSET = 2;          // doorways sat one block from the outer wall, as a full-height slot
   const CASTLE_KEEP_HEIGHT = 9; // shared so the roof (built at this height) and anything that needs to line up with it (the guards' patrol bounds) all agree with buildCastleKeep's own wall height
   const STEP_TYPE = 9; // the 'Step' entry in BLOCK_TYPES — half-height, L-shaped riser, used for the dungeon staircase
@@ -7889,22 +7888,24 @@
     // always wins where the two overlap — the very top step, which is
     // meant to open directly onto the roof.
     const roofStairCx = midX - 4, roofStairCz = midZ + 4;
-    // Its top step used to end at y=gy+h-1, whose upper surface is a full
-    // block BELOW the roof walkway (the roof layer sits at gy+h, so you walk
-    // on it at gy+h+1) — and at the bottom of a 1x1 pit with roof on three
-    // sides, so getting out onto the roof meant a jump from inside a hole.
-    // Two more steps carry it up through the roof layer: the first is flush
-    // with the walkway, the second stands one block above it, so the way
-    // out is simply stepping onto (or down onto) the roof.
-    buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1 + CASTLE_ROOF_STAIR_EXTRA_STEPS, CASTLE_STONE);
-    const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
-    // Each window is 3 wide, and used to be centred exactly on the point
-    // where an interior divider meets the outer wall (midX on the north
-    // wall, midZ on the east wall) — so the divider ran straight into the
-    // middle of it and the glass ended up jammed against the internal wall.
-    // Shifted along the wall, into the north-east and south-east rooms.
-    buildVillageHouseWindowGeneric(midX + CASTLE_WINDOW_SHIFT, gy + 3, kz0, true, stonePalette); // north wall
-    buildVillageHouseWindowGeneric(kx1, gy + 3, midZ + CASTLE_WINDOW_SHIFT, false, stonePalette); // east wall
+    buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1, CASTLE_STONE);
+    // Windows: one, two blocks high, CASTLE_WINDOW_OFFSET blocks either side
+    // of every interior divider, on every outer wall the dividers meet — so
+    // eight in all: the vertical divider meets the north and south walls
+    // (x = midX), the horizontal one meets the west and east walls
+    // (z = midZ). Measured along the wall's own inside face, so each room
+    // gets its window clear of the divider rather than butting up to it,
+    // which is where the previous 3-wide frames, centred on the divider
+    // itself, sat. They start at gy+3 so they clear both the 2-high doors
+    // (the front door shares a column with the south wall's west-hand
+    // window: the window is the block pair directly above the door) and
+    // stay level with the room torches, which sit two blocks clear of them.
+    const windowY = gy + 3;
+    const putWindow = (wx, wz) => {
+      for (let dy = 0; dy < 2; dy++) { blocks.set(key(wx, windowY + dy, wz), 8); trackVillageHeight(wx, wz, windowY + dy); } // 8 = Glass
+    };
+    [midX - CASTLE_WINDOW_OFFSET, midX + CASTLE_WINDOW_OFFSET].forEach(wx => { putWindow(wx, kz0); putWindow(wx, kz1); });
+    [midZ - CASTLE_WINDOW_OFFSET, midZ + CASTLE_WINDOW_OFFSET].forEach(wz => { putWindow(kx0, wz); putWindow(kx1, wz); });
     // Doorway through to the tower, carved on both sides of the shared
     // boundary — the tower sits immediately west of the keep, touching
     // it, so this is the one gap in an otherwise solid wall on that side.
@@ -7975,7 +7976,7 @@
   // footprint), so digging straight down anywhere in here, at any
   // depth, can never collide with it.
   function buildCastleDungeon(kx0, kz0, gy, reg) {
-    const depth = 5; // 5 steps down from the keep's own ground floor
+    const depth = 5; // 5 steps down from the keep's own ground floor — plus the one at floor level, see the staircase loop
     const stairX = kx0 + 5; // tucked well inside the NW quadrant — clear of the outer wall (kx0) and short of the central divider (midX = kx0+9)
     const stairZ0 = kz0 + 2;
     const floorY = gy - depth;
@@ -8028,28 +8029,24 @@
     // where step `depth` lands — that overlap is deliberate, it's what
     // makes the stairs open directly into the room instead of
     // stopping short of it).
-    for (let i = 1; i <= depth; i++) {
+    // Starts at i = 0 — a stair block in the keep floor's own layer (sy = gy) —
+    // rather than at 1. Every stair block gives two half-block rises (its
+    // half-height tread, then its riser), which is what makes the flight
+    // walkable, but only if the next block along is exactly one cell higher.
+    // The top of this flight broke that: tread 1 was a plain full block
+    // (see the old note about its riser blocking the way out), whose top is
+    // still a full block below the keep floor, and a full-block rise can't
+    // be walked, only jumped. So climbing from the dungeon, the last two
+    // rises (tread 2 to tread 1, tread 1 to the floor) both needed a jump —
+    // the top two steps were, in effect, missing. With the tread at floor
+    // level, its riser tops out exactly flush with the floor, so nothing is
+    // left for it to block; tread 1 goes back to being an ordinary stair
+    // block, and the whole climb is walking.
+    for (let i = 0; i <= depth; i++) {
       const sz = stairZ0 + i, sy = gy - i;
       const k = key(stairX, sy, sz);
-      // The topmost step (i===1) is a full block instead of a Step —
-      // every other step uses the half-height Step with its riser
-      // facing north (correct for descending, since that's the uphill
-      // side). But that same riser is exactly what was blocking climbing
-      // BACK OUT: stepping north off tread 1 onto the keep's actual
-      // floor means passing straight through this cell's own solid
-      // north-facing riser first, which is real, deliberate collision
-      // geometry (see isSolid's half-block handling), not a rendering
-      // quirk — no rotation would have fixed it without breaking the
-      // other direction of travel instead. A plain full block here has
-      // no riser to be in the way, at the one spot where a player
-      // actually needs to pass through this exact cell in both
-      // directions equally rather than just descending through it.
-      if (i === 1) {
-        blocks.set(k, CASTLE_STONE);
-      } else {
-        blocks.set(k, STEP_TYPE);
-        stepRotations.set(k, STAIR_DOWN_SOUTH_ROT); // riser faces back north, uphill, the way a real staircase's risers do
-      }
+      blocks.set(k, STEP_TYPE);
+      stepRotations.set(k, STAIR_DOWN_SOUTH_ROT); // riser faces back north, uphill, the way a real staircase's risers do
       blocks.delete(key(stairX, sy + 1, sz)); // headroom — on the first step this is what punches the entry hole through the keep's own ground floor
       blocks.delete(key(stairX, sy + 2, sz));
       blocks.delete(key(stairX, sy + 3, sz)); // extra margin, given how the last version's math worked out

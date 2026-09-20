@@ -7661,6 +7661,10 @@
   // surrounds it, bridge at the entrance, tower on one side" only
   // stays true if the whole thing doesn't randomly rotate.
   const CASTLE_STONE = 13, CASTLE_TRIM = 12, CASTLE_FLOOR = 11; // Cracked Stone, Mossy Stone, Cobblestone
+  // Adjustments from play-testing the keep (each is used, with its reasoning, where it applies below):
+  const CASTLE_ROOF_STAIR_EXTRA_STEPS = 2; // the roof staircase stopped short of the roof — see buildCastleKeep
+  const CASTLE_WINDOW_SHIFT = 2;           // windows sat exactly where an interior divider meets the outer wall
+  const CASTLE_DOORWAY_INSET = 2;          // doorways sat one block from the outer wall, as a full-height slot
   const CASTLE_KEEP_HEIGHT = 9; // shared so the roof (built at this height) and anything that needs to line up with it (the guards' patrol bounds) all agree with buildCastleKeep's own wall height
   const STEP_TYPE = 9; // the 'Step' entry in BLOCK_TYPES — half-height, L-shaped riser, used for the dungeon staircase
   // addStepInstance positions a Step block's upper (riser) quarter at
@@ -7757,7 +7761,11 @@
     // visible (and the way back down obvious) from above rather than
     // just a single hole easy to miss while standing on the platform.
     for (let y = topOpenY; y <= topOpenY + 1; y++) blocks.delete(key(ladderX, y, climbZ + 1));
-    for (let y = gy + 1; y <= topOpenY - 1; y++) { const lk = addLadder(ladderX, y, tz0, 0, 0, 1); if (lk) reg.ladderKeys.push(lk); } // wall block at (ladderX, y, tz0), normal (0,0,1) pointing south into the tower — stops one below the wall's own top course, not at it, since that cell is the solid surface the player steps sideways onto, not another rung
+    // Up to and INCLUDING topOpenY. It used to stop one rung short (topOpenY - 1): you count as being on a ladder
+    // only while your feet or mid-body are in a cell that has a rung, and climbing momentum carries you roughly a
+    // third of a block past the last one — so the old top left you about 0.7 of a block below the roof walkway
+    // (feet need to reach topOpenY + 1) with nothing left to hold, and you fell back down.
+    for (let y = gy + 1; y <= topOpenY; y++) { const lk = addLadder(ladderX, y, tz0, 0, 0, 1); if (lk) reg.ladderKeys.push(lk); } // wall block at (ladderX, y, tz0), normal (0,0,1) pointing south into the tower — stops one below the wall's own top course, not at it, since that cell is the solid surface the player steps sideways onto, not another rung
     // A couple of small windows partway up and near the top, for light
     // on the way up rather than climbing it in the dark.
     blocks.set(key(tx0, gy + 8, tcz), 8); trackVillageHeight(tx0, tcz, gy + 8);
@@ -7827,16 +7835,37 @@
     });
     // Four rooms — same cross-divider-with-end-gaps idea as the house,
     // just on a plain rectangle instead of a cross-shaped one.
-    const vGapA = kz0 + 2, vGapB = kz1 - 2;
+    // The doorways between the rooms used to be bare slots the full height
+    // of the wall (9 blocks) and only one block in from the outer wall.
+    // They're now door-sized (2 high) with a real door in each, moved
+    // CASTLE_DOORWAY_INSET blocks along the divider toward its middle. The
+    // dividers are built solid from end to end and the openings cut into
+    // that, so the wall above each door (the lintel) and the stretch where
+    // the old slot was both come out as the same stone as the rest of the
+    // wall, rather than being filled in as a separate step afterwards.
+    const vGapA = kz0 + 2 + CASTLE_DOORWAY_INSET, vGapB = kz1 - 2 - CASTLE_DOORWAY_INSET;
     for (let z = kz0 + 1; z <= kz1 - 1; z++) {
-      if (z === vGapA || z === vGapB) continue;
-      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(midX, y, z), CASTLE_STONE); trackVillageHeight(midX, z, y); }
+      const doorwayHere = (z === vGapA || z === vGapB);
+      for (let y = gy + 1; y <= gy + h; y++) {
+        if (doorwayHere && y <= gy + 2) continue; // the door's own two cells
+        blocks.set(key(midX, y, z), CASTLE_STONE); trackVillageHeight(midX, z, y);
+      }
     }
-    const hGapA = kx0 + 2, hGapB = kx1 - 2;
+    const hGapA = kx0 + 2 + CASTLE_DOORWAY_INSET, hGapB = kx1 - 2 - CASTLE_DOORWAY_INSET;
     for (let x = kx0 + 1; x <= kx1 - 1; x++) {
-      if (x === hGapA || x === hGapB) continue;
-      for (let y = gy + 1; y <= gy + h; y++) { blocks.set(key(x, y, midZ), CASTLE_STONE); trackVillageHeight(x, midZ, y); }
+      const doorwayHere = (x === hGapA || x === hGapB);
+      for (let y = gy + 1; y <= gy + h; y++) {
+        if (doorwayHere && y <= gy + 2) continue;
+        blocks.set(key(x, y, midZ), CASTLE_STONE); trackVillageHeight(x, midZ, y);
+      }
     }
+    // rot 1 for the divider that runs north-south (its doors face east-west,
+    // like an outer east/west wall's) and rot 0 for the one running
+    // east-west — see the note above placeShellDoor on why those pairs matter.
+    [[midX, vGapA, 1], [midX, vGapB, 1], [hGapA, midZ, 0], [hGapB, midZ, 0]].forEach(([bx, bz, rot]) => {
+      const dk = addDoor(bx, gy, bz, rot, 0); // Wood Door, 1 wide
+      if (dk) reg.doorKeys.push(dk);
+    });
     // Flat roof, one level below the crenellated tips (which stay at
     // gy+h+1) rather than flush with them — the walkway sits at gy+h,
     // the same height the outer wall's own top course already
@@ -7860,10 +7889,22 @@
     // always wins where the two overlap — the very top step, which is
     // meant to open directly onto the roof.
     const roofStairCx = midX - 4, roofStairCz = midZ + 4;
-    buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1, CASTLE_STONE);
+    // Its top step used to end at y=gy+h-1, whose upper surface is a full
+    // block BELOW the roof walkway (the roof layer sits at gy+h, so you walk
+    // on it at gy+h+1) — and at the bottom of a 1x1 pit with roof on three
+    // sides, so getting out onto the roof meant a jump from inside a hole.
+    // Two more steps carry it up through the roof layer: the first is flush
+    // with the walkway, the second stands one block above it, so the way
+    // out is simply stepping onto (or down onto) the roof.
+    buildSpiralStaircase(roofStairCx, roofStairCz, gy, h - 1 + CASTLE_ROOF_STAIR_EXTRA_STEPS, CASTLE_STONE);
     const stonePalette = { trim: CASTLE_TRIM, glass: 8 };
-    buildVillageHouseWindowGeneric(midX, gy + 3, kz0, true, stonePalette); // north wall
-    buildVillageHouseWindowGeneric(kx1, gy + 3, midZ, false, stonePalette); // east wall
+    // Each window is 3 wide, and used to be centred exactly on the point
+    // where an interior divider meets the outer wall (midX on the north
+    // wall, midZ on the east wall) — so the divider ran straight into the
+    // middle of it and the glass ended up jammed against the internal wall.
+    // Shifted along the wall, into the north-east and south-east rooms.
+    buildVillageHouseWindowGeneric(midX + CASTLE_WINDOW_SHIFT, gy + 3, kz0, true, stonePalette); // north wall
+    buildVillageHouseWindowGeneric(kx1, gy + 3, midZ + CASTLE_WINDOW_SHIFT, false, stonePalette); // east wall
     // Doorway through to the tower, carved on both sides of the shared
     // boundary — the tower sits immediately west of the keep, touching
     // it, so this is the one gap in an otherwise solid wall on that side.

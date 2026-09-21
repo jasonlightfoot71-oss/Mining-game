@@ -258,6 +258,12 @@
     right: 136px; bottom: 210px;
     width: 54px; height: 54px; font-size: 22px;
   }
+  /* Only shown while a Step / Slope / Curve is the selected block (see updateRotateButton) — sits just above
+     the build and jump buttons, out of the way of both. */
+  #btnRotate {
+    right: 168px; bottom: 278px;
+    width: 46px; height: 46px; font-size: 20px;
+  }
 
   #worldSelect {
     position: fixed; inset: 0; background: rgba(15,20,25,0.94); z-index: 25;
@@ -573,6 +579,7 @@
   <button class="touchBtn" id="btnMine">⛏️</button>
   <button class="touchBtn" id="btnPlace">🧱</button>
   <button class="touchBtn" id="btnJump">⤴️</button>
+  <button class="touchBtn" id="btnRotate" style="display:none;" title="Rotate the step, slope or curve you're aiming at">🔄</button>
 </div>
 
 <div id="rotatePrompt">
@@ -1994,6 +2001,26 @@
     { name: 'Brown Concrete',      mats: TEX.concreteBrown,     cost: 4, isVariant: true },
     { name: 'Light Blue Concrete', mats: TEX.concreteLightBlue, cost: 4, isVariant: true },
     { name: 'Dark Grey Concrete',  mats: TEX.concreteDarkGrey,  cost: 4, isVariant: true },
+    // Curves, for roads with corners. Two shapes, each in six road-ish materials:
+    //  - Curve ('out'): a quarter-round. The cell is filled out to a quarter disc of radius 1 around one
+    //    corner (its "pivot"), so the opposite corner is rounded off — the OUTSIDE of a bend.
+    //  - Inverse Curve ('in'): the rest of the cell, outside that same quarter disc — a concave fillet, the
+    //    INSIDE of a bend, or the filler that turns a stepped edge into a smooth one.
+    // Both are full height, rotate in 90 degree steps (stepRotations, same as Step and Slope) and only the
+    // first of each is a hotbar slot; the rest live in its popup. Appended at the very END, after everything
+    // else, for the same reason as the Slopes above (saved worlds store block types by number).
+    { name: 'Curve',           mats: TEX.concreteDarkGrey, curve: 'out', cost: 4 },
+    { name: 'Black Curve',     mats: TEX.concreteBlack,    curve: 'out', cost: 4, isVariant: true },
+    { name: 'Grey Curve',      mats: TEX.concreteGrey,     curve: 'out', cost: 4, isVariant: true },
+    { name: 'White Curve',     mats: TEX.concreteWhite,    curve: 'out', cost: 4, isVariant: true },
+    { name: 'Path Slab Curve', mats: TEX.pathSlabGrey,     curve: 'out', cost: 4, isVariant: true },
+    { name: 'Stone Curve',     mats: TEX.stone,            curve: 'out', cost: 4, isVariant: true },
+    { name: 'Inverse Curve',           mats: TEX.concreteDarkGrey, curve: 'in', cost: 4 },
+    { name: 'Black Inverse Curve',     mats: TEX.concreteBlack,    curve: 'in', cost: 4, isVariant: true },
+    { name: 'Grey Inverse Curve',      mats: TEX.concreteGrey,     curve: 'in', cost: 4, isVariant: true },
+    { name: 'White Inverse Curve',     mats: TEX.concreteWhite,    curve: 'in', cost: 4, isVariant: true },
+    { name: 'Path Slab Inverse Curve', mats: TEX.pathSlabGrey,     curve: 'in', cost: 4, isVariant: true },
+    { name: 'Stone Inverse Curve',     mats: TEX.stone,            curve: 'in', cost: 4, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
@@ -2002,10 +2029,11 @@
   // (no slotLayout field) had 60 block types, layout 2 had 61 (Slope),
   // layout 3 had 65 (the four material slopes), layout 4 had 67 (the two
   // roof-tile slopes), and the current layout 5 has them all (the extra
-  // concrete colours). ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
+  // concrete colours), and layout 6 (the current one) has the twelve Curve
+  // types on top of that. ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
   // and recording the old count here.
-  const SLOT_LAYOUT = 5;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 6;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2051,6 +2079,12 @@
   BLOCK_FAMILIES[SLOPE_TYPE] = [SLOPE_TYPE, ...SLOPE_VARIANT_TYPES, ...ROOF_SLOPE_TYPES];
   // Concrete's original five colours, then the extra ones.
   BLOCK_FAMILIES[10].push(...EXTRA_CONCRETE_TYPES);
+  // Curves: the first of each shape is its hotbar slot, the other five materials sit in its popup.
+  const CURVE_OUT_TYPES = ['Curve', 'Black Curve', 'Grey Curve', 'White Curve', 'Path Slab Curve', 'Stone Curve'].map(typeIndexByName);
+  const CURVE_IN_TYPES = ['Inverse Curve', 'Black Inverse Curve', 'Grey Inverse Curve', 'White Inverse Curve', 'Path Slab Inverse Curve', 'Stone Inverse Curve'].map(typeIndexByName);
+  const CURVE_TYPE = CURVE_OUT_TYPES[0], CURVE_IN_TYPE = CURVE_IN_TYPES[0];
+  BLOCK_FAMILIES[CURVE_TYPE] = CURVE_OUT_TYPES;
+  BLOCK_FAMILIES[CURVE_IN_TYPE] = CURVE_IN_TYPES;
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -4048,6 +4082,78 @@
     return g;
   })();
 
+  // Curve blocks — a quarter-round ('out') and its complement ('in'), full height, with the curved side
+  // 16 straight facets around the 90 degrees. Like the Slope, built by reshaping a BoxGeometry rather than
+  // from hand-written vertices, so the six material groups, the winding and the UV layout all come out
+  // exactly as every other block's do (the side/top/bottom textures land on the right faces for free).
+  // The box is subdivided N x 1 x N and every vertex is moved by a function of its (x,z) alone, so the top
+  // and bottom stay in step and there are no cracks. In the un-rotated shape the arc's centre (the "pivot")
+  // is the corner at (-x,-z); rot turns it a quarter at a time about Y, like the Slope. Checked headlessly
+  // for: no degenerate or folded triangles, winding agreeing with the normals, and volume equal to the
+  // analytic area (0.784 for 'out', 0.216 for 'in').
+  function buildCurveGeometry(kind) {
+    const N = 8; // segments per box face along the curve -> 16 straight facets around a 90 degree arc
+    const g = new THREE.BoxGeometry(1, 1, 1, N, 1, N);
+    const pos = g.attributes.position, nor = g.attributes.normal, uv = g.attributes.uv;
+    const u0 = new Float32Array(pos.count), v0 = new Float32Array(pos.count); // where each vertex started, 0..1 across the cell
+    for (let i = 0; i < pos.count; i++) {
+      const u = pos.getX(i) + 0.5, v = pos.getZ(i) + 0.5; // the arc's centre (the "pivot") is the corner at (0,0)
+      u0[i] = u; v0[i] = v;
+      const ny = nor.getY(i);
+      let u2 = u, v2 = v, nx = nor.getX(i), nz = nor.getZ(i);
+      if (kind === 'out') {
+        // Convex quarter-round: the square is pulled onto the quarter disc of radius 1 around the pivot, each
+        // point keeping its "distance" m = max(u,v) and getting an angle that grows evenly along each edge, so
+        // the arc comes out in equal-length facets. The +X and +Z faces land on the arc (one half each); -X and
+        // -Z stay flat.
+        const m = Math.max(u, v);
+        if (m > 1e-9) {
+          const phi = (u >= v) ? (Math.PI / 4) * (v / u) : Math.PI / 2 - (Math.PI / 4) * (u / v);
+          u2 = m * Math.cos(phi); v2 = m * Math.sin(phi);
+        }
+        if (ny === 0 && (nx > 0.5 || nz > 0.5)) { const hh = Math.hypot(u2, v2) || 1; nx = u2 / hh; nz = v2 / hh; }
+      } else {
+        // Inverse: what is left of the cell OUTSIDE that same quarter disc. Seen from the far corner Q = (1,1),
+        // every point sits a fraction m = max(s,t) of the way from Q to a point on the arc (again evenly spaced
+        // in angle). The -X and -Z faces land on the (concave) arc; +X and +Z stay flat.
+        const s = 1 - u, t = 1 - v, m = Math.max(s, t);
+        if (m > 1e-9) {
+          const phi = (t <= s) ? Math.PI / 2 - (Math.PI / 4) * (t / s) : (Math.PI / 4) * (s / t);
+          u2 = 1 + m * (Math.cos(phi) - 1); v2 = 1 + m * (Math.sin(phi) - 1);
+        }
+        if (ny === 0 && (nx < -0.5 || nz < -0.5)) { const hh = Math.hypot(u2, v2) || 1; nx = -u2 / hh; nz = -v2 / hh; }
+      }
+      pos.setX(i, u2 - 0.5); pos.setZ(i, v2 - 0.5);
+      nor.setXYZ(i, nx, ny, nz);
+      if (ny > 0.5) uv.setXY(i, u2, 1 - v2);      // top and bottom: plain planar mapping so a texture isn't stretched by the warp
+      else if (ny < -0.5) uv.setXY(i, u2, v2);
+    }
+    // The warp has a crease along the diagonal u == v (that is where max(u,v) changes over). A quad whose
+    // diagonal runs ALONG the crease must be split along it, otherwise one of its two triangles comes out
+    // folded over. BoxGeometry splits every quad (a,b,c,d) into (a,b,d),(b,c,d) - i.e. along b-d - but which
+    // diagonal is the crease differs between the top face and the bottom face (their grids run in opposite
+    // directions), so this checks each quad's own corners rather than assuming.
+    const index = g.index.array;
+    const onCrease = i => Math.abs(u0[i] - v0[i]) < 1e-4;
+    for (const grp of g.groups) {
+      if (grp.materialIndex !== 2 && grp.materialIndex !== 3) continue; // only the top and bottom faces are warped in-plane
+      for (let t = grp.start; t < grp.start + grp.count; t += 6) {
+        const a = index[t], b = index[t + 1], d = index[t + 2], c = index[t + 4];
+        if (onCrease(a) && onCrease(c)) { // a-c is the crease: split (a,b,c),(a,c,d)
+          index[t] = a; index[t + 1] = b; index[t + 2] = c;
+          index[t + 3] = a; index[t + 4] = c; index[t + 5] = d;
+        } // else b-d is the crease (already how BoxGeometry splits it) or the quad isn't on the crease at all
+      }
+    }
+    g.index.needsUpdate = true;
+    pos.needsUpdate = true; nor.needsUpdate = true; uv.needsUpdate = true;
+    g.computeBoundingSphere();
+    return g;
+  }
+  const curveOutGeometry = buildCurveGeometry('out');
+  const curveInGeometry = buildCurveGeometry('in');
+  const curveGeometryFor = entry => entry.curve === 'in' ? curveInGeometry : curveOutGeometry;
+
   const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
   const meshes = BLOCK_TYPES.map((entry, i) => {
     const mat = buildMaterialArray(entry);
@@ -4055,8 +4161,10 @@
     // glassMeshes/rebuildGlassGeometry below) — this mesh for them stays
     // permanently empty, so it only needs a minimal starting buffer
     // rather than the full MAX_INSTANCES every real block type gets.
-    const cap = GLASS_TYPE_SET.has(i) ? 1 : MAX_INSTANCES;
-    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : geometry), mat, cap);
+    // The twelve Curve types start small (they grow on demand — see growBlockMesh): a per-type buffer at
+    // MAX_INSTANCES is ~3MB, and no world has anywhere near 50,000 curve blocks.
+    const cap = GLASS_TYPE_SET.has(i) ? 1 : (entry.curve ? 2048 : MAX_INSTANCES);
+    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : (entry.curve ? curveGeometryFor(entry) : geometry)), mat, cap);
     m.castShadow = !entry.transparent; m.receiveShadow = true;
     m.count = 0;
     scene.add(m);
@@ -4249,7 +4357,7 @@
     if (nt === undefined) return false;
     const nEntry = BLOCK_TYPES[nt];
     if (nEntry && (nEntry.name||'').includes('Glass')) return true;
-    return !(nEntry && (nEntry.half || nEntry.slope));
+    return !(nEntry && (nEntry.half || nEntry.slope || nEntry.curve));
   }
   // Unit-cube faces are axis-aligned, so the two in-plane coordinates of
   // each corner (the ones NOT along the face's own normal) already run
@@ -4403,7 +4511,7 @@
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
-    dummy.rotation.set(0, (BLOCK_TYPES[type] && BLOCK_TYPES[type].slope) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // a Slope faces the way it was placed; every other full block is symmetric
+    dummy.rotation.set(0, (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // a Slope or Curve faces the way it was placed; every other full block is symmetric
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     mesh.count = idx+1;
@@ -4558,6 +4666,13 @@
   // changed, and the loaded world is now large enough for that to take
   // multiple frames.
   function handleLocalBlockChange(x, y, z, removedType) {
+    // The edited cell's own instance is dropped first so it's always rebuilt from scratch: when only the
+    // ROTATION of a Step/Slope/Curve changed (see rotateTargetBlock) the block type is the same, and
+    // updateFullInstanceAt would otherwise see "already has an instance of this type" and leave the old
+    // orientation on screen.
+    const editedKey = key(x, y, z);
+    if (instanceIndex.has(editedKey)) removeFullInstance(editedKey);
+    if (stepInstanceIndex.has(editedKey) || stepUpperInstanceIndex.has(editedKey)) removeStepInstance(editedKey);
     const cells = [[x,y,z],[x+1,y,z],[x-1,y,z],[x,y+1,z],[x,y-1,z],[x,y,z+1],[x,y,z-1]];
     for (const [cx,cy,cz] of cells) updateFullInstanceAt(cx,cy,cz);
     rebuildWaterGeometry(); // cheap relative to the block rebuild — keeps water's own occlusion in sync with whatever changed
@@ -4604,7 +4719,7 @@
       // the ceiling block over them, and the wall blocks at their ends all
       // had every neighbour present (one of them a bar), so none of them
       // were drawn, and the cell looked cut out of the room.
-      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].transparent)); // a Slope only fills half its cell, like a Step
+      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].transparent)); // a Slope only fills half its cell, like a Step — and a Curve part of one
     };
     return solidAt(x+1,y,z) && solidAt(x-1,y,z) && solidAt(x,y+1,z) && solidAt(x,y-1,z) && solidAt(x,y,z+1) && solidAt(x,y,z-1);
   }
@@ -4690,7 +4805,7 @@
         reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
-        dummy.rotation.set(0, (BLOCK_TYPES[type] && BLOCK_TYPES[type].slope) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // same rotation as addFullInstance gives a Slope
+        dummy.rotation.set(0, (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // same rotation as addFullInstance gives a Slope or Curve
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
         if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -4738,7 +4853,7 @@
     const nk = key(nx,ny,nz);
     if (waterBlocks.has(nk)) return true;
     const t = blocks.get(nk);
-    return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope));
+    return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve));
   }
   // Flood-fills outward from one water cell through every water cell
   // connected to it (6-directionally) and removes them all in one go —
@@ -15015,6 +15130,7 @@
     if (e.code === 'KeyF') selectSlot(FIRE_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
+    if (e.code === 'KeyR' && !e.repeat && document.pointerLockElement === renderer.domElement) rotateTargetBlock();
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
       // because the on-screen Enter/Exit Vehicle buttons are unreliable
@@ -15045,8 +15161,40 @@
       selectSlot(s);
     }
   });
+  // Steps, Slopes and Curves are the blocks that have a facing, and the only ones that can be rotated.
+  function isShapedBlockEntry(entry) { return !!(entry && (entry.half || entry.slope || entry.curve)); }
+  // Touch only: the rotate button is there exactly while a shaped block is what you're holding.
+  function updateRotateButton() {
+    const el = document.getElementById('btnRotate');
+    if (!el) return;
+    el.style.display = (isTouchDevice && isShapedBlockEntry(BLOCK_TYPES[selectedSlot])) ? 'flex' : 'none';
+  }
+  // Turns the Step / Slope / Curve you're aiming at a quarter turn (R on desktop, the rotate button on touch).
+  // Placement picks a facing automatically from where you're standing, which is right most of the time, but a
+  // road corner needs all four orientations and this is the way to fix one that came out wrong without
+  // mining it and placing it again.
+  function rotateTargetBlock() {
+    const r = voxelRaycast(true, false);
+    const t = r && r.hit ? blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) : undefined;
+    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope or curve to rotate it'); return false; }
+    const { x, y, z } = r.hit;
+    if (!canEditAt(x, z)) return false; // view only — same rule as placing and mining
+    const k = key(x, y, z);
+    const rot = ((stepRotations.get(k) || 0) + 1) & 3;
+    if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+    recordBlockEdit(x, y, z, t, rot); // saved, and sent to anyone else in this world
+    handleLocalBlockChange(x, y, z);  // rebuilds this cell's instance in the new orientation
+    playThud(320);
+    return true;
+  }
+  let curveHintShown = false;
   function selectSlot(i) {
     selectedSlot = i;
+    updateRotateButton();
+    if (!curveHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) {
+      curveHintShown = true;
+      showBriefMessage(isTouchDevice ? 'Curve: tap 🔄 to rotate the one you\u2019re aiming at' : 'Curve: press R to rotate the one you\u2019re aiming at');
+    }
     document.querySelectorAll('.slot.active').forEach(el => el.classList.remove('active'));
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
     if (slotElByIndex[highlightIdx]) slotElByIndex[highlightIdx].classList.add('active');
@@ -15061,7 +15209,7 @@
     }
     heldMesh.visible = true;
     heldStepGroup.visible = false;
-    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : heldGeom; // the Slope shows as a wedge in your hand
+    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) ? curveGeometryFor(BLOCK_TYPES[i]) : heldGeom); // the Slope shows as a wedge in your hand, a Curve as its quarter-round
     if (i === WATER_SLOT) {
       heldMesh.material = new THREE.MeshPhongMaterial({ map: TEX.water, transparent: true, opacity: 0.7, shininess: 0 });
     } else if (i === LIGHT_SLOT) {
@@ -16299,6 +16447,16 @@
         const pdx = player.pos.x - (x + 0.5), pdz = player.pos.z - (z + 0.5);
         placedRot = Math.abs(pdx) >= Math.abs(pdz) ? (pdx > 0 ? 0 : 2) : (pdz > 0 ? 3 : 1);
         stepRotations.set(k, placedRot);
+      } else if (type && type.curve) {
+        // Curves turn on the corner nearest the player: a Curve's round side ends up facing AWAY from you (the
+        // arc's centre is the corner nearest you), an Inverse Curve's scooped side likewise faces away (its
+        // centre is the far corner). That is the natural way round when you stand on the road you're building.
+        // 0/1/2/3 = the shape's pivot at the (-x,-z) / (-x,+z) / (+x,+z) / (+x,-z) corner of the cell. If it
+        // comes out the wrong way, aim at it and press R (or the rotate button on touch) — see rotateTargetBlock.
+        const pcx = player.pos.x - (x + 0.5), pcz = player.pos.z - (z + 0.5);
+        const nearestCorner = pcx < 0 ? (pcz < 0 ? 0 : 1) : (pcz < 0 ? 3 : 2);
+        placedRot = type.curve === 'out' ? nearestCorner : (nearestCorner + 2) & 3;
+        if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
@@ -16537,6 +16695,24 @@
   // whole physical hold); this is what gives touch the same thing.
   let touchJumpHeld = false;
 
+  // How far the move stick is pushed maps straight onto speed on foot (a light push walks, a full push runs),
+  // and that is left exactly as it was. In a vehicle the same straight line made a gentle push and a full one
+  // feel too alike, so the stick's deflection is passed through a curve first: a small dead zone, then speed
+  // rising with the SQUARE-ish of how far it's pushed. Roughly, of top speed: a quarter push -> 6%, half ->
+  // 26%, three quarters -> 57%, full -> 100% (it was 25/50/75/100). Tune these two to taste.
+  const VEH_STICK_DEADZONE = 0.06;
+  const VEH_STICK_CURVE = 1.8;
+  function vehicleStickCurve(m) {
+    if (m <= VEH_STICK_DEADZONE) return 0;
+    const n = Math.min(1, (m - VEH_STICK_DEADZONE) / (1 - VEH_STICK_DEADZONE));
+    return Math.pow(n, VEH_STICK_CURVE);
+  }
+  // Rescales a movement vector (length 0..1 = how far the stick is pushed) by that curve, keeping its direction.
+  function shapeVehicleStick(vec) {
+    const m = Math.min(1, vec.length());
+    if (m <= 0) return;
+    vec.multiplyScalar(vehicleStickCurve(m) / m);
+  }
   function setupJoystick(el, knob, state) {
     const maxDist = 40;
     let touchId = null, cx = 0, cy = 0;
@@ -16704,6 +16880,7 @@
       else { touchJumpQueued = true; touchJumpHeld = true; }
     });
     btnJump.addEventListener('touchend', e => { e.preventDefault(); touchJumpHeld = false; });
+    document.getElementById('btnRotate').addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); rotateTargetBlock(); });
     btnJump.addEventListener('touchcancel', e => { touchJumpHeld = false; });
     // Touching the fly lever auto-engages flying, same as the old fly
     // buttons did — this fires alongside (not instead of) setupLever's
@@ -16755,6 +16932,19 @@
       const localX = (x - bx) - 0.5, localZ = (z - bz) - 0.5;
       const along = rot === 0 ? -localX : rot === 1 ? localZ : rot === 2 ? localX : -localZ; // -0.5 at the low edge .. +0.5 at the high edge
       return (y - by) < (along + 0.5) - SLOPE_COLLISION_INSET;
+    }
+    if (entry && entry.curve) {
+      // A Curve fills its whole height but only part of its footprint: the quarter disc of radius 1 around its
+      // pivot corner ('out'), or everything outside that disc ('in'). Undo the block's rotation to get back to
+      // the un-rotated shape, whose pivot is the corner at local (-0.5,-0.5) — a Y rotation by rot quarter
+      // turns takes local (x,z) to world (x cos + z sin, -x sin + z cos), whose inverse is (x,z) -> (-z, x)
+      // applied rot times (the same convention the Step's own rotation checks above use).
+      const rot = stepRotations.get(k) || 0;
+      let lx = (x - bx) - 0.5, lz = (z - bz) - 0.5;
+      for (let i = 0; i < rot; i++) { const t = lx; lx = -lz; lz = t; }
+      const du = lx + 0.5, dv = lz + 0.5;
+      const insideDisc = du*du + dv*dv <= 1;
+      return entry.curve === 'out' ? insideDisc : !insideDisc;
     }
     return true;
   }
@@ -17178,7 +17368,7 @@
     startBackgroundMapScan(blocks, (k, t) => {
       if (count >= MAX_INSTANCES) return true;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || type.slope || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
+      if (!type || type.half || type.slope || type.curve || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as
@@ -21087,6 +21277,7 @@
         move.addScaledVector(forward, -moveState.y);
         move.addScaledVector(right, moveState.x);
         if (move.lengthSq() > 1) move.normalize();
+        if (ridingVehicle) shapeVehicleStick(move); // see VEH_STICK_CURVE — a gentle push in a vehicle is now properly gentle
       } else {
         if (keys['KeyW']) move.add(forward);
         if (keys['KeyS']) move.sub(forward);
@@ -21175,6 +21366,7 @@
           flyMove.addScaledVector(forward, -moveState.y);
           flyMove.addScaledVector(right, moveState.x);
           if (flyMove.lengthSq() > 1) flyMove.normalize();
+          if (ridingVehicle) shapeVehicleStick(flyMove); // same curve for the flying vehicles and the boat
         } else {
           if (keys['KeyW']) flyMove.add(flyForward);
           if (keys['KeyS']) flyMove.sub(flyForward);
@@ -21818,7 +22010,28 @@
     ctx.restore();
     return c;
   }
-  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : swatchCanvas(entry);
+  // The Curve's icon: the texture cut to the shape seen from above — a quarter disc for the Curve, the
+  // corner outside it for the Inverse Curve — with the arc's centre at the bottom-left.
+  function curveSwatchCanvas(entry) {
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const texSrc = entry.mats.top || entry.mats.side || entry.mats;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0,0,34,34); // faint cell outline so the missing part reads as "cut away", not "empty slot"
+    ctx.save();
+    ctx.beginPath();
+    if (entry.curve === 'in') {
+      ctx.moveTo(34,34); ctx.lineTo(34,0); ctx.lineTo(0,0); ctx.arc(0,34,34, -Math.PI/2, 0, false);
+    } else {
+      ctx.moveTo(0,34); ctx.lineTo(34,34); ctx.arc(0,34,34, 0, -Math.PI/2, true);
+    }
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(texSrc.image, 0,0,34,34);
+    ctx.restore();
+    return c;
+  }
+  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : swatchCanvas(entry);
   // A simple teardrop instead of a flat texture square, for the same
   // "actually looks like the thing" reason as the step icon above.
   function waterDropCanvas() {
@@ -22074,6 +22287,13 @@
   // Step it's the smooth sibling of. Purely where it sits in the row —
   // slots are still selected by block number, so nothing else cares.
   if (slotElByIndex[SLOPE_TYPE] && slotElByIndex[9]) hotbar.insertBefore(slotElByIndex[SLOPE_TYPE], slotElByIndex[9].nextSibling);
+  // The two Curve slots sit right after the Slope, with the other shaped blocks.
+  {
+    let anchor = slotElByIndex[SLOPE_TYPE] || slotElByIndex[9];
+    [CURVE_TYPE, CURVE_IN_TYPE].forEach(t => {
+      if (slotElByIndex[t] && anchor) { hotbar.insertBefore(slotElByIndex[t], anchor.nextSibling); anchor = slotElByIndex[t]; }
+    });
+  }
   {
     const slot = document.createElement('div');
     slot.className = 'slot';

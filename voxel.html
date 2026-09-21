@@ -1804,7 +1804,33 @@
       ctx.fillRect(0, 0, 1, s); ctx.fillRect(s-1, 0, 1, s);
       if (fleck) { ctx.fillStyle = fleck; for (let i = 0; i < 7; i++) ctx.fillRect(Math.floor(Math.random()*s), Math.floor(Math.random()*s), 1, 1); }
     }),
+
+    // Roof tiles, for the roof Slope blocks. A Slope's texture runs DOWNHILL
+    // along its u axis (left to right in the image), so each course of
+    // tiles is a 4-pixel vertical band here — it comes out running across
+    // the roof, not up and down it. Every other course is shifted half a
+    // tile, each course has a lit upper edge and casts a shadow line over
+    // the one below it, and two close tones alternate tile by tile.
+    roofTile: (base, alt, light, dark, seam) => makeCanvasTexture((ctx, s) => {
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, s, s);
+      for (let c = 0; c < s; c += 4) {
+        const course = c / 4, off = course % 2 ? 4 : 0;         // every other course is shifted half a tile, like real tiling
+        for (let k = 0; k < 2; k++) {                          // two tiles per course, in two close tones so the roof isn't one flat colour
+          ctx.fillStyle = (course + k) % 2 ? alt : base;
+          ctx.fillRect(c, (off + k * 8) % s, 4, 8);
+          if (off && k === 1) ctx.fillRect(c, 0, 4, 4);        // the shifted course's tile wraps round the top edge
+        }
+        ctx.fillStyle = light; ctx.fillRect(c, 0, 1, s);       // the exposed upper edge of the course catches the light
+        ctx.fillStyle = dark;  ctx.fillRect(c + 3, 0, 1, s);   // shadow under its lower edge, where the next course overlaps
+        for (let y = off; y < s + 8; y += 8) {
+          ctx.fillStyle = seam; ctx.fillRect(c + 1, y % s, 2, 1); // the thin gap between two neighbouring tiles
+        }
+      }
+    }),
   };
+  TEX.roofTileRed  = TEX.roofTile('#b5432f', '#a63a28', '#d76a45', '#6a2216', '#8a2f1f');
+  TEX.roofTileGrey = TEX.roofTile('#6d7681', '#626b76', '#929dab', '#39404a', '#4f5762');
   TEX.pathSlabGrey      = TEX.pathSlab('#9a9a94', '#6e6e68', null);
   TEX.pathSlabSandstone = TEX.pathSlab('#d8c48a', '#b8a468', null);
   TEX.pathSlabMossy     = TEX.pathSlab('#8a9a84', '#5e6e58', '#4a7a3a');
@@ -1938,25 +1964,29 @@
     { name: 'Winter Branch C', mats: TEX.winterBranchC, cost: 4, isVariant: true },
     // Slope — like the Step, but a smooth ramp instead of a stair: full height
     // along one edge, falling away to nothing along the opposite one. Same
-    // stone as the Step. Sits in the Step's own family popup (see
+    // stone as the Step. Has its own hotbar slot and popup menu (see
     // BLOCK_FAMILIES). MUST stay appended at the END of this list: saved
     // worlds store block types by number.
-    { name: 'Slope', mats: TEX.stone, slope: true, cost: 4, isVariant: true },
+    { name: 'Slope', mats: TEX.stone, slope: true, cost: 4 }, // NOT a variant: it's the slot for the whole Slopes menu (see BLOCK_FAMILIES)
     // The Slope in the same four extra materials the Step comes in.
     { name: 'White Slope', mats: TEX.concreteWhite, slope: true, cost: 4, isVariant: true },
     { name: 'Brick Slope',  mats: TEX.brick,   slope: true, cost: 4, isVariant: true },
     { name: 'Wood Slope',   mats: TEX.planks,  slope: true, cost: 4, isVariant: true },
     { name: 'Sand Slope',   mats: TEX.sand,    slope: true, cost: 4, isVariant: true },
+    // Roof-tile slopes, for roofs: red (clay) and grey (slate).
+    { name: 'Red Roof Slope',  mats: TEX.roofTileRed,  slope: true, cost: 4, isVariant: true },
+    { name: 'Grey Roof Slope', mats: TEX.roofTileGrey, slope: true, cost: 4, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
   // save records which numbering it used (slotLayout) so its selected slot
   // can be shifted to match — see the restore in applyWorldData. Layout 1
-  // (no slotLayout field) had 60 block types, layout 2 had 61 (Slope), and
-  // the current layout 3 has them all. ADDING ANOTHER BLOCK TYPE means
+  // (no slotLayout field) had 60 block types, layout 2 had 61 (Slope),
+  // layout 3 had 65 (the four material slopes), and the current layout 4
+  // has them all (the two roof-tile slopes). ADDING ANOTHER BLOCK TYPE means
   // bumping SLOT_LAYOUT and recording the old count here.
-  const SLOT_LAYOUT = 3;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 4;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -1969,6 +1999,7 @@
   const WINTER_BRANCH_C = typeIndexByName('Winter Branch C');
   const SLOPE_TYPE = typeIndexByName('Slope');
   const SLOPE_VARIANT_TYPES = ['White Slope', 'Brick Slope', 'Wood Slope', 'Sand Slope'].map(typeIndexByName);
+  const ROOF_SLOPE_TYPES = ['Red Roof Slope', 'Grey Roof Slope'].map(typeIndexByName);
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -1994,9 +2025,10 @@
   // rather than getting their own slots, since they're mostly meant to
   // appear automatically each winter rather than be hand-placed.
   BLOCK_FAMILIES[3].push(WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C);
-  // The Slope is offered from the Step's own popup — it's the step's smooth
-  // sibling, in the same stone.
-  BLOCK_FAMILIES[9].push(SLOPE_TYPE, ...SLOPE_VARIANT_TYPES);
+  // Slopes get their own hotbar slot and popup menu, separate from the
+  // Step's: the plain stone Slope leads it, then the same four materials the
+  // Step comes in, then the two roof-tile slopes.
+  BLOCK_FAMILIES[SLOPE_TYPE] = [SLOPE_TYPE, ...SLOPE_VARIANT_TYPES, ...ROOF_SLOPE_TYPES];
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -21756,6 +21788,10 @@
     addSlotLabel(slot, entry.name);
     hotbar.appendChild(slot);
   });
+  // The Slopes slot is the last block in the list, but belongs next to the
+  // Step it's the smooth sibling of. Purely where it sits in the row —
+  // slots are still selected by block number, so nothing else cares.
+  if (slotElByIndex[SLOPE_TYPE] && slotElByIndex[9]) hotbar.insertBefore(slotElByIndex[SLOPE_TYPE], slotElByIndex[9].nextSibling);
   {
     const slot = document.createElement('div');
     slot.className = 'slot';

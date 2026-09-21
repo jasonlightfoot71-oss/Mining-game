@@ -456,6 +456,7 @@
 </div>
 <div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
 <div id="playerTags" style="position:fixed;left:0;top:0;width:100%;height:100%;z-index:9;pointer-events:none;overflow:hidden;"></div>
+<div id="padDebug" style="display:none;position:fixed;left:8px;top:8px;z-index:60;background:rgba(0,0,0,0.75);color:#9fff9f;font:12px/1.4 monospace;padding:6px 9px;border-radius:6px;pointer-events:none;white-space:pre;max-width:70vw;overflow:hidden;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
 <div id="taskPanel" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:10;max-width:260px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
@@ -15134,6 +15135,7 @@
     camera.updateProjectionMatrix();
   }
 
+  const ARROW_AS_WASD = { ArrowUp: 'KeyW', ArrowDown: 'KeyS', ArrowLeft: 'KeyA', ArrowRight: 'KeyD' };
   function toggleFly() { if (ridingVehicle) return; flying = !flying; player.vel.set(0,0,0); updateModeTag(); }
 
   document.addEventListener('keydown', e => {
@@ -15144,6 +15146,7 @@
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     keys[e.code] = true;
+    if (ARROW_AS_WASD[e.code]) { keys[ARROW_AS_WASD[e.code]] = true; if (padPlaying()) e.preventDefault(); } // arrows also walk (a TV browser may send the controller as arrow keys)
     const num = parseInt(e.key);
     if (num >= 1 && num <= 9 && num <= BLOCK_TYPES.length) selectSlot(familyChoice[num-1] !== undefined ? familyChoice[num-1] : num-1);
     if (e.key === '0') selectSlot(WATER_SLOT);
@@ -15176,6 +15179,7 @@
     const tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     keys[e.code] = false;
+    if (ARROW_AS_WASD[e.code]) keys[ARROW_AS_WASD[e.code]] = false;
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
@@ -21322,9 +21326,44 @@
       if (i === 7) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); }
     }
   }
+  // Controller test readout (top-left). Shows exactly what the PAGE is being told about the controller — its id and
+  // layout, every axis value, which buttons are down — plus any key presses and pointer movement the browser sends
+  // (a TV browser may turn the controller into arrow keys / a cursor instead of, or as well as, gamepad data). It
+  // is there to find out which inputs actually reach the game on a given device. Select hides/shows it, and it
+  // hides itself 20 seconds after the left stick, A, B or X has been seen working.
+  let padDebugOn = true, padDebugLast = 0, padWorkingSince = 0;
+  const padSeenKeys = [];
+  let padMouseMoves = 0, padLastMouse = '';
+  window.addEventListener('keydown', e => { padSeenKeys.push(e.code || e.key); if (padSeenKeys.length > 5) padSeenKeys.shift(); }, true);
+  window.addEventListener('mousemove', e => { padMouseMoves++; padLastMouse = e.clientX + ',' + e.clientY; }, true);
+  function updatePadDebug(pad, cur) {
+    const el = document.getElementById('padDebug');
+    if (!el) return;
+    if (!padDebugOn) { el.style.display = 'none'; return; }
+    const now = performance.now();
+    if (now - padDebugLast < 100) return;
+    padDebugLast = now;
+    const ax = Array.from(pad.axes || []).map((v, i) => i + ':' + v.toFixed(2)).join('  ');
+    const down = [];
+    for (let i = 0; i < (pad.buttons ? pad.buttons.length : 0); i++) if (pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > 0.5)) down.push(i);
+    el.textContent = 'CONTROLLER TEST  (Select hides)\n'
+      + 'id: ' + String(pad.id).slice(0, 48) + '\n'
+      + 'mapping: ' + (pad.mapping || '(none)') + '   buttons: ' + (pad.buttons ? pad.buttons.length : 0) + '   axes: ' + (pad.axes ? pad.axes.length : 0) + '\n'
+      + 'axes: ' + (ax || '(none)') + '\n'
+      + 'buttons down: ' + (down.join(' ') || '-') + '\n'
+      + 'keys the page got: ' + (padSeenKeys.join(' ') || '-') + '\n'
+      + 'pointer moves: ' + padMouseMoves + '  last ' + (padLastMouse || '-') + '\n'
+      + 'playing a world: ' + (padPlaying() ? 'yes' : 'no');
+    el.style.display = 'block';
+    // Once the main inputs are seen working, get out of the way.
+    const working = padStickActive || down.includes(0) || down.includes(1) || down.includes(2);
+    if (working && !padWorkingSince) padWorkingSince = now;
+    if (padWorkingSince && now - padWorkingSince > 20000) padDebugOn = false;
+  }
   function updateGamepad(dt) {
     const pad = getActivePad();
     if (!pad) { padReleaseInputs(); return; }
+    updatePadDebug(pad);
     if (!padConnected) {
       padConnected = true;
       try { console.info('[voxel] controller:', pad.id, '| mapping:', pad.mapping || '(none)', '|', pad.buttons.length, 'buttons,', pad.axes.length, 'axes'); } catch (e) {}
@@ -21374,6 +21413,7 @@
     if (down(15)) padCycleVariant(-1);
     if (down(11) && ridingVehicle) document.getElementById('vehicleViewToggleBtn').click();
     if (down(9)) { const hint = document.getElementById('hint'); if (hint) hint.style.display = hint.style.display === 'none' ? 'block' : 'none'; }
+    if (down(8)) padDebugOn = !padDebugOn; // Select: show / hide the controller test readout
 
     // Triggers: mine (hold) and place (press, or hold and sweep) — the same calls the mouse buttons make
     if (down(6)) { ensureAudio(); mineHeld = true; doMine(); }

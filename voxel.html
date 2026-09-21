@@ -21688,6 +21688,7 @@
   const slotElByIndex = {}; // BLOCK_TYPES index (or WATER/LIGHT/LADDER_SLOT) -> its hotbar DOM element
   let openFamilyPopup = null;
   let openFamilyPopupOwner = null; // the hotbar slot the open popup belongs to, so pressing that same slot again can collapse it
+  let openFamilyPopupHotbarScroll = 0; // how far the hotbar was scrolled sideways when the popup opened
   function closeFamilyPopup() {
     if (openFamilyPopup) { openFamilyPopup.remove(); openFamilyPopup = null; }
     openFamilyPopupOwner = null;
@@ -21725,8 +21726,8 @@
   // (children reversed, scrolled to the bottom to start), not
   // flex-direction:column-reverse. Browsers have differed over whether a
   // reversed container's overflowing end can be scrolled to at all; a plain
-  // column scrolls the same everywhere. (The wallpaper popup wraps into
-  // several columns and keeps column-reverse, via opts.reverse.)
+  // column scrolls the same everywhere. (opts.reverse / opts.wrap remain
+  // available for a menu that wants a wrapped grid; none currently does.)
   function mountPopup(popup, slotEl, opts) {
     const keepReversed = !!(opts && opts.reverse);
     if (!keepReversed) Array.from(popup.children).reverse().forEach(c => popup.appendChild(c));
@@ -21734,7 +21735,17 @@
     if (!keepReversed) popup.scrollTop = popup.scrollHeight;
     openFamilyPopup = popup;
     openFamilyPopupOwner = slotEl;
+    openFamilyPopupHotbarScroll = hotbar.scrollLeft;
   }
+  // A popup is fixed on the screen where it opened, above its slot. Slide the
+  // hotbar sideways and the slot moves out from under it, leaving the menu
+  // hanging over the wrong block — so it collapses instead. Compared against
+  // where the hotbar was when the menu opened, with a couple of pixels of
+  // tolerance, so only a real slide closes it (not a tap, or subpixel
+  // rounding).
+  hotbar.addEventListener('scroll', () => {
+    if (openFamilyPopup && Math.abs(hotbar.scrollLeft - openFamilyPopupHotbarScroll) > 2) closeFamilyPopup();
+  }, { passive: true });
   // Refreshes a family slot's own icon to match whichever variant is
   // currently chosen for it, so the main hotbar row reflects your pick
   // rather than always showing the base block regardless of selection.
@@ -21968,11 +21979,11 @@
   function showWallpaperPopup(slotEl) {
     if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    // flex-wrap + a fixed max-height turns this into a scrollable
-    // multi-column grid once it has more entries than fit in one column
-    // (20 colours now, up from the original 5) — without this it just
-    // kept growing upward off the top of the screen.
-    popup.style.cssText = popupCss(slotEl, { reverse: true, wrap: true, extra: 'padding:2px;' });
+    // A single scrolling column, like every other menu. (It used to wrap into
+    // a multi-column grid once the colours outgrew one column (20 of them, up
+    // from the original 5) to stop it running off the top of the screen; the
+    // shared popup sizing now keeps every menu on screen and scrolling.)
+    popup.style.cssText = popupCss(slotEl);
     WALLPAPER_COLORS.forEach((c, idx) => {
       const btn = document.createElement('div');
       btn.className = 'slot';
@@ -21987,7 +21998,7 @@
       });
       popup.appendChild(btn);
     });
-    mountPopup(popup, slotEl, { reverse: true, wrap: true, extra: 'padding:2px;' });
+    mountPopup(popup, slotEl);
   }
   {
     const slot = document.createElement('div');

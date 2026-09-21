@@ -19278,7 +19278,7 @@
   // desktop. Only the sideways axis is used (see tryHitTennisBall below);
   // forward/back isn't, since the ball always has to go over the net.
   function tennisAimInput() {
-    if (isTouchDevice) return moveState.x;
+    if (isTouchDevice || padStickActive) return moveState.x;
     let x = 0;
     if (keys['KeyD']) x += 1;
     if (keys['KeyA']) x -= 1;
@@ -21249,6 +21249,147 @@
     }
   }
 
+  // ================= GAMEPAD =================
+  // A Bluetooth / USB controller (Xbox, PlayStation, Luna, ... — anything the browser exposes through the standard
+  // Gamepad API), for playing without a keyboard and mouse: a Fire TV Stick, a Chromebook on the sofa, etc. It
+  // doesn't replace anything. Each frame the stick and button state is turned into the SAME inputs the other
+  // devices already produce — the left stick fills moveState (exactly what the on-screen joystick does, so the
+  // vehicle response curve applies to it too), the right stick turns yaw/pitch directly (no pointer lock needed,
+  // which is the point: a TV browser can't give the page a mouse), and the buttons call the same functions the
+  // mouse buttons, keys and touch buttons do. Nothing happens until a controller is actually connected (browsers
+  // only expose one after its first button press), and keyboard/mouse play is untouched when none is.
+  //
+  //   Left stick  move (push further = faster)      Right stick  look
+  //   A  jump / fly up / swim up      B or L3  sprint / fly down / swim down      X  get in / out of a vehicle
+  //   Y  toggle flying                LT  mine (hold)      RT  place / fire (hold and sweep to build a line)
+  //   LB / RB  previous / next hotbar slot         D-pad down / right  next / previous material of the slot
+  //   D-pad left  spin block left/right (rotate)   D-pad up  spin block up/down (tilt)
+  //   R3  vehicle first/third person         Start  show or hide this reminder
+  const PAD_DEADZONE = 0.18;
+  const PAD_LOOK_SPEED = 2.8; // radians per second at full deflection
+  const PAD_HINT_HTML = 'Controller: L-stick move · R-stick look · A jump/up · B sprint/down · X vehicle in/out · Y fly<br>LT mine · RT place · LB/RB slot · D-pad ◀ rotate · ▲ tilt · ▼▶ material · Start hides this';
+  let playStarted = false;           // set once a world has actually been entered (beginPlaying)
+  let padConnected = false, padStickActive = false, padDrivingMove = false, padHintShown = false;
+  const padPrev = new Array(20).fill(false);
+  function getActivePad() {
+    const list = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let i = 0; i < list.length; i++) if (list[i] && list[i].connected) return list[i];
+    return null;
+  }
+  // Radial dead zone, rescaled so the output still reaches the full 0..1 range.
+  function padStick(x, y) {
+    const m = Math.hypot(x, y);
+    if (m < PAD_DEADZONE) return [0, 0];
+    const k = (Math.min(1, m) - PAD_DEADZONE) / (1 - PAD_DEADZONE) / m;
+    return [x * k, y * k];
+  }
+  // Only drives the game while a world is being played and nothing is being typed into.
+  function padPlaying() {
+    const ws = document.getElementById('worldSelect'), ae = document.activeElement;
+    const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+    return padConnected && playStarted && !(ws && ws.style.display === 'flex') && !typing;
+  }
+  // The hotbar as LB/RB walk it: one stop per slot in the row (a family slot lands on whichever material is
+  // currently chosen for it), not one per block type — the wheel's stop-per-type would be dozens of presses.
+  function padCycleSlot(dir) {
+    const order = [];
+    for (let i = 0; i <= WEAPON_SLOT; i++) if (!(BLOCK_TYPES[i] && BLOCK_TYPES[i].isVariant)) order.push(i);
+    const primary = variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot;
+    let at = order.indexOf(primary); if (at < 0) at = 0;
+    const next = order[(at + dir + order.length) % order.length];
+    selectSlot(familyChoice[next] !== undefined ? familyChoice[next] : next);
+  }
+  // Steps to the next / previous material within the selected slot's family (what its popup menu would let you pick).
+  function padCycleVariant(dir) {
+    const primary = variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot;
+    const fam = BLOCK_FAMILIES[primary];
+    if (!fam) return;
+    let at = fam.indexOf(selectedSlot); if (at < 0) at = 0;
+    const idx = fam[(at + dir + fam.length) % fam.length];
+    familyChoice[primary] = idx;
+    updateFamilySlotIcon(primary);
+    selectSlot(idx);
+  }
+  function padReleaseInputs() {
+    if (padDrivingMove) { moveState.x = 0; moveState.y = 0; padDrivingMove = false; }
+    padStickActive = false;
+    for (let i = 0; i < padPrev.length; i++) {
+      if (!padPrev[i]) continue;
+      padPrev[i] = false;
+      if (i === 0) keys['Space'] = false;
+      if (i === 1 || i === 10) keys['ShiftLeft'] = false;
+      if (i === 6) { mineHeld = false; mining = null; }
+      if (i === 7) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); }
+    }
+  }
+  function updateGamepad(dt) {
+    const pad = getActivePad();
+    if (!pad) { padReleaseInputs(); return; }
+    if (!padConnected) {
+      padConnected = true;
+      try { console.info('[voxel] controller:', pad.id, '| mapping:', pad.mapping || '(none)', '|', pad.buttons.length, 'buttons,', pad.axes.length, 'axes'); } catch (e) {}
+      showBriefMessage('Controller connected');
+    }
+    if (!padPlaying()) { padReleaseInputs(); return; }
+    if (!padHintShown) {
+      padHintShown = true;
+      const hint = document.getElementById('hint');
+      if (hint) { hint.style.display = 'block'; hint.innerHTML = PAD_HINT_HTML; }
+    }
+    const cur = [];
+    for (let i = 0; i < padPrev.length; i++) { const b = pad.buttons[i]; cur[i] = !!(b && (b.pressed || b.value > 0.5)); }
+    const down = i => cur[i] && !padPrev[i], up = i => !cur[i] && padPrev[i];
+
+    // Sticks
+    const [lx, ly] = padStick(pad.axes[0] || 0, pad.axes[1] || 0);
+    const [rx, ry] = padStick(pad.axes[2] || 0, pad.axes[3] || 0);
+    if (lx || ly) { moveState.x = lx; moveState.y = ly; padDrivingMove = true; padStickActive = true; }
+    else { if (padDrivingMove) { moveState.x = 0; moveState.y = 0; padDrivingMove = false; } padStickActive = false; }
+    if (rx || ry) {
+      const kx = rx * Math.abs(rx), ky = ry * Math.abs(ry); // squared, so small movements aim finely
+      if (anySceneActive()) {
+        sceneCamYawOffset = Math.max(-SCENE_CAM_YAW_RANGE, Math.min(SCENE_CAM_YAW_RANGE, sceneCamYawOffset - kx * PAD_LOOK_SPEED * dt));
+        sceneCamPitchOffset = Math.max(-SCENE_CAM_PITCH_RANGE, Math.min(SCENE_CAM_PITCH_RANGE, sceneCamPitchOffset - ky * PAD_LOOK_SPEED * dt));
+      } else {
+        yaw -= kx * PAD_LOOK_SPEED * dt;
+        pitch -= ky * PAD_LOOK_SPEED * dt;
+        pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, pitch));
+      }
+    }
+
+    // Held buttons -> the keys the keyboard would have set (only on press/release, so a keyboard held at the same time isn't overridden)
+    if (down(0)) keys['Space'] = true;
+    if (up(0)) keys['Space'] = false;
+    if (down(1) || down(10)) keys['ShiftLeft'] = true;
+    if ((up(1) && !cur[10]) || (up(10) && !cur[1])) keys['ShiftLeft'] = false;
+
+    // One-shot buttons
+    if (down(2)) { if (ridingVehicle) exitVehicle(); else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); } }
+    if (down(3)) toggleFly();
+    if (down(4)) padCycleSlot(-1);
+    if (down(5)) padCycleSlot(1);
+    if (down(14)) rotateTargetBlock();
+    if (down(12)) tiltTargetBlock();
+    if (down(13)) padCycleVariant(1);
+    if (down(15)) padCycleVariant(-1);
+    if (down(11) && ridingVehicle) document.getElementById('vehicleViewToggleBtn').click();
+    if (down(9)) { const hint = document.getElementById('hint'); if (hint) hint.style.display = hint.style.display === 'none' ? 'block' : 'none'; }
+
+    // Triggers: mine (hold) and place (press, or hold and sweep) — the same calls the mouse buttons make
+    if (down(6)) { ensureAudio(); mineHeld = true; doMine(); }
+    if (up(6)) { mineHeld = false; mining = null; }
+    if (down(7)) {
+      ensureAudio();
+      if (tennisChargeEligible()) tennisStartCharge();
+      else if (golfChargeEligible()) golfStartCharge();
+      else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
+    }
+    if (up(7)) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); }
+
+    for (let i = 0; i < padPrev.length; i++) padPrev[i] = cur[i];
+  }
+  window.addEventListener('gamepaddisconnected', () => { if (!getActivePad()) { padReleaseInputs(); padConnected = false; padHintShown = false; showBriefMessage('Controller disconnected'); } });
+
   // ================= GAME LOOP =================
   const clock = new THREE.Clock();
   const GRAVITY = -18;
@@ -21269,7 +21410,8 @@
     updateFires(waterTime);
     updateWinterBranchVariety(dt);
     updateWindSound(dt, windIntensity);
-    const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement);
+    try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
+    const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement || padPlaying()); // a controller doesn't need pointer lock — the right stick turns the view directly
     if (!locked) windIntensity = 0; // menus/paused — fade the wind out rather than leaving it stuck on from before
 
     // While App Make/Bar/Bar Team Leader/Kitchen's automated scenes are
@@ -21332,7 +21474,7 @@
       const forward = new THREE.Vector3(-Math.sin(moveYaw),0,-Math.cos(moveYaw));
       const right = new THREE.Vector3(Math.cos(moveYaw),0,-Math.sin(moveYaw));
       let move = new THREE.Vector3();
-      if (isTouchDevice) {
+      if (isTouchDevice || padStickActive) {
         move.addScaledVector(forward, -moveState.y);
         move.addScaledVector(right, moveState.x);
         if (move.lengthSq() > 1) move.normalize();
@@ -21421,7 +21563,7 @@
           -Math.cos(yaw)*Math.cos(pitch)
         );
         let flyMove = new THREE.Vector3();
-        if (isTouchDevice) {
+        if (isTouchDevice || padStickActive) {
           flyMove.addScaledVector(forward, -moveState.y);
           flyMove.addScaledVector(right, moveState.x);
           if (flyMove.lengthSq() > 1) flyMove.normalize();
@@ -21478,7 +21620,7 @@
           -Math.cos(moveYaw)*Math.cos(pitch)
         );
         let swimDir = new THREE.Vector3();
-        if (isTouchDevice) {
+        if (isTouchDevice || padStickActive) {
           // Uses the pitch-aware swimForward here, not the flat forward
           // flying's touch controls use — flying has a separate
           // dedicated lever for altitude, so its joystick deliberately
@@ -23269,6 +23411,7 @@
     }
     updateModeTag();
     ensureAudio();
+    playStarted = true; // (for the controller code — see updateGamepad)
     if (isTouchDevice) {
       touchActive = true;
       document.getElementById('touchUI').style.display = 'block';

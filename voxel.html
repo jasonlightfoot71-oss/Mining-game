@@ -264,6 +264,10 @@
     right: 168px; bottom: 278px;
     width: 46px; height: 46px; font-size: 20px;
   }
+  #btnTilt {
+    right: 116px; bottom: 278px;
+    width: 46px; height: 46px; font-size: 20px;
+  }
 
   #worldSelect {
     position: fixed; inset: 0; background: rgba(15,20,25,0.94); z-index: 25;
@@ -579,7 +583,8 @@
   <button class="touchBtn" id="btnMine">⛏️</button>
   <button class="touchBtn" id="btnPlace">🧱</button>
   <button class="touchBtn" id="btnJump">⤴️</button>
-  <button class="touchBtn" id="btnRotate" style="display:none;" title="Rotate the step, slope or curve you're aiming at">🔄</button>
+  <button class="touchBtn" id="btnRotate" style="display:none;" title="Spin the step, slope or curve you're aiming at left/right">🔄</button>
+  <button class="touchBtn" id="btnTilt" style="display:none;" title="Spin the step, slope or curve you're aiming at up/down">↕️</button>
 </div>
 
 <div id="rotatePrompt">
@@ -4506,12 +4511,20 @@
   const instanceIndex = new Map();
   const reverseFullIndex = BLOCK_TYPES.map(() => []);
   const tempMatrix = new THREE.Matrix4();
+  // A Step / Slope / Curve's orientation is one number in stepRotations: yaw + 4*tilt. yaw (0..3, the low two
+  // bits) is the quarter-turn about the vertical axis it has always been; tilt (0..3, the next two) is a quarter
+  // turn about the block's own X axis applied FIRST, so 0 is the normal way up, 2 is upside down, and 1 and 3
+  // stand it on its side. Existing blocks and saves only ever hold 0..3, i.e. tilt 0, so they are unchanged.
+  // The block is drawn with matrix Ry(yaw) * Rx(tilt) — Euler order 'YXZ' in three.js.
+  const _orientEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+  const _orientVec = new THREE.Vector3();
+  function setBlockOrientation(obj, v) { obj.quaternion.setFromEuler(_orientEuler.set(((v >> 2) & 3) * Math.PI/2, (v & 3) * Math.PI/2, 0)); }
   function addFullInstance(k, x, y, z, type) {
     let mesh = meshes[type];
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
-    dummy.rotation.set(0, (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // a Slope or Curve faces the way it was placed; every other full block is symmetric
+    if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // a Slope or Curve faces the way it was placed (and may be tilted); every other full block is symmetric
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     mesh.count = idx+1;
@@ -4555,8 +4568,14 @@
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false);
     {
       const idx = mesh.count;
-      dummy.position.set(x+0.5, y+0.25, z+0.5);
-      dummy.rotation.set(0,0,0);
+      if (rot > 3) { // tilted: the slab is placed and turned with the rest of the block
+        setBlockOrientation(dummy, rot);
+        _orientVec.set(0, -0.25, 0).applyQuaternion(dummy.quaternion);
+        dummy.position.set(x+0.5+_orientVec.x, y+0.5+_orientVec.y, z+0.5+_orientVec.z);
+      } else {
+        dummy.position.set(x+0.5, y+0.25, z+0.5);
+        dummy.rotation.set(0,0,0);
+      }
       dummy.updateMatrix();
       mesh.setMatrixAt(idx, dummy.matrix);
       mesh.count = idx+1;
@@ -4568,10 +4587,10 @@
     if (umesh.count >= umesh.instanceMatrix.count) umesh = growBlockMesh(type, true);
     {
       const uidx = umesh.count;
-      const theta = rot * Math.PI/2;
-      const ox = -0.25*Math.cos(theta), oz = 0.25*Math.sin(theta);
-      dummy.position.set(x+0.5+ox, y+0.75, z+0.5+oz);
-      dummy.rotation.set(0, theta, 0);
+      // the raised quarter sits at local (-0.25, +0.25, 0), carried round by the block's orientation
+      setBlockOrientation(dummy, rot);
+      _orientVec.set(-0.25, 0.25, 0).applyQuaternion(dummy.quaternion);
+      dummy.position.set(x+0.5+_orientVec.x, y+0.5+_orientVec.y, z+0.5+_orientVec.z);
       dummy.updateMatrix();
       umesh.setMatrixAt(uidx, dummy.matrix);
       umesh.count = uidx+1;
@@ -4777,8 +4796,15 @@
       if (isHalf) {
         // Lower half — a plain symmetric full-footprint slab, so it
         // never needs rotating regardless of which way the step faces.
-        dummy.position.set(x+0.5, y+0.25, z+0.5);
-        dummy.rotation.set(0,0,0);
+        const rot = stepRotations.get(k) || 0;
+        if (rot > 3) { // tilted: same placement as addStepInstance
+          setBlockOrientation(dummy, rot);
+          _orientVec.set(0, -0.25, 0).applyQuaternion(dummy.quaternion);
+          dummy.position.set(x+0.5+_orientVec.x, y+0.5+_orientVec.y, z+0.5+_orientVec.z);
+        } else {
+          dummy.position.set(x+0.5, y+0.25, z+0.5);
+          dummy.rotation.set(0,0,0);
+        }
         dummy.updateMatrix();
         const li = rebuildCounts[type]++;
         if (li >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -4791,12 +4817,9 @@
         // amount, or the piece would end up sitting in the wrong spot
         // facing the wrong way. theta here is the exact same Y rotation
         // isSolid's collision math already assumes for this rot value.
-        const rot = stepRotations.get(k) || 0;
-        const theta = rot * Math.PI/2;
-        const ox = -0.25*Math.cos(theta);
-        const oz =  0.25*Math.sin(theta);
-        dummy.position.set(x+0.5+ox, y+0.75, z+0.5+oz);
-        dummy.rotation.set(0, theta, 0);
+        setBlockOrientation(dummy, rot);
+        _orientVec.set(-0.25, 0.25, 0).applyQuaternion(dummy.quaternion);
+        dummy.position.set(x+0.5+_orientVec.x, y+0.5+_orientVec.y, z+0.5+_orientVec.z);
         dummy.updateMatrix();
         const ui = rebuildStepUpperCounts[type]++;
         if (ui >= stepUpperMeshes[type].instanceMatrix.count) growBlockMesh(type, true);
@@ -4805,7 +4828,7 @@
         reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
-        dummy.rotation.set(0, (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) ? (stepRotations.get(k) || 0) * Math.PI/2 : 0, 0); // same rotation as addFullInstance gives a Slope or Curve
+        if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // same orientation addFullInstance gives a Slope or Curve
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
         if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -9600,6 +9623,7 @@
       const t = blocks.get(k);
       if (t === undefined || !BLOCK_TYPES[t] || !BLOCK_TYPES[t].slope) continue;
       const rot = stepRotations.get(k) || 0;
+      if (rot > 3) continue; // tilted slope — not a ramp
       const lx = (px - bx) - 0.5, lz = (pz - bz) - 0.5;
       const along = rot === 0 ? -lx : rot === 1 ? lz : rot === 2 ? lx : -lz;
       const surf = by + along + 0.5;
@@ -15131,6 +15155,7 @@
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
     if (e.code === 'KeyR' && !e.repeat && document.pointerLockElement === renderer.domElement) rotateTargetBlock();
+    if (e.code === 'KeyX' && !e.repeat && document.pointerLockElement === renderer.domElement) tiltTargetBlock();
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
       // because the on-screen Enter/Exit Vehicle buttons are unreliable
@@ -15167,33 +15192,42 @@
   function updateRotateButton() {
     const el = document.getElementById('btnRotate');
     if (!el) return;
-    el.style.display = (isTouchDevice && isShapedBlockEntry(BLOCK_TYPES[selectedSlot])) ? 'flex' : 'none';
+    const show = (isTouchDevice && isShapedBlockEntry(BLOCK_TYPES[selectedSlot])) ? 'flex' : 'none';
+    el.style.display = show;
+    const tiltEl = document.getElementById('btnTilt');
+    if (tiltEl) tiltEl.style.display = show;
   }
-  // Turns the Step / Slope / Curve you're aiming at a quarter turn (R on desktop, the rotate button on touch).
-  // Placement picks a facing automatically from where you're standing, which is right most of the time, but a
-  // road corner needs all four orientations and this is the way to fix one that came out wrong without
-  // mining it and placing it again.
-  function rotateTargetBlock() {
+  // Turns the Step / Slope / Curve you're aiming at a quarter turn: 'yaw' spins it left/right about the vertical
+  // (R on desktop, the 🔄 button on touch), 'tilt' spins it up/down (X, or the ↕️ button) — 0 normal, 1 on its
+  // side, 2 upside down, 3 on its other side, then round again. Placement picks a facing automatically from where
+  // you're standing, which is right most of the time, but a road corner (or a ceiling, or an arch) needs the
+  // others, and this fixes one without mining it and placing it again. The two turns are independent.
+  function reorientTargetBlock(what) {
     const r = voxelRaycast(true, false);
     const t = r && r.hit ? blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) : undefined;
-    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope or curve to rotate it'); return false; }
+    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope or curve to turn it'); return false; }
     const { x, y, z } = r.hit;
     if (!canEditAt(x, z)) return false; // view only — same rule as placing and mining
     const k = key(x, y, z);
-    const rot = ((stepRotations.get(k) || 0) + 1) & 3;
-    if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
-    recordBlockEdit(x, y, z, t, rot); // saved, and sent to anyone else in this world
-    handleLocalBlockChange(x, y, z);  // rebuilds this cell's instance in the new orientation
+    const cur = stepRotations.get(k) || 0;
+    let yaw = cur & 3, tilt = (cur >> 2) & 3;
+    if (what === 'tilt') tilt = (tilt + 1) & 3; else yaw = (yaw + 1) & 3;
+    const v = yaw | (tilt << 2);
+    if (v) stepRotations.set(k, v); else stepRotations.delete(k);
+    recordBlockEdit(x, y, z, t, v); // saved, and sent to anyone else in this world
+    handleLocalBlockChange(x, y, z); // rebuilds this cell's instance in the new orientation
     playThud(320);
     return true;
   }
+  const rotateTargetBlock = () => reorientTargetBlock('yaw');
+  const tiltTargetBlock = () => reorientTargetBlock('tilt');
   let curveHintShown = false;
   function selectSlot(i) {
     selectedSlot = i;
     updateRotateButton();
     if (!curveHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) {
       curveHintShown = true;
-      showBriefMessage(isTouchDevice ? 'Curve: tap 🔄 to rotate the one you\u2019re aiming at' : 'Curve: press R to rotate the one you\u2019re aiming at');
+      showBriefMessage(isTouchDevice ? 'Curve: tap 🔄 to spin it left/right, ↕️ to spin it up/down' : 'Curve: R spins it left/right, X spins it up/down (aim at it first)');
     }
     document.querySelectorAll('.slot.active').forEach(el => el.classList.remove('active'));
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
@@ -16881,6 +16915,7 @@
     });
     btnJump.addEventListener('touchend', e => { e.preventDefault(); touchJumpHeld = false; });
     document.getElementById('btnRotate').addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); rotateTargetBlock(); });
+    document.getElementById('btnTilt').addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); tiltTargetBlock(); });
     btnJump.addEventListener('touchcancel', e => { touchJumpHeld = false; });
     // Touching the fly lever auto-engages flying, same as the old fly
     // buttons did — this fires alongside (not instead of) setupLever's
@@ -16906,12 +16941,35 @@
   // to the geometry (dummy.rotation.y = rot * Math.PI/2), just solved in
   // reverse: given a world-space point, which local quadrant does it fall
   // in once you undo that rotation.
+  // World point -> the block's own un-rotated, un-tilted frame (all relative to the cell centre): the inverse of
+  // Ry(yaw) * Rx(tilt), see setBlockOrientation. Only used for TILTED blocks — an untilted one keeps the
+  // original checks below exactly as they were.
+  const _BCOS = [1, 0, -1, 0], _BSIN = [0, 1, 0, -1];
+  const _blockLocal = { x: 0, y: 0, z: 0 };
+  function blockLocalPoint(v, dx, dy, dz) {
+    const yc = _BCOS[v & 3], ys = _BSIN[v & 3], tc = _BCOS[(v >> 2) & 3], ts = _BSIN[(v >> 2) & 3];
+    const x1 = dx*yc - dz*ys, z1 = dx*ys + dz*yc;      // undo the yaw
+    _blockLocal.x = x1;
+    _blockLocal.y = dy*tc + z1*ts;                     // undo the tilt
+    _blockLocal.z = -dy*ts + z1*tc;
+    return _blockLocal;
+  }
   function isSolid(x,y,z) {
     const bx=Math.floor(x), by=Math.floor(y), bz=Math.floor(z);
     const k = key(bx,by,bz);
     const type = blocks.get(k);
     if (type === undefined) return false;
     const entry = BLOCK_TYPES[type];
+    const orient = (entry && (entry.half || entry.slope || entry.curve)) ? (stepRotations.get(k) || 0) : 0;
+    if (orient > 3) {
+      // Tilted Step / Slope / Curve: test the point in the block's own frame. Same shapes as the untilted
+      // checks below, minus the Slope's player-radius inset (that only makes sense for walking up a ramp).
+      const l = blockLocalPoint(orient, (x - bx) - 0.5, (y - by) - 0.5, (z - bz) - 0.5);
+      if (entry.half) return l.y < 0 || l.x < 0;            // lower slab, plus the raised quarter on the -X side
+      if (entry.slope) return l.y < -l.x;                   // below the surface that falls from the -X edge (top) to the +X edge (bottom)
+      const du = l.x + 0.5, dv = l.z + 0.5, inside = du*du + dv*dv <= 1; // curve: full height, quarter disc or its complement
+      return entry.curve === 'out' ? inside : !inside;
+    }
     if (entry && entry.half) {
       const localY = y - by; // 0..1 within the cell
       if (localY < 0.5) return true; // lower half — always solid, any rotation
@@ -16973,7 +17031,7 @@
     // Slope handling (see isSolid): everything below only triggers when a
     // Slope block is right there, so walking on anything else is exactly as
     // it always was.
-    const slopeAt = (px, py, pz) => { const t = blocks.get(key(Math.floor(px), Math.floor(py), Math.floor(pz))); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].slope); };
+    const slopeAt = (px, py, pz) => { const sk = key(Math.floor(px), Math.floor(py), Math.floor(pz)); const t = blocks.get(sk); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].slope) && (stepRotations.get(sk) || 0) < 4; }; // a tilted Slope is just a wedge of wall, not a ramp
     const nearSlope = (px, pz, reachUp) => {
       // Looks 0.1 ABOVE the feet, not at them: standing on flat ground the
       // game rests the player ~0.05 below the surface (foot collision points
@@ -17054,8 +17112,9 @@
         // would find the WRONG cell (the one below the actual step) and
         // miss the shortcut below entirely, falling through to the
         // slower clearUpThere/groundToLandOn check instead.
-        const targetType = blocks.get(key(Math.floor(newPos.x), Math.floor(y + 0.01), Math.floor(newPos.z)));
-        const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half;
+        const targetKey = key(Math.floor(newPos.x), Math.floor(y + 0.01), Math.floor(newPos.z));
+        const targetType = blocks.get(targetKey);
+        const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half && (stepRotations.get(targetKey) || 0) < 4; // an upside-down or sideways step isn't a stair to walk up
         if (targetIsStep) {
           y = raisedY;
         } else {

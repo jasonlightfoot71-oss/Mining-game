@@ -445,6 +445,7 @@
   <div id="millCompassArrow" style="font-size:18px;">⬆️</div>
 </div>
 <div id="playerRadar" style="display:none;position:fixed;top:80px;left:56px;z-index:10;width:36px;height:36px;background:rgba(0,0,0,0.35);border-radius:50%;"></div>
+<div id="playerTags" style="position:fixed;left:0;top:0;width:100%;height:100%;z-index:9;pointer-events:none;overflow:hidden;"></div>
 <div id="roleTag" style="display:none;"></div>
 <div id="workStatus" style="display:none;"></div>
 <div id="taskPanel" style="display:none;position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:10;max-width:260px;background:rgba(0,0,0,0.55);padding:8px 10px;border-radius:6px;color:#ffe27a;font-size:12px;text-align:left;">
@@ -9398,11 +9399,11 @@
   const VEHICLE_TYPES = [
     // gunOffset: local-space point (roughly the front of each model) the
     // vehicle gun's tracer visually fires from — see getVehicleMuzzleWorldPos.
-    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false, gunOffset: [0, 0.95, -0.32] }, // standing on the deck, not sitting
-    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true,  gunOffset: [0, 0.5, -0.9]   },
+    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false, ramps: true, gunOffset: [0, 0.95, -0.32] }, // standing on the deck, not sitting
+    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true,  ramps: true, gunOffset: [0, 0.5, -0.9]   },
     { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true,  gunOffset: [0, 0.48, -1.05] },
     { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false, gunOffset: [0, 0.4, -0.3]   }, // standing in the basket
-    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true,  gunOffset: [0, 0.4, -1.05]  },
+    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true,  ramps: true, gunOffset: [0, 0.4, -1.05]  },
   ];
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
@@ -9451,6 +9452,51 @@
       if (waterBlocks.has(key(fx, y, fz))) return y + 0.75;
     }
     return null;
+  }
+
+  // ---- Ramp launches (Scooter, Flying Car, Boat — the types flagged `ramps`) ----
+  // Driving up a Slope block climbs it (tryMove's slope handling, extended to
+  // these vehicles) and, if the top of the slope drops away into open air
+  // rather than leading onto more ground, throws the vehicle off the end:
+  // vehAir tracks that flight. Launch speed comes from how fast the vehicle
+  // was actually rising on the ramp (so a steeper/faster run-up jumps
+  // further), scaled by VEH_RAMP_BOOST and clamped. These four constants
+  // are the ones to tune if the jump feels too weak or too wild.
+  const VEH_RAMP_BOOST = 1.25;   // launch vertical speed = climb rate x this
+  const VEH_RAMP_MAX_VY = 9;     // cap on launch vertical speed (blocks/s)
+  const VEH_RAMP_MIN_VY = 3.5;   // and a floor, so even a gentle roll off the end pops up
+  const VEH_SLOPE_MAX_MOVE = 0.35; // most a vehicle is lifted per frame while climbing a slope (on foot it's 0.12, which a vehicle at speed outruns)
+  const vehAir = { active: false, vy: 0, hx: 0, hz: 0, airT: 0, lastLiftT: 0, climbVy: 0, climbHx: 0, climbHz: 0 };
+  let tryMoveSlopeLifted = false; // set by tryMove each call: did it just lift the player up a slope this frame
+  function resetVehAir() { vehAir.active = false; vehAir.vy = 0; vehAir.airT = 0; vehAir.lastLiftT = 0; vehAir.climbVy = 0; }
+  function vehicleRampsActive() { return !!(ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx] && VEHICLE_TYPES[ridingVehicle.typeIdx].ramps); }
+  // Height of the Slope surface under (px,pz), if the vehicle's centre is
+  // at or just below it (within one step) — used to carry a Boat up a ramp
+  // that sits flush with the water. A boat floats ~0.75 up its cell, and
+  // tryMove's slope collision is lowered by the player's radius (see
+  // SLOPE_COLLISION_INSET), so a slope in the boat's own cell is never
+  // actually "hit" — the boat would just sail through it. Same surface maths
+  // as isSolid, evaluated at the centre with no inset.
+  function slopeSurfaceUnder(px, py, pz) {
+    const bx = Math.floor(px), bz = Math.floor(pz);
+    let best = null;
+    for (let by = Math.floor(py - 0.3); by <= Math.floor(py + 0.6); by++) {
+      const k = key(bx, by, bz);
+      const t = blocks.get(k);
+      if (t === undefined || !BLOCK_TYPES[t] || !BLOCK_TYPES[t].slope) continue;
+      const rot = stepRotations.get(k) || 0;
+      const lx = (px - bx) - 0.5, lz = (pz - bz) - 0.5;
+      const along = rot === 0 ? -lx : rot === 1 ? lz : rot === 2 ? lx : -lz;
+      const surf = by + along + 0.5;
+      if (surf > py && surf <= py + 0.6 && (best === null || surf > best)) best = surf;
+    }
+    return best;
+  }
+  // Is there solid ground right under the vehicle's footprint? (checked a
+  // hair below the feet — tryMove rests the player ~0.05 into the surface)
+  function vehicleSupported() {
+    const r = player.radius, px = player.pos.x, py = player.pos.y - 0.12, pz = player.pos.z;
+    return isSolid(px - r, py, pz - r) || isSolid(px + r, py, pz - r) || isSolid(px - r, py, pz + r) || isSolid(px + r, py, pz + r);
   }
 
   // ---- Riding ----
@@ -9555,6 +9601,7 @@
       return;
     }
     ridingVehicle = v;
+    resetVehAir();
     vehiclePrevFlying = flying;
     flying = !!VEHICLE_TYPES[v.typeIdx].flies;
     player.pos.set(v.x, v.y, v.z);
@@ -9573,6 +9620,7 @@
     const v = ridingVehicle;
     flying = vehiclePrevFlying;
     ridingVehicle = null;
+    resetVehAir();
     stopVehicleEngineSound();
     removeRiderFromVehicle();
     document.getElementById('vehicleExitBtn').style.display = 'none';
@@ -9682,6 +9730,7 @@
     const typeIdx = v.typeIdx;
     flying = vehiclePrevFlying;
     ridingVehicle = null;
+    resetVehAir();
     stopVehicleEngineSound();
     removeRiderFromVehicle();
     document.getElementById('vehicleExitBtn').style.display = 'none';
@@ -11157,7 +11206,13 @@
     if (btnPlaceEl) btnPlaceEl.textContent = '🔫'; // the touch build button IS the fire button while riding — same doPlace interception fireVehicleGun relies on
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
+    v.group.rotation.order = 'YXZ'; // yaw first, then tilt about the vehicle's OWN side axis — the default XYZ order would tilt about the world X axis whatever way it's facing
     v.group.rotation.y = yaw + Math.PI;
+    // Pitches the nose up on the way up a ramp jump and down on the way
+    // back down (only ever non-zero while vehAir is active, so every other
+    // moment — and every other vehicle — stays perfectly level).
+    const airTilt = vehAir.active ? Math.max(-0.5, Math.min(0.5, vehAir.vy * 0.05)) : 0;
+    v.group.rotation.x += (airTilt - v.group.rotation.x) * Math.min(1, dt*8);
     if (v.group.userData.rotor) v.group.userData.rotor.rotation.y += dt*40;
     if (v.group.userData.tailRotor) v.group.userData.tailRotor.rotation.x += dt*50;
     // In first person the camera sits at/inside the vehicle's own model
@@ -16714,7 +16769,7 @@
   const SLOPE_COLLISION_INSET = 0.3;
   const SLOPE_MAX_MOVE_PER_FRAME = 0.12; // the most a slope lifts or lowers the player in one frame — see smoothLift in tryMove
   const STEP_HEIGHT = 0.55; // a touch more than the step block's own 0.5, so it clears comfortably
-  function tryMove(newPos, wasGrounded) {
+  function tryMove(newPos, wasGrounded, rideSlopes) { // rideSlopes: true for the ramp vehicles — lets them climb Slope blocks (even in flying mode) and at a speed a walking player never reaches
     const r = player.radius;
     const test = (x,y,z) => {
       const pts = [
@@ -16729,14 +16784,17 @@
     // Slope block is right there, so walking on anything else is exactly as
     // it always was.
     const slopeAt = (px, py, pz) => { const t = blocks.get(key(Math.floor(px), Math.floor(py), Math.floor(pz))); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].slope); };
-    const nearSlope = (px, pz) => {
+    const nearSlope = (px, pz, reachUp) => {
       // Looks 0.1 ABOVE the feet, not at them: standing on flat ground the
       // game rests the player ~0.05 below the surface (foot collision points
       // are tested 0.05 up), so their feet are still in the block's own cell
       // — one below a slope sitting on it.
-      for (const [ox, oz] of [[0,0],[r,r],[-r,r],[r,-r],[-r,-r]]) if (slopeAt(px+ox, y+0.1, pz+oz) || slopeAt(px+ox, y-0.05, pz+oz)) return true;
+      for (const [ox, oz] of [[0,0],[r,r],[-r,r],[r,-r],[-r,-r]]) if (slopeAt(px+ox, y+0.1, pz+oz) || slopeAt(px+ox, y-0.05, pz+oz) || (reachUp && slopeAt(px+ox, y+0.35, pz+oz))) return true;
       return false;
     };
+    // reachUp (ramp vehicles only) also counts a Slope sitting a step ABOVE
+    // whatever's blocking — a boat floats ~0.25 below the top of a shoreline
+    // block, so a ramp built on the bank starts above its feet, not at them.
     // Steps up by the SMALLEST amount that clears whatever's in the way, up
     // to STEP_HEIGHT — the ordinary step-up below jumps the full 0.55 and
     // needs solid ground exactly there, which is right for a stair block
@@ -16749,10 +16807,11 @@
     // (SLOPE_MAX_MOVE_PER_FRAME each) — they stay flagged as on the ground
     // meanwhile, so next frame's call carries on where this one left off.
     let slopeMoved = false, slopeLifted = false;
+    const liftCap = rideSlopes ? VEH_SLOPE_MAX_MOVE : SLOPE_MAX_MOVE_PER_FRAME;
     const smoothLift = () => {
       for (let lift = 0.03; lift <= STEP_HEIGHT + 1e-9; lift += 0.03) {
         if (!test(newPos.x, y + lift, z) && !test(x, y + lift, newPos.z)) {
-          const applied = Math.min(lift, SLOPE_MAX_MOVE_PER_FRAME);
+          const applied = Math.min(lift, liftCap);
           y += applied;
           newPos.y += applied; // the vertical move below is resolved from newPos.y, worked out by the caller BEFORE this lift — without this it would put y straight back
           slopeMoved = slopeLifted = true;
@@ -16780,7 +16839,7 @@
     // reading it directly here would always see false and never trigger.
     if (!flying && wasGrounded) {
       const blockedHere = test(newPos.x, y, z) || test(x, y, newPos.z);
-      if (blockedHere && (nearSlope(x, z) || nearSlope(newPos.x, newPos.z)) && smoothLift()) {
+      if (blockedHere && (nearSlope(x, z, rideSlopes) || nearSlope(newPos.x, newPos.z, rideSlopes)) && smoothLift()) {
         // climbed the slope (or stepped from it onto the ledge at its top) by the smallest amount needed
       } else if (blockedHere) {
         const raisedY = y + STEP_HEIGHT;
@@ -16816,6 +16875,14 @@
           if (clearUpThere && groundToLandOn) y = raisedY;
         }
       }
+    } else if (flying && rideSlopes) {
+      // Flying Car / Boat: they never get the walking step-up above (they
+      // aren't grounded in that sense), but driving one into a Slope should
+      // still ride up it rather than stop dead against it — same
+      // smallest-lift-that-clears logic, slopes only, so every other block
+      // still just blocks them exactly as before.
+      const blockedHere = test(newPos.x, y, z) || test(x, y, newPos.z);
+      if (blockedHere && (nearSlope(x, z, true) || nearSlope(newPos.x, newPos.z, true))) smoothLift();
     }
 
     if (!test(newPos.x,y,z)) x = newPos.x;
@@ -16826,13 +16893,14 @@
     // and fall down it in a series of hops. So if you were on the ground,
     // aren't rising, and there's ground within a step's height below you on
     // a slope, stay on it.
-    if (!flying && wasGrounded && !slopeLifted && !player.onGround && player.vel.y <= 0 && nearSlope(x, z)) { // (not on a frame that just lifted them — that would undo it)
+    if (!flying && wasGrounded && !slopeLifted && !player.onGround && player.vel.y <= 0 && nearSlope(x, z) && !(rideSlopes && performance.now() - vehAir.lastLiftT < 200)) { // (not on a frame that just lifted them — that would undo it; and not for a vehicle that was climbing a moment ago — at the top of a ramp it should fly off the end, not hug the far side down)
       for (let drop = 0; drop <= STEP_HEIGHT + 1e-9; drop += 0.03) {
         if (test(x, y - drop, z)) break;
-        if (test(x, y - drop - 0.03, z)) { if (drop > 0) y -= Math.min(drop, SLOPE_MAX_MOVE_PER_FRAME); slopeMoved = true; break; } // a bigger drop (stepping off a ledge onto the ramp) is taken over a few frames, not in one
+        if (test(x, y - drop - 0.03, z)) { if (drop > 0) y -= Math.min(drop, liftCap); slopeMoved = true; break; } // a bigger drop (stepping off a ledge onto the ramp) is taken over a few frames, not in one
       }
     }
     if (slopeMoved) { player.onGround = true; player.vel.y = 0; } // still riding the ground while a lift/drop plays out over several frames
+    tryMoveSlopeLifted = slopeLifted;
     player.pos.set(x,y,z);
   }
   // A dedicated, much simpler collision resolver for swimming — same
@@ -17680,6 +17748,7 @@
   function removeOtherPlayer(uid) {
     const op = otherPlayers.get(uid);
     if (!op) return;
+    if (op.tagEl && op.tagEl.parentNode) op.tagEl.parentNode.removeChild(op.tagEl);
     scene.remove(op.group);
     disposeObject3D(op.group);
     if (op.vehicleGroup) { scene.remove(op.vehicleGroup); disposeObject3D(op.vehicleGroup); }
@@ -18230,6 +18299,64 @@
       if (now2 - op.lastUpdate > 15000) removeOtherPlayer(op.uid); // hasn't broadcast in a while — connection likely dropped rather than Presence catching it
     });
     updatePlayerRadar();
+  }
+  // Screen-space name tags for players who are too far away to see.
+  // The floating 3D name above a player's head (buildNameSprite) is
+  // part of the scene, so it gets swallowed by the fog (scene.fog.far is
+  // only ~70) and shrinks to nothing well before that — past a certain
+  // distance you couldn't tell where the other player was at all, even
+  // looking straight at them. Their position is still known exactly
+  // (it's broadcast every 150ms whatever the distance), so beyond
+  // PLAYER_TAG_FAR this projects it onto the screen and draws a plain HTML
+  // label there instead — name plus distance, fixed pixel size, never
+  // fogged — and hides the 3D one so there's never a doubled-up label.
+  // Only shown while they're actually in front of the camera; the radar
+  // beside the compass still covers "which way are they".
+  const PLAYER_TAG_FAR = 20;
+  const _tagVec = new THREE.Vector3();
+  function makePlayerTagEl() {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute;left:0;top:0;display:none;flex-direction:column;align-items:center;white-space:nowrap;will-change:transform;';
+    const label = document.createElement('div');
+    label.style.cssText = 'background:rgba(0,0,0,0.6);color:#fff;font:600 12px/1 sans-serif;padding:4px 8px;border-radius:10px;border:1px solid rgba(255,255,255,0.25);';
+    const arrow = document.createElement('div');
+    arrow.textContent = '\u25BE';
+    arrow.style.cssText = 'color:rgba(0,0,0,0.6);font-size:12px;line-height:8px;margin-top:1px;';
+    el.appendChild(label); el.appendChild(arrow);
+    el._label = label;
+    return el;
+  }
+  function updatePlayerTags() {
+    const layer = document.getElementById('playerTags');
+    if (!layer) return;
+    if (otherPlayers.size === 0) return; // removeOtherPlayer already took each player's tag with it
+    camera.updateMatrixWorld(true);
+    const vw = window.innerWidth, vh = window.innerHeight;
+    otherPlayers.forEach(op => {
+      if (!op.tagEl) { op.tagEl = makePlayerTagEl(); layer.appendChild(op.tagEl); }
+      const p = op.group.position, c = camera.position;
+      const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z;
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      let show = false, sx = 0, sy = 0;
+      if (dist > PLAYER_TAG_FAR) {
+        _tagVec.set(p.x, p.y + 2.6, p.z).applyMatrix4(camera.matrixWorldInverse);
+        if (_tagVec.z < -0.1) { // negative camera-space z = in front of the camera
+          _tagVec.set(p.x, p.y + 2.6, p.z).project(camera);
+          if (_tagVec.x > -1.05 && _tagVec.x < 1.05 && _tagVec.y > -1.05 && _tagVec.y < 1.05) {
+            show = true;
+            sx = (_tagVec.x * 0.5 + 0.5) * vw;
+            sy = (-_tagVec.y * 0.5 + 0.5) * vh;
+          }
+        }
+      }
+      if (op.nameSprite) op.nameSprite.visible = !show;
+      if (!show) { if (op.tagShown) { op.tagEl.style.display = 'none'; op.tagShown = false; } return; }
+      const distText = dist >= 1000 ? (dist/1000).toFixed(1) + 'km' : Math.round(dist) + 'm';
+      const text = (op.displayName || 'Player') + '  \u00B7  ' + distText;
+      if (op.tagText !== text) { op.tagEl._label.textContent = text; op.tagText = text; }
+      if (!op.tagShown) { op.tagEl.style.display = 'flex'; op.tagShown = true; }
+      op.tagEl.style.transform = 'translate(' + sx.toFixed(1) + 'px,' + sy.toFixed(1) + 'px) translate(-50%,-100%)';
+    });
   }
   // Small radar-style compass showing the relative direction of every
   // other player currently visible, alongside the Mill/spawn compass —
@@ -20979,7 +21106,51 @@
       windIntensity = flying ? Math.min(1, move.length()) : 0;
       move.multiplyScalar(speed*dt);
 
-      if (flying) {
+      const vehPrevX = player.pos.x, vehPrevY = player.pos.y, vehPrevZ = player.pos.z; // start-of-frame position, for measuring how fast a vehicle is climbing a ramp (see the launch check below)
+      tryMoveSlopeLifted = false;
+      // A Flying Car mid-jump hands control straight back the moment the
+      // player asks for altitude (Space / fly lever up) — it can just fly
+      // off the ramp instead of arcing down. Boat and Scooter can't.
+      if (ridingVehicle && vehAir.active) {
+        const vtc = VEHICLE_TYPES[ridingVehicle.typeIdx];
+        if (vtc.flies && !vtc.boat && (keys['Space'] || flyState.y < 0)) { vehAir.active = false; vehAir.vy = 0; }
+      }
+
+      if (ridingVehicle && vehAir.active) {
+        // Mid-jump off a ramp: own tiny ballistic step, replacing walking /
+        // flying / swimming until touchdown. Horizontal momentum from the
+        // launch carries on (mostly — a quarter of it is steerable with the
+        // move input, so you can nudge left/right but can't stop dead in
+        // mid-air), gravity does the rest.
+        const vtype = VEHICLE_TYPES[ridingVehicle.typeIdx];
+        vehAir.airT += dt;
+        vehAir.vy += GRAVITY * dt;
+        const airNew = player.pos.clone();
+        airNew.x += vehAir.hx*dt*0.75 + move.x*0.25;
+        airNew.z += vehAir.hz*dt*0.75 + move.z*0.25;
+        airNew.y += vehAir.vy*dt;
+        player.onGround = false;
+        tryMove(airNew, false, false); // no slope-riding in the air: coming down onto a slope just lands on its surface
+        if (vehAir.vy > 0 && player.pos.y < airNew.y - 1e-4) vehAir.vy = 0; // bumped a ceiling — stop rising, start falling
+        let touchedDown = player.onGround;
+        let splash = false;
+        if (vtype.boat) {
+          // A boat comes down onto the water rather than through it: the
+          // first frame it's falling and at/below the local surface, it
+          // settles there (the same height the normal boat clamp uses).
+          const wyAir = waterSurfaceYNear(player.pos.x, player.pos.z);
+          if (wyAir !== null && vehAir.vy <= 0 && player.pos.y <= wyAir + 0.05) { player.pos.y = wyAir; touchedDown = true; splash = true; }
+        } else if (waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + 0.2), Math.floor(player.pos.z)))) {
+          touchedDown = true; splash = true; // scooter/car into water — the normal swim/hover handling takes over next frame
+        }
+        if (vehAir.airT > 8) touchedDown = true; // safety net: never stay in the air forever
+        if (touchedDown) {
+          vehAir.active = false; vehAir.vy = 0; vehAir.airT = 0;
+          player.vel.set(0, 0, 0);
+          playThud(splash ? 110 : 180);
+        }
+        footstepTimer = 0;
+      } else if (flying) {
         // Walking's `forward` above is deliberately flat (yaw only, no
         // pitch) so looking down never makes you walk into the ground.
         // Keyboard flying still follows where you're looking (aim down and
@@ -21029,7 +21200,7 @@
         if (flyState.y !== 0) dy -= flyState.y*speed*dt;
         const newPos = player.pos.clone();
         newPos.x += flyMove.x; newPos.z += flyMove.z; newPos.y += dy;
-        tryMove(newPos, false);
+        tryMove(newPos, false, vehicleRampsActive());
         player.vel.y = 0;
         footstepTimer = 0;
       } else if (submerged) {
@@ -21143,7 +21314,7 @@
         // below it. Space's own strong upward boost (6.5, see the
         // submerged branch above) is what gets you up and over a bank
         // at the water's edge instead.
-        tryMove(newPos, wasGrounded);
+        tryMove(newPos, wasGrounded, vehicleRampsActive());
         if (player.pos.y < -10) { player.pos.set(0.5, WORLD_HEIGHT+5, 0.5); player.vel.set(0,0,0); }
 
         // Depth-aware movement sound: genuinely swimming (2+ blocks of
@@ -21184,11 +21355,48 @@
         }
       }
 
+      // Ramp launch: while a Scooter / Flying Car / Boat is being lifted up
+      // a Slope, remember how fast it's rising and going; the moment it's
+      // come off the top with nothing solid underneath, throw it into the
+      // air with that speed (vehAir, stepped above). A ramp that leads onto
+      // more ground (a plateau, a ridge that keeps going) never trips this
+      // — the vehicle is still supported there, so it just drives on.
+      if (vehicleRampsActive() && !vehAir.active && dt > 0) {
+        const nowRamp = performance.now();
+        if (VEHICLE_TYPES[ridingVehicle.typeIdx].boat) {
+          const surfY = slopeSurfaceUnder(player.pos.x, player.pos.y, player.pos.z);
+          if (surfY !== null) { player.pos.y = Math.min(surfY, player.pos.y + VEH_SLOPE_MAX_MOVE); tryMoveSlopeLifted = true; }
+        }
+        if (tryMoveSlopeLifted) {
+          const instVy = (player.pos.y - vehPrevY) / dt;
+          const instHx = (player.pos.x - vehPrevX) / dt, instHz = (player.pos.z - vehPrevZ) / dt;
+          if (nowRamp - vehAir.lastLiftT > 200) { vehAir.climbVy = instVy; vehAir.climbHx = instHx; vehAir.climbHz = instHz; }
+          else { // smoothed, so one uneven frame doesn't set the launch speed
+            vehAir.climbVy = vehAir.climbVy*0.5 + instVy*0.5;
+            vehAir.climbHx = vehAir.climbHx*0.5 + instHx*0.5;
+            vehAir.climbHz = vehAir.climbHz*0.5 + instHz*0.5;
+          }
+          vehAir.lastLiftT = nowRamp;
+        } else if (vehAir.lastLiftT > 0 && nowRamp - vehAir.lastLiftT < 180 && vehAir.climbVy > 1.2 && !vehicleSupported()) {
+          vehAir.active = true;
+          vehAir.airT = 0;
+          vehAir.vy = Math.min(VEH_RAMP_MAX_VY, Math.max(VEH_RAMP_MIN_VY, vehAir.climbVy * VEH_RAMP_BOOST));
+          vehAir.hx = vehAir.climbHx; vehAir.hz = vehAir.climbHz;
+          vehAir.lastLiftT = 0; vehAir.climbVy = 0;
+          player.vel.set(0, 0, 0);
+          player.onGround = false;
+          playJump();
+        }
+      }
+
       // A boat floats — whatever height the normal flight math above just
       // produced (including any pitch-follow climb/dive) gets overridden
       // to sit right on the local water surface instead, so looking up
-      // doesn't send it climbing into the air.
-      if (ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx].boat) {
+      // doesn't send it climbing into the air. Not while it's in a ramp
+      // jump (it should actually be in the air), nor for a moment after
+      // climbing a ramp (the water column under a ramp would otherwise
+      // yank it straight back down).
+      if (ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx].boat && !vehAir.active && performance.now() - vehAir.lastLiftT > 250) {
         const wy = waterSurfaceYNear(player.pos.x, player.pos.z);
         if (wy !== null) player.pos.y = wy;
       }
@@ -21430,6 +21638,7 @@
 
     updateSky(dt);
     updateWeather(dt);
+    try { updatePlayerTags(); } catch (err) { console.warn('updatePlayerTags error (recovered):', err); } // after the camera has settled for this frame (every camera mode above), right before drawing
     if (!contextLost) {
       if (needsRebuild) { rebuildMeshes(); needsRebuild = false; }
       else if (rebuildInProgress) { continueRebuild(); } // drains the rest of a chunked rebuild over subsequent frames — see rebuildMeshes()/continueRebuild()'s own comments

@@ -1705,6 +1705,14 @@
     concreteRed:   makeCanvasTexture((ctx,s) => speckle(ctx,s,'#b03a3a',['#a53232','#bb4444'],0.18)),
     concreteBlue:  makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3a5ab0',['#324fa5','#4468bb'],0.18)),
     concreteBlack: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#2a2a2a',['#232323','#333333'],0.18)),
+    concreteGreen:     makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3a8a3f',['#337f38','#449a49'],0.18)),
+    concreteYellow:    makeCanvasTexture((ctx,s) => speckle(ctx,s,'#d8c23a',['#cdb632','#e4ce4a'],0.18)),
+    concreteOrange:    makeCanvasTexture((ctx,s) => speckle(ctx,s,'#d9782a',['#cd6d22','#e5853a'],0.18)),
+    concretePurple:    makeCanvasTexture((ctx,s) => speckle(ctx,s,'#7a3ab0',['#7032a5','#8646bb'],0.18)),
+    concretePink:      makeCanvasTexture((ctx,s) => speckle(ctx,s,'#e08aa8',['#d67e9c','#eb96b3'],0.18)),
+    concreteBrown:     makeCanvasTexture((ctx,s) => speckle(ctx,s,'#7a5230',['#6f482a','#865c38'],0.18)),
+    concreteLightBlue: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#5aaee0',['#4fa2d4','#68baeb'],0.18)),
+    concreteDarkGrey:  makeCanvasTexture((ctx,s) => speckle(ctx,s,'#4a4a4c',['#414143','#555557'],0.18)),
 
     // Coloured glass — same translucent-panel technique as the base
     // TEX.glass, just tinted, each still cleared+redrawn so opacity stays
@@ -1976,17 +1984,27 @@
     // Roof-tile slopes, for roofs: red (clay) and grey (slate).
     { name: 'Red Roof Slope',  mats: TEX.roofTileRed,  slope: true, cost: 4, isVariant: true },
     { name: 'Grey Roof Slope', mats: TEX.roofTileGrey, slope: true, cost: 4, isVariant: true },
+    // More concrete colours, added to Concrete's own popup after its original five.
+    { name: 'Green Concrete',      mats: TEX.concreteGreen,     cost: 4, isVariant: true },
+    { name: 'Yellow Concrete',     mats: TEX.concreteYellow,    cost: 4, isVariant: true },
+    { name: 'Orange Concrete',     mats: TEX.concreteOrange,    cost: 4, isVariant: true },
+    { name: 'Purple Concrete',     mats: TEX.concretePurple,    cost: 4, isVariant: true },
+    { name: 'Pink Concrete',       mats: TEX.concretePink,      cost: 4, isVariant: true },
+    { name: 'Brown Concrete',      mats: TEX.concreteBrown,     cost: 4, isVariant: true },
+    { name: 'Light Blue Concrete', mats: TEX.concreteLightBlue, cost: 4, isVariant: true },
+    { name: 'Dark Grey Concrete',  mats: TEX.concreteDarkGrey,  cost: 4, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
   // save records which numbering it used (slotLayout) so its selected slot
   // can be shifted to match — see the restore in applyWorldData. Layout 1
   // (no slotLayout field) had 60 block types, layout 2 had 61 (Slope),
-  // layout 3 had 65 (the four material slopes), and the current layout 4
-  // has them all (the two roof-tile slopes). ADDING ANOTHER BLOCK TYPE means
-  // bumping SLOT_LAYOUT and recording the old count here.
-  const SLOT_LAYOUT = 4;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: BLOCK_TYPES.length };
+  // layout 3 had 65 (the four material slopes), layout 4 had 67 (the two
+  // roof-tile slopes), and the current layout 5 has them all (the extra
+  // concrete colours). ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
+  // and recording the old count here.
+  const SLOT_LAYOUT = 5;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2000,6 +2018,7 @@
   const SLOPE_TYPE = typeIndexByName('Slope');
   const SLOPE_VARIANT_TYPES = ['White Slope', 'Brick Slope', 'Wood Slope', 'Sand Slope'].map(typeIndexByName);
   const ROOF_SLOPE_TYPES = ['Red Roof Slope', 'Grey Roof Slope'].map(typeIndexByName);
+  const EXTRA_CONCRETE_TYPES = ['Green Concrete', 'Yellow Concrete', 'Orange Concrete', 'Purple Concrete', 'Pink Concrete', 'Brown Concrete', 'Light Blue Concrete', 'Dark Grey Concrete'].map(typeIndexByName);
   // Primary hotbar index -> its family members (itself first, then its
   // variants), in the order the popup lists them. Glass's list is 4
   // longer than the others now — the popup itself already renders
@@ -2029,6 +2048,8 @@
   // Step's: the plain stone Slope leads it, then the same four materials the
   // Step comes in, then the two roof-tile slopes.
   BLOCK_FAMILIES[SLOPE_TYPE] = [SLOPE_TYPE, ...SLOPE_VARIANT_TYPES, ...ROOF_SLOPE_TYPES];
+  // Concrete's original five colours, then the extra ones.
+  BLOCK_FAMILIES[10].push(...EXTRA_CONCRETE_TYPES);
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -21637,10 +21658,9 @@
     slotEl.appendChild(waterHeightIconCanvas(waterHeightIdx));
   }
   function showWaterHeightPopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     WATER_HEIGHT_LABELS.forEach((label, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
@@ -21659,8 +21679,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   // Appended to every priced item's tooltip/label so the cost is always
   // visible right next to its name, not just discoverable by trying to
@@ -21668,8 +21687,53 @@
   function costLabel(cost) { return cost ? ' — 💰'+cost : ''; }
   const slotElByIndex = {}; // BLOCK_TYPES index (or WATER/LIGHT/LADDER_SLOT) -> its hotbar DOM element
   let openFamilyPopup = null;
+  let openFamilyPopupOwner = null; // the hotbar slot the open popup belongs to, so pressing that same slot again can collapse it
   function closeFamilyPopup() {
     if (openFamilyPopup) { openFamilyPopup.remove(); openFamilyPopup = null; }
+    openFamilyPopupOwner = null;
+  }
+  // Every popup builder calls this first. It closes whatever popup is open
+  // and reports whether that popup was THIS slot's — in which case the press
+  // was to collapse it, and the builder must return without opening another.
+  function togglePopupFor(slotEl) {
+    const wasThisSlots = !!openFamilyPopup && openFamilyPopupOwner === slotEl;
+    closeFamilyPopup();
+    return wasThisSlots;
+  }
+  // Shared placement for every hotbar popup. It sits directly above its
+  // slot, so the room it actually has is the gap between the top of the
+  // screen and the top of the slot — NOT the screen height, which is what
+  // the block popups used to be capped at, and which the Door popup had no
+  // cap at all for. On a short screen a long menu (Slopes, Concrete, Glass)
+  // came out taller than that gap, so its top stood off the top of the
+  // screen with the last blocks unreachable — the container's own scrolling
+  // couldn't help because the container itself was the thing that didn't fit.
+  // Capped to the real gap, it scrolls internally and every item can be
+  // brought fully into view.
+  const POPUP_GAP_ABOVE_SLOT = 6, POPUP_MARGIN_FROM_SCREEN_TOP = 8, POPUP_MIN_HEIGHT = 72;
+  function popupCss(slotEl, opts) {
+    opts = opts || {};
+    const rect = slotEl.getBoundingClientRect();
+    const room = Math.max(POPUP_MIN_HEIGHT, Math.floor(rect.top - POPUP_GAP_ABOVE_SLOT - POPUP_MARGIN_FROM_SCREEN_TOP));
+    return `position:fixed;left:${rect.left}px;bottom:${window.innerHeight - rect.top + POPUP_GAP_ABOVE_SLOT}px;display:flex;`
+      + `flex-direction:${opts.reverse ? 'column-reverse' : 'column'};${opts.wrap ? 'flex-wrap:wrap;' : ''}gap:4px;z-index:50;`
+      + `max-height:${room}px;overflow-y:auto;overscroll-behavior:contain;${opts.extra || ''}`;
+  }
+  // Puts a built popup on screen and registers it as the open one. Items are
+  // added in menu order and this lays them out with the FIRST at the bottom,
+  // next to the slot — as before — but as an ordinary top-to-bottom column
+  // (children reversed, scrolled to the bottom to start), not
+  // flex-direction:column-reverse. Browsers have differed over whether a
+  // reversed container's overflowing end can be scrolled to at all; a plain
+  // column scrolls the same everywhere. (The wallpaper popup wraps into
+  // several columns and keeps column-reverse, via opts.reverse.)
+  function mountPopup(popup, slotEl, opts) {
+    const keepReversed = !!(opts && opts.reverse);
+    if (!keepReversed) Array.from(popup.children).reverse().forEach(c => popup.appendChild(c));
+    document.body.appendChild(popup);
+    if (!keepReversed) popup.scrollTop = popup.scrollHeight;
+    openFamilyPopup = popup;
+    openFamilyPopupOwner = slotEl;
   }
   // Refreshes a family slot's own icon to match whichever variant is
   // currently chosen for it, so the main hotbar row reflects your pick
@@ -21697,8 +21761,7 @@
   // was pressed. Picking one closes the popup and both selects it AND
   // remembers it as this family's current choice.
   function showFamilyPopup(primaryIdx, slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
     // Fixed + appended to <body> rather than being a child of the slot —
     // the hotbar needs horizontal scrolling to fit everything now, and
@@ -21712,7 +21775,7 @@
     // could run off the top of a shorter screen with no way to reach
     // the rest of it. Every other family is still short enough never to
     // hit this cap in practice.
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:${window.innerHeight-20}px;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     BLOCK_FAMILIES[primaryIdx].forEach(idx => {
       const entry = BLOCK_TYPES[idx];
       const btn = document.createElement('div');
@@ -21736,8 +21799,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   document.addEventListener('click', e => {
     if (openFamilyPopup && !openFamilyPopup.contains(e.target)) closeFamilyPopup();
@@ -21904,14 +21966,13 @@
     slotEl.insertBefore(wallpaperSwatchCanvas(wallpaperColorIdx), slotEl.querySelector('.family-badge'));
   }
   function showWallpaperPopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
     // flex-wrap + a fixed max-height turns this into a scrollable
     // multi-column grid once it has more entries than fit in one column
     // (20 colours now, up from the original 5) — without this it just
     // kept growing upward off the top of the screen.
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;flex-wrap:wrap;gap:4px;z-index:50;max-height:80vh;overflow-y:auto;padding:2px;`;
+    popup.style.cssText = popupCss(slotEl, { reverse: true, wrap: true, extra: 'padding:2px;' });
     WALLPAPER_COLORS.forEach((c, idx) => {
       const btn = document.createElement('div');
       btn.className = 'slot';
@@ -21926,8 +21987,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl, { reverse: true, wrap: true, extra: 'padding:2px;' });
   }
   {
     const slot = document.createElement('div');
@@ -21976,10 +22036,9 @@
     slotEl.insertBefore(doorIconCanvas(doorTypeIdx), slotEl.querySelector('.family-badge'));
   }
   function showDoorPopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;`;
+    popup.style.cssText = popupCss(slotEl);
     DOOR_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
@@ -21998,8 +22057,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   {
     const slot = document.createElement('div');
@@ -22033,10 +22091,9 @@
     return c;
   }
   function showSignPopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     SIGN_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
@@ -22057,8 +22114,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   {
     const slot = document.createElement('div');
@@ -22162,10 +22218,9 @@
   // scroll below is a safety net on top of that split, in case a category
   // ever grows past what fits.
   function showFurniturePopup(slotEl, slotConst, category, getIdx, setIdx) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     FURNITURE_TYPES.forEach((t, idx) => {
       if (t.category !== category) return;
       const btn = document.createElement('div');
@@ -22185,8 +22240,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   function makeFurnitureSlot(slotConst, category, label, defaultIdx, getIdx, setIdx) {
     const slot = document.createElement('div');
@@ -22251,10 +22305,9 @@
     slotEl.insertBefore(vehicleIconCanvas(vehicleTypeIdx), slotEl.querySelector('.family-badge'));
   }
   function showVehiclePopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     VEHICLE_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
@@ -22273,8 +22326,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   {
     const slot = document.createElement('div');
@@ -22334,10 +22386,9 @@
     slotEl.insertBefore(weaponIconCanvas(weaponTypeIdx), slotEl.querySelector('.family-badge'));
   }
   function showWeaponPopup(slotEl) {
-    closeFamilyPopup();
-    const rect = slotEl.getBoundingClientRect();
+    if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
     const popup = document.createElement('div');
-    popup.style.cssText = `position:fixed;left:${rect.left}px;bottom:${window.innerHeight-rect.top+6}px;display:flex;flex-direction:column-reverse;gap:4px;z-index:50;max-height:70vh;overflow-y:auto;`;
+    popup.style.cssText = popupCss(slotEl);
     WEAPON_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
@@ -22357,8 +22408,7 @@
       });
       popup.appendChild(btn);
     });
-    document.body.appendChild(popup);
-    openFamilyPopup = popup;
+    mountPopup(popup, slotEl);
   }
   {
     const slot = document.createElement('div');

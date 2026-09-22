@@ -81,6 +81,62 @@
   .popup-item:hover { border-color: #fff; }
   .popup-item-label { font-size: 9px; color: #fff; text-align: center; line-height: 1.15; max-width: 60px; }
 
+  /* ── Categorised block menu (see MENU_CATEGORIES) ── */
+  .slot { transition: background .12s ease, border-color .12s ease, transform .12s ease; cursor: pointer; }
+  #hotbar .slot:hover { background: rgba(255,255,255,0.14); }
+  #hotbar .slot:active { transform: scale(0.94); }
+  .cat-slot.cat-expanded { background: rgba(255,255,255,0.22); border-color: #fff; }
+  .cat-badge { position: absolute; top: 1px; right: 3px; font-size: 9px; color: rgba(255,255,255,0.7); pointer-events: none; transition: transform .15s ease; }
+  .cat-slot.cat-expanded .cat-badge { transform: rotate(180deg); }
+  .cat-column, .menu-panel {
+    padding: 5px; background: rgba(14,18,24,0.82); border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); box-sizing: border-box;
+    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.3) transparent;
+  }
+  .cat-column {
+    position: fixed; display: none; flex-direction: column; gap: 3px; z-index: 50;
+    overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+  .menu-panel > .slot, .menu-panel > .popup-item {
+    width: 190px; min-width: 0; height: 44px; flex-shrink: 0; flex-direction: row; justify-content: flex-start; gap: 9px;
+    padding: 0 8px 0 5px; border: 1px solid transparent; border-radius: 7px; background: rgba(255,255,255,0.05);
+  }
+  .menu-panel > .slot:hover, .menu-panel > .popup-item:hover { background: rgba(255,255,255,0.15); border-color: transparent; }
+  .menu-panel > .slot.active { border-color: #fff; background: rgba(255,255,255,0.2); box-shadow: none; }
+  .menu-panel .slot-label, .menu-panel .popup-item-label {
+    position: static; background: none; font-size: 12px; line-height: 1.2; text-align: left; max-width: none;
+    white-space: normal; flex: 1; text-shadow: 0 1px 2px #000; overflow: visible;
+  }
+  .menu-panel > .slot > .key { display: none; }
+  .menu-panel canvas { object-fit: contain; flex-shrink: 0; }
+  .menu-panel .price-badge { top: 3px !important; right: 6px !important; }
+  .cat-column .slot {
+    width: 168px; height: 44px; flex-shrink: 0; justify-content: flex-start; gap: 9px;
+    padding: 0 22px 0 5px; border: 1px solid transparent; border-radius: 7px; background: rgba(255,255,255,0.05);
+  }
+  .cat-column .slot:hover { background: rgba(255,255,255,0.15); }
+  .cat-column .slot:active { transform: scale(0.97); }
+  .cat-column .slot.active { border-color: #fff; background: rgba(255,255,255,0.2); box-shadow: none; }
+  .cat-column .key { display: none; }
+  .cat-column .slot-label {
+    position: static; background: none; font-size: 12px; line-height: 1.2; text-align: left;
+    white-space: normal; flex: 1; text-shadow: 0 1px 2px #000;
+  }
+  .cat-column .family-badge { top: 50% !important; bottom: auto !important; right: 8px !important; font-size: 12px !important; transform: translateY(-50%); }
+  .cat-column .price-badge { top: 3px !important; right: 20px !important; }
+  @keyframes menuRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes menuSlideR { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: none; } }
+  @keyframes menuSlideL { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
+  .cat-column.cat-open, .menu-panel { animation: menuRise .16s ease-out; }
+  .menu-panel.menu-sub { animation-name: menuSlideR; }
+  .menu-panel.menu-sub-left { animation-name: menuSlideL; }
+  /* Short landscape screens (phones on their side): tighter rows so more fit before scrolling. */
+  @media (max-height: 500px) {
+    .cat-column .slot, .menu-panel > .slot, .menu-panel > .popup-item { height: 34px; width: 150px; gap: 7px; }
+    .cat-column .swatch, .menu-panel .swatch, .menu-panel .popup-item canvas { width: 26px; height: 26px; }
+    .cat-column .slot-label, .menu-panel .slot-label, .menu-panel .popup-item-label { font-size: 11px; }
+  }
+
   #overlay {
     position: fixed; inset: 0; background: rgba(15,20,25,0.92); z-index: 20;
     color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -198,6 +254,12 @@
     .swatch { width: 18px; height: 18px; }
     .key { font-size: 6px; top: 0; left: 1px; }
     .slot-label { font-size: 5px; line-height: 6px; }
+    .cat-column .slot { width: 128px; height: 32px; gap: 6px; padding: 0 18px 0 4px; }
+    .menu-panel > .slot, .menu-panel > .popup-item { width: 128px; height: 32px; gap: 6px; padding: 0 4px; }
+    .cat-column .swatch, .menu-panel .swatch, .menu-panel .popup-item canvas { width: 24px; height: 24px; }
+    .cat-column .slot-label, .menu-panel .slot-label, .menu-panel .popup-item-label { font-size: 10px; line-height: 1.15; }
+    .cat-column .family-badge { font-size: 10px !important; right: 5px !important; }
+    .cat-badge { font-size: 6px; right: 1px; }
     #crosshair { width: 16px; height: 16px; }
     #crosshair::before { height: 16px; left: 7px; }
     #crosshair::after { width: 16px; top: 7px; }
@@ -9535,14 +9597,147 @@
     group.add(sail);
     return group;
   }
+  // The original five vehicle models were built with their nose at local -Z,
+  // but a ridden vehicle's group is turned so local +Z is the way it travels
+  // (see updateVehicleCameraFocus: rotation.y = yaw + PI) and the rider
+  // figure faces +Z too — so the helicopter flew tail-first, the scooter's
+  // handlebar sat behind its rider and the boat went stern-first. This turns
+  // every part of such a model half a turn about the vertical, in place, so
+  // the same objects (and userData refs like the rotor) survive. Their
+  // gunOffsets were flipped to +Z to match. New models (E-Bike, Tank) are
+  // simply built facing +Z to begin with.
+  function nosePlusZ(buildFn) {
+    const half = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
+    return function () {
+      const group = buildFn();
+      group.children.forEach(ch => {
+        ch.position.x = -ch.position.x;
+        ch.position.z = -ch.position.z;
+        ch.quaternion.premultiply(half);
+      });
+      return group;
+    };
+  }
+  // A straight tube between two points in the model's YZ side-plane (x fixed).
+  function sideTube(group, x, y0, z0, y1, z1, thick, mat) {
+    const dy = y1 - y0, dz = z1 - z0, len = Math.hypot(dy, dz);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(thick, thick, len), mat);
+    m.position.set(x, (y0 + y1) / 2, (z0 + z1) / 2);
+    m.rotation.x = -Math.atan2(dy, dz);
+    group.add(m);
+    return m;
+  }
+  // Electric bicycle — a quicker, seated alternative to the scooter. Nose at +Z.
+  function buildEBike() {
+    const outer = new THREE.Group();
+    const group = new THREE.Group(); // parts built at small scale, then the whole frame enlarged — kept separate from `outer` so the rider (added to the vehicle's group later) isn't scaled with it
+    group.scale.setScalar(1.25);
+    outer.add(group);
+    const frameMat = new THREE.MeshPhongMaterial({ color: 0x2e8b57, shininess: 60 });
+    const darkMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, shininess: 20 });
+    const metalMat = new THREE.MeshPhongMaterial({ color: 0xb8bec4, shininess: 80 });
+    const battMat = new THREE.MeshPhongMaterial({ color: 0x2a2a2a, shininess: 40, emissive: 0x0a2a14 });
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff6c8 });
+    const WR = 0.29, RZ = -0.55, FZ = 0.56;
+    [RZ, FZ].forEach(z => {
+      const tyre = new THREE.Mesh(new THREE.TorusGeometry(WR - 0.04, 0.045, 6, 18), darkMat);
+      tyre.rotation.y = Math.PI / 2;
+      tyre.position.set(0, WR, z);
+      group.add(tyre);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.08, 8), metalMat);
+      hub.rotation.z = Math.PI / 2;
+      hub.position.set(0, WR, z);
+      group.add(hub);
+      [0, Math.PI / 3, 2 * Math.PI / 3].forEach(a => { // three spokes-as-bars through the hub
+        const sp = new THREE.Mesh(new THREE.BoxGeometry(0.012, (WR - 0.06) * 2, 0.012), metalMat);
+        sp.position.set(0, WR, z); sp.rotation.x = a; group.add(sp);
+      });
+    });
+    const BB = [0.3, -0.02], SEAT = [0.62, -0.14], HEAD = [0.74, 0.40];
+    sideTube(group, 0, BB[0], BB[1], SEAT[0], SEAT[1], 0.05, frameMat);        // seat tube
+    sideTube(group, 0, SEAT[0], SEAT[1], HEAD[0], HEAD[1], 0.05, frameMat);    // top tube
+    sideTube(group, 0, BB[0], BB[1], HEAD[0] - 0.06, HEAD[1], 0.07, frameMat); // down tube
+    [-0.05, 0.05].forEach(x => {
+      sideTube(group, x, BB[0], BB[1], WR, RZ, 0.03, frameMat);                // chain stays
+      sideTube(group, x, SEAT[0], SEAT[1], WR, RZ, 0.03, frameMat);            // seat stays
+      sideTube(group, x, HEAD[0], HEAD[1], WR, FZ, 0.035, metalMat);           // fork
+    });
+    // Battery pack along the down tube.
+    const batt = sideTube(group, 0, BB[0] + 0.12, BB[1] + 0.09, HEAD[0] - 0.14, HEAD[1] - 0.12, 0.1, battMat);
+    batt.scale.y = 1.3;
+    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.1, 10), darkMat);
+    motor.rotation.z = Math.PI / 2; motor.position.set(0, BB[0], BB[1]); group.add(motor);
+    const seatPost = sideTube(group, 0, SEAT[0], SEAT[1], SEAT[0] + 0.05, SEAT[1] - 0.02, 0.035, metalMat);
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.05, 0.26), darkMat);
+    seat.position.set(0, SEAT[0] + 0.07, SEAT[1] - 0.03); group.add(seat);
+    sideTube(group, 0, HEAD[0], HEAD[1], 0.93, 0.36, 0.04, metalMat);           // stem
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.035, 0.035), metalMat);
+    bar.position.set(0, 0.93, 0.34); group.add(bar);
+    [-0.25, 0.25].forEach(x => { const g = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.045, 0.045), darkMat); g.position.set(x, 0.93, 0.34); group.add(g); });
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.05), lampMat);
+    lamp.position.set(0, 0.82, 0.47); group.add(lamp);
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 0.4), frameMat);
+    guard.position.set(0, WR * 2 + 0.03, RZ - 0.02); guard.rotation.x = 0.15; group.add(guard);
+    return outer;
+  }
+  // Tank — slow, heavy, fires explosive shells (see fireTankShell). Nose at +Z.
+  // userData.barrelPivot is raised/lowered to follow your aim while riding;
+  // userData.muzzle marks where a shell leaves the barrel.
+  function buildTank() {
+    const group = new THREE.Group();
+    const armour = new THREE.MeshPhongMaterial({ color: 0x556b2f, shininess: 15 });
+    const armourDark = new THREE.MeshPhongMaterial({ color: 0x3f5022, shininess: 10 });
+    const trackMat = new THREE.MeshPhongMaterial({ color: 0x262626, shininess: 5 });
+    const wheelMat = new THREE.MeshPhongMaterial({ color: 0x3a3a3a, shininess: 10 });
+    const metal = new THREE.MeshPhongMaterial({ color: 0x4a4f44, shininess: 30 });
+    [-0.62, 0.62].forEach(x => {
+      const track = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.42, 2.3), trackMat);
+      track.position.set(x, 0.21, 0); group.add(track);
+      for (let z = -0.8; z <= 0.81; z += 0.4) {
+        const w = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 10), wheelMat);
+        w.rotation.z = Math.PI / 2; w.position.set(x + Math.sign(x) * 0.17, 0.2, z); group.add(w);
+      }
+      const skirt = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.06, 2.35), armourDark);
+      skirt.position.set(x, 0.45, 0); group.add(skirt);
+    });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.36, 2.1), armour);
+    hull.position.set(0, 0.5, 0); group.add(hull);
+    const glacis = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.06, 0.45), armourDark);
+    glacis.position.set(0, 0.55, 1.08); glacis.rotation.x = 0.55; group.add(glacis);
+    const engineDeck = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, 0.6), armourDark);
+    engineDeck.position.set(0, 0.7, -0.7); group.add(engineDeck);
+    const turret = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.34, 0.95), armour);
+    turret.position.set(0, 0.85, -0.1); group.add(turret);
+    const turretFront = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.06, 0.3), armour);
+    turretFront.position.set(0, 0.95, 0.44); turretFront.rotation.x = 0.7; group.add(turretFront);
+    const hatchLid = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.04, 0.34), armourDark);
+    hatchLid.position.set(0, 1.18, -0.36); hatchLid.rotation.x = -1.1; group.add(hatchLid); // standing open behind the rider
+    const barrelPivot = new THREE.Group();
+    barrelPivot.position.set(0, 0.86, 0.42); group.add(barrelPivot);
+    const mantlet = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.14), armourDark);
+    barrelPivot.add(mantlet);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, 1.35, 10), metal);
+    barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0, 0.72); barrelPivot.add(barrel);
+    const brake = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.14, 10), metal);
+    brake.rotation.x = Math.PI / 2; brake.position.set(0, 0, 1.4); barrelPivot.add(brake);
+    const muzzle = new THREE.Object3D(); muzzle.position.set(0, 0, 1.5); barrelPivot.add(muzzle);
+    group.userData.barrelPivot = barrelPivot;
+    group.userData.muzzle = muzzle;
+    return group;
+  }
   const VEHICLE_TYPES = [
     // gunOffset: local-space point (roughly the front of each model) the
     // vehicle gun's tracer visually fires from — see getVehicleMuzzleWorldPos.
-    { name: 'Electric Scooter', build: buildScooter,       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false, ramps: true, gunOffset: [0, 0.95, -0.32] }, // standing on the deck, not sitting
-    { name: 'Flying Car',       build: buildFlyingCar,     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true,  ramps: true, gunOffset: [0, 0.5, -0.9]   },
-    { name: 'Helicopter',       build: buildHelicopter,    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true,  gunOffset: [0, 0.48, -1.05] },
-    { name: 'Hot Air Balloon',  build: buildHotAirBalloon, swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false, gunOffset: [0, 0.4, -0.3]   }, // standing in the basket
-    { name: 'Boat',             build: buildBoat,          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true,  ramps: true, gunOffset: [0, 0.4, -1.05]  },
+    { name: 'Electric Scooter', build: nosePlusZ(buildScooter),       swatch: 0x3ac0e0, cost: 150, flies: false, boat: false, speedMult: 1.5, riderY: 0.24, riderSeated: false, ramps: true, gunOffset: [0, 0.95, 0.32] }, // standing on the deck, not sitting
+    { name: 'Flying Car',       build: nosePlusZ(buildFlyingCar),     swatch: 0xd93a3a, cost: 500, flies: true,  boat: false, speedMult: 1.5, riderY: 0.48, riderSeated: true,  ramps: true, gunOffset: [0, 0.5, 0.9]   },
+    { name: 'Helicopter',       build: nosePlusZ(buildHelicopter),    swatch: 0xe8e030, cost: 550, flies: true,  boat: false, speedMult: 1.7, riderY: 0.45, riderSeated: true,  gunOffset: [0, 0.48, 1.05] },
+    { name: 'Hot Air Balloon',  build: nosePlusZ(buildHotAirBalloon), swatch: 0xf2c14e, cost: 350, flies: true,  boat: false, speedMult: 0.55, riderY: 0.4, riderSeated: false, gunOffset: [0, 0.4, 0.3]   }, // standing in the basket
+    { name: 'Boat',             build: nosePlusZ(buildBoat),          swatch: 0x8a5a34, cost: 250, flies: true,  boat: true,  speedMult: 1.2, riderY: 0.36, riderSeated: true,  ramps: true, gunOffset: [0, 0.4, 1.05]  },
+    // tank:true — fires shells instead of the gun (see fireTankShell) and has
+    // its own barrel, so the camera-held vehicle gun is hidden for it.
+    // Appended at the END: saved worlds store vehicles by their number here.
+    { name: 'E-Bike',           build: buildEBike,         swatch: 0x2e8b57, cost: 200, flies: false, boat: false, speedMult: 1.9, riderY: 0.40, riderSeated: true,  ramps: true, gunOffset: [0, 1.25, 0.55] },
+    { name: 'Tank',             build: buildTank,          swatch: 0x556b2f, cost: 800, flies: false, boat: false, speedMult: 1.25, riderY: 0.55, riderSeated: true, tank: true, gunOffset: [0, 1.55, 0.3] },
   ];
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
@@ -9667,7 +9862,9 @@
     if (type.boat) { waveform = 'sawtooth'; baseFreq = 90; detune = 6; filterFreq = 500; } // Boat — low choppy motor putter
     else if (type.name === 'Helicopter') { waveform = 'square'; baseFreq = 75; detune = 4; filterFreq = 380; } // deep, buzzy rotor thrum
     else if (type.name === 'Hot Air Balloon') { waveform = 'sine'; baseFreq = 140; detune = 3; filterFreq = 1000; } // quiet, gentle burner hiss rather than an engine at all
-    else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 140; detune = 6; filterFreq = 800; } // brighter, more "engine" than the scooter
+    else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 140; detune = 6; filterFreq = 800; }
+    else if (type.tank) { waveform = 'sawtooth'; baseFreq = 62; detune = 9; filterFreq = 420; } // Tank — heavy diesel rumble (sawtooth keeps enough upper harmonics to still be heard on a phone)
+    else if (type.name === 'E-Bike') { waveform = 'triangle'; baseFreq = 230; detune = 5; filterFreq = 1200; } // lighter, higher hub-motor whine than the scooter // brighter, more "engine" than the scooter
     const gain = audioCtx.createGain();
     gain.gain.value = 0.001;
     const filter = audioCtx.createBiquadFilter();
@@ -10273,6 +10470,8 @@
     { name: 'Laser Gun', kind: 'laser',    emoji: '⚡', cooldown: 650,  range: 25,  damage: 2 },
     { name: 'Bazooka',   kind: 'bazooka',  emoji: '🚀', cooldown: 1800, range: 120, damage: 6, radius: 7, speed: 55 },
     { name: 'Dynamite',  kind: 'dynamite', emoji: '🧨', cooldown: 1300, damage: 5, radius: 6, fuse: 2.4 },
+    { name: 'TNT',       kind: 'tnt',      emoji: '💣', cooldown: 600,  damage: 9, radius: 10, fuse: 5 },    // placed, not thrown — see placeExplosive
+    { name: 'Landmine',  kind: 'mine',     emoji: '⚠️', cooldown: 600,  damage: 7, radius: 5, armDelay: 1.5 },
   ];
   let weaponTypeIdx = 1;
   const LIVES_MAX = 10;
@@ -10690,6 +10889,13 @@
       const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.18, 6), L(0x222222)); fuse.position.set(0, 0.27, -0.03); g.add(fuse);
       const spark = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), B(0xffdd33)); spark.position.set(0, 0.37, -0.03); g.add(spark);
       g.userData.spark = spark;
+    } else if (kind === 'tnt') {
+      const t = buildTntMesh(0.3);
+      g.add(t); g.userData.spark = t.userData.spark;
+    } else if (kind === 'mine') {
+      const m = buildMineMesh(0.17);
+      m.rotation.x = 0.5; // tilted towards you so the pressure plate is visible in hand
+      g.add(m);
     }
     return g;
   }
@@ -10715,6 +10921,8 @@
     laser:    { pos: [0.30, -0.18, -0.72], rot: [0.03, 0.10, 0.0],  scale: 1.0 },
     bazooka:  { pos: [0.42, -0.30, -0.55], rot: [0.03, 0.22, 0.0],  scale: 0.8 },
     dynamite: { pos: [0.34, -0.14, -0.62], rot: [0.0, 0.0, 0.0],    scale: 1.1 },
+    tnt:      { pos: [0.34, -0.22, -0.62], rot: [0.1, 0.4, 0.0],    scale: 1.0 },
+    mine:     { pos: [0.32, -0.24, -0.6],  rot: [0.0, 0.0, 0.0],    scale: 1.0 },
   };
   const WEAPON_MUZZLE_LOCAL = { gun: [0.30, -0.22, -1.0], laser: [0.30, -0.20, -1.1], bazooka: [0.28, -0.18, -1.35], dynamite: [0.36, -0.18, -0.7], sword: [0.4, -0.3, -0.8] };
   let weaponViewGroup = null, wvBuiltKind = null, wvKick = 0, wvSwingT = -1, wvThrowT = -1;
@@ -10779,6 +10987,7 @@
     updateWeaponViewmodel(dt);
     updateWeaponBtnLabel();
     updateLives(dt);
+    updatePlacedExplosives(dt);
   }
 
   // ── What OTHER players' avatars look like when armed ─────────────
@@ -10787,7 +10996,7 @@
   // put and its centre swings out along the aim direction. e is the
   // elevation above horizontal (rotation.x = -(PI/2 + e) points the arm
   // along (0, sin e, cos e) on the figure's +Z front).
-  const AVATAR_WEAPON_SCALE = { sword: 0.85, gun: 1.35, laser: 1.35, bazooka: 1.0, dynamite: 1.4 };
+  const AVATAR_WEAPON_SCALE = { sword: 0.85, gun: 1.35, laser: 1.35, bazooka: 1.0, dynamite: 1.4, tnt: 1.3, mine: 1.3 };
   function poseAvatarArm(arm, rest, e) {
     arm.rotation.x = -(Math.PI / 2 + e);
     const shY = rest.y + 0.27, len = 0.29;
@@ -10919,6 +11128,7 @@
       const body = new THREE.Vector3(player.pos.x, player.pos.y + 0.9, player.pos.z);
       const d = body.distanceTo(c), reach = p.r * 1.6;
       if (d < reach) damageMe(p.dmg * (1 - d / reach) * (p.by === playerUid ? SELF_BLAST_FACTOR : 1), p.byName);
+      chainExplosivesFrom(p); // TNT and landmines caught in it go off too
     } else if (p.k === 'laser') {
       const o = new THREE.Vector3(p.o[0], p.o[1], p.o[2]), d = new THREE.Vector3(p.d[0], p.d[1], p.d[2]);
       showLaserBeam(o, d, p.len);
@@ -10944,6 +11154,7 @@
     else if (w.kind === 'laser') fireLaser(w);
     else if (w.kind === 'bazooka') fireBazooka(w);
     else if (w.kind === 'dynamite') throwDynamite(w);
+    else if (w.kind === 'tnt' || w.kind === 'mine') { if (!placeExplosive(w)) lastWeaponFireTime = 0; } // a failed placement doesn't use up the cooldown
   }
   function fireSword(w) {
     wvSwingT = performance.now();
@@ -11093,9 +11304,183 @@
   }
   // Fx from other players — purely visual (their damage arrives separately
   // as 'weaponBlast' / 'weaponHit').
+  // ── Placed explosives: TNT and Landmines ─────────────────────────
+  // Both are WEAPON_TYPES entries, "fired" by placing them into the empty
+  // cell you're aiming at (a Landmine needs solid ground under it). Neither
+  // is a real block — they're props tracked here, shared with everyone else
+  // through a 'place' weaponFx message and detonated through the same
+  // broadcastAndRunBlast every other explosive uses, so the blast, block
+  // damage, NPC kills and lives all behave (and sync) exactly like the
+  // Bazooka's. Like all weapon damage, nothing here is ever saved.
+  //  - TNT: lit the moment it's placed, goes off after its fuse. Only the
+  //    player who placed it detonates it (so it can't go off twice).
+  //  - Landmine: arms after a moment, then is invisible to everyone except
+  //    whoever placed it (a faint outline for them). Goes off when anyone
+  //    or anything goes over it: any player (each client watches its own
+  //    player), and — watched by the owner's client — NPCs, animals,
+  //    vehicles, a block or furniture placed on it, or its ground removed.
+  //  - Any blast sets off every TNT/mine inside it (a chain reaction). Only
+  //    the client that caused a blast chains it, so each goes off once.
+  const placedExplosives = new Map(); // id -> rec
+  let tntTexCache = null;
+  function tntTexture() {
+    if (tntTexCache) return tntTexCache;
+    const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#c62828'; ctx.fillRect(0, 0, 32, 32);
+    ctx.fillStyle = '#9e1c1c'; for (let x = 0; x < 32; x += 8) ctx.fillRect(x, 0, 1, 32); // stick seams
+    ctx.fillStyle = '#eee6d0'; ctx.fillRect(0, 11, 32, 10);
+    ctx.fillStyle = '#1a1a1a'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('TNT', 16, 16.5);
+    tntTexCache = new THREE.CanvasTexture(c);
+    tntTexCache.magFilter = THREE.NearestFilter;
+    return tntTexCache;
+  }
+  function buildTntMesh(size) {
+    const g = new THREE.Group();
+    const side = new THREE.MeshLambertMaterial({ map: tntTexture(), emissive: 0x000000 });
+    const top = new THREE.MeshLambertMaterial({ color: 0xa82020, emissive: 0x000000 });
+    const box = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), [side, side, top, top, side, side]);
+    g.add(box);
+    const fuse = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.03, size * 0.03, size * 0.3, 6), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+    fuse.position.y = size * 0.65; g.add(fuse);
+    const spark = new THREE.Mesh(new THREE.SphereGeometry(size * 0.08, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffdd33 }));
+    spark.position.y = size * 0.82; g.add(spark);
+    g.userData.spark = spark; g.userData.glowMats = [side, top];
+    return g;
+  }
+  function buildMineMesh(size) {
+    const g = new THREE.Group();
+    const body = new THREE.MeshLambertMaterial({ color: 0x4a5236, transparent: true, opacity: 1 });
+    const plate = new THREE.MeshLambertMaterial({ color: 0x7a8060, transparent: true, opacity: 1 });
+    const dot = new THREE.MeshBasicMaterial({ color: 0xd62020, transparent: true, opacity: 1 });
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(size, size * 1.08, size * 0.24, 16), body);
+    g.add(disc);
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.45, size * 0.45, size * 0.12, 12), plate);
+    p.position.y = size * 0.17; g.add(p);
+    const d = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.1, size * 0.1, size * 0.05, 8), dot);
+    d.position.y = size * 0.25; g.add(d);
+    g.userData.fadeMats = [body, plate, dot];
+    return g;
+  }
+  // cfg: { id, kind, x, y, z (the cell it sits in), owner (placed by me), byName }
+  function spawnPlacedExplosive(cfg) {
+    if (placedExplosives.has(cfg.id)) return;
+    const w = WEAPON_TYPES.find(t => t.kind === cfg.kind);
+    if (!w) return;
+    const mesh = cfg.kind === 'tnt' ? buildTntMesh(0.8) : buildMineMesh(0.3);
+    if (cfg.kind === 'tnt') mesh.position.set(cfg.x + 0.5, cfg.y + 0.4, cfg.z + 0.5);
+    else mesh.position.set(cfg.x + 0.5, cfg.y + 0.04, cfg.z + 0.5);
+    if (cfg.kind === 'mine' && !cfg.owner) mesh.visible = false; // planted out of sight from the start for everyone else
+    scene.add(mesh);
+    const rec = { id: cfg.id, kind: cfg.kind, w, x: cfg.x, y: cfg.y, z: cfg.z, owner: !!cfg.owner, byName: cfg.byName || '',
+                  mesh, t0: performance.now(), lastHiss: 0, detonated: false, removed: false, worldId: currentWorldId };
+    rec.remove = () => {
+      if (rec.removed) return;
+      rec.removed = true;
+      scene.remove(mesh); disposeObject3D(mesh);
+      placedExplosives.delete(rec.id); activeDynamite.delete(rec.id);
+    };
+    placedExplosives.set(rec.id, rec);
+    activeDynamite.set(rec.id, { remove: rec.remove }); // the matching blast (by id) clears it on every client — see runWeaponBlast
+    if (cfg.kind === 'mine') { if (cfg.owner) playThud(260); } // a soft "planted" thump, only for whoever buried it
+    return rec;
+  }
+  function explosiveCentre(rec) {
+    return rec.kind === 'tnt' ? { x: rec.x + 0.5, y: rec.y + 0.4, z: rec.z + 0.5 } : { x: rec.x + 0.5, y: rec.y + 0.2, z: rec.z + 0.5 };
+  }
+  function detonateExplosive(rec) {
+    if (!rec || rec.detonated || rec.removed) return;
+    rec.detonated = true;
+    const c = explosiveCentre(rec);
+    broadcastAndRunBlast({ k: 'boom', id: rec.id, x: c.x, y: c.y, z: c.z, r: rec.w.radius, dmg: rec.w.damage, by: playerUid, byName: rec.byName || getMyDisplayName() });
+  }
+  // Called from runWeaponBlast for every blast: whoever caused this blast
+  // sets off the TNT and mines caught inside it, each a beat later.
+  function chainExplosivesFrom(p) {
+    if (p.by !== playerUid) return;
+    placedExplosives.forEach(rec => {
+      if (rec.detonated || rec.removed || rec.id === p.id) return;
+      const c = explosiveCentre(rec);
+      const dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
+      if (dx * dx + dy * dy + dz * dz <= p.r * p.r) setTimeout(() => detonateExplosive(rec), 140 + Math.random() * 180);
+    });
+  }
+  function placeExplosive(w) {
+    const r = voxelRaycast(true, true);
+    if (!r || !r.before) { showBriefMessage('Aim at a block to place ' + (w.kind === 'tnt' ? 'the TNT' : 'a landmine')); return false; }
+    const { x, y, z } = r.before;
+    const k = key(x, y, z);
+    if (blocks.has(k) || furniture.has(k)) return false;
+    for (const rec of placedExplosives.values()) if (rec.x === x && rec.y === y && rec.z === z) { showBriefMessage('Something\u2019s already there'); return false; }
+    if (w.kind === 'mine' && !blocks.has(key(x, y - 1, z))) { showBriefMessage('Landmines go on the ground \u2014 aim at the top of a block'); return false; }
+    const id = newWeaponFxId();
+    wvThrowT = performance.now(); // the hand-down-and-back-up animation the dynamite uses
+    spawnPlacedExplosive({ id, kind: w.kind, x, y, z, owner: true, byName: getMyDisplayName() });
+    sendWeaponMsg('weaponFx', { k: 'place', id, kind: w.kind, x, y, z, byName: getMyDisplayName() });
+    sendWeaponMsg('weaponFx', { k: 'swing', kind: 'dynamite' });
+    if (w.kind === 'tnt') showBriefMessage('TNT lit \u2014 ' + w.fuse + ' seconds, get clear!');
+    else showBriefMessage('Landmine planted \u2014 it arms in a moment');
+    return true;
+  }
+  // Is anything standing/sitting on this mine's cell? pos = feet position.
+  function onMineCell(rec, px, py, pz, reach) {
+    return Math.abs(px - (rec.x + 0.5)) < reach && Math.abs(pz - (rec.z + 0.5)) < reach && py > rec.y - 0.35 && py < rec.y + 0.9;
+  }
+  function updatePlacedExplosives(dt) {
+    if (!placedExplosives.size) return;
+    const now = performance.now();
+    placedExplosives.forEach(rec => {
+      if (rec.removed) return;
+      if (rec.worldId !== currentWorldId) { rec.remove(); return; } // left the world it was in
+      const el = (now - rec.t0) / 1000;
+      if (rec.kind === 'tnt') {
+        const sp = rec.mesh.userData.spark;
+        if (sp) sp.scale.setScalar(0.6 + Math.random() * 1.1);
+        const frac = el / rec.w.fuse;
+        const rate = 2 + frac * 10; // blinks faster as the fuse runs down
+        const on = Math.floor(el * rate) % 2 === 0;
+        rec.mesh.userData.glowMats.forEach(m => m.emissive.setHex(on ? 0x662020 : 0x000000));
+        rec.mesh.scale.setScalar(1 + (frac > 0.8 && on ? 0.06 : 0)); // swells in the last second
+        if (audioCtx && now - rec.lastHiss > 450) { // fizzing fuse
+          rec.lastHiss = now;
+          const c = explosiveCentre(rec);
+          playNoiseBurst(0.35, 'highpass', 4000, 2500, 0.25, weaponSoundVol(c.x, c.y, c.z), 0.8);
+        }
+        if (rec.owner && el >= rec.w.fuse) detonateExplosive(rec);
+        else if (!rec.owner && el > rec.w.fuse + 3) rec.remove(); // its blast never arrived (owner left?) — don't leave it lying there
+        return;
+      }
+      // Landmine
+      const armed = el >= rec.w.armDelay;
+      if (rec.owner) {
+        // Fades from solid to a faint marker as it arms — only you ever see it.
+        const op = armed ? 0.28 : 1 - 0.72 * (el / rec.w.armDelay);
+        rec.mesh.userData.fadeMats.forEach(m => { m.opacity = op; m.depthWrite = op > 0.9; });
+      }
+      if (!armed || rec.detonated) return;
+      // Me — on foot, or in whatever I'm riding (a bigger footprint for the bigger vehicles).
+      const vt = ridingVehicle ? (VEHICLE_TYPES[ridingVehicle.typeIdx] || {}) : null;
+      const reach = !vt ? 0.55 : (vt.tank ? 1.25 : (vt.flies && !vt.boat ? 0.9 : 0.7));
+      if (!playerDead && !(vt && vt.flies && !vt.boat && flying && player.pos.y > rec.y + 0.9) && onMineCell(rec, player.pos.x, player.pos.y, player.pos.z, reach)) { detonateExplosive(rec); return; }
+      if (!rec.owner) return;
+      // Everything else is watched by the client that planted it.
+      const k = key(rec.x, rec.y, rec.z);
+      if (blocks.has(k) || furniture.has(k) || !blocks.has(key(rec.x, rec.y - 1, rec.z))) { detonateExplosive(rec); return; }
+      const hit = list => { for (const e of list) { const m = e.mesh; if (m && onMineCell(rec, m.position.x, m.position.y, m.position.z, 0.6)) return true; } return false; };
+      if (hit(villageNPCs) || hit(villageAnimals)) { detonateExplosive(rec); return; }
+      for (const v of vehicles) {
+        if (v === ridingVehicle) continue;
+        const vtt = VEHICLE_TYPES[v.typeIdx] || {};
+        if (onMineCell(rec, v.group.position.x, v.group.position.y, v.group.position.z, vtt.tank ? 1.25 : 0.7)) { detonateExplosive(rec); return; }
+      }
+    });
+  }
   function applyRemoteWeaponFx(p, senderUid) {
     if (p.k === 'shot') {
       showTracer(new THREE.Vector3(p.a[0], p.a[1], p.a[2]), new THREE.Vector3(p.b[0], p.b[1], p.b[2]));
+    } else if (p.k === 'place') {
+      spawnPlacedExplosive({ id: p.id, kind: p.kind, x: p.x, y: p.y, z: p.z, owner: false, byName: p.byName });
     } else if (p.k === 'rocket') {
       spawnRocketVisual(new THREE.Vector3(p.a[0], p.a[1], p.a[2]), new THREE.Vector3(p.b[0], p.b[1], p.b[2]), p.speed || 55, null);
     } else if (p.k === 'dyn') {
@@ -11246,9 +11631,47 @@
 
   let lastVehicleFireTime = 0;
   const VEHICLE_FIRE_COOLDOWN = 180; // ms between shots
+  // ── Tank gun ─────────────────────────────────────────────────────
+  // The Tank fires a slow-reloading explosive shell instead of the other
+  // vehicles' machine gun: aimed with the crosshair (camera ray, same as the
+  // gun), flown visibly from the barrel's tip, and detonated through the
+  // weapons' shared blast (broadcastAndRunBlast) — so it breaks blocks,
+  // kills NPCs/animals and costs players lives exactly like the Bazooka,
+  // only bigger, and every other player sees and feels the same blast.
+  const TANK_FIRE_COOLDOWN = 2600, TANK_SHELL_RANGE = 120, TANK_SHELL_SPEED = 70;
+  const TANK_BLAST_RADIUS = 9, TANK_BLAST_DAMAGE = 8; // Bazooka is 7 / 6
+  let lastTankFireTime = -1e9;
+  function tankMuzzleWorldPos() {
+    const m = ridingVehicle && ridingVehicle.group.userData.muzzle;
+    if (!m) return getVehicleMuzzleWorldPos();
+    ridingVehicle.group.updateMatrixWorld(true);
+    return m.getWorldPosition(new THREE.Vector3());
+  }
+  function fireTankShell() {
+    const now = performance.now();
+    if (now - lastTankFireTime < TANK_FIRE_COOLDOWN) return;
+    if (playerDead) return;
+    lastTankFireTime = now;
+    ensureAudio();
+    const winner = weaponResolveHit(TANK_SHELL_RANGE);
+    const origin = camera.getWorldPosition(new THREE.Vector3());
+    const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    const dist = winner ? Math.max(1.5, winner.dist - 0.35) : TANK_SHELL_RANGE;
+    const impact = origin.clone().addScaledVector(dir, dist);
+    const muzzle = tankMuzzleWorldPos();
+    playBoom(0.55); // the cannon's own report, quieter than the landing blast
+    showExplosionAt(muzzle, [0x5a5a5a, 0x3a3a3a, 0xffb347, 0x8a8a8a]); // muzzle flash and smoke
+    ridingVehicle.group.userData.recoilT = now;
+    const id = newWeaponFxId();
+    sendWeaponMsg('weaponFx', { k: 'rocket', a: vecArr(muzzle), b: vecArr(impact), speed: TANK_SHELL_SPEED });
+    spawnRocketVisual(muzzle, impact, TANK_SHELL_SPEED, () => {
+      broadcastAndRunBlast({ k: 'boom', id, x: impact.x, y: impact.y, z: impact.z, r: TANK_BLAST_RADIUS, dmg: TANK_BLAST_DAMAGE, by: playerUid, byName: getMyDisplayName() });
+    });
+  }
   function fireVehicleGun() {
     if (!ridingVehicle) return;
     if (currentWorldId === PUB_WORLD_ID) return; // the Mill is a no-shooting zone — a social space, not somewhere combat (in any vehicle) belongs; enterVehicle already keeps flying vehicles out entirely, but ground vehicles (the Scooter) can still be parked/ridden in there, so this stays as a belt-and-braces check
+    if ((VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank) { fireTankShell(); return; } // shells, not bullets — see fireTankShell
     const now = performance.now();
     if (now - lastVehicleFireTime < VEHICLE_FIRE_COOLDOWN) return;
     lastVehicleFireTime = now;
@@ -11341,13 +11764,22 @@
     // Helicopter, and in both camera modes below.
     if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
-    vehicleGunGroup.visible = true; // the build button fires this vehicle's gun now, not a block — see doPlace's vehicle interception
+    const ridingTank = !!(VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank;
+    vehicleGunGroup.visible = !ridingTank; // the build button fires this vehicle's gun now, not a block — see doPlace's vehicle interception. The Tank has its own barrel instead.
     const btnPlaceEl = document.getElementById('btnPlace');
-    if (btnPlaceEl) btnPlaceEl.textContent = '🔫'; // the touch build button IS the fire button while riding — same doPlace interception fireVehicleGun relies on
+    if (btnPlaceEl) btnPlaceEl.textContent = ridingTank ? '💥' : '🔫'; // the touch build button IS the fire button while riding — same doPlace interception fireVehicleGun relies on
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
     v.group.rotation.order = 'YXZ'; // yaw first, then tilt about the vehicle's OWN side axis — the default XYZ order would tilt about the world X axis whatever way it's facing
     v.group.rotation.y = yaw + Math.PI;
+    const barrelPivot = v.group.userData.barrelPivot;
+    if (barrelPivot) {
+      // The Tank's barrel follows your aim up and down (the whole tank
+      // already turns with you), and kicks back briefly when it fires.
+      barrelPivot.rotation.x = -Math.max(-0.12, Math.min(0.55, pitch));
+      const rs = (performance.now() - (v.group.userData.recoilT || -1e9)) / 350;
+      barrelPivot.position.z = 0.42 - (rs < 1 ? Math.sin(rs * Math.PI) * 0.22 : 0);
+    }
     // Pitches the nose up on the way up a ramp jump and down on the way
     // back down (only ever non-zero while vehAir is active, so every other
     // moment — and every other vehicle — stays perfectly level).
@@ -15148,8 +15580,7 @@
     keys[e.code] = true;
     if (ARROW_AS_WASD[e.code]) { keys[ARROW_AS_WASD[e.code]] = true; if (padPlaying()) e.preventDefault(); } // arrows also walk (a TV browser may send the controller as arrow keys)
     const num = parseInt(e.key);
-    if (num >= 1 && num <= 9 && num <= BLOCK_TYPES.length) selectSlot(familyChoice[num-1] !== undefined ? familyChoice[num-1] : num-1);
-    if (e.key === '0') selectSlot(WATER_SLOT);
+    if (num >= 1 && num <= 9) selectMenuCategory(num-1); // 1-9 = the bottom bar's categories, each jumping to its last-used item
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
@@ -15183,11 +15614,7 @@
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
-      const total = WEAPON_SLOT + 1; // was BLOCK_TYPES.length + 13, which stopped short of Drain and Fire and would have missed Weapons too
-      // // +1 Water, +1 Spotlight, +1 Ladder, +1 Wallpaper, +1 Door, +1 Sign, +1 Room Furniture, +1 Bathroom Furniture, +1 Bar Furniture, +1 Kitchen Furniture, +1 Cellar Furniture, +1 Bedroom Furniture, +1 Vehicles
-      let s = selectedSlot + (e.deltaY > 0 ? 1 : -1);
-      s = ((s % total) + total) % total;
-      selectSlot(s);
+      padCycleSlot(e.deltaY > 0 ? 1 : -1); // same stops as LB/RB: each menu item in category order, a family landing on its chosen material
     }
   });
   // Steps, Slopes and Curves are the blocks that have a facing, and the only ones that can be rotated.
@@ -15236,6 +15663,7 @@
     document.querySelectorAll('.slot.active').forEach(el => el.classList.remove('active'));
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
     if (slotElByIndex[highlightIdx]) slotElByIndex[highlightIdx].classList.add('active');
+    refreshMenuCategories(highlightIdx); // light up its category in the bottom bar and mirror its icon there
     if (i === WEAPON_SLOT) { heldMesh.visible = false; heldStepGroup.visible = false; return; } // the weapon model itself is shown/positioned every frame — see updateWeaponViewmodel
     if (BLOCK_TYPES[i] && BLOCK_TYPES[i].half) {
       heldMesh.visible = false;
@@ -21296,8 +21724,7 @@
   // The hotbar as LB/RB walk it: one stop per slot in the row (a family slot lands on whichever material is
   // currently chosen for it), not one per block type — the wheel's stop-per-type would be dozens of presses.
   function padCycleSlot(dir) {
-    const order = [];
-    for (let i = 0; i <= WEAPON_SLOT; i++) if (!(BLOCK_TYPES[i] && BLOCK_TYPES[i].isVariant)) order.push(i);
+    const order = MENU_ITEM_ORDER; // the category menu's own order, so stepping walks Terrain, then Landscape, ...
     const primary = variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot;
     let at = order.indexOf(primary); if (at < 0) at = 0;
     const next = order[(at + dir + order.length) % order.length];
@@ -22362,6 +22789,7 @@
   function togglePopupFor(slotEl) {
     const wasThisSlots = !!openFamilyPopup && openFamilyPopupOwner === slotEl;
     closeFamilyPopup();
+    if (!(slotEl.closest && slotEl.closest('.cat-column'))) closeCategoryColumn(); // a bar-level menu (Vehicles, Weapons) replaces any open category
     return wasThisSlots;
   }
   // Shared placement for every hotbar popup. It sits directly above its
@@ -22377,6 +22805,16 @@
   const POPUP_GAP_ABOVE_SLOT = 6, POPUP_MARGIN_FROM_SCREEN_TOP = 8, POPUP_MIN_HEIGHT = 72;
   function popupCss(slotEl, opts) {
     opts = opts || {};
+    // An item inside a category column opens its menu as a second column
+    // BESIDE that one, sharing its bottom edge and height (mountPopup flips it
+    // to the left side if it would run off the right of the screen).
+    const col = slotEl.closest && slotEl.closest('.cat-column');
+    if (col) {
+      const cr = col.getBoundingClientRect();
+      const colRoom = Math.max(POPUP_MIN_HEIGHT, Math.floor(cr.bottom - POPUP_MARGIN_FROM_SCREEN_TOP));
+      return `position:fixed;left:${cr.right + 6}px;bottom:${window.innerHeight - cr.bottom}px;display:flex;`
+        + `flex-direction:column;gap:4px;z-index:51;max-height:${colRoom}px;overflow-y:auto;overscroll-behavior:contain;${opts.extra || ''}`;
+    }
     const rect = slotEl.getBoundingClientRect();
     const room = Math.max(POPUP_MIN_HEIGHT, Math.floor(rect.top - POPUP_GAP_ABOVE_SLOT - POPUP_MARGIN_FROM_SCREEN_TOP));
     return `position:fixed;left:${rect.left}px;bottom:${window.innerHeight - rect.top + POPUP_GAP_ABOVE_SLOT}px;display:flex;`
@@ -22394,7 +22832,19 @@
   function mountPopup(popup, slotEl, opts) {
     const keepReversed = !!(opts && opts.reverse);
     if (!keepReversed) Array.from(popup.children).reverse().forEach(c => popup.appendChild(c));
+    const col = slotEl.closest && slotEl.closest('.cat-column');
+    popup.classList.add('menu-panel');
+    if (col) popup.classList.add('menu-sub');
     document.body.appendChild(popup);
+    if (col) {
+      const r = popup.getBoundingClientRect(), cr = col.getBoundingClientRect();
+      if (r.right > window.innerWidth - 4) { popup.style.left = Math.max(4, cr.left - r.width - 6) + 'px'; popup.classList.add('menu-sub-left'); }
+    } else {
+      const r = popup.getBoundingClientRect();
+      if (r.right > window.innerWidth - 8) popup.style.left = Math.max(8, window.innerWidth - 8 - r.width) + 'px';
+    }
+    // Picking anything in this menu also closes the category column it came from.
+    popup.addEventListener('click', e => { if (e.target.closest && e.target.closest('.slot, .popup-item')) setTimeout(closeCategoryColumn, 0); }, true);
     if (!keepReversed) popup.scrollTop = popup.scrollHeight;
     openFamilyPopup = popup;
     openFamilyPopupOwner = slotEl;
@@ -22464,6 +22914,7 @@
         priceBadge.style.cssText = 'position:absolute;top:1px;right:2px;font-size:8px;line-height:1;color:#ffe27a;text-shadow:0 1px 2px rgba(0,0,0,0.9);pointer-events:none;';
         btn.appendChild(priceBadge);
       }
+      addSlotLabel(btn, entry.name); // shown as a name beside the icon in the menu's row layout
       btn.addEventListener('click', e => {
         e.stopPropagation();
         familyChoice[primaryIdx] = idx;
@@ -22666,6 +23117,7 @@
         selectSlot(WALLPAPER_SLOT);
         closeFamilyPopup();
       });
+      addSlotLabel(btn, c.name);
       popup.appendChild(btn);
     });
     mountPopup(popup, slotEl);
@@ -22972,6 +23424,20 @@
     } else if (type.name === 'Hot Air Balloon') {
       ctx.beginPath(); ctx.ellipse(17,13,10,12,0,0,Math.PI*2); ctx.fill();
       ctx.fillStyle = '#8a5a34'; ctx.fillRect(13,27,8,5);
+    } else if (type.name === 'E-Bike') {
+      ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(9,24,6,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(25,24,6,0,Math.PI*2); ctx.stroke();
+      ctx.strokeStyle = hex; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(9,24); ctx.lineTo(16,24); ctx.lineTo(13,13); ctx.lineTo(23,13); ctx.lineTo(25,24); ctx.moveTo(16,24); ctx.lineTo(23,13); ctx.moveTo(23,13); ctx.lineTo(22,8); ctx.stroke();
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(10,11,6,2); ctx.fillRect(19,7,6,2);
+      ctx.fillStyle = '#ffe066'; ctx.fillRect(15,18,4,3); // battery charge light
+    } else if (type.name === 'Tank') {
+      ctx.fillStyle = '#262626'; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(3,22,28,8,4); else ctx.rect(3,22,28,8); ctx.fill();
+      ctx.fillStyle = hex; ctx.fillRect(5,17,24,6);
+      ctx.fillRect(9,11,13,7);
+      ctx.fillStyle = '#4a4f44'; ctx.fillRect(21,13,12,3);
+      ctx.fillStyle = '#3a3a3a'; [7,12,17,22,27].forEach(x => { ctx.beginPath(); ctx.arc(x,26,2,0,Math.PI*2); ctx.fill(); });
     } else { // Boat
       ctx.beginPath(); ctx.moveTo(4,20); ctx.lineTo(30,20); ctx.lineTo(25,29); ctx.lineTo(9,29); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#f4f0e4'; ctx.beginPath(); ctx.moveTo(17,20); ctx.lineTo(17,5); ctx.lineTo(25,17); ctx.closePath(); ctx.fill();
@@ -23051,6 +23517,17 @@
       ctx.fillStyle = '#e0c020'; ctx.fillRect(12, 13, 3, 8);
       ctx.fillStyle = '#d6342a'; ctx.beginPath(); ctx.moveTo(28, 12); ctx.lineTo(33, 17); ctx.lineTo(28, 22); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#2a2a2a'; ctx.fillRect(13, 21, 4, 8);
+    } else if (kind === 'tnt') {
+      ctx.fillStyle = '#c62828'; ctx.fillRect(6, 9, 22, 21);
+      ctx.fillStyle = '#eee6d0'; ctx.fillRect(6, 15, 22, 8);
+      ctx.fillStyle = '#1a1a1a'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('TNT', 17, 19.5);
+      ctx.strokeStyle = '#dddddd'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(17, 9); ctx.lineTo(19, 4); ctx.stroke();
+      ctx.fillStyle = '#ffdd33'; ctx.beginPath(); ctx.arc(19, 3.5, 2.2, 0, Math.PI * 2); ctx.fill();
+    } else if (kind === 'mine') {
+      ctx.fillStyle = '#6b5a3a'; ctx.fillRect(2, 24, 30, 8); // the ground it's buried in
+      ctx.fillStyle = '#4a5236'; ctx.beginPath(); ctx.ellipse(17, 22, 12, 5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#7a8060'; ctx.beginPath(); ctx.ellipse(17, 19.5, 6, 2.6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#d62020'; ctx.beginPath(); ctx.arc(17, 18.5, 1.6, 0, Math.PI * 2); ctx.fill();
     } else { // dynamite
       ctx.fillStyle = '#c62828'; [8, 14, 20].forEach(x => ctx.fillRect(x, 11, 6, 19));
       ctx.fillStyle = '#d9c9a0'; ctx.fillRect(7, 18, 20, 3);
@@ -23094,7 +23571,7 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'Weapons — sword, gun, laser gun, bazooka, dynamite. Q selects it (press again to cycle). Not usable in The Mill; all damage to the terrain is temporary.';
+    slot.title = 'Weapons — sword, gun, laser gun, bazooka, dynamite, TNT, landmine. Q selects it (press again to cycle). Not usable in The Mill; all damage to the terrain is temporary.';
     const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = 'Q';
     slot.appendChild(keyEl);
     slot.appendChild(weaponIconCanvas(weaponTypeIdx));
@@ -23107,6 +23584,149 @@
     addSlotLabel(slot, 'Weapons');
     hotbar.appendChild(slot);
   }
+
+  // ── Categorised block menu ───────────────────────────────────────
+  // The bottom bar now holds CATEGORIES, not every item. Pressing one slides
+  // up a single scrolling column of its items (the same slot elements that
+  // used to sit in the bar, moved here — so their own icons, price badges,
+  // popups and slotElByIndex entries all keep working unchanged). An item
+  // with its own menu (Stone's variants, Glass colours, Room furniture...)
+  // opens that menu as a second column BESIDE this one, see popupCss.
+  // A category with a single item (Vehicles, Weapons) has no column at all:
+  // its one item's slot sits in the bar itself and opens its menu directly.
+  // Purely a UI grouping — slot numbers, saves and selectSlot are untouched.
+  var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
+  const MENU_CATEGORIES = [
+    { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT] },
+    { name: 'Landscape',  items: [3, 4] },
+    { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
+    { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
+    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT] },
+    { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },
+    { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
+    { name: 'Vehicles',   items: [VEHICLE_SLOT] },
+    { name: 'Weapons',    items: [WEAPON_SLOT] },
+  ];
+  const MENU_ITEM_ORDER = [];          // every item, category by category — what LB/RB and the mouse wheel step through
+  const menuItemCategory = {};         // item slot index -> category index
+  const menuCatChoice = [];            // category index -> the item last picked in it (a primary slot, not a variant)
+  const catSlotEls = [], catColumns = [];
+  let openCatIdx = -1, openCatHotbarScroll = 0;
+  MENU_CATEGORIES.forEach((cat, ci) => {
+    cat.items.forEach(idx => { MENU_ITEM_ORDER.push(idx); menuItemCategory[idx] = ci; });
+    menuCatChoice[ci] = cat.items[0];
+  });
+  while (hotbar.firstChild) hotbar.removeChild(hotbar.firstChild);
+  function setSlotLabelText(slotEl, text) {
+    const lbl = slotEl.querySelector('.slot-label');
+    if (lbl) lbl.textContent = text;
+  }
+  MENU_CATEGORIES.forEach((cat, ci) => {
+    if (cat.items.length === 1) {
+      const el = slotElByIndex[cat.items[0]];
+      const keyEl = el.querySelector('.key'); if (keyEl) keyEl.textContent = String(ci + 1);
+      setSlotLabelText(el, cat.name);
+      const fb = el.querySelector('.family-badge'); if (fb) { fb.textContent = '▴'; fb.style.bottom = 'auto'; fb.style.top = '1px'; }
+      el.classList.add('cat-slot');
+      hotbar.appendChild(el);
+      catSlotEls[ci] = el; catColumns[ci] = null;
+      return;
+    }
+    const slot = document.createElement('div');
+    slot.className = 'slot cat-slot';
+    slot.title = cat.name;
+    slot.style.position = 'relative';
+    const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = String(ci + 1);
+    slot.appendChild(keyEl);
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    slot.appendChild(c);
+    const badge = document.createElement('span'); badge.className = 'cat-badge'; badge.textContent = '▴';
+    slot.appendChild(badge);
+    addSlotLabel(slot, cat.name);
+    slot.addEventListener('click', e => {
+      e.stopPropagation();
+      if (openCatIdx === ci) closeCategoryColumn(); else openCategoryColumn(ci);
+    });
+    hotbar.appendChild(slot);
+    catSlotEls[ci] = slot;
+    const col = document.createElement('div');
+    col.className = 'cat-column';
+    // Added last-first so the first item ends up at the bottom, next to the bar.
+    cat.items.slice().reverse().forEach(idx => {
+      const el = slotElByIndex[idx];
+      if (!el) return;
+      const fb = el.querySelector('.family-badge'); if (fb) fb.textContent = '▸';
+      col.appendChild(el);
+    });
+    // A plain item (no menu of its own) is picked by this click — close the
+    // column after it. Items WITH a menu stop the click at the slot, so they
+    // never reach here; their pick closes the column from mountPopup instead.
+    col.addEventListener('click', e => { if (e.target.closest && e.target.closest('.slot')) closeCategoryColumn(); });
+    document.body.appendChild(col);
+    catColumns[ci] = col;
+  });
+  function updateCategoryIcon(ci) {
+    if (!catColumns[ci]) return; // single-item categories ARE their item's slot, which keeps its own icon
+    const src = slotElByIndex[menuCatChoice[ci]] && slotElByIndex[menuCatChoice[ci]].querySelector('canvas.swatch');
+    const dst = catSlotEls[ci].querySelector('canvas.swatch');
+    if (!src || !dst) return;
+    const ctx = dst.getContext('2d');
+    ctx.clearRect(0, 0, dst.width, dst.height);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(src, 0, 0, dst.width, dst.height);
+  }
+  function openCategoryColumn(ci) {
+    closeFamilyPopup();
+    closeCategoryColumn();
+    const col = catColumns[ci], slotEl = catSlotEls[ci];
+    if (!col) return;
+    const rect = slotEl.getBoundingClientRect();
+    const room = Math.max(POPUP_MIN_HEIGHT, Math.floor(rect.top - POPUP_GAP_ABOVE_SLOT - POPUP_MARGIN_FROM_SCREEN_TOP));
+    col.style.bottom = (window.innerHeight - rect.top + POPUP_GAP_ABOVE_SLOT) + 'px';
+    col.style.maxHeight = room + 'px';
+    col.style.left = rect.left + 'px';
+    col.style.display = 'flex';
+    const w = col.offsetWidth;
+    if (rect.left + w > window.innerWidth - 8) col.style.left = Math.max(8, window.innerWidth - 8 - w) + 'px';
+    col.scrollTop = col.scrollHeight;
+    col.classList.remove('cat-open'); void col.offsetWidth; col.classList.add('cat-open'); // restart the rise-in animation
+    slotEl.classList.add('cat-expanded');
+    openCatIdx = ci;
+    openCatHotbarScroll = hotbar.scrollLeft;
+  }
+  function closeCategoryColumn() {
+    if (openCatIdx < 0) return;
+    const col = catColumns[openCatIdx];
+    if (col) col.style.display = 'none';
+    if (catSlotEls[openCatIdx]) catSlotEls[openCatIdx].classList.remove('cat-expanded');
+    openCatIdx = -1;
+  }
+  // Called from selectSlot with the primary (non-variant) slot now selected.
+  function refreshMenuCategories(primaryIdx) {
+    if (!menuCategoriesReady) return;
+    const ci = menuItemCategory[primaryIdx];
+    if (ci !== undefined) { menuCatChoice[ci] = primaryIdx; updateCategoryIcon(ci); }
+    catSlotEls.forEach((el, i) => { if (i === ci) el.classList.add('active'); });
+  }
+  // Number keys 1-9: jump straight to that category's last-used item.
+  function selectMenuCategory(ci) {
+    if (!menuCategoriesReady || !MENU_CATEGORIES[ci]) return;
+    const p = menuCatChoice[ci];
+    selectSlot(familyChoice[p] !== undefined ? familyChoice[p] : p);
+  }
+  hotbar.addEventListener('scroll', () => {
+    if (openCatIdx >= 0 && Math.abs(hotbar.scrollLeft - openCatHotbarScroll) > 2) { closeFamilyPopup(); closeCategoryColumn(); }
+  }, { passive: true });
+  document.addEventListener('click', e => {
+    if (openCatIdx < 0) return;
+    const inCol = catColumns[openCatIdx] && catColumns[openCatIdx].contains(e.target);
+    const inPopup = openFamilyPopup && openFamilyPopup.contains(e.target);
+    if (!inCol && !inPopup && !catSlotEls[openCatIdx].contains(e.target)) closeCategoryColumn();
+  });
+  window.addEventListener('resize', () => { closeFamilyPopup(); closeCategoryColumn(); });
+  menuCategoriesReady = true;
+  MENU_CATEGORIES.forEach((cat, ci) => updateCategoryIcon(ci));
+  refreshMenuCategories(variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot); // highlight the starting category
 
   // Real orientation lock — works on most Android browsers, but only
   // inside a fullscreen element, hence requesting that first. iOS Safari

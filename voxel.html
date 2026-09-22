@@ -696,6 +696,13 @@
   const WORLD_HEIGHT = 105; // raised from 20 — sea level moving up (below) needs somewhere to move up INTO. Today's above-sea-level terrain shape/variety is untouched — same formula as before, just sitting on the new, higher baseline — so this only needs enough headroom for that plus a wide margin for whatever the below-sea-level range below actually uses. Also leaves room for a later "vary the above-sea-level range too" pass without needing to touch this again.
   const SEA_LEVEL = 50; // raised from 5 — below sea level now reserves a permanent 10-block solid floor at the world's absolute bottom (y=0..9, see MIN_TERRAIN_HEIGHT/BEDROCK_Y) with up to 40 blocks of water able to sit above that, so sea level itself has to sit at least 50 up from the bottom to leave room for all of it
   const MIN_TERRAIN_HEIGHT = SEA_LEVEL - 40; // the lowest the natural ocean floor/land height is ever allowed to generate — below this is the reserved floor, never touched by generation
+  // How far a player can dig a mine shaft straight down: new rock is only ever
+  // generated on demand, one layer at a time, the moment mining exposes open
+  // space beneath the last block of a column (see continueMineShaft) — never
+  // pre-filled, so this costs nothing anywhere nobody has actually dug. Capped
+  // at the same reserved-floor boundary natural terrain already respects, so a
+  // shaft can't reach all the way to BEDROCK_Y.
+  const DEEP_MINE_FLOOR = MIN_TERRAIN_HEIGHT;
   const BEDROCK_Y = 0; // the single bottom-most layer of that reserved floor — unmineable (see doMine's own check), the one hard boundary beneath the 10-block buffer
   const MAX_TERRAIN_STEP = 4; // steepest a natural column's height is ever allowed to differ from its west/south neighbour (see rawTerrainHeight below) — at this rate, the deepest possible basin (40 below sea level) takes at least 10 columns to reach from the shoreline, but that's the CAP, not the norm; most transitions are gentler, purely from how smooth the underlying noise already is
   // Water used to be stretched/thresholded the exact same way everywhere,
@@ -3229,6 +3236,44 @@
       try { mpChannel.send({ type: 'broadcast', event: 'blockEdit', payload: { uid: playerUid, x, y, z, t: type, rot: rot||0 } }); } catch(e) {}
     }
   }
+  const STONE_BLOCK_TYPE = 2; // BLOCK_TYPES[2] — Stone (see the registry near the top; matches the material ordinary terrain generation already uses this deep)
+  // The 8 cells surrounding a shaft's path at a given depth (a full 3x3
+  // minus the centre) — see continueMineShaft. All 8, not just the 4
+  // cardinal sides, so there's no open diagonal gap either.
+  const SHAFT_WALL_OFFSETS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+  // Places one block of stone at (x,y,z) as ordinary generated world content:
+  // persisted (recordBlockEdit), instanced (handleLocalBlockChange), and only
+  // ever into a cell that's genuinely untouched — never something a player
+  // has already placed or, importantly, already MINED AWAY on purpose
+  // (blockEdits explicitly holding -1 there), which blocks.has/waterBlocks.has
+  // alone can't tell apart from a cell nobody has ever touched. Shared by the
+  // mine-shaft walls below and the explosion-crater walls further down, so
+  // both respect an already-dug neighbouring tunnel the same way.
+  function fillGeneratedRock(x, y, z) {
+    const k = key(x, y, z);
+    if (blocks.has(k) || waterBlocks.has(k) || blockEdits.get(k) === -1) return false;
+    blocks.set(k, STONE_BLOCK_TYPE);
+    recordBlockEdit(x, y, z, STONE_BLOCK_TYPE, 0);
+    handleLocalBlockChange(x, y, z);
+    return true;
+  }
+  // A mine shaft's next layer — called right after a block at (bx,by,bz) is
+  // mined away. If that was the deepest block this column had (nothing below
+  // it — no block, no water — and there's still room above the reserved
+  // floor), a fresh block of stone is generated one layer further down, so
+  // there's always rock to keep digging into rather than an empty drop the
+  // moment you break through the natural crust. The 8 cells around that new
+  // layer are walled in solid the same way, so the shaft reads as an
+  // enclosed tunnel — walls on every side — rather than a floating column
+  // with open void all around it. All of it goes through fillGeneratedRock,
+  // so it persists, saves, and broadcasts live to every other player exactly
+  // like a block anyone actually placed by hand.
+  function continueMineShaft(bx, by, bz) {
+    const belowY = by - 1;
+    if (belowY < DEEP_MINE_FLOOR) return; // stays out of the world's existing reserved floor near BEDROCK_Y
+    if (!fillGeneratedRock(bx, belowY, bz)) return; // something's already there — not the bottom of the column
+    for (const [dx, dz] of SHAFT_WALL_OFFSETS) fillGeneratedRock(bx + dx, belowY, bz + dz);
+  }
   function recordWaterEdit(x, y, z, level) {
     if (!terrainStreamingActive) return;
     waterEdits.set(key(x, y, z), level);
@@ -3253,6 +3298,14 @@
   // needlessly huge vertical range. This tracks each individual column's
   // own height instead, so syncChunkInstances only ever scans a tight
   // band around what's ACTUALLY there in that specific column.
+  // "x,z" -> DEEPEST solid block a saved mine shaft reaches in that column,
+  // recomputed from blockEdits every time the chunk generates (see the
+  // chunkBlockEdits replay loop below) — nothing writes this directly.
+  // syncChunkInstances widens its scan window with this so a shaft's own
+  // blocks still get instanced (and are therefore visible) after a reload,
+  // instead of only the normal shallow crust band. Absent for every column
+  // nobody has ever dug a shaft in, which is the vast majority of the world.
+  const columnDeepY = new Map();
   const columnHeight = new Map(); // "x,z" -> TALLEST block ever recorded at that column — includes tree canopy spillover into neighbouring columns (see the tree-placement loop below), which is exactly right for its original purpose (bounding the mesh-sync scan range) but wrong as a "how steep is the natural ground here" reference — see groundHeightOnly below for that.
   const groundHeightOnly = new Map(); // "x,z" -> this column's own actual ground height, deliberately NEVER touched by a neighbouring tree's canopy. Used only for the smoothing clamp and the steepness-driven surface material below — using columnHeight for those instead was mistaking "a tree's leaves reach over this column" for "the ground here is steep", putting dirt/stone rings around every tree.
   let anyWaterTouchedThisStream = false; // reset per streaming update — see updateChunkStreaming
@@ -3754,6 +3807,13 @@
       const colKey = ex+','+ez;
       const prevColH = columnHeight.get(colKey);
       if (type !== -1 && (prevColH === undefined || ey > prevColH)) columnHeight.set(colKey, ey); // a player-built tower can reach higher than whatever the terrain generator put there
+      // Mirrors the columnHeight tracking just above, but for the LOWEST any
+      // saved edit in this column reaches — see columnDeepY's own comment.
+      // Harmless to track unconditionally: this only ever widens
+      // syncChunkInstances' scan window to cover a real saved block, never
+      // narrows it, so an ordinary near-surface edit costs nothing extra.
+      const prevDeepY = columnDeepY.get(colKey);
+      if (type !== -1 && (prevDeepY === undefined || ey < prevDeepY)) columnDeepY.set(colKey, ey);
     }
     const chunkWaterEdits = waterEdits.byChunk.get(ck);
     if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
@@ -3878,7 +3938,14 @@
         const colKey = x+','+z;
         const colH = columnHeight.get(colKey);
         if (colH === undefined) continue; // nothing was ever generated for this column
-        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - 2), yMax = colH + 3;
+        // Widened the same way syncChunkInstances is (see columnDeepY) — a
+        // dug mine shaft's own blocks sit below the normal shallow band, and
+        // without this they'd never actually get cleared on unload, just
+        // sitting resident in memory instead of being properly torn down
+        // and re-derived from blockEdits on the next visit like everything
+        // else here already is.
+        const deepYTeardown = columnDeepY.get(colKey);
+        const yMin = Math.max(0, deepYTeardown !== undefined ? Math.min(colH - CHUNK_FILL_DEPTH_CAP - 2, deepYTeardown - 1) : colH - CHUNK_FILL_DEPTH_CAP - 2), yMax = colH + 3;
         for (let y = yMin; y <= yMax; y++) {
           const k = key(x,y,z);
           blocks.delete(k);
@@ -3971,7 +4038,13 @@
         // terrain was never the problem, so it goes back to the original
         // tight window that MAX_INSTANCES was actually sized around.
         const isVillageColumn = villageGroundHeight.has(x+','+z);
-        const yMin = Math.max(0, colH - CHUNK_FILL_DEPTH_CAP - (isVillageColumn ? 20 : 2));
+        const shallowYMin = colH - CHUNK_FILL_DEPTH_CAP - (isVillageColumn ? 20 : 2);
+        // A saved mine shaft in this column (see columnDeepY) reaches below
+        // that normal band — widen down to it, and only for this one column,
+        // so every other column keeps the same tight scan MAX_INSTANCES was
+        // sized around (see the comment on the original narrowing, above).
+        const deepY = columnDeepY.get(x+','+z);
+        const yMin = Math.max(0, deepY !== undefined ? Math.min(shallowYMin, deepY - 1) : shallowYMin);
         const yMax = colH + (isVillageColumn ? 20 : 3);
         for (let y = yMin; y <= yMax; y++) {
           updateFullInstanceAt(x, y, z);
@@ -11116,6 +11189,41 @@
     showImpactExplosion(hit.point);
     playThud(hit.kind === 'player' ? 200 : 180);
   }
+  // Backfills any face a blast just exposed that opens onto genuinely
+  // ungenerated void, rather than leaving the crater open on that side —
+  // this is what makes a TNT/tank shell/dynamite blast that breaks out
+  // through the side or bottom of a dug mine shaft read as a walled-in
+  // cavern instead of punching a hole straight through into open nothing.
+  // A blast on or near the surface is deliberately left alone: a neighbour
+  // within or above the column's own natural crust is a genuine opening —
+  // exactly the ordinary open-air crater this game has always made — so
+  // only a neighbour BELOW that column's crust (the same void
+  // continueMineShaft operates in) ever gets filled in. Session-only, like
+  // the crater itself (see the TERRAIN comment above this section) — never
+  // recorded via recordBlockEdit — so a reload cleanly restores both the
+  // untouched crust AND these walls together, with nothing left orphaned.
+  function wallExplosionCrater(cells) {
+    if (!cells.length) return;
+    const destroyedSet = new Set(cells.map(c => key(c[0], c[1], c[2])));
+    const toWall = new Map();
+    for (const [x, y, z] of cells) {
+      for (let i = 1; i < OFF7.length; i++) { // skip OFF7[0], which is [0,0,0] — only real neighbours here
+        const nx = x + OFF7[i][0], ny = y + OFF7[i][1], nz = z + OFF7[i][2];
+        const nk = key(nx, ny, nz);
+        if (destroyedSet.has(nk) || toWall.has(nk)) continue;
+        if (ny < DEEP_MINE_FLOOR) continue; // stays out of the reserved floor, same as continueMineShaft
+        if (blocks.has(nk) || waterBlocks.has(nk) || blockEdits.get(nk) === -1) continue; // solid/water already, or a player's own dug-out tunnel — never fill either
+        const gh = groundHeightOnly.get(nx + ',' + nz);
+        if (gh === undefined) continue; // neighbouring column never generated — leave it rather than guess
+        if (ny >= gh - CHUNK_FILL_DEPTH_CAP) continue; // within/above the normal crust — a genuine opening onto the surface, not the void
+        toWall.set(nk, [nx, ny, nz]);
+      }
+    }
+    for (const [nx, ny, nz] of toWall.values()) {
+      blocks.set(key(nx, ny, nz), STONE_BLOCK_TYPE);
+      handleLocalBlockChange(nx, ny, nz); // instanced immediately, same as the crater itself; deliberately no recordBlockEdit — see this function's own header comment
+    }
+  }
   // One event, run identically on every client (see the header comment).
   function runWeaponBlast(p) {
     if (p.k === 'boom') {
@@ -11123,7 +11231,11 @@
       const c = new THREE.Vector3(p.x, p.y, p.z);
       showBigExplosion(c, p.r);
       ensureAudio(); playBoom(weaponSoundVol(p.x, p.y, p.z));
-      if (terrainDamageAllowed()) destroyBlocksBatch(explosionCells(p.x, p.y, p.z, p.r));
+      if (terrainDamageAllowed()) {
+        const blastCells = explosionCells(p.x, p.y, p.z, p.r);
+        destroyBlocksBatch(blastCells);
+        wallExplosionCrater(blastCells);
+      }
       killEntitiesInRadius(c, p.r * 1.15);
       const body = new THREE.Vector3(player.pos.x, player.pos.y + 0.9, player.pos.z);
       const d = body.distanceTo(c), reach = p.r * 1.6;
@@ -22413,6 +22525,7 @@
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
             handleLocalBlockChange(bx, by, bz, removedType); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            continueMineShaft(bx, by, bz); // if this just broke through the bottom of the column, extends the shaft one block further down
             playThud(150);
             mining = null;
             crackMesh.visible = false;

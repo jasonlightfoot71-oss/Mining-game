@@ -3237,10 +3237,6 @@
     }
   }
   const STONE_BLOCK_TYPE = 2; // BLOCK_TYPES[2] — Stone (see the registry near the top; matches the material ordinary terrain generation already uses this deep)
-  // The 8 cells surrounding a shaft's path at a given depth (a full 3x3
-  // minus the centre) — see continueMineShaft. All 8, not just the 4
-  // cardinal sides, so there's no open diagonal gap either.
-  const SHAFT_WALL_OFFSETS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
   // Places one block of stone at (x,y,z) as ordinary generated world content:
   // persisted (recordBlockEdit), instanced (handleLocalBlockChange), and only
   // ever into a cell that's genuinely untouched — never something a player
@@ -3257,22 +3253,59 @@
     handleLocalBlockChange(x, y, z);
     return true;
   }
+  // True if (x,y,z) sits below ITS OWN column's natural crust — genuine mine-
+  // shaft territory a shaft may legitimately extend into — rather than at or
+  // above it, which is ordinary near-surface ground/open sky that must never
+  // get auto-filled just because a tunnel happened to reach toward it. Column-
+  // relative (not shaft-relative) so it works the same whichever direction a
+  // shaft is extending: down, sideways, or back up toward the surface.
+  // Mirrors generateChunkTerrain's own fillFrom formula exactly.
+  function belowNaturalCrust(x, y, z) {
+    if (y < DEEP_MINE_FLOOR) return false; // stays out of the world's existing reserved floor near BEDROCK_Y
+    const gh = groundHeightOnly.get(x + ',' + z);
+    if (gh === undefined) return false; // neighbouring column never generated — safest to leave alone rather than guess
+    return y < gh - CHUNK_FILL_DEPTH_CAP + 1; // one below the lowest block generateChunkTerrain's fillFrom would ever place here
+  }
+  // The 8 offsets of a full 3x3 ring minus its centre, reused for whichever
+  // two axes are perpendicular to the direction just dug (see wallShaftRing).
+  const RING_OFFSETS = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+  function wallShaftRing(x, y, z, axis) {
+    for (const [a, b] of RING_OFFSETS) {
+      if (axis === 'y') fillGeneratedRock(x + a, y, z + b);       // a vertical shaft — ring in the X/Z plane
+      else if (axis === 'x') fillGeneratedRock(x, y + a, z + b);  // a tunnel heading along X — ring in the Y/Z plane
+      else fillGeneratedRock(x + a, y + b, z);                    // a tunnel heading along Z — ring in the X/Y plane
+    }
+  }
+  // Every direction mining might now be extending into — not just down. Each
+  // one is tried after every mined block; only the direction(s) that are
+  // actually open (see belowNaturalCrust/fillGeneratedRock) ever do anything,
+  // so in practice this is a no-op in five directions and only ever acts in
+  // whichever direction the player is actually digging toward.
+  const MINE_DIRECTIONS = [
+    { dx: 0, dy: -1, dz: 0, axis: 'y' }, // down — the ordinary case, going deeper
+    { dx: 0, dy: 1,  dz: 0, axis: 'y' }, // up — tunnelling back toward the surface
+    { dx: 1, dy: 0,  dz: 0, axis: 'x' }, { dx: -1, dy: 0, dz: 0, axis: 'x' }, // across, along X
+    { dx: 0, dy: 0,  dz: 1, axis: 'z' }, { dx: 0, dy: 0, dz: -1, axis: 'z' }, // across, along Z
+  ];
   // A mine shaft's next layer — called right after a block at (bx,by,bz) is
-  // mined away. If that was the deepest block this column had (nothing below
-  // it — no block, no water — and there's still room above the reserved
-  // floor), a fresh block of stone is generated one layer further down, so
+  // mined away. Wherever that just opened onto genuine, never-touched void
+  // (below the natural crust in whichever direction — down, sideways, or
+  // up), a fresh block of stone is generated one step further that way, so
   // there's always rock to keep digging into rather than an empty drop the
-  // moment you break through the natural crust. The 8 cells around that new
-  // layer are walled in solid the same way, so the shaft reads as an
-  // enclosed tunnel — walls on every side — rather than a floating column
-  // with open void all around it. All of it goes through fillGeneratedRock,
+  // moment you break through. The 8 cells forming a ring around that new
+  // block, perpendicular to the direction just extended, are walled in solid
+  // the same way, so a shaft — in any direction, including one that turns
+  // partway down — reads as an enclosed tunnel rather than a floating path
+  // with open void on every side. All of it goes through fillGeneratedRock,
   // so it persists, saves, and broadcasts live to every other player exactly
   // like a block anyone actually placed by hand.
   function continueMineShaft(bx, by, bz) {
-    const belowY = by - 1;
-    if (belowY < DEEP_MINE_FLOOR) return; // stays out of the world's existing reserved floor near BEDROCK_Y
-    if (!fillGeneratedRock(bx, belowY, bz)) return; // something's already there — not the bottom of the column
-    for (const [dx, dz] of SHAFT_WALL_OFFSETS) fillGeneratedRock(bx + dx, belowY, bz + dz);
+    for (const dir of MINE_DIRECTIONS) {
+      const nx = bx + dir.dx, ny = by + dir.dy, nz = bz + dir.dz;
+      if (!belowNaturalCrust(nx, ny, nz)) continue;
+      if (!fillGeneratedRock(nx, ny, nz)) continue; // already solid/water, or a cell the player deliberately mined out — nothing to extend here
+      wallShaftRing(nx, ny, nz, dir.axis);
+    }
   }
   function recordWaterEdit(x, y, z, level) {
     if (!terrainStreamingActive) return;
@@ -11211,11 +11244,8 @@
         const nx = x + OFF7[i][0], ny = y + OFF7[i][1], nz = z + OFF7[i][2];
         const nk = key(nx, ny, nz);
         if (destroyedSet.has(nk) || toWall.has(nk)) continue;
-        if (ny < DEEP_MINE_FLOOR) continue; // stays out of the reserved floor, same as continueMineShaft
         if (blocks.has(nk) || waterBlocks.has(nk) || blockEdits.get(nk) === -1) continue; // solid/water already, or a player's own dug-out tunnel — never fill either
-        const gh = groundHeightOnly.get(nx + ',' + nz);
-        if (gh === undefined) continue; // neighbouring column never generated — leave it rather than guess
-        if (ny >= gh - CHUNK_FILL_DEPTH_CAP) continue; // within/above the normal crust — a genuine opening onto the surface, not the void
+        if (!belowNaturalCrust(nx, ny, nz)) continue; // within/above the normal crust — a genuine opening onto the surface, not the void
         toWall.set(nk, [nx, ny, nz]);
       }
     }

@@ -17161,17 +17161,30 @@
     // a full block in place, instead of stacking a new block on the cell
     // in front of it. Replacing flowing water this way makes it still
     // water — it stays put even if whatever was feeding it goes.
-    if (selectedSlot === WATER_SLOT && r.isWater && WATER_HEIGHTS[waterHeightIdx] === 1) {
-      const hk = key(r.hit.x, r.hit.y, r.hit.z);
-      const cur = waterBlocks.get(hk);
-      if (typeof cur === 'number' && cur < 0.999 || flowDist.has(hk)) {
+    // Checks the cell the ray HIT and, failing that, the cell just in
+    // front of whatever it hit — the second is the usual case with a
+    // stream, because you're normally standing in it: the raycast skips
+    // any cell overlapping your own body, so looking down at the water
+    // round your feet goes straight through it and lands on the ground
+    // underneath, leaving that water as `before`, not `hit`. It also
+    // deliberately skips the "would this trap the player" check below —
+    // water can't trap anyone, and that check was the other half of why
+    // topping up the stream you're standing in did nothing.
+    if (selectedSlot === WATER_SLOT && WATER_HEIGHTS[waterHeightIdx] === 1) {
+      const topUp = c => {
+        if (!c) return false;
+        const hk = key(c.x, c.y, c.z);
+        if (!waterBlocks.has(hk)) return false;
+        const cur = waterBlocks.get(hk);
+        if (!(typeof cur === 'number' && cur < 0.999) && !flowDist.has(hk)) return false; // already full, still water — nothing to do
         flowDist.delete(hk);
         waterBlocks.set(hk, 1);
-        recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, 1);
+        recordWaterEdit(c.x, c.y, c.z, 1);
         rebuildWaterGeometry();
         playThud(280);
-        return;
-      }
+        return true;
+      };
+      if ((r.isWater && topUp(r.hit)) || topUp(r.before)) return;
     }
     const target = replacingWater ? r.hit : r.before;
     if (!target) return; // aiming at water from inside water with the bucket — there's no cell in front of it to place into

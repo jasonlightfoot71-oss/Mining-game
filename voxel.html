@@ -16784,7 +16784,13 @@
       const k = key(vx,vy,vz);
       if (blocks.has(k)) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:false };
       if (waterBlocks.has(k)) {
-        if (!skipWater) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:true };
+        // skipWater === 'flowing' — the water bucket's mining raycast.
+        // Still water can be scooped, but flowing water is refilled by
+        // whatever feeds it on the very next flow tick, so aiming at it
+        // with the bucket just scooped the same cell forever and never
+        // reached the ground underneath. Like Minecraft, the bucket
+        // can't pick flowing water up — it's seen through instead.
+        if (!skipWater || (skipWater === 'flowing' && !flowDist.has(k))) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:true };
         prev = {x:vx,y:vy,z:vz};
         continue;
       }
@@ -16835,7 +16841,7 @@
     // deliberately scoop water up, but mining with anything else now
     // reaches the actual terrain instead of just clearing the water in
     // front of it.
-    const r = voxelRaycast(selectedSlot !== WATER_SLOT);
+    const r = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing');
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
     // over a block if it's actually the closer of the two along the
@@ -22696,7 +22702,7 @@
       workHeldRoot.position.y = -0.35 + (moving ? Math.sin(bobT)*0.02 : 0);
 
       // mining
-      const r = voxelRaycast(selectedSlot !== WATER_SLOT); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
+      const r = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing'); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
       let blockDist = Infinity;
       if (r) {
         const camPos = camera.getWorldPosition(new THREE.Vector3());
@@ -22749,7 +22755,7 @@
       }
 
       if (mining) {
-        const rr = voxelRaycast(selectedSlot !== WATER_SLOT); // same reasoning as doMine's own raycast above
+        const rr = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing'); // same reasoning as doMine's own raycast above
         const currentKey = rr ? key(rr.hit.x,rr.hit.y,rr.hit.z) : null;
         if (currentKey !== mining.k) {
           if (!rr) { mining = null; crackMesh.visible = false; } // nothing under the crosshair — stop entirely

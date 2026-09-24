@@ -937,7 +937,7 @@
       if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
     }
     for (const [k, level] of waterEdits) {
-      if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+      applyWaterEditValue(k, level);
     }
   }
 
@@ -2491,7 +2491,7 @@
     dropChunk(ck) {
       const set = this.chunkCells.get(ck);
       if (!set) return;
-      for (const k of set) this._data.delete(k);
+      for (const k of set) { this._data.delete(k); flowDist.delete(k); activeWaterBlocks.delete(k); } // flowing-water state goes with it — it's re-read from waterEdits when the chunk streams back in
       this.chunkCells.delete(ck);
     }
     has(k) {
@@ -2507,16 +2507,15 @@
       return this._naturalLevel(x, y, z);
     }
     get size() { return this._data.size; }
-    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); }
+    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); flowDist.clear(); activeWaterBlocks.clear(); } // a new/reloaded world starts with nothing mid-flow
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
     entries() { return this._data.entries(); }
     keys() { return this._data.keys(); }
     values() { return this._data.values(); }
     forEach(fn) { this._data.forEach(fn); }
   }
-  const waterBlocks = new WaterBlockMap(); // "x,y,z" -> flow level: 0 = source (player-placed, or a falling
-                                  // column's own body — see below), 1..MAX_SPREAD = flowing water,
-                                  // weaker (shallower) the further it's spread from a source.
+  const waterBlocks = new WaterBlockMap(); // "x,y,z" -> rendered height fraction (0..1]. Whether a cell is
+                                  // still or flowing water lives separately in flowDist — see WATER FLOW below.
   // Which water blocks the flow simulation below actually bothers
   // checking each tick — most of waterBlocks is NOT in here. Naturally
   // generated lakes/oceans are already sitting in a settled, correct
@@ -2531,88 +2530,217 @@
   const activeWaterBlocks = new Set();
   const key = (x,y,z) => x+','+y+','+z;
 
-  // Water flow — each tick:
-  //  1. Falling takes priority: any water with empty space directly below
-  //     it falls one block down, and becomes full-strength (level 0) the
-  //     instant it starts falling — this is what keeps a waterfall
-  //     looking like a strong, solid column all the way down even if the
-  //     pool feeding it is a weak, far-spread puddle.
-  //  2. Water that CAN'T fall (blocked below) spreads sideways into empty
-  //     neighbouring cells instead, one level weaker each step out from
-  //     wherever it started, stopping once it's spread MAX_SPREAD blocks
-  //     from its source — real fluid doesn't flow forever, it thins out
-  //     and stops, which is what the increasing level number models.
-  // Ticked on an interval (like mining's own pacing) rather than every
-  // frame, so it visibly ripples outward/downward over time instead of
-  // the whole body of water resolving itself instantly in one frame.
+  // ================= WATER FLOW =================
+  // Minecraft-style flowing water. Every water cell is one of two kinds:
+  //  - STILL (source) water — natural lakes/sea (see WaterBlockMap's
+  //    _naturalLevel) and anything a player placed by hand. Never moves
+  //    or disappears on its own; it just feeds flow into any gap that
+  //    opens up next to or below it.
+  //  - FLOWING water — anything that spilled out of a source. Tracked in
+  //    flowDist (cells NOT in there are still water): 0 = a falling
+  //    column (full height, fed from directly above), 1..MAX_SPREAD =
+  //    spreading sideways, one step thinner per block from whatever feeds
+  //    it. Flowing water only exists while something still feeds it —
+  //    plug the gap it came through and it recedes back out of existence
+  //    one ring at a time, the same way it spread.
+  // So breaking a dam lets the water behind it pour through the hole,
+  // fall down any drop, and run on downhill (it heads for the nearest
+  // edge rather than spreading evenly when there's somewhere lower to
+  // go); patching the hole makes the escaped stream dry up again.
+  // The reservoir itself never empties — like Minecraft, a body of still
+  // water is an endless source (a real volume-conserving sim of a
+  // 40-deep ocean isn't something a browser can afford every tick).
+  //
+  // Only cells in activeWaterBlocks get simulated. Nothing is ever put
+  // in there except by wakeWaterAround() — called when a block next to
+  // water is mined or placed, or water itself is removed — and by the
+  // simulation waking its own neighbours when it changes something. A
+  // settled world therefore costs nothing at all, however much water
+  // exists in it.
+  //
+  // Persisted through the same waterEdits as everything else: still
+  // water stores its height (0..1), -1 = removed, and flowing water
+  // stores FLOW_EDIT_BASE + its distance, decoded by applyWaterEditValue
+  // on load — so a stream is still a stream (and still recedes if you
+  // later plug its source) after a reload, rather than freezing into a
+  // permanent source of its own.
+  const flowDist = new Map(); // "x,y,z" -> 0 (falling) or 1..MAX_SPREAD (sideways) — flowing cells only
   const WATER_TICK_MS = 260;
-  const MAX_SPREAD = 4; // how many blocks flowing water can travel sideways from a source before stopping
+  const MAX_SPREAD = 6; // how far flowing water runs sideways across flat ground from whatever feeds it before petering out
+  const WATER_CELLS_PER_TICK = 700; // safety valve — a very large spill finishes over a few extra ticks rather than stalling one frame
+  const FLOW_EDIT_BASE = 2; // waterEdits encoding for flowing cells (heights are 0..1 and removed is -1, so 2+ is free)
+  const DROP_SEARCH = 4; // how far sideways flowing water looks for a way down before giving up and spreading evenly
   let lastWaterTick = 0;
-  function updateWaterFlow() {
-    if (activeWaterBlocks.size === 0) return;
-    const fallMoves = [];  // [fromKey, toKey]
-    const spreadAdds = []; // [toKey, level]
-    const settled = [];    // keys that did nothing this tick — dropped from the active set below, until something reactivates them (mining next to them, more water arriving)
-
-    activeWaterBlocks.forEach(k => {
-      const level = waterBlocks.get(k);
-      if (level === undefined) { settled.push(k); return; } // already gone (mined out, or consumed by something else) — nothing left to simulate here
-      const [x,y,z] = k.split(',').map(Number);
-      let didSomething = false;
-
-      if (y > 0) {
-        const belowKey = key(x,y-1,z);
-        if (!blocks.has(belowKey) && !waterBlocks.has(belowKey)) {
-          fallMoves.push([k, belowKey]);
-          activeWaterBlocks.add(belowKey); // keeps simulating at its new spot next tick
-          return; // falling this tick — don't also try to spread from where it's leaving
+  const WATER_SIX = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]];
+  const WATER_FOUR = [[1,0],[-1,0],[0,1],[0,-1]];
+  function flowHeight(d) { return d <= 0 ? 1 : Math.max(0.125, 1 - d / (MAX_SPREAD + 1)); }
+  // Applies one saved/streamed waterEdits value to the live map —
+  // shared by every place edits get replayed, so all of them understand
+  // the flowing-water encoding identically.
+  function applyWaterEditValue(k, level) {
+    if (level === -1) { waterBlocks.delete(k); flowDist.delete(k); return; }
+    if (level >= FLOW_EDIT_BASE) { const d = level - FLOW_EDIT_BASE; flowDist.set(k, d); waterBlocks.set(k, flowHeight(d)); return; }
+    flowDist.delete(k); waterBlocks.set(k, level);
+  }
+  // Whether water can NOT enter this cell. Deliberately stricter than
+  // just `blocks.has` — below each column's generated crust there is no
+  // rock in the block map at all (see belowNaturalCrust), and columns
+  // that aren't loaded have nothing either; water must treat both as
+  // solid or it would pour straight into the void.
+  function waterSolidAt(x, y, z) {
+    if (y < 1) return true;
+    const k = key(x, y, z);
+    if (blocks.has(k)) return true;
+    const gh = groundHeightOnly.get(x + ',' + z);
+    if (gh === undefined) return true; // unloaded/ungenerated column — acts as a wall until it streams in
+    if (y < gh - CHUNK_FILL_DEPTH_CAP + 1 && blockEdits.get(k) !== -1) return true; // implied deep rock nobody has dug
+    if (!pubWaterAllowed(x, z)) return true;
+    return false;
+  }
+  function waterOpenAt(x, y, z) { return !waterSolidAt(x, y, z) && !waterBlocks.has(key(x, y, z)); }
+  function wakeWaterAround(x, y, z) {
+    activeWaterBlocks.add(key(x, y, z));
+    for (const [dx, dy, dz] of WATER_SIX) activeWaterBlocks.add(key(x + dx, y + dy, z + dz));
+  }
+  // Can the water in this cell push sideways? Still water always can
+  // (a lake's lower layers sit on more water, not on ground). Flowing
+  // water only spreads once it's actually resting on something solid —
+  // a falling column doesn't fan out mid-air, and a stream landing in a
+  // pool just merges into it.
+  function waterCanSpread(x, y, z, k) {
+    if (!flowDist.has(k)) return true;
+    return waterSolidAt(x, y - 1, z);
+  }
+  // Shortest sideways distance (within DROP_SEARCH) from (sx,y,sz) to a
+  // spot with open space underneath, walking only over open cells —
+  // what makes a spill run toward the nearest edge/slope instead of
+  // spreading out as an even diamond.
+  function nearestDropFrom(sx, y, sz, fromX, fromZ) {
+    if (!waterSolidAt(sx, y - 1, sz)) return 0; // open below — or already water pouring down there, which still counts: the stream keeps heading for the same drop once it's started running into it
+    const seen = new Set([sx + ',' + sz, fromX + ',' + fromZ]);
+    let frontier = [[sx, sz]];
+    for (let depth = 1; depth <= DROP_SEARCH; depth++) {
+      const next = [];
+      for (const [cx, cz] of frontier) {
+        for (const [dx, dz] of WATER_FOUR) {
+          const nx = cx + dx, nz = cz + dz, ck = nx + ',' + nz;
+          if (seen.has(ck)) continue;
+          seen.add(ck);
+          if (waterSolidAt(nx, y, nz)) continue;
+          if (!waterSolidAt(nx, y - 1, nz)) return depth;
+          next.push([nx, nz]);
         }
       }
-
-      if (level < MAX_SPREAD) { // MAX_SPREAD or beyond is already too far from a source to spread further
-        [[x+1,y,z],[x-1,y,z],[x,y,z+1],[x,y,z-1]].forEach(([nx,ny,nz]) => {
-          const nk = key(nx,ny,nz);
-          if (blocks.has(nk)) return; // solid — can't flow through it
-          const existing = waterBlocks.get(nk);
-          if (existing !== undefined && existing <= level+1) return; // already equal or stronger water there
-          spreadAdds.push([nk, level+1]);
-          didSomething = true;
-        });
+      if (!next.length) break;
+      frontier = next;
+    }
+    return Infinity;
+  }
+  function setFlowingWater(x, y, z, d) {
+    const k = key(x, y, z);
+    flowDist.set(k, d);
+    waterBlocks.set(k, flowHeight(d));
+    recordWaterEdit(x, y, z, FLOW_EDIT_BASE + d);
+    wakeWaterAround(x, y, z);
+  }
+  function removeFlowingWater(x, y, z) {
+    const k = key(x, y, z);
+    flowDist.delete(k);
+    waterBlocks.delete(k);
+    recordWaterEdit(x, y, z, -1);
+    wakeWaterAround(x, y, z);
+  }
+  // One simulation step for one cell. Returns true if anything changed.
+  function stepWaterCell(k) {
+    if (!waterBlocks.has(k)) return false; // empty — its neighbours were woken alongside it and will push into it if they can
+    const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+    const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+    let changed = false;
+    // 1. Flowing water re-checks what's feeding it: water directly above
+    //    makes it a falling column; otherwise it's one step further than
+    //    its closest neighbour that can spread into it. Nothing feeding
+    //    it at all (the gap was plugged, the source was drained) and it
+    //    goes — which wakes the cells it was feeding, so the whole
+    //    stream recedes behind it.
+    if (flowDist.has(k)) {
+      let best = Infinity;
+      if (waterBlocks.has(key(x, y + 1, z))) best = 0;
+      else {
+        for (const [dx, dz] of WATER_FOUR) {
+          const nx = x + dx, nz = z + dz, nk = key(nx, y, nz);
+          if (!waterBlocks.has(nk)) continue;
+          const nd = flowDist.has(nk) ? flowDist.get(nk) : 0;
+          if (nd >= MAX_SPREAD || !waterCanSpread(nx, y, nz, nk)) continue;
+          if (nd + 1 < best) best = nd + 1;
+        }
       }
-      if (!didSomething) settled.push(k);
-    });
-
-    settled.forEach(k => activeWaterBlocks.delete(k));
-
-    if (!fallMoves.length && !spreadAdds.length) return;
-
-    fallMoves.forEach(([from, to]) => { waterBlocks.delete(from); waterBlocks.set(to, 0); });
-    spreadAdds.forEach(([to, lvl]) => {
-      const existing = waterBlocks.get(to);
-      if (existing === undefined || existing > lvl) waterBlocks.set(to, lvl);
-      activeWaterBlocks.add(to);
-    });
-    // Water settling/spreading only ever changes waterBlocks — it never
-    // touches the terrain block map or its mesh instances at all, so
-    // there's no reason for it to trigger a full needsRebuild (which
-    // resets and reprocesses the ENTIRE loaded world's terrain mesh, not
-    // just water). That mismatch is very likely the real, persistent
-    // cause of the flash: this runs on its own timer roughly 4 times a
-    // second, completely independent of chunk streaming, and with water
-    // now common, it's almost always finding something to settle —
-    // meaning it was quietly forcing a full terrain rebuild on a tight
-    // recurring timer the whole time, regardless of any of the
-    // streaming-specific fixes made so far. Only the water surface
-    // itself actually needs updating here.
-    scheduleWaterRebuild();
-    // Also nudges the snow/flower overlay to re-check itself — water
-    // spreading into a new spot over time (not just at generation) is
-    // exactly how snow could end up left behind sitting on top of water
-    // that only arrived there afterward, since nothing else was telling
-    // the overlay that water had moved. Already debounced on its own, so
-    // this is cheap to call here regardless of how often flow ticks.
+      if (best > MAX_SPREAD) {
+        // A neighbouring column that isn't loaded might be exactly where
+        // this stream's feed is — never dry a stream up on a guess.
+        for (const [dx, dz] of WATER_FOUR) if (!groundHeightOnly.has((x + dx) + ',' + (z + dz))) return changed;
+        removeFlowingWater(x, y, z); return true;
+      }
+      if (best !== flowDist.get(k)) { setFlowingWater(x, y, z, best); changed = true; }
+    }
+    const d = flowDist.has(k) ? flowDist.get(k) : 0;
+    // 2. Falling takes priority — open space below means it pours down
+    //    as a full-height column and doesn't also spread sideways.
+    if (waterOpenAt(x, y - 1, z)) { setFlowingWater(x, y - 1, z, 0); return true; }
+    // 3. Otherwise spread sideways — toward the nearest drop if there is
+    //    one within reach, evenly in every open direction if not.
+    if (d >= MAX_SPREAD || !waterCanSpread(x, y, z, k)) return changed;
+    const targets = [];
+    let bestDrop = Infinity;
+    for (const [dx, dz] of WATER_FOUR) {
+      const nx = x + dx, nz = z + dz;
+      if (waterSolidAt(nx, y, nz)) continue;
+      // Direction is chosen over EVERY open neighbour, including ones
+      // already full — skipping those first meant that once the downhill
+      // cell had filled, the sideways ones became "the best remaining"
+      // and the stream fanned out across the whole hillside.
+      const drop = nearestDropFrom(nx, y, nz, x, z);
+      if (drop < bestDrop) { bestDrop = drop; targets.length = 0; }
+      if (drop === bestDrop) targets.push([nx, nz]);
+    }
+    for (const [nx, nz] of targets) {
+      const nk = key(nx, y, nz);
+      if (waterBlocks.has(nk) && (!flowDist.has(nk) || flowDist.get(nk) <= d + 1)) continue; // already as full (or fuller) there
+      setFlowingWater(nx, y, nz, d + 1); changed = true;
+    }
+    return changed;
+  }
+  function updateWaterFlow() {
+    if (activeWaterBlocks.size === 0) return;
+    const batch = [];
+    for (const k of activeWaterBlocks) { batch.push(k); if (batch.length >= WATER_CELLS_PER_TICK) break; }
+    for (const k of batch) activeWaterBlocks.delete(k);
+    // Anything woken during this pass lands back in activeWaterBlocks
+    // and runs NEXT tick — that's what paces a spill so you can watch it
+    // spread and pour rather than it appearing all at once.
+    let changed = false;
+    for (const k of batch) { if (stepWaterCell(k)) changed = true; }
+    if (!changed) return;
+    requestFlowWaterRebuild();
+    // Snow/flower overlay re-check, same as before — water arriving
+    // somewhere new can leave snow sitting on top of it otherwise.
     const flowSeason = getSeasonState().season;
     if (flowSeason === 0 || flowSeason === 1 || flowSeason === 2) scheduleOverlayRebuild(flowSeason);
+  }
+  // Throttled rather than debounced: scheduleWaterRebuild restarts its
+  // one-second timer on every call, so a spill that keeps changing every
+  // tick would never actually get redrawn until it stopped completely.
+  let lastFlowRebuildAt = 0, flowRebuildTimer = null;
+  function requestFlowWaterRebuild() {
+    const now = performance.now(), gap = 300;
+    if (now - lastFlowRebuildAt >= gap) { lastFlowRebuildAt = now; rebuildWaterGeometry(); return; }
+    if (flowRebuildTimer) return;
+    flowRebuildTimer = setTimeout(() => { flowRebuildTimer = null; lastFlowRebuildAt = performance.now(); rebuildWaterGeometry(); }, gap - (now - lastFlowRebuildAt));
+  }
+  function tickWaterFlow() {
+    const now = performance.now();
+    if (now - lastWaterTick < WATER_TICK_MS) return;
+    lastWaterTick = now;
+    updateWaterFlow();
   }
 
   function generateNewWorld() {
@@ -3048,7 +3176,7 @@
         }
       }
       if (we) for (const [k, level] of we) {
-        if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+        applyWaterEditValue(k, level);
         anyWaterTouchedThisStream = true;
       }
       const parts = tck.split('_');
@@ -3850,7 +3978,7 @@
     }
     const chunkWaterEdits = waterEdits.byChunk.get(ck);
     if (chunkWaterEdits) for (const [k, level] of chunkWaterEdits) {
-      if (level === -1) waterBlocks.delete(k); else waterBlocks.set(k, level);
+      applyWaterEditValue(k, level);
       anyWaterTouchedThisStream = true;
     }
     // Village generation happens here as part of building this chunk.
@@ -5041,9 +5169,16 @@
     { d:[0,0,1],  c:[[0,0,1],[1,0,1],[1,1,1],[0,1,1]] },
     { d:[0,0,-1], c:[[0,0,0],[0,1,0],[1,1,0],[1,0,0]] },
   ];
-  function waterNeighborOccludes(nx, ny, nz) {
+  function waterNeighborOccludes(nx, ny, nz, selfH, dy) {
     const nk = key(nx,ny,nz);
-    if (waterBlocks.has(nk)) return true;
+    if (waterBlocks.has(nk)) {
+      // A shallower neighbour beside a deeper cell (flowing water steps
+      // down in height as it spreads) only covers the bottom part of
+      // this cell's side — hiding the whole face left a see-through slot
+      // along every step of a stream.
+      if (dy === 0 && selfH !== undefined) { const nh = waterBlocks.get(nk); if (typeof nh === 'number' && nh < selfH - 0.01) return false; }
+      return true;
+    }
     const t = blocks.get(nk);
     return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve));
   }
@@ -5177,7 +5312,7 @@
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
             for (const face of WATER_FACES) {
               const [dx,dy,dz] = face.d;
-              if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue;
+              if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
               const [a,b,c,d] = face.c;
               for (const corner of [a,b,c, a,c,d]) {
                 const cy = corner[1] === 1 ? h : corner[1];
@@ -5204,7 +5339,7 @@
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
           for (const face of WATER_FACES) {
             const [dx,dy,dz] = face.d;
-            if (waterNeighborOccludes(x+dx, y+dy, z+dz)) continue;
+            if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
             const [a,b,c,d] = face.c;
             for (const corner of [a,b,c, a,c,d]) {
               const cy = corner[1] === 1 ? h : corner[1];
@@ -16770,12 +16905,14 @@
       const current = waterBlocks.get(k);
       const currentHeight = (typeof current === 'number' && current > 0 && current <= 1) ? current : 1;
       const nextHeight = currentHeight - 0.25;
+      flowDist.delete(k); // scooping flowing water turns what's left of it into still water — or it's gone entirely below
       if (nextHeight > 0.001) {
         waterBlocks.set(k, nextHeight);
         recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, nextHeight);
       } else {
         waterBlocks.delete(k);
         recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, -1);
+        wakeWaterAround(r.hit.x, r.hit.y, r.hit.z); // a now-empty cell — flow can recede from it or refill it
       }
       rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all
       playThud(220);
@@ -17068,6 +17205,8 @@
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
+      flowDist.delete(k);
+      wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
       playThud(300);
     }
@@ -17940,6 +18079,93 @@
     }
   }
 
+  // ================= LEAF DECAY =================
+  // Minecraft-style: chop out a tree's trunk and its leaves don't hang in
+  // the air forever — any natural leaf that can no longer reach a log
+  // within LEAF_SUPPORT_RANGE steps (walking through other leaves) drops
+  // away on its own, one at a time, over the next few seconds.
+  // Only NATURAL leaves decay — anything a player placed by hand (it has
+  // its own entry in blockEdits) is left alone, so hedges and leafy
+  // builds never vanish. Winter's branch blocks are just winterized
+  // leaves, so they count as leaves here too.
+  // Each drop goes through recordBlockEdit exactly like a mined block,
+  // so it persists and every other player in the world sees it go.
+  const LOG_TYPE_SET = new Set([3, ...['Birch Wood', 'Spruce Wood', 'Dark Oak Wood', 'Acacia Wood'].map(typeIndexByName)].filter(i => i >= 0));
+  const LEAF_TYPE_SET = new Set([4, WINTER_BRANCH_A, WINTER_BRANCH_B, WINTER_BRANCH_C].filter(i => i >= 0));
+  const LEAF_SUPPORT_RANGE = 4;   // trees here spread their canopy at most ~3 blocks from the trunk
+  const LEAF_SEARCH_RADIUS = 6;   // how far from the removed log to look for leaves that might have lost their support
+  const LEAF_DECAY_MIN_MS = 700, LEAF_DECAY_SPREAD_MS = 6000; // each orphaned leaf drops at its own random moment in this window — "slowly", not all at once
+  const leafDecayQueue = new Map(); // "x,y,z" -> [performance.now() time it's due to drop, world it was queued in — a leftover from a world you've since left must never knock a hole in the next one]
+  const LEAF_SIX = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+  function isNaturalLeaf(k) { return LEAF_TYPE_SET.has(blocks.get(k)) && blockEdits.get(k) === undefined; }
+  function leafHasLogSupport(x, y, z) {
+    const seen = new Set([key(x, y, z)]);
+    let frontier = [[x, y, z]];
+    for (let depth = 1; depth <= LEAF_SUPPORT_RANGE && frontier.length; depth++) {
+      const next = [];
+      for (const [cx, cy, cz] of frontier) {
+        for (const [dx, dy, dz] of LEAF_SIX) {
+          const nx = cx + dx, ny = cy + dy, nz = cz + dz, nk = key(nx, ny, nz);
+          if (seen.has(nk)) continue;
+          seen.add(nk);
+          if (!groundHeightOnly.has(nx + ',' + nz)) return true; // runs into a column that isn't loaded — can't see whether a trunk is over there, so never drop on a guess
+          const t = blocks.get(nk);
+          if (t === undefined) continue;
+          if (LOG_TYPE_SET.has(t)) return true;
+          if (LEAF_TYPE_SET.has(t)) next.push([nx, ny, nz]);
+        }
+      }
+      frontier = next;
+    }
+    return false;
+  }
+  // Called once when a log is mined — finds the leaves connected to
+  // where it was and queues any that just lost their last trunk.
+  function onLogRemoved(bx, by, bz) {
+    const seen = new Set();
+    const stack = LEAF_SIX.map(([dx, dy, dz]) => [bx + dx, by + dy, bz + dz]);
+    const now = performance.now();
+    let visited = 0;
+    while (stack.length && visited < 600) {
+      const [x, y, z] = stack.pop();
+      if (Math.abs(x - bx) > LEAF_SEARCH_RADIUS || Math.abs(y - by) > LEAF_SEARCH_RADIUS || Math.abs(z - bz) > LEAF_SEARCH_RADIUS) continue;
+      const k = key(x, y, z);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (!LEAF_TYPE_SET.has(blocks.get(k))) continue;
+      visited++;
+      for (const [dx, dy, dz] of LEAF_SIX) stack.push([x + dx, y + dy, z + dz]);
+      if (leafDecayQueue.has(k) || !isNaturalLeaf(k) || leafHasLogSupport(x, y, z)) continue;
+      leafDecayQueue.set(k, [now + LEAF_DECAY_MIN_MS + Math.random() * LEAF_DECAY_SPREAD_MS, currentWorldId]);
+    }
+  }
+  let leafDecayNextCheck = 0;
+  function updateLeafDecay() {
+    if (!leafDecayQueue.size) return;
+    const now = performance.now();
+    if (now < leafDecayNextCheck) return;
+    leafDecayNextCheck = now + 100;
+    let dropped = 0;
+    for (const [k, [due, worldId]] of leafDecayQueue) {
+      if (worldId !== currentWorldId) { leafDecayQueue.delete(k); continue; }
+      if (due > now) continue;
+      leafDecayQueue.delete(k);
+      const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      // Re-checked at the moment it drops — the leaf might already be
+      // gone (mined, chunk unloaded), or the player might have put a log
+      // back in the meantime.
+      if (!isNaturalLeaf(k) || leafHasLogSupport(x, y, z)) continue;
+      const removedType = blocks.get(k);
+      blocks.delete(k);
+      winterizedLeaves.delete(k);
+      recordBlockEdit(x, y, z, -1, 0);
+      removeFixturesForBlock(x, y, z);
+      handleLocalBlockChange(x, y, z, removedType);
+      if (++dropped >= 6) break; // a big canopy going at once is spread over a few frames
+    }
+  }
+
   function isExposedToSky(x, y, z) {
     // Bounded generously rather than to WORLD_HEIGHT — a tall player-built
     // structure's roof could sit well above the terrain generator's own
@@ -18646,6 +18872,8 @@
         const prevColH = columnHeight.get(colKey);
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
+        if (t !== -1) { waterBlocks.delete(k); flowDist.delete(k); } // a block placed into water displaces it, same as locally
+        wakeWaterAround(x, y, z); // another player breaching (or plugging) a dam flows here too — water itself isn't broadcast, each client runs the same simulation
       });
       // The host just built something new (see recordStructureSpec). Take
       // its spec; if this client already has that chunk's terrain, build
@@ -22018,6 +22246,8 @@
     updateVillageAnimals(dt);
     updateFires(waterTime);
     updateWinterBranchVariety(dt);
+    tickWaterFlow();
+    updateLeafDecay();
     updateWindSound(dt, windIntensity);
     try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement || padPlaying()); // a controller doesn't need pointer lock — the right stick turns the view directly
@@ -22496,6 +22726,8 @@
             // dig, same as a single tap on it always has — let next
             // frame's raycast pick up fresh from whatever's now revealed.
             waterBlocks.delete(currentKey);
+            flowDist.delete(currentKey);
+            wakeWaterAround(rr.hit.x, rr.hit.y, rr.hit.z); // anything this cell was feeding recedes; anything feeding it flows back in
             recordWaterEdit(rr.hit.x, rr.hit.y, rr.hit.z, -1); // was missing here — this specific removal (moving onto new water while a mine is already held) never actually persisted without it
             rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all. This used to set needsRebuild = true instead, triggering a full mesh rebuild (chunked, not a hard freeze, but still redoing far more than necessary) for something doMine's own single-tap water handling already did the cheap way — water being far more common now made this a real, regular cost every time this specific path (moving the crosshair onto new water while already mining) was hit
             playThud(220);
@@ -22528,25 +22760,12 @@
             const removedType = blocks.get(mining.k); // captured before deletion — handleLocalBlockChange below needs to know if this was glass, since by the time it runs the removal has already happened and the current state no longer shows it
             blocks.delete(mining.k);
             stepRotations.delete(mining.k);
-            // One-time water response, not a continuous simulation (the
-            // old per-frame flow tick this used to feed into — see
-            // activeWaterBlocks — was removed entirely for performance,
-            // so simply flagging water as "active" here did nothing any
-            // more; a hole mined right next to a lake just stayed bone
-            // dry, which is what prompted this). If there's water
-            // directly above, it falls to fill this new gap; otherwise,
-            // water to any side spreads in to fill it. Fires exactly
-            // once, right here at the moment of mining — never an
-            // ongoing tick.
-            if (pubWaterAllowed(bx, bz)) {
-              const filledFromAbove = waterBlocks.has(key(bx,by+1,bz));
-              const filledFromSide = !filledFromAbove && [[bx+1,by,bz],[bx-1,by,bz],[bx,by,bz+1],[bx,by,bz-1]].some(([nx,ny,nz]) => waterBlocks.has(key(nx,ny,nz)));
-              if (filledFromAbove || filledFromSide) {
-                waterBlocks.set(mining.k, 1);
-                recordWaterEdit(bx, by, bz, 1);
-                anyWaterTouchedThisStream = true;
-              }
-            }
+            // Wakes the water simulation around the new gap (see WATER
+            // FLOW) — any water beside or above it pours in over the next
+            // few ticks and keeps going wherever it can reach, which is
+            // what makes breaking a dam actually let the water out rather
+            // than just filling this one cell and stopping.
+            wakeWaterAround(bx, by, bz);
             recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
             removeFixturesForBlock(bx, by, bz);
             removeLaddersForBlock(bx, by, bz);
@@ -22555,6 +22774,7 @@
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
             handleLocalBlockChange(bx, by, bz, removedType); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            if (LOG_TYPE_SET.has(removedType)) onLogRemoved(bx, by, bz); // leaves left with no trunk in reach start dropping — see LEAF DECAY
             continueMineShaft(bx, by, bz); // if this just broke through the bottom of the column, extends the shaft one block further down
             playThud(150);
             mining = null;

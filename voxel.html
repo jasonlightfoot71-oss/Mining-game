@@ -17156,7 +17156,26 @@
     // Minecraft — otherwise it target the empty cell just before the water
     // and you could never build over/through it.
     const replacingWater = (selectedSlot !== WATER_SLOT && r.isWater);
-    const {x,y,z} = replacingWater ? r.hit : r.before;
+    // A FULL water block aimed at a partial one (a shallow shoreline
+    // cell, flowing water, or one you scooped down) tops that cell up to
+    // a full block in place, instead of stacking a new block on the cell
+    // in front of it. Replacing flowing water this way makes it still
+    // water — it stays put even if whatever was feeding it goes.
+    if (selectedSlot === WATER_SLOT && r.isWater && WATER_HEIGHTS[waterHeightIdx] === 1) {
+      const hk = key(r.hit.x, r.hit.y, r.hit.z);
+      const cur = waterBlocks.get(hk);
+      if (typeof cur === 'number' && cur < 0.999 || flowDist.has(hk)) {
+        flowDist.delete(hk);
+        waterBlocks.set(hk, 1);
+        recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, 1);
+        rebuildWaterGeometry();
+        playThud(280);
+        return;
+      }
+    }
+    const target = replacingWater ? r.hit : r.before;
+    if (!target) return; // aiming at water from inside water with the bucket — there's no cell in front of it to place into
+    const {x,y,z} = target;
     if (blockOverlapsPlayer(x,y,z)) return; // safeguard — never place a block that would clip/trap the player
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there

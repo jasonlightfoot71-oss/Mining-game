@@ -2648,6 +2648,26 @@
     return false;
   }
   function waterOpenAt(x, y, z) { return !waterSolidAt(x, y, z) && !waterBlocks.has(key(x, y, z)); }
+  // Lava meeting water hardens, Minecraft-style: a still lava source
+  // becomes Stone, flowing lava becomes Cobblestone. Checked from both
+  // sides — a lava cell that finds water beside/above/below it, and a
+  // water cell that finds lava beside it — so it happens whichever of
+  // the two arrives. The water itself is untouched and carries on
+  // flowing around the new block.
+  const LAVA_STONE_TYPE = Math.max(0, typeIndexByName('Stone'));
+  const LAVA_COBBLE_TYPE = typeIndexByName('Cobblestone') >= 0 ? typeIndexByName('Cobblestone') : LAVA_STONE_TYPE;
+  function solidifyLava(x, y, z) {
+    const k = key(x, y, z);
+    if (!lava.has(k) || blocks.has(k)) return false;
+    const t = lava.isFlowing(k) ? LAVA_COBBLE_TYPE : LAVA_STONE_TYPE;
+    lava.remove(x, y, z); // records the lava as gone and wakes what it was feeding, so any stream behind it recedes
+    blocks.set(k, t);
+    recordBlockEdit(x, y, z, t, 0);
+    handleLocalBlockChange(x, y, z);
+    wakeWaterAround(x, y, z);
+    playThud(140);
+    return true;
+  }
   function wakeWaterAround(x, y, z) {
     activeWaterBlocks.add(key(x, y, z));
     for (const [dx, dy, dz] of WATER_SIX) activeWaterBlocks.add(key(x + dx, y + dy, z + dz));
@@ -2734,6 +2754,7 @@
     const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
     const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
     let changed = false;
+    for (const [dx, dy, dz] of WATER_SIX) if (lava.has(key(x + dx, y + dy, z + dz)) && solidifyLava(x + dx, y + dy, z + dz)) changed = true;
     // 1. Flowing water re-checks what's feeding it: water directly above
     //    makes it a falling column; otherwise it's one step further than
     //    its closest neighbour that can spread into it. Nothing feeding
@@ -2942,6 +2963,7 @@
       if (!cells.has(k)) return false;
       const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      for (const [dx, dy, dz] of WATER_SIX) if (waterBlocks.has(key(x + dx, y + dy, z + dz))) return solidifyLava(x, y, z); // touching water — hardens into stone
       let changed = false;
       if (flow.has(k)) {
         let best = Infinity, bestH = 1;
@@ -4990,11 +5012,13 @@
   }
   function rebuildLavaGeometry() {
     const cp = [], cn = [];
+    const logged = new Map(); // shaped cells beside lava — see FLUID-FILLED SHAPED BLOCKS
     for (const k of lava.cells.keys()) {
       const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
       const h = lavaRenderHeight(k, x, y, z);
       if (h === undefined) continue;
+      noteFluidFill(logged, x, y, z, h);
       const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 ? 2 : 1;
       for (const face of WATER_FACES) {
         const [dx, dy, dz] = face.d;
@@ -5007,6 +5031,7 @@
         }
       }
     }
+    if (logged.size) emitFluidFill(logged, nk => lava.has(nk), cp, cn);
     const geom = lavaMesh.geometry;
     geom.setAttribute('position', new THREE.Float32BufferAttribute(cp, 3));
     geom.setAttribute('normal', new THREE.Float32BufferAttribute(cn, 3));
@@ -5612,7 +5637,13 @@
       return true;
     }
     const t = blocks.get(nk);
-    return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve));
+    if (t === undefined) return false;
+    // A slope/curve/step beside or below this water now has the water
+    // drawn inside its empty part (see FLUID-FILLED SHAPED BLOCKS), so
+    // the face between them would be an extra inner layer — hidden. One
+    // ABOVE the water isn't filled, so the water's top still shows there.
+    if (BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve)) return dy !== undefined && dy <= 0;
+    return true;
   }
   // Flood-fills outward from one water cell through every water cell
   // connected to it (6-directionally) and removes them all in one go —
@@ -5673,6 +5704,55 @@
   function waterCellHash(x, y, z, h) {
     return (((x*73856093) ^ (y*19349663) ^ (z*83492791) ^ (Math.round(h*4)*2654435761)) | 0);
   }
+  // ================= FLUID-FILLED SHAPED BLOCKS =================
+  // Slopes, curves and steps only fill part of their cell, so beside
+  // water (or lava) the empty part of the cell showed as a see-through
+  // gap between the fluid and the block's surface. Each such cell that
+  // touches a fluid now gets a box of that fluid drawn inside it, as
+  // high as the fluid beside it (full height if the fluid is on top).
+  // Where the box runs into the shaped block's own solid part it's
+  // simply hidden behind the block's surface by the depth test, so only
+  // the empty part of the cell reads as filled. Purely visual — the
+  // fluid doesn't flow through the cell, and you can't swim in it.
+  // Inset a hair on every side so a box face never sits exactly on one
+  // of the block's own flat faces (which would flicker).
+  const FLUID_FILL_INSET = 0.002;
+  function shapedBlockAt(k) { const t = blocks.get(k); return t !== undefined && isShapedBlockEntry(BLOCK_TYPES[t]); }
+  // Records, for each shaped cell next to the fluid cell at (x,y,z) of
+  // drawn height h, how high the fill inside it should be.
+  function noteFluidFill(logged, x, y, z, h) {
+    for (const [dx, dz] of WATER_FOUR) {
+      const nk = key(x + dx, y, z + dz);
+      if (shapedBlockAt(nk) && !(logged.get(nk) >= h)) logged.set(nk, h);
+    }
+    const bk = key(x, y - 1, z);
+    if (shapedBlockAt(bk)) logged.set(bk, 1); // fluid sitting on top of it — the gap under the fluid fills right up
+  }
+  // Emits the fill boxes. isFluidAt says whether a neighbouring cell is
+  // the same fluid (a face against it is hidden, same as between two
+  // ordinary fluid cells); normalMul lets water's caller keep its own
+  // conventions (always 1 here — a fill is never a falling column).
+  function emitFluidFill(logged, isFluidAt, cp, cn) {
+    const e = FLUID_FILL_INSET;
+    for (const [k, h] of logged) {
+      const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      const top = Math.max(e * 2, h - e);
+      for (const face of WATER_FACES) {
+        const [dx, dy, dz] = face.d;
+        const nk = key(x + dx, y + dy, z + dz);
+        if (isFluidAt(nk) || logged.has(nk)) continue;
+        if (blocks.has(nk) && !shapedBlockAt(nk)) continue; // against a full block — never visible
+        const [a, b, c, d] = face.c;
+        for (const corner of [a, b, c, a, c, d]) {
+          const px = corner[0] === 1 ? 1 - e : e, pz = corner[2] === 1 ? 1 - e : e;
+          const py = corner[1] === 1 ? top : e;
+          cp.push(x + px, y + py, z + pz);
+          cn.push(dx, dy, dz);
+        }
+      }
+    }
+  }
   function rebuildWaterGeometry() {
     // Which chunks actually need their water geometry recomputed this
     // time: any chunk whose own water cells changed since the last
@@ -5729,6 +5809,7 @@
       const [ccx, ccz] = ck.split('_').map(Number);
       const cx0 = ccx * CHUNK_SIZE, cz0 = ccz * CHUNK_SIZE;
       const cp = [], cn = [];
+      const logged = new Map(); // shaped cells beside water in this chunk — see FLUID-FILLED SHAPED BLOCKS
       let signature = 0, anyWater = false;
       const consideredExplicit = explicitKeys ? new Set() : null;
       for (let x = cx0; x < cx0 + CHUNK_SIZE; x++) {
@@ -5741,6 +5822,7 @@
             if (h === undefined) continue; // explicitly removed here
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
+            noteFluidFill(logged, x, y, z, h);
             const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
             for (const face of WATER_FACES) {
@@ -5769,6 +5851,7 @@
           const h = waterRenderHeight(k, x, y, z);
           if (h === undefined) continue;
           anyWater = true;
+          noteFluidFill(logged, x, y, z, h);
           const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
           for (const face of WATER_FACES) {
@@ -5783,6 +5866,7 @@
           }
         }
       }
+      if (logged.size) emitFluidFill(logged, nk => waterBlocks.has(nk), cp, cn);
       if (!anyWater) {
         // No water left in this chunk at all (fully drained, or
         // unloaded) — drop any stale cache/signature for it, rather

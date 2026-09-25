@@ -3020,7 +3020,28 @@
       wake,
       // Player places a lava source block.
       place(x, y, z) { const k = key(x, y, z); flow.delete(k); base.delete(k); put(k, 1); record(x, y, z, 1); wake(x, y, z); },
-      // Player scoops it up, or a block is placed into it.
+      // Full lava aimed at partial or flowing lava tops that cell up to a
+      // full still source in place — same as water's top-up (doPlace).
+      topUp(x, y, z) {
+        const k = key(x, y, z);
+        if (!cells.has(k)) return false;
+        if (!(cells.get(k) < 0.999) && !flow.has(k)) return false; // already a full still source
+        flow.delete(k); base.delete(k);
+        put(k, 1); record(x, y, z, 1); wake(x, y, z);
+        return true;
+      },
+      // Mining with lava selected — a quarter-block at a time, exactly
+      // like the water bucket: what's left becomes still lava, and an
+      // emptied cell wakes its neighbours so flow can recede or refill.
+      scoop(x, y, z) {
+        const k = key(x, y, z);
+        if (!cells.has(k)) return;
+        const cur = cells.get(k), next = (cur > 0 && cur <= 1 ? cur : 1) - 0.25;
+        flow.delete(k); base.delete(k);
+        if (next > 0.001) { put(k, next); record(x, y, z, next); }
+        else { drop(k); record(x, y, z, -1); wake(x, y, z); }
+      },
+      // A block is placed into it (or it hardens).
       remove(x, y, z, noRecord) { if (drop(key(x, y, z)) && !noRecord) record(x, y, z, -1); wake(x, y, z); },
       applyEdit(k, level) {
         if (level === -1) { drop(k); return; }
@@ -17428,9 +17449,7 @@
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
     if (r.isLava) {
-      // Scooped up whole with the lava slot selected — anything it was
-      // feeding creeps back behind it.
-      lava.remove(r.hit.x, r.hit.y, r.hit.z);
+      lava.scoop(r.hit.x, r.hit.y, r.hit.z); // a quarter at a time, same as the water bucket
       playThud(200);
       return;
     }
@@ -17731,6 +17750,13 @@
         return true;
       };
       if ((r.isWater && topUp(r.hit)) || topUp(r.before)) return;
+    }
+    // Lava's version of the top-up above — same two cells checked (the
+    // one hit, then the one in front, for lava round your own feet) and
+    // the same skipped player-overlap check.
+    if (selectedSlot === LAVA_SLOT) {
+      const lavaTopUp = c => !!c && pubWaterAllowed(c.x, c.z) && lava.topUp(c.x, c.y, c.z);
+      if ((r.isLava && lavaTopUp(r.hit)) || lavaTopUp(r.before)) { playThud(260); return; }
     }
     // Same for lava: a solid block aimed at lava goes into that cell and
     // snuffs it out; water and lava themselves go in the cell in front.

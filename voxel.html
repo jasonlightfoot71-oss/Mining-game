@@ -17756,7 +17756,13 @@
     // the same skipped player-overlap check.
     if (selectedSlot === LAVA_SLOT) {
       const lavaTopUp = c => !!c && pubWaterAllowed(c.x, c.z) && lava.topUp(c.x, c.y, c.z);
-      if ((r.isLava && lavaTopUp(r.hit)) || lavaTopUp(r.before)) { playThud(260); return; }
+      // Third check: the cell the new block would land in sits directly
+      // on top of a spread (not-full) lava cell — fill THAT one up
+      // instead of stacking a new block above it. Belt-and-braces for
+      // "placing on top of a spread lava block", in case the aim ray
+      // reaches that cell some way the first two checks don't catch.
+      const under = r.before ? { x: r.before.x, y: r.before.y - 1, z: r.before.z } : null;
+      if ((r.isLava && lavaTopUp(r.hit)) || lavaTopUp(r.before) || lavaTopUp(under)) { playThud(260); return; }
     }
     // Same for lava: a solid block aimed at lava goes into that cell and
     // snuffs it out; water and lava themselves go in the cell in front.

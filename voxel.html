@@ -881,6 +881,11 @@
         const parts = k.split(',');
         waterOut.push([+parts[0], +parts[1], +parts[2], level]);
       }
+      const chunkLavaEdits = lavaEdits.byChunk.get(ck);
+      if (chunkLavaEdits) for (const [k, level] of chunkLavaEdits) {
+        const parts = k.split(',');
+        waterOut.push([+parts[0], +parts[1], +parts[2], level, 1]); // 5th element 1 = lava, see LAVA
+      }
       rows.push({ world_id: worldId, uid: playerUid, chunk_x: cx, chunk_z: cz, blocks: blocksOut, water: waterOut, updated_at: new Date().toISOString() });
     }
     const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_chunks`, {
@@ -911,8 +916,9 @@
           blockEdits.set(k, t);
           if (rot) stepRotEdits.set(k, rot);
         }
-        for (const [x,y,z,lvl] of (row.water||[])) {
-          waterEdits.set(key(x,y,z), lvl);
+        for (const [x,y,z,lvl,isLava] of (row.water||[])) {
+          if (isLava === 1) lavaEdits.set(key(x,y,z), lvl); // see LAVA — rides along in the water array
+          else waterEdits.set(key(x,y,z), lvl);
         }
       }
       return true;
@@ -939,6 +945,7 @@
     for (const [k, level] of waterEdits) {
       applyWaterEditValue(k, level);
     }
+    for (const [k, level] of lavaEdits) lava.applyEdit(k, level);
   }
 
   let playerUid = null;
@@ -1156,7 +1163,7 @@
     // turns streaming back on itself, only once position and world state
     // are fully settled, right before beginPlaying().
     terrainStreamingActive = false;
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
     structureSpecs.clear(); pendingStructureReplays.length = 0;
     // Session-only placement state that was never reset between worlds either.
     houseRegionClaimed.clear(); shopRegionClaimed.clear(); churchRegionClaimed.clear(); landmarkRegionClaimed.clear(); farmRegionClaimed.clear();
@@ -2196,6 +2203,7 @@
   const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
   const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
   const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
+  const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
@@ -2626,7 +2634,10 @@
   // rock in the block map at all (see belowNaturalCrust), and columns
   // that aren't loaded have nothing either; water must treat both as
   // solid or it would pour straight into the void.
-  function waterSolidAt(x, y, z) {
+  function waterSolidAt(x, y, z) { return fluidTerrainSolidAt(x, y, z) || lava.has(key(x, y, z)); } // lava is a wall to water (see LAVA)
+  // The terrain half of that test — shared with lava, which adds WATER
+  // as its own extra wall instead.
+  function fluidTerrainSolidAt(x, y, z) {
     if (y < 1) return true;
     const k = key(x, y, z);
     if (blocks.has(k)) return true;
@@ -2831,6 +2842,195 @@
     lastWaterTick = now;
     updateWaterFlow();
   }
+
+
+  // ================= LAVA =================
+  // Same rules as WATER FLOW above — still (placed) lava is an endless
+  // source, flowing lava spreads a step thinner per block, pours over
+  // edges as falling columns, heads for an edge right beside it, deepens
+  // shallower lava, and recedes when its source is removed — but it
+  // ticks every LAVA_TICK_MS instead of every 260ms, so it creeps.
+  // It's a completely separate set of cells from water: water and lava
+  // treat each other as solid walls (neither flows into the other).
+  // Saved through the same Supabase row as water — each lava edit rides
+  // along in the chunk's `water` array with a 5th element of 1 marking it
+  // as lava (see saveDirtyEditChunks / loadWorldEditChunks), so no new
+  // table column was needed. Same value encoding as waterEdits.
+  const LAVA_TICK_MS = 1500;
+  const LAVA_CELLS_PER_TICK = 400;
+  const lava = (() => {
+    const cells = new Map();   // "x,y,z" -> height (0..1]
+    const flow = new Map();    // flowing cells only -> 0 (falling) or 1..MAX_SPREAD
+    const base = new Map();    // flowing lava laid over shallower still lava -> the still height to go back to
+    const active = new Set();
+    const byChunk = new Map(); // chunkKey -> Set of cell keys, for unloading
+    let dirty = false, lastTick = 0;
+    const ckOf = k => { const c1 = k.indexOf(','), c2 = k.lastIndexOf(','); return chunkKeyOf(+k.slice(0, c1), +k.slice(c2 + 1)); };
+    function put(k, h) {
+      cells.set(k, h);
+      const c = ckOf(k);
+      let s = byChunk.get(c); if (!s) { s = new Set(); byChunk.set(c, s); }
+      s.add(k); dirty = true;
+    }
+    function drop(k) {
+      flow.delete(k); base.delete(k);
+      if (!cells.delete(k)) return false;
+      const c = ckOf(k), s = byChunk.get(c);
+      if (s) { s.delete(k); if (!s.size) byChunk.delete(c); }
+      dirty = true;
+      return true;
+    }
+    function record(x, y, z, v) {
+      if (!terrainStreamingActive) return;
+      const k = key(x, y, z);
+      if (v === -1) lavaEdits.delete(k); else lavaEdits.set(k, v); // no natural lava to override, so "removed" just means no edit
+      dirtyChunks.add(chunkKeyOf(x, z));
+    }
+    function solidAt(x, y, z) { return fluidTerrainSolidAt(x, y, z) || waterBlocks.has(key(x, y, z)); }
+    function openAt(x, y, z) { return !solidAt(x, y, z) && !cells.has(key(x, y, z)); }
+    function wake(x, y, z) {
+      const k0 = key(x, y, z);
+      active.add(k0);
+      let near = cells.has(k0);
+      for (const [dx, dy, dz] of WATER_SIX) { const nk = key(x + dx, y + dy, z + dz); active.add(nk); if (cells.has(nk)) near = true; }
+      if (near) dirty = true; // a block appearing/vanishing beside lava changes which of its faces show
+    }
+    function canSpread(x, y, z, k) {
+      if (solidAt(x, y - 1, z)) return true;
+      if (flow.has(k)) return false;
+      const bk = key(x, y - 1, z);
+      return cells.has(bk) && !flow.has(bk);
+    }
+    function dropBelow(x, y, z) {
+      if (solidAt(x, y - 1, z)) return false;
+      const bk = key(x, y - 1, z);
+      return !cells.has(bk) || flow.has(bk);
+    }
+    function nearestDrop(sx, y, sz, fromX, fromZ) {
+      if (dropBelow(sx, y, sz)) return 0;
+      const seen = new Set([sx + ',' + sz, fromX + ',' + fromZ]);
+      let frontier = [[sx, sz]];
+      for (let depth = 1; depth <= DROP_SEARCH; depth++) {
+        const next = [];
+        for (const [cx, cz] of frontier) for (const [dx, dz] of WATER_FOUR) {
+          const nx = cx + dx, nz = cz + dz, ck = nx + ',' + nz;
+          if (seen.has(ck)) continue;
+          seen.add(ck);
+          if (solidAt(nx, y, nz)) continue;
+          if (dropBelow(nx, y, nz)) return depth;
+          next.push([nx, nz]);
+        }
+        if (!next.length) break;
+        frontier = next;
+      }
+      return Infinity;
+    }
+    function setFlowing(x, y, z, d, h) {
+      const k = key(x, y, z);
+      put(k, h); flow.set(k, d);
+      const bq = base.has(k) ? Math.max(1, Math.min(4, Math.round(base.get(k) * 4))) : 0;
+      record(x, y, z, FLOW_EDIT_BASE + bq * 100 + d + Math.min(h, 0.999) / 2);
+      wake(x, y, z);
+    }
+    function removeFlowing(x, y, z) { drop(key(x, y, z)); record(x, y, z, -1); wake(x, y, z); }
+    function restoreStill(x, y, z, b) {
+      const k = key(x, y, z);
+      flow.delete(k); base.delete(k);
+      put(k, b); record(x, y, z, b); wake(x, y, z);
+    }
+    function step(k) {
+      if (!cells.has(k)) return false;
+      const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      let changed = false;
+      if (flow.has(k)) {
+        let best = Infinity, bestH = 1;
+        const aboveK = key(x, y + 1, z);
+        if (cells.has(aboveK)) { best = 0; bestH = Math.min(1, cells.get(aboveK)); }
+        else for (const [dx, dz] of WATER_FOUR) {
+          const nx = x + dx, nz = z + dz, nk = key(nx, y, nz);
+          if (!cells.has(nk)) continue;
+          const nd = flow.has(nk) ? flow.get(nk) : 0;
+          if (nd >= MAX_SPREAD || !canSpread(nx, y, nz, nk)) continue;
+          const nh = flowHeightFrom(cells.get(nk));
+          if (best === Infinity || nh > bestH + 0.001 || (Math.abs(nh - bestH) <= 0.001 && nd + 1 < best)) { best = nd + 1; bestH = nh; }
+        }
+        const b = base.get(k);
+        if (b !== undefined && (best > MAX_SPREAD || bestH <= b + 0.01)) { restoreStill(x, y, z, b); return true; }
+        if (best > MAX_SPREAD) {
+          for (const [dx, dz] of WATER_FOUR) if (!groundHeightOnly.has((x + dx) + ',' + (z + dz))) return changed;
+          removeFlowing(x, y, z); return true;
+        }
+        if (best !== flow.get(k) || Math.abs(bestH - cells.get(k)) > 0.01) { setFlowing(x, y, z, best, bestH); changed = true; }
+      }
+      const d = flow.has(k) ? flow.get(k) : 0;
+      if (openAt(x, y - 1, z)) { setFlowing(x, y - 1, z, 0, Math.min(1, cells.get(k))); return true; }
+      if (d >= MAX_SPREAD || !canSpread(x, y, z, k)) return changed;
+      const myNewH = flowHeightFrom(cells.get(k));
+      const targets = [];
+      let bestDrop = Infinity;
+      for (const [dx, dz] of WATER_FOUR) {
+        const nx = x + dx, nz = z + dz;
+        if (solidAt(nx, y, nz)) continue;
+        const sk = key(nx, y, nz);
+        if (cells.has(sk) && !flow.has(sk) && !(cells.get(sk) < myNewH - 0.01)) continue;
+        const dr = nearestDrop(nx, y, nz, x, z);
+        if (dr < bestDrop) { bestDrop = dr; targets.length = 0; }
+        if (dr === bestDrop) targets.push([nx, nz]);
+      }
+      for (const [nx, nz] of targets) {
+        const nk = key(nx, y, nz);
+        if (cells.has(nk)) {
+          const curH = cells.get(nk);
+          if (curH >= myNewH - 0.01) continue;
+          if (!flow.has(nk)) base.set(nk, curH);
+        }
+        setFlowing(nx, y, nz, d + 1, myNewH); changed = true;
+      }
+      return changed;
+    }
+    return {
+      has: k => cells.has(k),
+      get: k => cells.get(k),
+      isFlowing: k => flow.has(k),
+      cells, flow, byChunk,
+      get dirty() { return dirty; }, set dirty(v) { dirty = v; },
+      wake,
+      // Player places a lava source block.
+      place(x, y, z) { const k = key(x, y, z); flow.delete(k); base.delete(k); put(k, 1); record(x, y, z, 1); wake(x, y, z); },
+      // Player scoops it up, or a block is placed into it.
+      remove(x, y, z, noRecord) { if (drop(key(x, y, z)) && !noRecord) record(x, y, z, -1); wake(x, y, z); },
+      applyEdit(k, level) {
+        if (level === -1) { drop(k); return; }
+        if (level >= FLOW_EDIT_BASE) {
+          const raw0 = level - FLOW_EDIT_BASE, bq = Math.floor((raw0 + 1e-6) / 100), raw = raw0 - bq * 100;
+          const d = Math.floor(raw + 1e-6), hPart = (raw - d) * 2;
+          put(k, hPart > 0.01 ? Math.min(1, hPart) : flowHeight(d)); flow.set(k, d);
+          if (bq > 0) base.set(k, bq / 4); else base.delete(k);
+          active.add(k);
+          return;
+        }
+        flow.delete(k); base.delete(k); put(k, level);
+      },
+      dropChunk(ck) {
+        const s = byChunk.get(ck);
+        if (!s) return;
+        for (const k of [...s]) { drop(k); active.delete(k); }
+      },
+      clear() { cells.clear(); flow.clear(); base.clear(); active.clear(); byChunk.clear(); dirty = true; },
+      tick() {
+        const now = performance.now();
+        if (active.size && now - lastTick >= LAVA_TICK_MS) {
+          lastTick = now;
+          const batch = [];
+          for (const k of active) { batch.push(k); if (batch.length >= LAVA_CELLS_PER_TICK) break; }
+          for (const k of batch) active.delete(k);
+          for (const k of batch) step(k);
+        }
+        if (dirty) { dirty = false; rebuildLavaGeometry(); }
+      },
+    };
+  })();
 
   function generateNewWorld() {
     // Deliberately decoupled from the live SEA_LEVEL/WORLD_HEIGHT/
@@ -3112,6 +3312,7 @@
   const blockEdits = new EditsMap();   // cellKey -> type (-1 = removed)
   const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
   const waterEdits = new EditsMap();   // cellKey -> level (-1 = removed)
+  const lavaEdits = new EditsMap();    // cellKey -> level, same encoding as waterEdits — see LAVA
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
   // Freezes the terrain height under any column a player has ever built
   // or dug in, keyed "x,z" -> the natural height it had the very first
@@ -4070,6 +4271,8 @@
       applyWaterEditValue(k, level);
       anyWaterTouchedThisStream = true;
     }
+    const chunkLavaEdits = lavaEdits.byChunk.get(ck);
+    if (chunkLavaEdits) for (const [k, level] of chunkLavaEdits) lava.applyEdit(k, level);
     // Village generation happens here as part of building this chunk.
     // Water shorelines aren't tapered by any separate pass here at all
     // any more — see the depth-based fractional top layer computed
@@ -4220,6 +4423,7 @@
     // which would be exactly wrong here — this chunk isn't being
     // drained, it's just leaving memory for a while.
     waterBlocks.dropChunk(ck);
+    lava.dropChunk(ck);
     pureOceanChunks.delete(ck);
     waterChunkCache.delete(ck);
     waterChunkSignatures.delete(ck);
@@ -4706,6 +4910,108 @@
   waterMesh.receiveShadow = true;
   waterMesh.frustumCulled = false; // one big merged surface spanning the world — a single bounding sphere isn't a reliable cull test
   scene.add(waterMesh);
+
+  // ================= LAVA RENDERING =================
+  // Its own mesh and shader — opaque, self-lit (glows the same at night
+  // as by day, no scene lighting involved), slowly churning bright
+  // orange with darker cooling crust drifting across it, and the same
+  // falling-column trick as water (doubled normals on a falling column's
+  // side faces) for slow molten streaks sliding down a lavafall.
+  const lavaMat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      uniform float uTime;
+      varying vec3 vWorldPos;
+      varying vec3 vNormal;
+      varying float vFall;
+      void main() {
+        vec3 pos = position;
+        vFall = step(1.5, length(normal));
+        if (normal.y > 0.9) pos.y += sin(uTime * 0.6 + pos.x * 1.3 + pos.z * 0.9) * 0.015;
+        vWorldPos = pos;
+        vNormal = normalize(normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec3 vWorldPos;
+      varying vec3 vNormal;
+      varying float vFall;
+      float lh(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
+      void main() {
+        vec3 n = normalize(vNormal);
+        vec3 p = vWorldPos;
+        float t = uTime * 0.25;
+        // Two slow, interfering wave fields — hot channels where they
+        // agree, darker crust where they cancel.
+        float a = sin(p.x * 1.9 + t * 1.3) * sin(p.z * 1.6 - t * 1.1);
+        float b = sin((p.x + p.z) * 2.7 - t * 1.7) * 0.5 + sin((p.x - p.z) * 3.9 + t * 0.9) * 0.35;
+        float heat = clamp(0.55 + 0.45 * (a + b), 0.0, 1.0);
+        vec3 crust = vec3(0.32, 0.05, 0.02);
+        vec3 molten = vec3(1.0, 0.36, 0.04);
+        vec3 bright = vec3(1.0, 0.82, 0.32);
+        vec3 color = mix(crust, molten, smoothstep(0.15, 0.6, heat));
+        color = mix(color, bright, smoothstep(0.78, 1.0, heat));
+        // Side faces a touch darker so blocks of lava still read as shapes.
+        if (abs(n.y) < 0.5) color *= 0.82;
+        if (vFall > 0.5) {
+          float u = abs(n.x) > 0.5 ? p.z : p.x;
+          float lane = floor(u * 5.0);
+          float r1 = lh(lane + floor(p.x) * 17.0 + floor(p.z) * 31.0);
+          float ph = fract(p.y * 0.8 + uTime * (0.35 + r1 * 0.25) + r1 * 5.0);
+          float streak = smoothstep(0.0, 0.2, ph) * (1.0 - smoothstep(0.4, 0.8, ph));
+          color = mix(color, bright, streak * 0.45);
+        }
+        gl_FragColor = vec4(color, 1.0);
+      }
+    `,
+  });
+  const lavaMesh = new THREE.Mesh(new THREE.BufferGeometry(), lavaMat);
+  lavaMesh.frustumCulled = false;
+  scene.add(lavaMesh);
+  function lavaRenderHeight(k, x, y, z) {
+    const h = lava.get(k);
+    if (h === undefined) return undefined;
+    if (lava.isFlowing(k) && lava.flow.get(k) >= 1 && lava.isFlowing(key(x, y - 1, z))) return Math.min(h, 0.2); // pour-over lip, same as water's
+    return h;
+  }
+  // Lava is opaque, so unlike water a face against a solid block is
+  // hidden too — only faces open to air, water, or a shallower lava
+  // neighbour get drawn.
+  function lavaFaceHidden(x, y, z, dx, dy, dz, selfH) {
+    const nx = x + dx, ny = y + dy, nz = z + dz, nk = key(nx, ny, nz);
+    if (blocks.has(nk)) return true;
+    if (!lava.has(nk)) return false;
+    if (dy === 0) { const nh = lavaRenderHeight(nk, nx, ny, nz); if (nh < selfH - 0.01) return false; }
+    if (dy === -1) return true;
+    if (dy === 1) return selfH >= 0.999;
+    return true;
+  }
+  function rebuildLavaGeometry() {
+    const cp = [], cn = [];
+    for (const k of lava.cells.keys()) {
+      const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      const h = lavaRenderHeight(k, x, y, z);
+      if (h === undefined) continue;
+      const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 ? 2 : 1;
+      for (const face of WATER_FACES) {
+        const [dx, dy, dz] = face.d;
+        if (lavaFaceHidden(x, y, z, dx, dy, dz, h)) continue;
+        const [a, b, c, d] = face.c;
+        for (const corner of [a, b, c, a, c, d]) {
+          const cy = corner[1] === 1 ? h : corner[1];
+          cp.push(x + corner[0], y + cy, z + corner[2]);
+          cn.push(dx * nm, dy, dz * nm);
+        }
+      }
+    }
+    const geom = lavaMesh.geometry;
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(cp, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(cn, 3));
+    geom.computeBoundingSphere();
+  }
 
   // ================= MERGED GLASS PANES =================
   // Same "one merged, hole-punched surface" idea as water above, applied
@@ -14952,7 +15258,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
     player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
     yaw = Math.PI; pitch = 0;
     const [, savedData] = await Promise.all([
@@ -14994,7 +15300,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
     generatePubWorld();
     visitMode = false;
     currentRole = null;
@@ -16101,6 +16407,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: VEHICLE_TYPES[vehicleTypeIdx].swatch });
     } else if (i === DRAIN_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x4fa8d6, transparent: true, opacity: 0.75 });
+    } else if (i === LAVA_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xff5a10 });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }
@@ -16911,7 +17219,18 @@
       if (skipPlayerOverlap && blockOverlapsPlayer(vx,vy,vz)) { prev = {x:vx,y:vy,z:vz}; continue; }
       const k = key(vx,vy,vz);
       if (blocks.has(k)) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:false };
+      // Lava: something you aim at when placing (to build into it or
+      // next to it) or when scooping it with the lava slot ('lava' mode,
+      // still lava only — flowing lava is refilled by its feed, same as
+      // water's bucket rule). Every other tool sees straight through it
+      // to the block underneath, same as water.
+      if (lava.has(k)) {
+        if (skipWater === false || (skipWater === 'lava' && !lava.isFlowing(k))) return { hit:{x:vx,y:vy,z:vz}, before: prev, isWater:false, isLava:true };
+        prev = {x:vx,y:vy,z:vz};
+        continue;
+      }
       if (waterBlocks.has(k)) {
+        if (skipWater === 'lava') { prev = {x:vx,y:vy,z:vz}; continue; }
         // skipWater === 'flowing' — the water bucket's mining raycast.
         // Still water can be scooped, but flowing water is refilled by
         // whatever feeds it on the very next flow tick, so aiming at it
@@ -16969,7 +17288,7 @@
     // deliberately scoop water up, but mining with anything else now
     // reaches the actual terrain instead of just clearing the water in
     // front of it.
-    const r = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing');
+    const r = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing'));
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
     // over a block if it's actually the closer of the two along the
@@ -17024,6 +17343,13 @@
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
+    if (r.isLava) {
+      // Scooped up whole with the lava slot selected — anything it was
+      // feeding creeps back behind it.
+      lava.remove(r.hit.x, r.hit.y, r.hit.z);
+      playThud(200);
+      return;
+    }
     if (!r.isWater && r.hit.y === BEDROCK_Y) { showSaveStatus('⚠ Solid bedrock — can\'t be mined', true); return; } // the single hard floor at the very bottom of the world, beneath the reserved buffer under any ocean — mining through the buffer above it is fine, this one layer just isn't going anywhere
     if (r.isWater) {
       // Drains a quarter-block at a time now instead of coming out
@@ -17065,6 +17391,7 @@
     // on why not) — the target IS the water cell itself in that case,
     // same as the actual placement logic uses.
     if (r.isWater) return key(r.hit.x, r.hit.y, r.hit.z);
+    if (r.isLava && selectedSlot !== WATER_SLOT && selectedSlot !== LAVA_SLOT) return key(r.hit.x, r.hit.y, r.hit.z); // a block goes INTO the lava, same as into water
     if (!r.before) return null;
     return key(r.before.x, r.before.y, r.before.z);
   }
@@ -17289,7 +17616,7 @@
     // drop the block INTO that cell (displacing the water), same as real
     // Minecraft — otherwise it target the empty cell just before the water
     // and you could never build over/through it.
-    const replacingWater = (selectedSlot !== WATER_SLOT && r.isWater);
+    const replacingWater = (selectedSlot !== WATER_SLOT && selectedSlot !== LAVA_SLOT && r.isWater); // lava aimed at water goes in front of it instead — they don't mix
     // A FULL water block aimed at a partial one (a shallow shoreline
     // cell, flowing water, or one you scooped down) tops that cell up to
     // a full block in place, instead of stacking a new block on the cell
@@ -17321,12 +17648,26 @@
       };
       if ((r.isWater && topUp(r.hit)) || topUp(r.before)) return;
     }
-    const target = replacingWater ? r.hit : r.before;
+    // Same for lava: a solid block aimed at lava goes into that cell and
+    // snuffs it out; water and lava themselves go in the cell in front.
+    const replacingLava = (r.isLava && selectedSlot !== WATER_SLOT && selectedSlot !== LAVA_SLOT);
+    const target = (replacingWater || replacingLava) ? r.hit : r.before;
     if (!target) return; // aiming at water from inside water with the bucket — there's no cell in front of it to place into
     const {x,y,z} = target;
     if (blockOverlapsPlayer(x,y,z)) return; // safeguard — never place a block that would clip/trap the player
     const k = key(x,y,z);
     if (blocks.has(k)) return; // something solid already there
+    if (selectedSlot === LAVA_SLOT) {
+      // A lava source — same as placed water: it spreads (slowly) across
+      // the ground and pours over edges. Won't go into water, or into
+      // The Mill's grounds (same rule as water there).
+      if (!lava.has(k) && !waterBlocks.has(k) && pubWaterAllowed(x, z)) {
+        lava.place(x, y, z);
+        playThud(260);
+      }
+      return;
+    }
+    if (lava.has(k) && !replacingLava) return; // water can't go into lava (they wall each other off)
     if (selectedSlot === WATER_SLOT) {
       if (!waterBlocks.has(k)) {
         const h = WATER_HEIGHTS[waterHeightIdx];
@@ -17375,6 +17716,7 @@
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
       clearFlowState(k);
       wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
+      if (replacingLava) lava.remove(x, y, z); else lava.wake(x, y, z); // same for lava
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
       playThud(300);
     }
@@ -19041,6 +19383,7 @@
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
         if (t !== -1) { waterBlocks.delete(k); clearFlowState(k); } // a block placed into water displaces it, same as locally
+        if (t !== -1 && lava.has(k)) lava.remove(x, y, z, true); else lava.wake(x, y, z);
         wakeWaterAround(x, y, z); // another player breaching (or plugging) a dam flows here too — water itself isn't broadcast, each client runs the same simulation
       });
       // The host just built something new (see recordStructureSpec). Take
@@ -22409,12 +22752,14 @@
     const dt = Math.min(clock.getDelta(), 0.05);
     waterTime += dt;
     waterMat.uniforms.uTime.value = waterTime;
+    lavaMat.uniforms.uTime.value = waterTime;
     updateWanderingCustomers(dt);
     updateVillageNPCs(dt);
     updateVillageAnimals(dt);
     updateFires(waterTime);
     updateWinterBranchVariety(dt);
     tickWaterFlow();
+    lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
     updateWindSound(dt, windIntensity);
     try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
@@ -22832,7 +23177,7 @@
       workHeldRoot.position.y = -0.35 + (moving ? Math.sin(bobT)*0.02 : 0);
 
       // mining
-      const r = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing'); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
+      const r = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing')); // same water-see-through reasoning as doMine's own raycast — the highlight box shouldn't be stuck showing on water while just mining/looking around underwater
       let blockDist = Infinity;
       if (r) {
         const camPos = camera.getWorldPosition(new THREE.Vector3());
@@ -22885,7 +23230,7 @@
       }
 
       if (mining) {
-        const rr = voxelRaycast(selectedSlot !== WATER_SLOT || 'flowing'); // same reasoning as doMine's own raycast above
+        const rr = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing')); // same reasoning as doMine's own raycast above
         const currentKey = rr ? key(rr.hit.x,rr.hit.y,rr.hit.z) : null;
         if (currentKey !== mining.k) {
           if (!rr) { mining = null; crackMesh.visible = false; } // nothing under the crosshair — stop entirely
@@ -22934,6 +23279,7 @@
             // what makes breaking a dam actually let the water out rather
             // than just filling this one cell and stopping.
             wakeWaterAround(bx, by, bz);
+            lava.wake(bx, by, bz); // lava beside or above the new gap creeps in too
             recordBlockEdit(bx, by, bz, -1, 0); // mined away — must persist as "explicitly empty" or it'd just regenerate next time this chunk reloads
             removeFixturesForBlock(bx, by, bz);
             removeLaddersForBlock(bx, by, bz);
@@ -23495,6 +23841,22 @@
     slot.addEventListener('click', () => selectSlot(WATER_SLOT)); // a plain pick now — no height menu
     slotElByIndex[WATER_SLOT] = slot;
     addSlotLabel(slot, 'Water');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Lava — flows and spreads like water, only much slower; mine with it selected to scoop it up';
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 4, 0, 30);
+    grad.addColorStop(0, '#ffd35a'); grad.addColorStop(0.5, '#ff6a14'); grad.addColorStop(1, '#8a1a04');
+    ctx.fillStyle = grad; ctx.fillRect(5, 4, 24, 26);
+    ctx.fillStyle = 'rgba(60,10,0,0.55)'; ctx.fillRect(9, 12, 7, 3); ctx.fillRect(18, 21, 8, 3);
+    slot.appendChild(c);
+    slot.addEventListener('click', () => selectSlot(LAVA_SLOT));
+    slotElByIndex[LAVA_SLOT] = slot;
+    addSlotLabel(slot, 'Lava');
     hotbar.appendChild(slot);
   }
   {
@@ -24092,7 +24454,7 @@
   // Purely a UI grouping — slot numbers, saves and selectSlot are untouched.
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
-    { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT] },
+    { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
     { name: 'Landscape',  items: [3, 4] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
@@ -24800,7 +25162,7 @@
       // with the chunks around spawn (0,0).
       infiniteWorldActive = true;
       terrainStreamingActive = true;
-      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); dirtyChunks.clear();
+      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
       generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
       blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
       clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();

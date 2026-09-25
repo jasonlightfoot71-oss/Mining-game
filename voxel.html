@@ -2491,7 +2491,7 @@
     dropChunk(ck) {
       const set = this.chunkCells.get(ck);
       if (!set) return;
-      for (const k of set) { this._data.delete(k); flowDist.delete(k); activeWaterBlocks.delete(k); } // flowing-water state goes with it — it's re-read from waterEdits when the chunk streams back in
+      for (const k of set) { this._data.delete(k); clearFlowState(k); activeWaterBlocks.delete(k); } // flowing-water state goes with it — it's re-read from waterEdits when the chunk streams back in
       this.chunkCells.delete(ck);
     }
     has(k) {
@@ -2507,7 +2507,7 @@
       return this._naturalLevel(x, y, z);
     }
     get size() { return this._data.size; }
-    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); flowDist.clear(); activeWaterBlocks.clear(); } // a new/reloaded world starts with nothing mid-flow
+    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); flowDist.clear(); stillBase.clear(); activeWaterBlocks.clear(); } // a new/reloaded world starts with nothing mid-flow
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
     entries() { return this._data.entries(); }
     keys() { return this._data.keys(); }
@@ -2586,19 +2586,31 @@
   // out of a lake's shallow edge (natural shoreline water is only
   // ¼-¾ deep) came out taller than the lake cell it came from.
   const FLOW_STEP = 1 / (MAX_SPREAD + 1);
+  // Still water that flowing water has DEEPENED — e.g. a full block
+  // placed into a ¼-deep shallows raises the shallows around it the same
+  // way it would spread across dry land. key -> the still height it had
+  // before, so when the flow recedes (the placed block is scooped, the
+  // gap plugged) the cell goes back to being that same still water
+  // instead of drying up and leaving a hole in the lake.
+  const stillBase = new Map();
+  function clearFlowState(k) { flowDist.delete(k); stillBase.delete(k); }
   function flowHeightFrom(parentH) { return Math.max(0.125, (typeof parentH === 'number' ? parentH : 1) - FLOW_STEP); }
   // Applies one saved/streamed waterEdits value to the live map —
   // shared by every place edits get replayed, so all of them understand
   // the flowing-water encoding identically.
   function applyWaterEditValue(k, level) {
-    if (level === -1) { waterBlocks.delete(k); flowDist.delete(k); return; }
+    if (level === -1) { waterBlocks.delete(k); clearFlowState(k); return; }
     if (level >= FLOW_EDIT_BASE) {
       // Encoded as FLOW_EDIT_BASE + distance + height/2 — the height/2
       // part is always under 1, so the whole number is still the
       // distance. Saves from before heights were stored have no
       // fraction and fall back to the old by-distance height.
-      const raw = level - FLOW_EDIT_BASE, d = Math.floor(raw + 1e-6), hPart = (raw - d) * 2;
+      // Deepened still water adds its original still height, in quarters
+      // (1-4), times 100 — see setFlowingWater.
+      const raw0 = level - FLOW_EDIT_BASE, bq = Math.floor((raw0 + 1e-6) / 100), raw = raw0 - bq * 100;
+      const d = Math.floor(raw + 1e-6), hPart = (raw - d) * 2;
       flowDist.set(k, d); waterBlocks.set(k, hPart > 0.01 ? Math.min(1, hPart) : flowHeight(d));
+      if (bq > 0) stillBase.set(k, bq / 4); else stillBase.delete(k);
       // Re-checked once whenever it streams in: clears out any flowing
       // water saved by an older version of the rules that shouldn't be
       // there (e.g. the raised block at the head of a channel), and lets
@@ -2607,7 +2619,7 @@
       activeWaterBlocks.add(k);
       return;
     }
-    flowDist.delete(k); waterBlocks.set(k, level);
+    clearFlowState(k); waterBlocks.set(k, level);
   }
   // Whether water can NOT enter this cell. Deliberately stricter than
   // just `blocks.has` — below each column's generated crust there is no
@@ -2685,12 +2697,22 @@
     const k = key(x, y, z);
     flowDist.set(k, d);
     waterBlocks.set(k, h);
-    recordWaterEdit(x, y, z, FLOW_EDIT_BASE + d + Math.min(h, 0.999) / 2);
+    const bq = stillBase.has(k) ? Math.max(1, Math.min(4, Math.round(stillBase.get(k) * 4))) : 0;
+    recordWaterEdit(x, y, z, FLOW_EDIT_BASE + bq * 100 + d + Math.min(h, 0.999) / 2);
+    wakeWaterAround(x, y, z);
+  }
+  // Flow over deepened still water has stopped (or no longer reaches
+  // above its old level) — back to exactly the still water it was.
+  function restoreStillWater(x, y, z, base) {
+    const k = key(x, y, z);
+    flowDist.delete(k); stillBase.delete(k);
+    waterBlocks.set(k, base);
+    recordWaterEdit(x, y, z, base);
     wakeWaterAround(x, y, z);
   }
   function removeFlowingWater(x, y, z) {
     const k = key(x, y, z);
-    flowDist.delete(k);
+    clearFlowState(k);
     waterBlocks.delete(k);
     recordWaterEdit(x, y, z, -1);
     wakeWaterAround(x, y, z);
@@ -2718,10 +2740,15 @@
           const nd = flowDist.has(nk) ? flowDist.get(nk) : 0;
           if (nd >= MAX_SPREAD || !waterCanSpread(nx, y, nz, nk)) continue;
           const nh = flowHeightFrom(waterBlocks.get(nk));
-          // Closest feed wins; between equally close ones, the deeper.
-          if (nd + 1 < best || (nd + 1 === best && nh > bestH)) { best = nd + 1; bestH = nh; }
+          // Deepest feed wins; between equally deep ones, the closest.
+          // (Deepest first, because deepened shallows sit right next to
+          // the lake's own still water — "closest" would always pick that
+          // ¼-deep neighbour and flatten the deepening straight back out.)
+          if (best === Infinity || nh > bestH + 0.001 || (Math.abs(nh - bestH) <= 0.001 && nd + 1 < best)) { best = nd + 1; bestH = nh; }
         }
       }
+      const base = stillBase.get(k);
+      if (base !== undefined && (best > MAX_SPREAD || bestH <= base + 0.01)) { restoreStillWater(x, y, z, base); return true; }
       if (best > MAX_SPREAD) {
         // A neighbouring column that isn't loaded might be exactly where
         // this stream's feed is — never dry a stream up on a guess.
@@ -2747,7 +2774,10 @@
       const nx = x + dx, nz = z + dz;
       if (waterSolidAt(nx, y, nz)) continue;
       const sk = key(nx, y, nz);
-      if (waterBlocks.has(sk) && !flowDist.has(sk)) continue; // still water there — nothing can flow into it, so it's never a direction to aim for
+      // Still water can only be flowed into if it's shallower than what
+      // this cell would give it (deepening it) — otherwise it's never a
+      // direction to aim for.
+      if (waterBlocks.has(sk) && !flowDist.has(sk) && !(waterBlocks.get(sk) < flowHeightFrom(waterBlocks.get(k)) - 0.01)) continue;
       // Direction is chosen over EVERY open neighbour, including ones
       // already full — skipping those first meant that once the downhill
       // cell had filled, the sideways ones became "the best remaining"
@@ -2758,8 +2788,13 @@
     }
     for (const [nx, nz] of targets) {
       const nk = key(nx, y, nz);
-      if (waterBlocks.has(nk) && (!flowDist.has(nk) || flowDist.get(nk) <= d + 1)) continue; // already as full (or fuller) there
-      setFlowingWater(nx, y, nz, d + 1, flowHeightFrom(waterBlocks.get(k))); changed = true;
+      const newH = flowHeightFrom(waterBlocks.get(k));
+      if (waterBlocks.has(nk)) {
+        const curH = waterBlocks.get(nk);
+        if (curH >= newH - 0.01) continue; // already as deep (or deeper) there
+        if (!flowDist.has(nk)) stillBase.set(nk, curH); // deepening still water — remember what to go back to
+      }
+      setFlowingWater(nx, y, nz, d + 1, newH); changed = true;
     }
     return changed;
   }
@@ -16978,7 +17013,7 @@
       const current = waterBlocks.get(k);
       const currentHeight = (typeof current === 'number' && current > 0 && current <= 1) ? current : 1;
       const nextHeight = currentHeight - 0.25;
-      flowDist.delete(k); // scooping flowing water turns what's left of it into still water — or it's gone entirely below
+      clearFlowState(k); // scooping flowing water turns what's left of it into still water — or it's gone entirely below
       if (nextHeight > 0.001) {
         waterBlocks.set(k, nextHeight);
         recordWaterEdit(r.hit.x, r.hit.y, r.hit.z, nextHeight);
@@ -17250,7 +17285,7 @@
         if (!waterBlocks.has(hk)) return false;
         const cur = waterBlocks.get(hk);
         if (!(typeof cur === 'number' && cur < 0.999) && !flowDist.has(hk)) return false; // already full, still water — nothing to do
-        flowDist.delete(hk);
+        clearFlowState(hk);
         waterBlocks.set(hk, 1);
         recordWaterEdit(c.x, c.y, c.z, 1);
         wakeWaterAround(c.x, c.y, c.z); // now a full source, so the water around it deepens to match
@@ -17312,7 +17347,7 @@
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
-      flowDist.delete(k);
+      clearFlowState(k);
       wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
       playThud(300);
@@ -18979,7 +19014,7 @@
         const prevColH = columnHeight.get(colKey);
         if (t !== -1 && (prevColH === undefined || y > prevColH)) columnHeight.set(colKey, y);
         handleLocalBlockChange(x, y, z, removedType); // updates the visible mesh instance immediately, exactly like a local edit would
-        if (t !== -1) { waterBlocks.delete(k); flowDist.delete(k); } // a block placed into water displaces it, same as locally
+        if (t !== -1) { waterBlocks.delete(k); clearFlowState(k); } // a block placed into water displaces it, same as locally
         wakeWaterAround(x, y, z); // another player breaching (or plugging) a dam flows here too — water itself isn't broadcast, each client runs the same simulation
       });
       // The host just built something new (see recordStructureSpec). Take
@@ -22833,7 +22868,7 @@
             // dig, same as a single tap on it always has — let next
             // frame's raycast pick up fresh from whatever's now revealed.
             waterBlocks.delete(currentKey);
-            flowDist.delete(currentKey);
+            clearFlowState(currentKey);
             wakeWaterAround(rr.hit.x, rr.hit.y, rr.hit.z); // anything this cell was feeding recedes; anything feeding it flows back in
             recordWaterEdit(rr.hit.x, rr.hit.y, rr.hit.z, -1); // was missing here — this specific removal (moving onto new water while a mine is already held) never actually persisted without it
             rebuildWaterGeometry(); // just the water surface changed — no block mesh work needed at all. This used to set needsRebuild = true instead, triggering a full mesh rebuild (chunked, not a hard freeze, but still redoing far more than necessary) for something doMine's own single-tap water handling already did the cheap way — water being far more common now made this a real, regular cost every time this specific path (moving the crosshair onto new water while already mining) was hit

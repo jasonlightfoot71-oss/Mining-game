@@ -17246,6 +17246,7 @@
         flowDist.delete(hk);
         waterBlocks.set(hk, 1);
         recordWaterEdit(c.x, c.y, c.z, 1);
+        wakeWaterAround(c.x, c.y, c.z); // now a full source, so the water around it deepens to match
         rebuildWaterGeometry();
         playThud(280);
         return true;
@@ -17263,6 +17264,7 @@
         const h = WATER_HEIGHTS[waterHeightIdx];
         waterBlocks.set(k, h);
         recordWaterEdit(x, y, z, h);
+        wakeWaterAround(x, y, z); // placed water is a source like Minecraft's — it spreads across flat ground and pours over any edge (see WATER FLOW)
         rebuildWaterGeometry();
         playThud(280);
       }

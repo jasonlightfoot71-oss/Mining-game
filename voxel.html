@@ -2574,13 +2574,24 @@
   const WATER_SIX = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]];
   const WATER_FOUR = [[1,0],[-1,0],[0,1],[0,-1]];
   function flowHeight(d) { return d <= 0 ? 1 : Math.max(0.125, 1 - d / (MAX_SPREAD + 1)); }
+  // Flowing water is always one step LOWER than the water feeding it —
+  // not a fixed height by distance. A fixed height meant water spilling
+  // out of a lake's shallow edge (natural shoreline water is only
+  // ¼-¾ deep) came out taller than the lake cell it came from.
+  const FLOW_STEP = 1 / (MAX_SPREAD + 1);
+  function flowHeightFrom(parentH) { return Math.max(0.125, (typeof parentH === 'number' ? parentH : 1) - FLOW_STEP); }
   // Applies one saved/streamed waterEdits value to the live map —
   // shared by every place edits get replayed, so all of them understand
   // the flowing-water encoding identically.
   function applyWaterEditValue(k, level) {
     if (level === -1) { waterBlocks.delete(k); flowDist.delete(k); return; }
     if (level >= FLOW_EDIT_BASE) {
-      const d = level - FLOW_EDIT_BASE; flowDist.set(k, d); waterBlocks.set(k, flowHeight(d));
+      // Encoded as FLOW_EDIT_BASE + distance + height/2 — the height/2
+      // part is always under 1, so the whole number is still the
+      // distance. Saves from before heights were stored have no
+      // fraction and fall back to the old by-distance height.
+      const raw = level - FLOW_EDIT_BASE, d = Math.floor(raw + 1e-6), hPart = (raw - d) * 2;
+      flowDist.set(k, d); waterBlocks.set(k, hPart > 0.01 ? Math.min(1, hPart) : flowHeight(d));
       // Re-checked once whenever it streams in: clears out any flowing
       // water saved by an older version of the rules that shouldn't be
       // there (e.g. the raised block at the head of a channel), and lets
@@ -2663,11 +2674,12 @@
     }
     return Infinity;
   }
-  function setFlowingWater(x, y, z, d) {
+  function setFlowingWater(x, y, z, d, h) {
     const k = key(x, y, z);
+    if (d === 0) h = 1; // a falling column is always full
     flowDist.set(k, d);
-    waterBlocks.set(k, flowHeight(d));
-    recordWaterEdit(x, y, z, FLOW_EDIT_BASE + d);
+    waterBlocks.set(k, h);
+    recordWaterEdit(x, y, z, FLOW_EDIT_BASE + d + Math.min(h, 0.999) / 2);
     wakeWaterAround(x, y, z);
   }
   function removeFlowingWater(x, y, z) {
@@ -2690,7 +2702,7 @@
     //    goes — which wakes the cells it was feeding, so the whole
     //    stream recedes behind it.
     if (flowDist.has(k)) {
-      let best = Infinity;
+      let best = Infinity, bestH = 1;
       if (waterBlocks.has(key(x, y + 1, z))) best = 0;
       else {
         for (const [dx, dz] of WATER_FOUR) {
@@ -2698,7 +2710,9 @@
           if (!waterBlocks.has(nk)) continue;
           const nd = flowDist.has(nk) ? flowDist.get(nk) : 0;
           if (nd >= MAX_SPREAD || !waterCanSpread(nx, y, nz, nk)) continue;
-          if (nd + 1 < best) best = nd + 1;
+          const nh = flowHeightFrom(waterBlocks.get(nk));
+          // Closest feed wins; between equally close ones, the deeper.
+          if (nd + 1 < best || (nd + 1 === best && nh > bestH)) { best = nd + 1; bestH = nh; }
         }
       }
       if (best > MAX_SPREAD) {
@@ -2707,12 +2721,13 @@
         for (const [dx, dz] of WATER_FOUR) if (!groundHeightOnly.has((x + dx) + ',' + (z + dz))) return changed;
         removeFlowingWater(x, y, z); return true;
       }
-      if (best !== flowDist.get(k)) { setFlowingWater(x, y, z, best); changed = true; }
+      const targetH = best === 0 ? 1 : bestH;
+      if (best !== flowDist.get(k) || Math.abs(targetH - waterBlocks.get(k)) > 0.01) { setFlowingWater(x, y, z, best, targetH); changed = true; }
     }
     const d = flowDist.has(k) ? flowDist.get(k) : 0;
     // 2. Falling takes priority — open space below means it pours down
     //    as a full-height column and doesn't also spread sideways.
-    if (waterOpenAt(x, y - 1, z)) { setFlowingWater(x, y - 1, z, 0); return true; }
+    if (waterOpenAt(x, y - 1, z)) { setFlowingWater(x, y - 1, z, 0, 1); return true; }
     // 3. Otherwise spread sideways — toward the nearest drop if there is
     //    one within reach, evenly in every open direction if not.
     if (d >= MAX_SPREAD || !waterCanSpread(x, y, z, k)) return changed;
@@ -2734,7 +2749,7 @@
     for (const [nx, nz] of targets) {
       const nk = key(nx, y, nz);
       if (waterBlocks.has(nk) && (!flowDist.has(nk) || flowDist.get(nk) <= d + 1)) continue; // already as full (or fuller) there
-      setFlowingWater(nx, y, nz, d + 1); changed = true;
+      setFlowingWater(nx, y, nz, d + 1, flowHeightFrom(waterBlocks.get(k))); changed = true;
     }
     return changed;
   }

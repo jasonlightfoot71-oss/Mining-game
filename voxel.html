@@ -2579,7 +2579,16 @@
   // the flowing-water encoding identically.
   function applyWaterEditValue(k, level) {
     if (level === -1) { waterBlocks.delete(k); flowDist.delete(k); return; }
-    if (level >= FLOW_EDIT_BASE) { const d = level - FLOW_EDIT_BASE; flowDist.set(k, d); waterBlocks.set(k, flowHeight(d)); return; }
+    if (level >= FLOW_EDIT_BASE) {
+      const d = level - FLOW_EDIT_BASE; flowDist.set(k, d); waterBlocks.set(k, flowHeight(d));
+      // Re-checked once whenever it streams in: clears out any flowing
+      // water saved by an older version of the rules that shouldn't be
+      // there (e.g. the raised block at the head of a channel), and lets
+      // a stream that stopped dead at the edge of loaded terrain carry
+      // on now that the next chunk is here.
+      activeWaterBlocks.add(k);
+      return;
+    }
     flowDist.delete(k); waterBlocks.set(k, level);
   }
   // Whether water can NOT enter this cell. Deliberately stricter than
@@ -2607,16 +2616,34 @@
   // water only spreads once it's actually resting on something solid —
   // a falling column doesn't fan out mid-air, and a stream landing in a
   // pool just merges into it.
+  // Still water spreads when it's resting on ground or on MORE still
+  // water (a lake's upper layers sit on its lower ones). Resting on
+  // FLOWING water it doesn't — that's the pool cell right above the
+  // hole you opened: it's pouring down into the hole, and letting it
+  // also spill sideways put an extra layer of water on top of the first
+  // cell of the channel, standing a whole block above the rest of it.
   function waterCanSpread(x, y, z, k) {
-    if (!flowDist.has(k)) return true;
-    return waterSolidAt(x, y - 1, z);
+    if (waterSolidAt(x, y - 1, z)) return true;
+    if (flowDist.has(k)) return false;
+    const bk = key(x, y - 1, z);
+    return waterBlocks.has(bk) && !flowDist.has(bk);
   }
   // Shortest sideways distance (within DROP_SEARCH) from (sx,y,sz) to a
   // spot with open space underneath, walking only over open cells —
   // what makes a spill run toward the nearest edge/slope instead of
   // spreading out as an even diamond.
+  // A "drop" is open space below, or FLOWING water below (a stream
+  // that's already started pouring over that edge keeps heading for
+  // it). Still water below doesn't count — otherwise the pool itself
+  // looks like the nearest drop to the water pouring out of it, and the
+  // spill tries to flow back into the pool and nowhere else.
+  function waterDropBelow(x, y, z) {
+    if (waterSolidAt(x, y - 1, z)) return false;
+    const bk = key(x, y - 1, z);
+    return !waterBlocks.has(bk) || flowDist.has(bk);
+  }
   function nearestDropFrom(sx, y, sz, fromX, fromZ) {
-    if (!waterSolidAt(sx, y - 1, sz)) return 0; // open below — or already water pouring down there, which still counts: the stream keeps heading for the same drop once it's started running into it
+    if (waterDropBelow(sx, y, sz)) return 0;
     const seen = new Set([sx + ',' + sz, fromX + ',' + fromZ]);
     let frontier = [[sx, sz]];
     for (let depth = 1; depth <= DROP_SEARCH; depth++) {
@@ -2627,7 +2654,7 @@
           if (seen.has(ck)) continue;
           seen.add(ck);
           if (waterSolidAt(nx, y, nz)) continue;
-          if (!waterSolidAt(nx, y - 1, nz)) return depth;
+          if (waterDropBelow(nx, y, nz)) return depth;
           next.push([nx, nz]);
         }
       }
@@ -2694,6 +2721,8 @@
     for (const [dx, dz] of WATER_FOUR) {
       const nx = x + dx, nz = z + dz;
       if (waterSolidAt(nx, y, nz)) continue;
+      const sk = key(nx, y, nz);
+      if (waterBlocks.has(sk) && !flowDist.has(sk)) continue; // still water there — nothing can flow into it, so it's never a direction to aim for
       // Direction is chosen over EVERY open neighbour, including ones
       // already full — skipping those first meant that once the downhill
       // cell had filled, the sideways ones became "the best remaining"
@@ -5169,6 +5198,19 @@
     { d:[0,0,1],  c:[[0,0,1],[1,0,1],[1,1,1],[0,1,1]] },
     { d:[0,0,-1], c:[[0,0,0],[0,1,0],[1,1,0],[1,0,0]] },
   ];
+  // What height to DRAW a water cell at — normally just its stored
+  // height, except the "lip" where flowing water pours over an edge: a
+  // flowing cell sitting on top of more flowing water (the falling
+  // column below it). At full stored height that lip drew as a whole
+  // extra block of water standing up above the channel beside it; drawn
+  // as a thin sheet instead, the surface steps down smoothly from the
+  // pool, over the lip, into the channel.
+  function waterRenderHeight(k, x, y, z) {
+    const h = waterBlocks.get(k);
+    if (h === undefined) return undefined;
+    if (flowDist.has(k) && flowDist.get(k) >= 1 && flowDist.has(key(x, y - 1, z))) return Math.min(h, 0.2);
+    return h;
+  }
   function waterNeighborOccludes(nx, ny, nz, selfH, dy) {
     const nk = key(nx,ny,nz);
     if (waterBlocks.has(nk)) {
@@ -5176,7 +5218,7 @@
       // down in height as it spreads) only covers the bottom part of
       // this cell's side — hiding the whole face left a see-through slot
       // along every step of a stream.
-      if (dy === 0 && selfH !== undefined) { const nh = waterBlocks.get(nk); if (typeof nh === 'number' && nh < selfH - 0.01) return false; }
+      if (dy === 0 && selfH !== undefined) { const nh = waterRenderHeight(nk, nx, ny, nz); if (typeof nh === 'number' && nh < selfH - 0.01) return false; }
       return true;
     }
     const t = blocks.get(nk);
@@ -5305,7 +5347,7 @@
           if (gh === undefined || gh >= SEA_LEVEL) continue; // ungenerated, or naturally dry here
           for (let y = gh + 1; y <= SEA_LEVEL; y++) {
             const k = key(x, y, z);
-            const h = waterBlocks.get(k); // natural default or explicit override, already correctly combined
+            const h = waterRenderHeight(k, x, y, z); // natural default or explicit override, already correctly combined
             if (h === undefined) continue; // explicitly removed here
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
@@ -5331,10 +5373,10 @@
       if (explicitKeys) {
         for (const k of explicitKeys) {
           if (consideredExplicit.has(k)) continue;
-          const h = waterBlocks.get(k);
-          if (h === undefined) continue;
           const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
           const x = parseInt(k.slice(0, firstComma), 10), y = parseInt(k.slice(firstComma + 1, lastComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+          const h = waterRenderHeight(k, x, y, z);
+          if (h === undefined) continue;
           anyWater = true;
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
           for (const face of WATER_FACES) {

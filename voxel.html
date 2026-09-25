@@ -5043,12 +5043,13 @@
       const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 ? 2 : 1;
       const pour = fluidPour(lk => lava.has(lk), lk => lava.isFlowing(lk) ? lava.flow.get(lk) : undefined, lk => lava.get(lk), x, y, z, h);
       if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+      const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
       if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
         const [dx, dy, dz] = face.d;
-        if (lavaFaceHidden(x, y, z, dx, dy, dz, h)) continue;
+        if (lavaFaceHidden(x, y, z, dx, dy, dz, drawH)) continue;
         const [a, b, c, d] = face.c;
         for (const corner of [a, b, c, a, c, d]) {
-          const cy = corner[1] === 1 ? h : corner[1];
+          const cy = corner[1] === 1 ? drawH : corner[1];
           cp.push(x + corner[0], y + cy, z + corner[2]);
           cn.push(dx * nm, dy, dz * nm);
         }
@@ -5763,8 +5764,14 @@
         if (ud === undefined || nd === undefined || nd < ud || get(nk) > uh + 0.001) sides.push([dx, dz]);
       }
     }
-    if (!sides.length) for (const s of WATER_FOUR) sides.push(s); // fed straight from above with nothing beside it — falls as a thin column
-    return { hide: hasBelow, y0: hasBelow ? 0 : h, y1: 1, sides };
+    // Only against an actual wall — a sheet with no block behind it just
+    // hung in mid-air (that was the floating streaky panels).
+    const walls = sides.filter(([dx, dz]) => blocks.has(key(x + dx, y, z + dz)));
+    // Nothing to run down (falling off an overhang, or out of a block
+    // placed in mid-air): draw the falling cell as a full-height column
+    // instead, like a proper waterfall, so the stream stays joined up.
+    if (!walls.length) return { hide: false, asColumn: true, sides: walls };
+    return { hide: hasBelow, y0: hasBelow ? 0 : h, y1: 1, sides: walls };
   }
   function emitPourSheets(pour, x, y, z, cp, cn) {
     const e = POUR_SHEET_INSET;
@@ -5903,12 +5910,13 @@
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
             const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
             if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+            const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
             if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
               const [dx,dy,dz] = face.d;
-              if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
+              if (waterNeighborOccludes(x+dx, y+dy, z+dz, drawH, dy)) continue;
               const [a,b,c,d] = face.c;
               for (const corner of [a,b,c, a,c,d]) {
-                const cy = corner[1] === 1 ? h : corner[1];
+                const cy = corner[1] === 1 ? drawH : corner[1];
                 cp.push(x+corner[0], y+cy, z+corner[2]);
                 cn.push(dx*nm, dy, dz*nm);
               }
@@ -5934,12 +5942,13 @@
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
           const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
           if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+          const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
           if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
             const [dx,dy,dz] = face.d;
-            if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
+            if (waterNeighborOccludes(x+dx, y+dy, z+dz, drawH, dy)) continue;
             const [a,b,c,d] = face.c;
             for (const corner of [a,b,c, a,c,d]) {
-              const cy = corner[1] === 1 ? h : corner[1];
+              const cy = corner[1] === 1 ? drawH : corner[1];
               cp.push(x+corner[0], y+cy, z+corner[2]);
               cn.push(dx*nm, dy, dz*nm);
             }

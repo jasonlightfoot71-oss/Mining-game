@@ -2569,7 +2569,14 @@
   const MAX_SPREAD = 6; // how far flowing water runs sideways across flat ground from whatever feeds it before petering out
   const WATER_CELLS_PER_TICK = 700; // safety valve — a very large spill finishes over a few extra ticks rather than stalling one frame
   const FLOW_EDIT_BASE = 2; // waterEdits encoding for flowing cells (heights are 0..1 and removed is -1, so 2+ is free)
-  const DROP_SEARCH = 4; // how far sideways flowing water looks for a way down before giving up and spreading evenly
+  // How far sideways flowing water looks for a way down before giving up
+  // and spreading evenly. Was 4 (Minecraft's value): on land that looks
+  // flat, any 1-block dip up to 4 blocks away pulled ALL of a placed
+  // block's water that way, so it spread forward/right and never
+  // left/back. At 1 it only commits to an edge right beside it — still
+  // enough to keep a stream running down a stepped hillside as one
+  // channel instead of fanning out.
+  const DROP_SEARCH = 1;
   let lastWaterTick = 0;
   const WATER_SIX = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]];
   const WATER_FOUR = [[1,0],[-1,0],[0,1],[0,-1]];

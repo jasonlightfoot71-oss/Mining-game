@@ -2676,7 +2676,6 @@
   }
   function setFlowingWater(x, y, z, d, h) {
     const k = key(x, y, z);
-    if (d === 0) h = 1; // a falling column is always full
     flowDist.set(k, d);
     waterBlocks.set(k, h);
     recordWaterEdit(x, y, z, FLOW_EDIT_BASE + d + Math.min(h, 0.999) / 2);
@@ -2703,7 +2702,8 @@
     //    stream recedes behind it.
     if (flowDist.has(k)) {
       let best = Infinity, bestH = 1;
-      if (waterBlocks.has(key(x, y + 1, z))) best = 0;
+      const aboveK = key(x, y + 1, z);
+      if (waterBlocks.has(aboveK)) { best = 0; bestH = Math.min(1, waterBlocks.get(aboveK)); } // a falling column is as deep as what's pouring into it
       else {
         for (const [dx, dz] of WATER_FOUR) {
           const nx = x + dx, nz = z + dz, nk = key(nx, y, nz);
@@ -2721,13 +2721,16 @@
         for (const [dx, dz] of WATER_FOUR) if (!groundHeightOnly.has((x + dx) + ',' + (z + dz))) return changed;
         removeFlowingWater(x, y, z); return true;
       }
-      const targetH = best === 0 ? 1 : bestH;
+      const targetH = bestH;
       if (best !== flowDist.get(k) || Math.abs(targetH - waterBlocks.get(k)) > 0.01) { setFlowingWater(x, y, z, best, targetH); changed = true; }
     }
     const d = flowDist.has(k) ? flowDist.get(k) : 0;
     // 2. Falling takes priority — open space below means it pours down
     //    as a full-height column and doesn't also spread sideways.
-    if (waterOpenAt(x, y - 1, z)) { setFlowingWater(x, y - 1, z, 0, 1); return true; }
+    // The column is only as deep as the water pouring into it — mining
+    // the bed out from under a lake's ⅛-deep shoreline used to drop a
+    // FULL block of water into the hole, far more than was ever there.
+    if (waterOpenAt(x, y - 1, z)) { setFlowingWater(x, y - 1, z, 0, Math.min(1, waterBlocks.get(k))); return true; }
     // 3. Otherwise spread sideways — toward the nearest drop if there is
     //    one within reach, evenly in every open direction if not.
     if (d >= MAX_SPREAD || !waterCanSpread(x, y, z, k)) return changed;

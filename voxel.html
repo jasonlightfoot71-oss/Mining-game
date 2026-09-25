@@ -5016,7 +5016,7 @@
   function lavaRenderHeight(k, x, y, z) {
     const h = lava.get(k);
     if (h === undefined) return undefined;
-    if (lava.isFlowing(k) && lava.flow.get(k) >= 1 && lava.isFlowing(key(x, y - 1, z))) return Math.min(h, 0.2); // pour-over lip, same as water's
+    if (lava.isFlowing(k) && lava.flow.get(k) >= 1 && lava.isFlowing(key(x, y - 1, z))) return 0; // pouring over an edge / into a hole — same as water's
     return h;
   }
   // Lava is opaque, so unlike water a face against a solid block is
@@ -5039,9 +5039,11 @@
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
       const h = lavaRenderHeight(k, x, y, z);
       if (h === undefined) continue;
-      noteFluidFill(logged, x, y, z, h);
+      if (h > 0.001) noteFluidFill(logged, x, y, z, h);
       const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 ? 2 : 1;
-      for (const face of WATER_FACES) {
+      const pour = fluidPour(lk => lava.has(lk), lk => lava.isFlowing(lk) ? lava.flow.get(lk) : undefined, lk => lava.get(lk), x, y, z, h);
+      if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+      if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
         const [dx, dy, dz] = face.d;
         if (lavaFaceHidden(x, y, z, dx, dy, dz, h)) continue;
         const [a, b, c, d] = face.c;
@@ -5644,7 +5646,7 @@
   function waterRenderHeight(k, x, y, z) {
     const h = waterBlocks.get(k);
     if (h === undefined) return undefined;
-    if (flowDist.has(k) && flowDist.get(k) >= 1 && flowDist.has(key(x, y - 1, z))) return Math.min(h, 0.2);
+    if (flowDist.has(k) && flowDist.get(k) >= 1 && flowDist.has(key(x, y - 1, z))) return 0; // pouring over an edge / into a hole — its fluid has dropped below (see POURING INTO A HOLE)
     return h;
   }
   function waterNeighborOccludes(nx, ny, nz, selfH, dy) {
@@ -5724,6 +5726,59 @@
   // dozens).
   function waterCellHash(x, y, z, h) {
     return (((x*73856093) ^ (y*19349663) ^ (z*83492791) ^ (Math.round(h*4)*2654435761)) | 0);
+  }
+  // ================= POURING INTO A HOLE =================
+  // A thin sheet of water/lava pouring into a gap below it (you mined
+  // the block under a ⅛-deep spread cell) used to draw as two separate
+  // ⅛-deep slabs — one at the top, one at the bottom of the hole — with
+  // an unnatural empty gap between them. Now:
+  //  - the spread cell doing the pouring (flowing, with more flowing
+  //    fluid directly under it) isn't drawn at all — its fluid has
+  //    "dropped" into the hole (see waterRenderHeight/lavaRenderHeight,
+  //    which now report it as height 0);
+  //  - a thin falling cell draws as a pool at the bottom of the hole
+  //    (or nothing, mid-column) plus a thin sheet running down the BACK
+  //    wall of the hole — the side the flow is coming from — joining the
+  //    fluid above to the pool below, with the falling-streak effect.
+  // Full-height falling columns (a thick waterfall) are unchanged.
+  const POUR_SHEET_INSET = 0.02;
+  // has/dist/get read one fluid's cells; dist() is undefined for still
+  // fluid. Returns null when (x,y,z) needs no sheet.
+  function fluidPour(has, dist, get, x, y, z, h) {
+    const k = key(x, y, z);
+    if (dist(k) !== 0 || h >= 0.999) return null;
+    const hasBelow = has(key(x, y - 1, z));
+    // Climb to the cell feeding the top of this column…
+    let uy = y + 1;
+    while (has(key(x, uy, z)) && dist(key(x, uy, z)) === 0) uy++;
+    const uk = key(x, uy, z);
+    // …and put the sheet on whichever of its sides the flow comes in from.
+    const sides = [];
+    if (has(uk)) {
+      const ud = dist(uk), uh = get(uk);
+      for (const [dx, dz] of WATER_FOUR) {
+        const nk = key(x + dx, uy, z + dz);
+        if (!has(nk)) continue;
+        const nd = dist(nk);
+        if (ud === undefined || nd === undefined || nd < ud || get(nk) > uh + 0.001) sides.push([dx, dz]);
+      }
+    }
+    if (!sides.length) for (const s of WATER_FOUR) sides.push(s); // fed straight from above with nothing beside it — falls as a thin column
+    return { hide: hasBelow, y0: hasBelow ? 0 : h, y1: 1, sides };
+  }
+  function emitPourSheets(pour, x, y, z, cp, cn) {
+    const e = POUR_SHEET_INSET;
+    for (const [dx, dz] of pour.sides) {
+      const face = WATER_FACES.find(f => f.d[0] === -dx && f.d[1] === 0 && f.d[2] === -dz); // faces into the hole, away from the wall
+      const [a, b, c, d] = face.c;
+      for (const corner of [a, b, c, a, c, d]) {
+        const px = dx !== 0 ? (dx > 0 ? 1 - e : e) : corner[0];
+        const pz = dz !== 0 ? (dz > 0 ? 1 - e : e) : corner[2];
+        const py = corner[1] === 1 ? pour.y1 : pour.y0;
+        cp.push(x + px, y + py, z + pz);
+        cn.push(-dx * 2, 0, -dz * 2); // doubled normal = falling-streak effect in the shader
+      }
+    }
   }
   // ================= FLUID-FILLED SHAPED BLOCKS =================
   // Slopes, curves and steps only fill part of their cell, so beside
@@ -5843,10 +5898,12 @@
             if (h === undefined) continue; // explicitly removed here
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
-            noteFluidFill(logged, x, y, z, h);
+            if (h > 0.001) noteFluidFill(logged, x, y, z, h);
             const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
-            for (const face of WATER_FACES) {
+            const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
+            if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+            if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
               const [dx,dy,dz] = face.d;
               if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
               const [a,b,c,d] = face.c;
@@ -5872,10 +5929,12 @@
           const h = waterRenderHeight(k, x, y, z);
           if (h === undefined) continue;
           anyWater = true;
-          noteFluidFill(logged, x, y, z, h);
+          if (h > 0.001) noteFluidFill(logged, x, y, z, h);
           const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
-          for (const face of WATER_FACES) {
+          const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
+          if (pour) emitPourSheets(pour, x, y, z, cp, cn);
+          if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
             const [dx,dy,dz] = face.d;
             if (waterNeighborOccludes(x+dx, y+dy, z+dz, h, dy)) continue;
             const [a,b,c,d] = face.c;

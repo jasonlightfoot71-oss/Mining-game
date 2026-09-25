@@ -234,6 +234,14 @@
     80%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
     100% { opacity: 0; transform: translate(-50%, -56%) scale(0.92); }
   }
+  #lavaOverlay {
+    position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none;
+    background:
+      radial-gradient(ellipse at center, rgba(255,90,20,0.22) 0%, rgba(170,25,0,0.62) 100%);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    animation: waterShimmer 4.5s ease-in-out infinite;
+  }
   #waterOverlay {
     position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none;
     background:
@@ -638,6 +646,7 @@
   <button id="reconnectReloadBtn" style="display:none;background:rgba(212,160,23,0.85);border:none;color:#1a1a1a;border-radius:6px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;">Taking too long? Tap to reload</button>
 </div>
 <div id="waterOverlay"></div>
+<div id="lavaOverlay"></div>
 
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
@@ -13334,7 +13343,7 @@
     camera.rotation.y = APP_MAKE_CAMERA_YAW + sceneCamYawOffset;
     camera.rotation.x = APP_MAKE_CAMERA_PITCH + sceneCamPitchOffset;
     outline.visible = false;
-    document.getElementById('waterOverlay').style.display = 'none';
+    document.getElementById('waterOverlay').style.display = 'none'; document.getElementById('lavaOverlay').style.display = 'none';
     workHeldRoot.visible = false; // the normal first-person held-item makes no sense from this outside angle
 
     const avatar = getAppMakeAvatar();
@@ -13476,7 +13485,7 @@
     camera.rotation.y = APP_MAKE_CAMERA_YAW + sceneCamYawOffset;
     camera.rotation.x = APP_MAKE_CAMERA_PITCH + sceneCamPitchOffset;
     outline.visible = false;
-    document.getElementById('waterOverlay').style.display = 'none';
+    document.getElementById('waterOverlay').style.display = 'none'; document.getElementById('lavaOverlay').style.display = 'none';
     workHeldRoot.visible = false;
 
     const customer = getBarCustomerAvatar();
@@ -13690,7 +13699,7 @@
     camera.rotation.y = KITCHEN_CAMERA_YAW + sceneCamYawOffset;
     camera.rotation.x = KITCHEN_CAMERA_PITCH + sceneCamPitchOffset;
     outline.visible = false;
-    document.getElementById('waterOverlay').style.display = 'none';
+    document.getElementById('waterOverlay').style.display = 'none'; document.getElementById('lavaOverlay').style.display = 'none';
     workHeldRoot.visible = false;
 
     const avatar = getKitchenAvatar();
@@ -16808,15 +16817,19 @@
   // regardless of where within it the player's feet currently sit, so
   // walking from the shallow end into the deep end registers correctly
   // without needing to jump to "accidentally" measure further down.
+  // Swimming works the same in lava as in water — the swim depth and
+  // surface checks below count either fluid (a column is never both;
+  // they harden where they touch).
+  function swimFluidHas(k) { return waterBlocks.has(k) || lava.has(k); }
   function waterSurfaceNear(x, z) {
     const px = Math.floor(x), pz = Math.floor(z);
     const base = Math.floor(player.pos.y);
     let anchor = null;
-    if (waterBlocks.has(key(px, base, pz))) anchor = base;
-    else if (waterBlocks.has(key(px, base-1, pz))) anchor = base-1;
+    if (swimFluidHas(key(px, base, pz))) anchor = base;
+    else if (swimFluidHas(key(px, base-1, pz))) anchor = base-1;
     if (anchor === null) return null;
     let topY = anchor;
-    while (waterBlocks.has(key(px, topY+1, pz))) topY++;
+    while (swimFluidHas(key(px, topY+1, pz))) topY++;
     return topY;
   }
 
@@ -16825,7 +16838,7 @@
     if (topY === null) return 0;
     const px = Math.floor(x), pz = Math.floor(z);
     let depth = 0;
-    while (waterBlocks.has(key(px, topY-depth, pz))) depth++;
+    while (swimFluidHas(key(px, topY-depth, pz))) depth++;
     return depth;
   }
   function playFootstep(material) {
@@ -23330,8 +23343,11 @@
         if (wy !== null) player.pos.y = wy;
       }
 
-      const eyeSubmerged = waterBlocks.has(key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.92), Math.floor(player.pos.z)));
+      const eyeKey = key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.92), Math.floor(player.pos.z));
+      const eyeSubmerged = waterBlocks.has(eyeKey);
+      const eyeInLava = !eyeSubmerged && lava.has(eyeKey);
       document.getElementById('waterOverlay').style.display = eyeSubmerged ? 'block' : 'none';
+      document.getElementById('lavaOverlay').style.display = eyeInLava ? 'block' : 'none'; // same underwater view, tinted red
 
       camera.position.set(player.pos.x, player.pos.y + player.height*0.92, player.pos.z);
       camera.rotation.order = 'YXZ';

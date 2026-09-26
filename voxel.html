@@ -5084,7 +5084,15 @@
     if (!lava.has(nk)) return false;
     if (dy === 0) { const nh = lavaRenderHeight(nk, nx, ny, nz); if (nh < selfH - 0.01) return false; }
     if (dy === -1) return true;
-    if (dy === 1) return selfH >= 0.999;
+    if (dy === 1) return selfH >= 0.999 && fluidAboveCovers(lavaRenderHeight(nk, nx, ny, nz), lava.isFlowing(nk) ? lava.flow.get(nk) : undefined); // same as water's — see waterNeighborOccludes
+    return true;
+  }
+  // Is the fluid cell above drawn as a real volume (so it covers the top
+  // of the cell below)? Not if it's drawn as nothing (pour-over lip) or
+  // only as a thin sheet (a thin falling cell).
+  function fluidAboveCovers(h, d) {
+    if (!(h > 0.001)) return false;
+    if (d === 0 && h < 0.999) return false;
     return true;
   }
   function rebuildLavaGeometry() {
@@ -5716,6 +5724,12 @@
       // this cell's side — hiding the whole face left a see-through slot
       // along every step of a stream.
       if (dy === 0 && selfH !== undefined) { const nh = waterRenderHeight(nk, nx, ny, nz); if (typeof nh === 'number' && nh < selfH - 0.01) return false; }
+      // Water above only hides this top if that water is actually DRAWN
+      // there. A pour-over cell (drawn as nothing — its water has dropped)
+      // or a thin falling cell (drawn as just a sheet) left the top of the
+      // column under it open: sides with no lid, the "flow block with
+      // just the sides" under an overhang.
+      if (dy === 1 && !fluidAboveCovers(waterRenderHeight(nk, nx, ny, nz), flowDist.get(nk))) return false;
       return true;
     }
     const t = blocks.get(nk);

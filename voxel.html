@@ -890,6 +890,11 @@
         const parts = k.split(',');
         waterOut.push([+parts[0], +parts[1], +parts[2], level]);
       }
+      const chunkSeedEdits = seedEdits.byChunk.get(ck);
+      if (chunkSeedEdits) for (const [k, v] of chunkSeedEdits) {
+        const parts = k.split(',');
+        waterOut.push([+parts[0], +parts[1], +parts[2], v, 2]); // 5th element 2 = a planted seed, see SEEDS
+      }
       const chunkLavaEdits = lavaEdits.byChunk.get(ck);
       if (chunkLavaEdits) for (const [k, level] of chunkLavaEdits) {
         const parts = k.split(',');
@@ -927,6 +932,7 @@
         }
         for (const [x,y,z,lvl,isLava] of (row.water||[])) {
           if (isLava === 1) lavaEdits.set(key(x,y,z), lvl); // see LAVA — rides along in the water array
+          else if (isLava === 2) seedEdits.set(key(x,y,z), lvl); // see SEEDS — same trick
           else waterEdits.set(key(x,y,z), lvl);
         }
       }
@@ -1172,7 +1178,7 @@
     // turns streaming back on itself, only once position and world state
     // are fully settled, right before beginPlaying().
     terrainStreamingActive = false;
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
     structureSpecs.clear(); pendingStructureReplays.length = 0;
     // Session-only placement state that was never reset between worlds either.
     houseRegionClaimed.clear(); shopRegionClaimed.clear(); churchRegionClaimed.clear(); landmarkRegionClaimed.clear(); farmRegionClaimed.clear();
@@ -2212,6 +2218,7 @@
   const VEHICLE_SLOT = BEDROOM_SLOT + 1; // "Vehicles" hotbar entry — see VEHICLE_TYPES
   const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
   const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
+  const SEED_SLOT = FIRE_SLOT + 3; // "Seeds" hotbar entry — see SEEDS
   const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
@@ -3404,6 +3411,7 @@
   const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
   const waterEdits = new EditsMap();   // cellKey -> level (-1 = removed)
   const lavaEdits = new EditsMap();    // cellKey -> level, same encoding as waterEdits — see LAVA
+  const seedEdits = new EditsMap();    // cellKey -> planted seed (type + planted-at time) — see SEEDS
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
   // Freezes the terrain height under any column a player has ever built
   // or dug in, keyed "x,z" -> the natural height it had the very first
@@ -5817,10 +5825,19 @@
     // just this cell's own level put sheets on the walls of any pit a
     // lavafall happened to land in, even when it came down through open
     // air from high above — the angled panels round the bottom of it.
-    const walls = sides.filter(([dx, dz]) => {
-      for (let ly = y; ly < uy; ly++) if (!blocks.has(key(x + dx, ly, z + dz))) return false;
-      return true;
-    });
+    // And only ONE sheet — the wall under the edge the fluid actually
+    // came over (its main feed: still water first, then the closest,
+    // then the deepest). Where a fall was fed from two sides (a corner),
+    // drawing both made a folded V of sheets that looked like the sides
+    // of the spreading fluid rather than a single pour.
+    const feedRank = ([dx, dz]) => { const nk = key(x + dx, uy, z + dz), nd = dist(nk); return (nd === undefined ? 0 : 1 + nd) * 10 - get(nk); };
+    sides.sort((a, b) => feedRank(a) - feedRank(b));
+    const walls = [];
+    for (const [dx, dz] of sides) {
+      let ok = true;
+      for (let ly = y; ly < uy; ly++) if (!blocks.has(key(x + dx, ly, z + dz))) { ok = false; break; }
+      if (ok) { walls.push([dx, dz]); break; }
+    }
     // Nothing to run down (falling off an overhang, or out of a block
     // placed in mid-air): draw the falling cell as a full-height column
     // instead, like a proper waterfall, so the stream stays joined up.
@@ -15499,7 +15516,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
     player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
     yaw = Math.PI; pitch = 0;
     const [, savedData] = await Promise.all([
@@ -15541,7 +15558,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
     generatePubWorld();
     visitMode = false;
     currentRole = null;
@@ -16650,6 +16667,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x4fa8d6, transparent: true, opacity: 0.75 });
     } else if (i === LAVA_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xff5a10 });
+    } else if (i === SEED_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x6b8e3a });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }
@@ -17588,6 +17607,20 @@
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
+    if (selectedSlot === SEED_SLOT) {
+      // With Seeds in hand, "mining" pulls up the plant on the mud you're
+      // aiming at (never digs the block itself — so holding the button
+      // can't carry on into the mud after the plant's gone).
+      if (r.isWater || r.isLava) return;
+      const pk = key(r.hit.x, r.hit.y + 1, r.hit.z);
+      const sd = seedAt(pk);
+      if (!sd || !sd.type) return;
+      const grown = seedProgress(sd) >= 1;
+      removeSeed(pk, r.hit.x, r.hit.y + 1, r.hit.z);
+      if (grown && sd.type.harvest) { addCoins(sd.type.harvest); showSaveStatus('🌾 Harvested ' + sd.type.name + ' +💰' + sd.type.harvest); }
+      playThud(220);
+      return;
+    }
     if (r.isLava) {
       lava.scoop(r.hit.x, r.hit.y, r.hit.z); // a quarter at a time, same as the water bucket
       playThud(200);
@@ -17890,6 +17923,17 @@
         return true;
       };
       if ((r.isWater && topUp(r.hit)) || topUp(r.before)) return;
+    }
+    // Seeds: plant on top of the Mud block you're aiming at.
+    if (selectedSlot === SEED_SLOT) {
+      if (r.isWater || r.isLava || !r.hit) return;
+      if (blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) !== MUD_TYPE) { showSaveStatus('🌱 Seeds only grow in Mud — plant them on top of a Mud block', true); return; }
+      const px = r.hit.x, py = r.hit.y + 1, pz = r.hit.z, pk = key(px, py, pz);
+      if (blocks.has(pk) || waterBlocks.has(pk) || lava.has(pk) || seedEdits.has(pk)) return; // something's already there
+      if (!plantSeed(px, py, pz, seedTypeIdx)) { showSaveStatus('🌱 Seeds can only be planted in your own worlds', true); return; }
+      seedNextPass = 0; // show the new sprout straight away
+      playThud(300);
+      return;
     }
     // Lava's version of the top-up above — same two cells checked (the
     // one hit, then the one in front, for lava round your own feet) and
@@ -18846,6 +18890,187 @@
   }
 
 
+
+  // ================= SEEDS =================
+  // Seeds planted on top of a Mud block grow over real time — they keep
+  // growing while you're away, since growth is measured from the moment
+  // they were planted. Saplings become a real tree (proper log/leaf
+  // blocks, saved like any build) once grown; vegetables and flowers
+  // grow to full size and stay. With Seeds selected, "mine" a planted
+  // mud block to pull the plant up — a fully-grown vegetable pays out
+  // coins. A plant goes if its mud is dug out or something is built in
+  // its space.
+  // Saved per chunk alongside water and lava: [x,y,z,value,2] in the
+  // chunk row's water array, value = typeIdx * 1e10 + planted-at time in
+  // whole seconds (so no new table column was needed).
+  const SEED_TYPES = [
+    { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 150 },
+    { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 150 },
+    { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 180 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 90,  harvest: 8 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 90,  harvest: 8 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 100, harvest: 10 },
+    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 120, harvest: 15 },
+    { name: 'Red Flowers',    kind: 'flower',  color: 0xd23a3a, growSec: 60 },
+    { name: 'Yellow Flowers', kind: 'flower',  color: 0xe8c52a, growSec: 60 },
+    { name: 'Purple Flowers', kind: 'flower',  color: 0x8e44ad, growSec: 60 },
+    { name: 'Blue Flowers',   kind: 'flower',  color: 0x2f6fd6, growSec: 60 },
+    { name: 'White Flowers',  kind: 'flower',  color: 0xf0f0f0, growSec: 60 },
+  ];
+  let seedTypeIdx = 0;
+  const MUD_TYPE = typeIndexByName('Mud');
+  const SEED_VALUE_MUL = 1e10;
+  const seedFx = new Map(); // "x,y,z" -> { group, stage }
+  const seedMatCache = new Map();
+  function seedMat(hex) {
+    let m = seedMatCache.get(hex);
+    if (!m) { m = new THREE.MeshLambertMaterial({ color: hex, side: THREE.DoubleSide }); seedMatCache.set(hex, m); }
+    return m;
+  }
+  function lerpHex(a, b, t) {
+    const ar = a >> 16, ag = (a >> 8) & 255, ab = a & 255, br = b >> 16, bg = (b >> 8) & 255, bb = b & 255;
+    return (Math.round(ar + (br - ar) * t) << 16) | (Math.round(ag + (bg - ag) * t) << 8) | Math.round(ab + (bb - ab) * t);
+  }
+  // Two crossed upright planes — the classic voxel-game plant shape.
+  function seedCross(g, w, h, hex, y0) {
+    const geo = new THREE.PlaneGeometry(w, h);
+    for (const r of [Math.PI / 4, -Math.PI / 4]) { const m = new THREE.Mesh(geo, seedMat(hex)); m.rotation.y = r; m.position.y = (y0 || 0) + h / 2; g.add(m); }
+  }
+  // p = growth 0..1 (quantized); builds the plant at that stage.
+  function buildSeedModel(type, p) {
+    const g = new THREE.Group();
+    if (type.kind === 'tree') {
+      const stemH = 0.3 + 0.5 * p;
+      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.07, stemH, 0.07), seedMat(0x6b4a2b)); stem.position.y = stemH / 2; g.add(stem);
+      const ls = 0.2 + 0.35 * p;
+      const leaves = new THREE.Mesh(new THREE.BoxGeometry(ls, ls, ls), seedMat(type.leaf)); leaves.position.y = stemH; g.add(leaves);
+    } else if (type.kind === 'wheat') {
+      seedCross(g, 0.7, 0.2 + 0.65 * p, p >= 1 ? 0xd4b83a : lerpHex(0x5fae3a, 0xb8b040, p));
+    } else if (type.kind === 'carrot') {
+      seedCross(g, 0.55, 0.15 + 0.35 * p, 0x4f9a33);
+      if (p >= 1) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.18, 6), seedMat(0xe8762a)); c.rotation.x = Math.PI; c.position.y = 0.05; g.add(c); }
+    } else if (type.kind === 'cabbage') {
+      const r = 0.08 + 0.22 * p;
+      const head = new THREE.Mesh(new THREE.SphereGeometry(r, 7, 5), seedMat(lerpHex(0x8fcf5a, 0x6fae4a, p))); head.position.y = r * 0.85; g.add(head);
+    } else if (type.kind === 'pumpkin') {
+      seedCross(g, 0.6, 0.18, 0x4f9a33);
+      if (p >= 0.4) {
+        const sz = 0.15 + 0.45 * ((p - 0.4) / 0.6);
+        const pk = new THREE.Mesh(new THREE.BoxGeometry(sz, sz * 0.85, sz), seedMat(p >= 1 ? 0xe07a1f : lerpHex(0x6aa84f, 0xd9892a, (p - 0.4) / 0.6)));
+        pk.position.y = sz * 0.42; g.add(pk);
+      }
+    } else { // flower
+      const stemH = 0.1 + 0.4 * p;
+      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.04, stemH, 0.04), seedMat(0x4f9a33)); stem.position.y = stemH / 2; g.add(stem);
+      if (p >= 0.5) {
+        const pr = 0.06 + 0.1 * ((p - 0.5) / 0.5);
+        const petals = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, 0.03, 8), seedMat(type.color)); petals.position.y = stemH; g.add(petals);
+        const centre = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.35, pr * 0.35, 0.04, 6), seedMat(0xf2c230)); centre.position.y = stemH + 0.005; g.add(centre);
+      }
+    }
+    return g;
+  }
+  function disposeSeedGroup(g) { g.traverse(o => { if (o.isMesh) o.geometry.dispose(); }); scene.remove(g); } // materials are cached/shared
+  function recordSeed(x, y, z, v) {
+    if (!terrainStreamingActive) return false;
+    const k = key(x, y, z);
+    if (v === -1) seedEdits.delete(k); else seedEdits.set(k, v);
+    dirtyChunks.add(chunkKeyOf(x, z));
+    return true;
+  }
+  function seedAt(k) {
+    const v = seedEdits.get(k);
+    if (v === undefined) return null;
+    const typeIdx = Math.floor(v / SEED_VALUE_MUL);
+    return { type: SEED_TYPES[typeIdx], typeIdx, plantedAt: v - typeIdx * SEED_VALUE_MUL };
+  }
+  function seedProgress(s) { return Math.max(0, Math.min(1, (Date.now() / 1000 - s.plantedAt) / s.type.growSec)); }
+  function plantSeed(x, y, z, typeIdx) {
+    return recordSeed(x, y, z, typeIdx * SEED_VALUE_MUL + Math.floor(Date.now() / 1000));
+  }
+  function removeSeed(k, x, y, z) {
+    const fx = seedFx.get(k);
+    if (fx) { disposeSeedGroup(fx.group); seedFx.delete(k); }
+    recordSeed(x, y, z, -1);
+  }
+  // A grown sapling becomes a real tree, built only into empty space.
+  function growSeedTree(x, y, z, type) {
+    const logT = Math.max(0, typeIndexByName(type.log)), leafT = typeIndexByName('Leaves');
+    const trunkH = 4 + (Math.abs(x * 31 + z * 17) % 2);
+    const put = (bx, by, bz, t) => {
+      const bk = key(bx, by, bz);
+      if (blocks.has(bk) || waterBlocks.has(bk) || lava.has(bk)) return;
+      blocks.set(bk, t); recordBlockEdit(bx, by, bz, t, 0); handleLocalBlockChange(bx, by, bz);
+    };
+    for (let i = 0; i < trunkH; i++) put(x, y + i, z, logT);
+    const top = y + trunkH - 1;
+    for (let ly = 0; ly <= 1; ly++) for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      if (ly === 0 && dx === 0 && dz === 0) continue; // trunk
+      put(x + dx, top + ly, z + dz, leafT);
+    }
+    put(x, top + 2, z, leafT);
+  }
+  let seedNextPass = 0;
+  function updateSeeds() {
+    const now = performance.now();
+    if (now < seedNextPass) return;
+    seedNextPass = now + 1000;
+    for (const [k] of seedEdits) {
+      const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      if (!groundHeightOnly.has(x + ',' + z)) { const fx = seedFx.get(k); if (fx) { disposeSeedGroup(fx.group); seedFx.delete(k); } continue; } // not loaded — hide, keep growing
+      const s = seedAt(k);
+      if (!s || !s.type || blocks.get(key(x, y - 1, z)) !== MUD_TYPE || blocks.has(k)) { removeSeed(k, x, y, z); continue; } // mud dug out, or built over
+      const p = seedProgress(s);
+      if (s.type.kind === 'tree' && p >= 1) { removeSeed(k, x, y, z); growSeedTree(x, y, z, s.type); continue; }
+      const stage = Math.round(p * 10) / 10;
+      const fx = seedFx.get(k);
+      if (fx && fx.stage === stage) continue;
+      if (fx) disposeSeedGroup(fx.group);
+      const g = buildSeedModel(s.type, stage);
+      g.position.set(x + 0.5, y, z + 0.5);
+      scene.add(g);
+      seedFx.set(k, { group: g, stage });
+    }
+    for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) { disposeSeedGroup(seedFx.get(k).group); seedFx.delete(k); } // world changed / removed elsewhere
+  }
+  function seedIconCanvas(idx) {
+    const t = SEED_TYPES[idx];
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#5a3d24'; ctx.fillRect(4, 24, 26, 7); // mud
+    ctx.fillStyle = '#4f9a33'; ctx.fillRect(16, 12, 2, 12); // stem
+    const hex = '#' + (t.kind === 'tree' ? t.leaf : t.kind === 'flower' ? t.color : t.kind === 'wheat' ? 0xd4b83a : t.kind === 'carrot' ? 0xe8762a : t.kind === 'pumpkin' ? 0xe07a1f : 0x6fae4a).toString(16).padStart(6, '0');
+    ctx.fillStyle = hex; ctx.beginPath(); ctx.arc(17, 11, 6, 0, Math.PI * 2); ctx.fill();
+    return c;
+  }
+  function showSeedPopup(slotEl) {
+    if (togglePopupFor(slotEl)) return;
+    const popup = document.createElement('div');
+    popup.style.cssText = popupCss(slotEl);
+    SEED_TYPES.forEach((t, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item';
+      btn.title = t.name;
+      btn.appendChild(seedIconCanvas(idx));
+      const label = document.createElement('span');
+      label.className = 'popup-item-label';
+      label.textContent = t.name;
+      btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        seedTypeIdx = idx;
+        const slotIcon = slotElByIndex[SEED_SLOT].querySelector('canvas.swatch');
+        if (slotIcon) slotIcon.remove();
+        slotElByIndex[SEED_SLOT].insertBefore(seedIconCanvas(idx), slotElByIndex[SEED_SLOT].querySelector('.family-badge'));
+        selectSlot(SEED_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    mountPopup(popup, slotEl);
+  }
+
   // ================= LAVA BURNS FLAMMABLE BLOCKS =================
   // Any wooden or leafy block touching lava (beside, above or below it)
   // catches and, after a slow random 6-16 seconds, burns away — then
@@ -19021,7 +19246,6 @@
       dropLavaInto(x, y, z);
       lava.wake(x, y, z);
       wakeWaterAround(x, y, z);
-      playThud(120);
     }
   }
 
@@ -23199,6 +23423,7 @@
     tickWaterFlow();
     lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
+    updateSeeds(); // planted seeds growing — see SEEDS
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
     try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
@@ -24304,6 +24529,22 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
+    slot.title = 'Seeds — plant on top of a Mud block; saplings grow into trees, plus vegetables and flowers. Mine a planted mud block with Seeds selected to pull the plant up (grown vegetables pay coins)';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(seedIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showSeedPopup(slot); });
+    slotElByIndex[SEED_SLOT] = slot;
+    addSlotLabel(slot, 'Seeds');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
     slot.title = 'LED Spotlight' + costLabel(LIGHT_COST) + ' — tap a block face to attach it there, tap the same face again to remove';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'L';
     slot.appendChild(keyEl);
@@ -24897,7 +25138,7 @@
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
     { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
-    { name: 'Landscape',  items: [3, 4] },
+    { name: 'Landscape',  items: [3, 4, SEED_SLOT] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
     { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT] },
@@ -25604,7 +25845,7 @@
       // with the chunks around spawn (0,0).
       infiniteWorldActive = true;
       terrainStreamingActive = true;
-      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); dirtyChunks.clear();
+      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
       generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
       blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
       clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();

@@ -3027,6 +3027,9 @@
       cells, flow, byChunk,
       get dirty() { return dirty; }, set dirty(v) { dirty = v; },
       wake,
+      // Set a cell to still lava of height h (used to drop lava down
+      // into a block it burned through — see LAVA BURNS FLAMMABLE BLOCKS).
+      putStill(x, y, z, h) { const k = key(x, y, z); flow.delete(k); base.delete(k); put(k, h); record(x, y, z, h); wake(x, y, z); },
       // Player places a lava source block.
       place(x, y, z) { const k = key(x, y, z); flow.delete(k); base.delete(k); put(k, 1); record(x, y, z, 1); wake(x, y, z); },
       // Full lava aimed at partial or flowing lava tops that cell up to a
@@ -18896,6 +18899,21 @@
     for (const [dx, dy, dz] of WATER_SIX) if (lava.has(key(x + dx, y + dy, z + dz))) return true;
     return false;
   }
+  // Still lava sitting on the block that just burned away drops down
+  // into the gap, rather than staying put and pouring into it — the
+  // whole unbroken stack of still lava above moves down one, so a pool
+  // resting on a wooden floor sinks through it. If the new block under
+  // it is flammable too, that one catches next, so lava can eat its way
+  // down through a wooden structure a block at a time. Flowing lava
+  // above needs nothing extra: it's fed from elsewhere and simply pours
+  // down into the gap under the normal rules.
+  function dropLavaInto(x, y, z) {
+    const heights = [];
+    for (let yy = y + 1; lava.has(key(x, yy, z)) && !lava.isFlowing(key(x, yy, z)); yy++) heights.push(lava.get(key(x, yy, z)));
+    if (!heights.length) return;
+    for (let i = 0; i < heights.length; i++) lava.putStill(x, y + i, z, heights[i]);
+    lava.remove(x, y + heights.length, z); // the top of the stack is now empty
+  }
   function updateLavaBurn() {
     const now = performance.now();
     if (burnFx.size) animateBurnFx(now); // every frame, so the flames actually flicker
@@ -18941,6 +18959,7 @@
       removeFixturesForBlock(x, y, z);
       handleLocalBlockChange(x, y, z, t);
       if (LOG_TYPE_SET.has(t)) onLogRemoved(x, y, z);
+      dropLavaInto(x, y, z);
       lava.wake(x, y, z);
       wakeWaterAround(x, y, z);
       playThud(120);

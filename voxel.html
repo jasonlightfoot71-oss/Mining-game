@@ -5049,7 +5049,7 @@
       const h = lavaRenderHeight(k, x, y, z);
       if (h === undefined) continue;
       if (h > 0.001) noteFluidFill(logged, x, y, z, h);
-      const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 ? 2 : 1;
+      const nm = lava.isFlowing(k) && lava.flow.get(k) === 0 && lava.has(key(x, y - 1, z)) ? 2 : 1; // streaks only while it's still falling — the cell it lands in is a pool, not a fall
       const pour = fluidPour(lk => lava.has(lk), lk => lava.isFlowing(lk) ? lava.flow.get(lk) : undefined, lk => lava.get(lk), x, y, z, h);
       if (pour) emitPourSheets(pour, x, y, z, cp, cn);
       const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
@@ -5915,7 +5915,7 @@
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
             if (h > 0.001) noteFluidFill(logged, x, y, z, h);
-            const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
+            const nm = flowDist.get(k) === 0 && waterBlocks.has(key(x, y - 1, z)) ? 2 : 1; // streaks only while it's still falling — the cell it lands in is a pool, not a fall (its sides were streaking where nothing pours)
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
             const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
             if (pour) emitPourSheets(pour, x, y, z, cp, cn);
@@ -5947,7 +5947,7 @@
           if (h === undefined) continue;
           anyWater = true;
           if (h > 0.001) noteFluidFill(logged, x, y, z, h);
-          const nm = flowDist.get(k) === 0 ? 2 : 1; // falling column — see the waterfall streaks in waterMat
+          const nm = flowDist.get(k) === 0 && waterBlocks.has(key(x, y - 1, z)) ? 2 : 1; // streaks only while it's still falling — the cell it lands in is a pool, not a fall (its sides were streaking where nothing pours)
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
           const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
           if (pour) emitPourSheets(pour, x, y, z, cp, cn);

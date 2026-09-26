@@ -5143,6 +5143,17 @@
     scene.add(m);
     return m;
   });
+  // Every block type has its own InstancedMesh, and most of them are EMPTY at any given moment (no Iron
+  // Railing, no Mossy Stone step in sight…). three.js r128 still does all of its per-draw work for an empty one
+  // — picks and binds the shader, uploads the uniforms, sets up the attributes, once per material group (six
+  // for a block) — and only skips the actual draw call at the very end, because the instance count is 0. And
+  // it does all that again in the shadow pass. Hiding the empty ones right before each render skips all of it.
+  // With 100+ block types (and a second mesh for each step) that's hundreds of wasted draw setups a frame, and every new block type (the fences
+  // and gates added 20) was quietly adding more.
+  function hideEmptyBlockMeshes() {
+    for (let i = 0; i < meshes.length; i++) { const m = meshes[i]; if (m) m.visible = m.count > 0; }
+    for (let i = 0; i < stepUpperMeshes.length; i++) { const m = stepUpperMeshes[i]; if (m) m.visible = m.count > 0; }
+  }
   // Second mesh per step type, for the upper quarter piece — null for
   // every non-step type. Uses the exact same material array as the lower
   // piece, so both parts of a step always look identical.
@@ -8411,8 +8422,30 @@
   // it here — nothing else does.
   const villageGroundHeight = new Map(); // "x,z" -> walkable surface y
   function markVillageGround(x, z, y) { villageGroundHeight.set(x + ',' + z, y); }
+  // Both height maps below (villageGroundHeight, groundHeightOnly) are written once, when the ground is
+  // GENERATED, and never updated after — so on their own they still said "ground here" for a column whose top
+  // block had since been mined out, and animals and villagers walked across the gap in mid-air at the old
+  // height. They're now only where the search STARTS: this walks down from there to the first block that
+  // actually exists right now. An untouched column costs one extra lookup (the block is still there); a
+  // mined one steps down to whatever's left. Fences don't count as ground — they're what pens animals in.
+  // If nothing's found within SURFACE_SCAN_DEPTH (a column that isn't loaded), it falls back to the map.
+  const SURFACE_SCAN_DEPTH = 24;
+  function currentSurfaceAtOrBelow(fx, fz, ref) {
+    for (let y = ref; y > ref - SURFACE_SCAN_DEPTH; y--) {
+      const t = blocks.get(key(fx, y, fz));
+      if (t === undefined) continue;
+      const e = BLOCK_TYPES[t];
+      if (e && e.fence) continue;
+      return y;
+    }
+    return ref;
+  }
   function villageSurfaceY(x, z, fallback) {
     const fx = Math.floor(x), fz = Math.floor(z);
+    const ref = generatedSurfaceY(fx, fz, fallback);
+    return typeof ref === 'number' && isFinite(ref) ? currentSurfaceAtOrBelow(fx, fz, ref) : ref;
+  }
+  function generatedSurfaceY(fx, fz, fallback) {
     const gy = villageGroundHeight.get(fx + ',' + fz);
     if (gy !== undefined) return gy; // an actual graded/marked village pad column — the most authoritative source where it exists
     // Building residents now wander up to 30 blocks from their own door
@@ -9172,6 +9205,16 @@
       villageAnimals.push({ mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck, fenceKeys, escaped: false, fenceCheckTimer: Math.random() });
     }
   }
+  // Puts an animal / villager's feet at footY: straight up for a step (one block, it just walks up it), but
+  // FALLING, with gravity, when the ground has gone out from under it — no snapping down to the bottom of a
+  // freshly dug hole in one frame.
+  function settleOnGround(w, footY, dt) {
+    const p = w.mesh.position;
+    if (!(footY < p.y - 0.02)) { if (footY === footY) p.y = footY; w.fallV = 0; return; } // on the ground, or stepping up (a NaN footY leaves it where it is)
+    w.fallV = Math.min(20, (w.fallV || 0) + 22 * dt);
+    p.y = Math.max(footY, p.y - w.fallV * dt);
+    if (p.y === footY) w.fallV = 0;
+  }
   function updateVillageAnimals(dt) {
     updateLeadRope();
     if (villageAnimals.length === 0) return;
@@ -9187,6 +9230,9 @@
       }
       const effBounds = w.escaped ? { xMin: w.bounds.xMin - 20, xMax: w.bounds.xMax + 20, zMin: w.bounds.zMin - 20, zMax: w.bounds.zMax + 20, y: w.bounds.y } : w.bounds;
       const legs = w.mesh.userData.legs;
+      // Keeps its feet on the ground it's standing on NOW, moving or not — so one standing still when the
+      // block under it is mined drops into the gap rather than hanging there until it next moves.
+      settleOnGround(w, villageSurfaceY(w.mesh.position.x, w.mesh.position.z, effBounds.y - 1) + 1, dt);
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
         for (const leg of legs) leg.rotation.x = 0;
@@ -9202,14 +9248,18 @@
       const speed = 0.5; // slower than the villager NPCs' 0.9 — grazing animals, not people with somewhere to be
       const nx = w.mesh.position.x + (dx / dist) * speed * dt;
       const nz = w.mesh.position.z + (dz / dist) * speed * dt;
-      if (villageNpcBlocked(nx, nz, effBounds)) {
+      // Blocked by something in the way, OR the ground there is more than a block higher than where it's
+      // standing — it could climb any height before, which let animals walk straight up out of a dug-out
+      // hole or a pit dug round a pen.
+      const nFoot = villageSurfaceY(nx, nz, effBounds.y - 1) + 1;
+      if (villageNpcBlocked(nx, nz, effBounds) || nFoot - w.mesh.position.y > 1.1) {
         w.target = pickVillageWanderTarget(effBounds);
         w.waitTimer = 0.4;
         return;
       }
       w.mesh.position.x = nx;
       w.mesh.position.z = nz;
-      w.mesh.position.y = villageSurfaceY(nx, nz, effBounds.y - 1) + 1;
+      settleOnGround(w, nFoot, dt);
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t * 4) * 0.35;
       for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
@@ -10332,6 +10382,7 @@
         return;
       }
       const legs = w.mesh.userData.legs, arms = w.mesh.userData.arms;
+      settleOnGround(w, villageSurfaceY(w.mesh.position.x, w.mesh.position.z, w.bounds.y - 1) + 1, dt); // same as the animals — standing still over a block that's just been mined drops them
       if (w.waitTimer > 0) {
         w.waitTimer -= dt;
         for (const leg of legs) leg.rotation.x = 0;
@@ -10376,7 +10427,7 @@
       }
       w.mesh.position.x = nx;
       w.mesh.position.z = nz;
-      w.mesh.position.y = villageSurfaceY(nx, nz, w.bounds.y - 1) + 1;
+      settleOnGround(w, villageSurfaceY(nx, nz, w.bounds.y - 1) + 1, dt);
       w.mesh.rotation.y = Math.atan2(dx, dz);
       const swing = Math.sin(t * 4) * 0.5;
       for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
@@ -25311,6 +25362,7 @@
     if (!contextLost) {
       if (needsRebuild) { rebuildMeshes(); needsRebuild = false; }
       else if (rebuildInProgress) { continueRebuild(); } // drains the rest of a chunked rebuild over subsequent frames — see rebuildMeshes()/continueRebuild()'s own comments
+      hideEmptyBlockMeshes();
       renderer.render(scene, camera);
     }
   }

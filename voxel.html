@@ -5773,9 +5773,15 @@
         if (ud === undefined || nd === undefined || nd < ud || get(nk) > uh + 0.001) sides.push([dx, dz]);
       }
     }
-    // Only against an actual wall — a sheet with no block behind it just
-    // hung in mid-air (that was the floating streaky panels).
-    const walls = sides.filter(([dx, dz]) => blocks.has(key(x + dx, y, z + dz)));
+    // Only against an actual wall, and one that runs unbroken all the
+    // way from this cell up to the edge the flow comes over. Checking
+    // just this cell's own level put sheets on the walls of any pit a
+    // lavafall happened to land in, even when it came down through open
+    // air from high above — the angled panels round the bottom of it.
+    const walls = sides.filter(([dx, dz]) => {
+      for (let ly = y; ly < uy; ly++) if (!blocks.has(key(x + dx, ly, z + dz))) return false;
+      return true;
+    });
     // Nothing to run down (falling off an overhang, or out of a block
     // placed in mid-air): draw the falling cell as a full-height column
     // instead, like a proper waterfall, so the stream stays joined up.
@@ -18786,6 +18792,161 @@
     }
   }
 
+
+  // ================= LAVA BURNS FLAMMABLE BLOCKS =================
+  // Any wooden or leafy block touching lava (beside, above or below it)
+  // catches and, after a slow random 6-16 seconds, burns away — then
+  // the lava is free to creep into the gap it leaves. Logs that burn
+  // away count as a trunk removed, so a tree whose trunk lava eats
+  // through drops its leaves the same way as one you chopped.
+  // Scanned in slices (LAVA_BURN_SCAN_PER_PASS lava cells a second) so a
+  // big lava lake costs no more per frame than a small one. Game areas
+  // and The Mill's grounds never burn.
+  const LAVA_BURN_NAMES = ['Wood', 'Leaves', 'Planks', 'Dark Planks', 'Birch Planks', 'Spruce Planks', 'Cracked Planks',
+    'Birch Wood', 'Spruce Wood', 'Dark Oak Wood', 'Acacia Wood', 'Wood Step', 'Wood Slope',
+    'Winter Branch A', 'Winter Branch B', 'Winter Branch C'];
+  const LAVA_FLAMMABLE = new Set(LAVA_BURN_NAMES.map(typeIndexByName).filter(i => i >= 0));
+  const LAVA_BURN_MIN_MS = 6000, LAVA_BURN_SPREAD_MS = 10000;
+  const LAVA_BURN_SCAN_PER_PASS = 300;
+  const lavaBurnQueue = new Map(); // "x,y,z" -> [time it burns away, world it was queued in]
+  let lavaBurnScanIter = null, lavaBurnNextPass = 0;
+  // Fire + smoke on each block while it's burning: a few flickering
+  // flame cones on one of its open faces (top if it's clear, otherwise a
+  // side), and grey smoke puffs drifting up off it. Flames share one set
+  // of geometries/materials, and every burning block's smoke lives in a
+  // single Points object, so a whole burning wall is still cheap. Capped
+  // at BURN_FX_MAX at once — anything past that still burns, just
+  // without its own effect. No point lights (too heavy on phones); the
+  // flames themselves are unlit so they glow anyway.
+  const BURN_FX_MAX = 48, SMOKE_PER_FIRE = 6;
+  const burnFx = new Map(); // "x,y,z" -> { group, flames:[mesh...], ox, oy, oz, seed, slot }
+  const burnFxFreeSlots = [];
+  for (let i = BURN_FX_MAX - 1; i >= 0; i--) burnFxFreeSlots.push(i);
+  const burnFlameGeoOuter = new THREE.ConeGeometry(0.17, 0.48, 7);
+  const burnFlameGeoInner = new THREE.ConeGeometry(0.09, 0.28, 7);
+  const burnFlameMatOuter = new THREE.MeshBasicMaterial({ color: 0xff6a14, transparent: true, opacity: 0.85, depthWrite: false });
+  const burnFlameMatInner = new THREE.MeshBasicMaterial({ color: 0xffd84a, transparent: true, opacity: 0.95, depthWrite: false });
+  const burnSmokeGeo = new THREE.BufferGeometry();
+  const burnSmokePos = new Float32Array(BURN_FX_MAX * SMOKE_PER_FIRE * 3).fill(-9999);
+  burnSmokeGeo.setAttribute('position', new THREE.BufferAttribute(burnSmokePos, 3));
+  const burnSmoke = new THREE.Points(burnSmokeGeo, new THREE.PointsMaterial({ color: 0x4a4a4a, size: 0.55, transparent: true, opacity: 0.45, depthWrite: false }));
+  burnSmoke.frustumCulled = false;
+  burnSmoke.visible = false;
+  scene.add(burnSmoke);
+  function addBurnFx(bk, x, y, z) {
+    if (burnFx.has(bk) || !burnFxFreeSlots.length) return;
+    // Which face the fire sits on — the top if nothing solid is on it,
+    // otherwise the first open side.
+    let face = null;
+    for (const [dx, dy, dz] of [[0,1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]]) {
+      if (!blocks.has(key(x + dx, y + dy, z + dz))) { face = [dx, dy, dz]; break; }
+    }
+    if (!face) return; // buried on every side — nothing would see it
+    const [fx, fy, fz] = face;
+    const ox = x + 0.5 + fx * 0.52, oy = y + (fy === 1 ? 1.0 : 0.35), oz = z + 0.5 + fz * 0.52;
+    const group = new THREE.Group();
+    const flames = [];
+    for (let i = 0; i < 3; i++) {
+      // Spread across the face: over the whole top, or along a side.
+      const u = (Math.random() - 0.5) * 0.6, v = (Math.random() - 0.5) * 0.6;
+      const outer = new THREE.Mesh(burnFlameGeoOuter, burnFlameMatOuter);
+      const inner = new THREE.Mesh(burnFlameGeoInner, burnFlameMatInner);
+      inner.position.y = -0.04;
+      const f = new THREE.Group(); f.add(outer); f.add(inner);
+      if (fy === 1) f.position.set(u, 0.22, v);
+      else f.position.set(fz !== 0 ? u : 0, 0.22 + v * 0.4, fx !== 0 ? u : 0);
+      f.userData.base = 0.75 + Math.random() * 0.5;
+      group.add(f); flames.push(f);
+    }
+    group.position.set(ox, oy, oz);
+    scene.add(group);
+    burnFx.set(bk, { group, flames, ox, oy, oz, seed: Math.random() * 100, slot: burnFxFreeSlots.pop() });
+    burnSmoke.visible = true;
+  }
+  function removeBurnFx(bk) {
+    const fx = burnFx.get(bk);
+    if (!fx) return;
+    scene.remove(fx.group); // geometries/materials are shared — nothing to dispose
+    const base = fx.slot * SMOKE_PER_FIRE * 3;
+    for (let i = 0; i < SMOKE_PER_FIRE * 3; i++) burnSmokePos[base + i] = -9999;
+    burnSmokeGeo.attributes.position.needsUpdate = true;
+    burnFxFreeSlots.push(fx.slot);
+    burnFx.delete(bk);
+    if (!burnFx.size) burnSmoke.visible = false;
+  }
+  function animateBurnFx(now) {
+    const t = now / 1000;
+    for (const fx of burnFx.values()) {
+      for (let i = 0; i < fx.flames.length; i++) {
+        const f = fx.flames[i];
+        const flick = f.userData.base * (0.8 + Math.sin(t * 13 + fx.seed + i * 2.1) * 0.12 + Math.sin(t * 29 + i) * 0.08);
+        f.scale.set(0.9 + Math.sin(t * 17 + i) * 0.1, flick, 0.9 + Math.cos(t * 15 + i) * 0.1);
+      }
+      const base = fx.slot * SMOKE_PER_FIRE * 3;
+      for (let p = 0; p < SMOKE_PER_FIRE; p++) {
+        const life = (t * 0.35 + p / SMOKE_PER_FIRE + fx.seed) % 1; // each puff rises ~2 blocks, then starts over
+        burnSmokePos[base + p * 3]     = fx.ox + Math.sin(t * 0.9 + p * 1.7 + fx.seed) * 0.25 * life;
+        burnSmokePos[base + p * 3 + 1] = fx.oy + 0.4 + life * 2.2;
+        burnSmokePos[base + p * 3 + 2] = fx.oz + Math.cos(t * 0.8 + p * 2.3 + fx.seed) * 0.25 * life;
+      }
+    }
+    burnSmokeGeo.attributes.position.needsUpdate = true;
+  }
+  function lavaTouches(x, y, z) {
+    for (const [dx, dy, dz] of WATER_SIX) if (lava.has(key(x + dx, y + dy, z + dz))) return true;
+    return false;
+  }
+  function updateLavaBurn() {
+    const now = performance.now();
+    if (burnFx.size) animateBurnFx(now); // every frame, so the flames actually flicker
+    if (now < lavaBurnNextPass) return;
+    lavaBurnNextPass = now + 1000;
+    // 1. Scan the next slice of lava cells for flammable neighbours.
+    if (lava.cells.size) {
+      if (!lavaBurnScanIter) lavaBurnScanIter = lava.cells.keys();
+      for (let n = 0; n < LAVA_BURN_SCAN_PER_PASS; n++) {
+        const it = lavaBurnScanIter.next();
+        if (it.done) { lavaBurnScanIter = null; break; }
+        const k = it.value;
+        const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+        const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+        for (const [dx, dy, dz] of WATER_SIX) {
+          const bx = x + dx, by = y + dy, bz = z + dz, bk = key(bx, by, bz);
+          if (lavaBurnQueue.has(bk) || !LAVA_FLAMMABLE.has(blocks.get(bk))) continue;
+          if (!canEditAt(bx, bz) || isProtectedStructuralBlock(bx, by, bz) || isProtectedGameArea(bx, bz) || !pubWaterAllowed(bx, bz)) continue;
+          lavaBurnQueue.set(bk, [now + LAVA_BURN_MIN_MS + Math.random() * LAVA_BURN_SPREAD_MS, currentWorldId]);
+          addBurnFx(bk, bx, by, bz);
+        }
+      }
+    } else lavaBurnScanIter = null;
+    // 2. Burn away whatever's due — re-checked first, in case the block
+    //    was mined, or the lava touching it has gone, in the meantime.
+    for (const [bk, [due, worldId]] of lavaBurnQueue) {
+      if (worldId !== currentWorldId) { lavaBurnQueue.delete(bk); removeBurnFx(bk); continue; }
+      if (due > now) {
+        // Put out early if it was mined, or the lava beside it went.
+        const q1 = bk.indexOf(','), q2 = bk.lastIndexOf(',');
+        if (!LAVA_FLAMMABLE.has(blocks.get(bk)) || !lavaTouches(+bk.slice(0, q1), +bk.slice(q1 + 1, q2), +bk.slice(q2 + 1))) { lavaBurnQueue.delete(bk); removeBurnFx(bk); }
+        continue;
+      }
+      lavaBurnQueue.delete(bk);
+      removeBurnFx(bk);
+      const c1 = bk.indexOf(','), c2 = bk.lastIndexOf(',');
+      const x = +bk.slice(0, c1), y = +bk.slice(c1 + 1, c2), z = +bk.slice(c2 + 1);
+      const t = blocks.get(bk);
+      if (!LAVA_FLAMMABLE.has(t) || !lavaTouches(x, y, z)) continue;
+      blocks.delete(bk);
+      winterizedLeaves.delete(bk);
+      recordBlockEdit(x, y, z, -1, 0);
+      removeFixturesForBlock(x, y, z);
+      handleLocalBlockChange(x, y, z, t);
+      if (LOG_TYPE_SET.has(t)) onLogRemoved(x, y, z);
+      lava.wake(x, y, z);
+      wakeWaterAround(x, y, z);
+      playThud(120);
+    }
+  }
+
   // ================= LEAF DECAY =================
   // Minecraft-style: chop out a tree's trunk and its leaves don't hang in
   // the air forever — any natural leaf that can no longer reach a log
@@ -22958,6 +23119,7 @@
     tickWaterFlow();
     lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
+    updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
     try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
     const locked = isTouchDevice ? touchActive : (document.pointerLockElement === renderer.domElement || padPlaying()); // a controller doesn't need pointer lock — the right stick turns the view directly

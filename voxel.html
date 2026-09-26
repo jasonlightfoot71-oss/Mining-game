@@ -5100,12 +5100,14 @@
       const pour = fluidPour(lk => lava.has(lk), lk => lava.isFlowing(lk) ? lava.flow.get(lk) : undefined, lk => lava.get(lk), x, y, z, h);
       if (pour) emitPourSheets(pour, x, y, z, cp, cn);
       const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
+      const ch = (lava.isFlowing(k) && h > 0.001 && !(pour && pour.asColumn)) ? fluidCornerHeights(lk => lava.has(lk), LAVA_RH, LAVA_SOLID, x, y, z) : null; // see SMOOTH FLOWING SURFACES
       if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
         const [dx, dy, dz] = face.d;
+        if (ch && dy === 0 && (lavaRenderHeight(key(x + dx, y, z + dz), x + dx, y, z + dz) || 0) > 0.001) continue; // continuous slope with the neighbour
         if (lavaFaceHidden(x, y, z, dx, dy, dz, drawH)) continue;
         const [a, b, c, d] = face.c;
         for (const corner of [a, b, c, a, c, d]) {
-          const cy = corner[1] === 1 ? drawH : corner[1];
+          const cy = corner[1] === 1 ? (ch ? ch[corner[0] + corner[2] * 2] : drawH) : corner[1];
           cp.push(x + corner[0], y + cy, z + corner[2]);
           cn.push(dx * nm, dy, dz * nm);
         }
@@ -5784,6 +5786,37 @@
   function waterCellHash(x, y, z, h) {
     return (((x*73856093) ^ (y*19349663) ^ (z*83492791) ^ (Math.round(h*4)*2654435761)) | 0);
   }
+  // ================= SMOOTH FLOWING SURFACES =================
+  // Flowing water/lava used to draw as flat boxes stepping down in
+  // height block by block, so a spread looked like a staircase of little
+  // walls rather than a liquid. Now each corner of a flowing cell's top
+  // is the average height of the (up to) four cells meeting at that
+  // corner — open air counting as 0, so the edge of a spread tapers off;
+  // solid blocks ignored; and any corner with fluid directly above one
+  // of its cells pulled right up to full. Neighbouring cells share their
+  // corners, so the surface becomes one continuous slope, and the little
+  // side walls between flowing cells aren't drawn at all. Still water
+  // (lakes, placed blocks) stays flat, and only flowing cells pay for the
+  // extra lookups. Rendering only — the simulation is untouched.
+  // Returns [corner(0,0), (1,0), (0,1), (1,1)] heights.
+  function fluidCornerHeights(has, renderH, solidAt, x, y, z) {
+    const out = [0, 0, 0, 0];
+    for (let oz = 0; oz <= 1; oz++) for (let ox = 0; ox <= 1; ox++) {
+      let sum = 0, n = 0, full = false;
+      for (let j = 0; j < 4; j++) {
+        const cx = x + ox - 1 + (j & 1), cz = z + oz - 1 + (j >> 1);
+        if (has(key(cx, y + 1, cz))) { full = true; break; }
+        const ck = key(cx, y, cz);
+        if (has(ck)) { sum += renderH(ck, cx, y, cz); n++; }
+        else if (!solidAt(cx, y, cz)) n++; // open air — the spread's edge slopes down to it
+      }
+      out[ox + oz * 2] = full ? 1 : Math.max(0.03, n ? sum / n : 0.03);
+    }
+    return out;
+  }
+  const WATER_RH = (k, x, y, z) => waterRenderHeight(k, x, y, z);
+  const LAVA_RH = (k, x, y, z) => lavaRenderHeight(k, x, y, z);
+  const LAVA_SOLID = (x, y, z) => fluidTerrainSolidAt(x, y, z) || waterBlocks.has(key(x, y, z));
   // ================= POURING INTO A HOLE =================
   // A thin sheet of water/lava pouring into a gap below it (you mined
   // the block under a ⅛-deep spread cell) used to draw as two separate
@@ -5996,12 +6029,14 @@
             const pour = flowDist.get(k) === 0 ? fluidPour(WATER_HAS, WATER_DIST, WATER_GET, x, y, z, h) : null; // only falling cells can need a pour sheet — skips the call (and its lookups) for every other cell
             if (pour) emitPourSheets(pour, x, y, z, cp, cn);
             const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
+            const ch = (flowDist.has(k) && h > 0.001 && !(pour && pour.asColumn)) ? fluidCornerHeights(WATER_HAS, WATER_RH, waterSolidAt, x, y, z) : null; // see SMOOTH FLOWING SURFACES
             if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
               const [dx,dy,dz] = face.d;
+              if (ch && dy === 0 && (waterRenderHeight(key(x+dx, y, z+dz), x+dx, y, z+dz) || 0) > 0.001) continue; // sloped surface is continuous with the neighbour — no little wall between
               if (waterNeighborOccludes(x+dx, y+dy, z+dz, drawH, dy)) continue;
               const [a,b,c,d] = face.c;
               for (const corner of [a,b,c, a,c,d]) {
-                const cy = corner[1] === 1 ? drawH : corner[1];
+                const cy = corner[1] === 1 ? (ch ? ch[corner[0] + corner[2] * 2] : drawH) : corner[1];
                 cp.push(x+corner[0], y+cy, z+corner[2]);
                 cn.push(dx*nm, dy, dz*nm);
               }
@@ -6028,12 +6063,14 @@
           const pour = flowDist.get(k) === 0 ? fluidPour(WATER_HAS, WATER_DIST, WATER_GET, x, y, z, h) : null; // only falling cells can need a pour sheet — skips the call (and its lookups) for every other cell
           if (pour) emitPourSheets(pour, x, y, z, cp, cn);
           const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
+          const ch = (flowDist.has(k) && h > 0.001 && !(pour && pour.asColumn)) ? fluidCornerHeights(WATER_HAS, WATER_RH, waterSolidAt, x, y, z) : null; // see SMOOTH FLOWING SURFACES
           if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
             const [dx,dy,dz] = face.d;
+            if (ch && dy === 0 && (waterRenderHeight(key(x+dx, y, z+dz), x+dx, y, z+dz) || 0) > 0.001) continue; // sloped surface is continuous with the neighbour — no little wall between
             if (waterNeighborOccludes(x+dx, y+dy, z+dz, drawH, dy)) continue;
             const [a,b,c,d] = face.c;
             for (const corner of [a,b,c, a,c,d]) {
-              const cy = corner[1] === 1 ? drawH : corner[1];
+              const cy = corner[1] === 1 ? (ch ? ch[corner[0] + corner[2] * 2] : drawH) : corner[1];
               cp.push(x+corner[0], y+cy, z+corner[2]);
               cn.push(dx*nm, dy, dz*nm);
             }
@@ -18937,27 +18974,102 @@
     for (const r of [Math.PI / 4, -Math.PI / 4]) { const m = new THREE.Mesh(geo, seedMat(hex)); m.rotation.y = r; m.position.y = (y0 || 0) + h / 2; g.add(m); }
   }
   // p = growth 0..1 (quantized); builds the plant at that stage.
-  function buildSeedModel(type, p) {
+  function buildSeedModel(type, p, x, z) {
     const g = new THREE.Group();
+    // Same every rebuild for a given spot, different between spots — so
+    // each plant has its own shape without it jumping about as it grows.
+    let rs = Math.abs(Math.sin((x || 0) * 12.9898 + (z || 0) * 78.233) * 43758.5453) % 1;
+    const rnd = () => { rs = (rs * 9301 + 0.49297) % 1; return rs; };
     if (type.kind === 'tree') {
       const stemH = 0.3 + 0.5 * p;
       const stem = new THREE.Mesh(new THREE.BoxGeometry(0.07, stemH, 0.07), seedMat(0x6b4a2b)); stem.position.y = stemH / 2; g.add(stem);
       const ls = 0.2 + 0.35 * p;
       const leaves = new THREE.Mesh(new THREE.BoxGeometry(ls, ls, ls), seedMat(type.leaf)); leaves.position.y = stemH; g.add(leaves);
     } else if (type.kind === 'wheat') {
-      seedCross(g, 0.7, 0.2 + 0.65 * p, p >= 1 ? 0xd4b83a : lerpHex(0x5fae3a, 0xb8b040, p));
+      // A little clump of separate stalks, each leaning slightly its own
+      // way; green and short while growing, golden with a seed-head ear
+      // once ripe.
+      const ripe = p >= 1;
+      const stalkCol = ripe ? 0xcfae45 : lerpHex(0x5fae3a, 0x9fb046, p);
+      const stalks = 7;
+      for (let i = 0; i < stalks; i++) {
+        const sx = (rnd() - 0.5) * 0.6, sz = (rnd() - 0.5) * 0.6;
+        const hgt = (0.25 + 0.6 * p) * (0.8 + rnd() * 0.35);
+        const st = new THREE.Mesh(new THREE.BoxGeometry(0.025, hgt, 0.025), seedMat(stalkCol));
+        const lean = new THREE.Group();
+        lean.position.set(sx, 0, sz);
+        lean.rotation.set((rnd() - 0.5) * 0.25, 0, (rnd() - 0.5) * 0.25);
+        st.position.y = hgt / 2; lean.add(st);
+        // A thin leaf blade partway up
+        const blade = new THREE.Mesh(new THREE.PlaneGeometry(0.05, hgt * 0.45), seedMat(lerpHex(0x4f9a33, stalkCol, p * 0.7)));
+        blade.position.set(0.03, hgt * 0.35, 0); blade.rotation.z = -0.5; blade.rotation.y = rnd() * Math.PI; lean.add(blade);
+        if (p >= 0.6) {
+          const earL = 0.08 + 0.1 * ((p - 0.6) / 0.4);
+          const ear = new THREE.Mesh(new THREE.BoxGeometry(0.05, earL, 0.05), seedMat(ripe ? 0xe0c25a : 0x8fb04a));
+          ear.position.y = hgt + earL / 2 - 0.01; lean.add(ear);
+        }
+        g.add(lean);
+      }
     } else if (type.kind === 'carrot') {
-      seedCross(g, 0.55, 0.15 + 0.35 * p, 0x4f9a33);
-      if (p >= 1) { const c = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.18, 6), seedMat(0xe8762a)); c.rotation.x = Math.PI; c.position.y = 0.05; g.add(c); }
+      // Feathery fronds fanning out of the soil; when ready, the orange
+      // shoulder of the carrot shows at the surface.
+      const fronds = 6, fh = 0.12 + 0.3 * p;
+      for (let i = 0; i < fronds; i++) {
+        const f = new THREE.Group();
+        f.rotation.y = (i / fronds) * Math.PI * 2 + rnd() * 0.4;
+        const stem = new THREE.Mesh(new THREE.BoxGeometry(0.015, fh, 0.015), seedMat(0x4f9a33));
+        stem.position.y = fh / 2; stem.rotation.z = 0.35; f.add(stem);
+        for (let j = 1; j <= 3; j++) { // little leaflets along each frond
+          const lf = new THREE.Mesh(new THREE.PlaneGeometry(0.07, 0.035), seedMat(j % 2 ? 0x5aa83a : 0x478c2e));
+          lf.position.set(Math.sin(0.35) * fh * (j / 3.5) + 0.02, fh * (j / 3.5), 0); lf.rotation.z = 0.35 + (j % 2 ? 0.6 : -0.6);
+          f.add(lf);
+        }
+        g.add(f);
+      }
+      if (p >= 0.7) {
+        const r = 0.035 + 0.045 * ((p - 0.7) / 0.3);
+        const shoulder = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.8, r, 0.06, 8), seedMat(0xe8762a));
+        shoulder.position.y = 0.02; g.add(shoulder);
+      }
     } else if (type.kind === 'cabbage') {
-      const r = 0.08 + 0.22 * p;
-      const head = new THREE.Mesh(new THREE.SphereGeometry(r, 7, 5), seedMat(lerpHex(0x8fcf5a, 0x6fae4a, p))); head.position.y = r * 0.85; g.add(head);
+      // A pale tight heart wrapped in broad, darker outer leaves that
+      // curl outwards — more leaves as it grows.
+      const r = 0.06 + 0.16 * p;
+      const heart = new THREE.Mesh(new THREE.SphereGeometry(r, 9, 7), seedMat(0xbfe08a));
+      heart.position.y = r * 0.9; heart.scale.y = 0.9; g.add(heart);
+      const leaves = 5 + Math.round(p * 4);
+      for (let i = 0; i < leaves; i++) {
+        const leaf = new THREE.Mesh(new THREE.SphereGeometry(r * 0.95, 7, 5, 0, Math.PI), seedMat(i % 2 ? 0x6fae4a : 0x5c9a3e));
+        const ang = (i / leaves) * Math.PI * 2 + rnd() * 0.3;
+        leaf.position.set(Math.cos(ang) * r * 0.55, r * 0.55, Math.sin(ang) * r * 0.55);
+        leaf.rotation.set(0, -ang, 0.6 + rnd() * 0.3);
+        leaf.scale.set(1, 1.1, 0.35);
+        g.add(leaf);
+      }
     } else if (type.kind === 'pumpkin') {
-      seedCross(g, 0.6, 0.18, 0x4f9a33);
-      if (p >= 0.4) {
-        const sz = 0.15 + 0.45 * ((p - 0.4) / 0.6);
-        const pk = new THREE.Mesh(new THREE.BoxGeometry(sz, sz * 0.85, sz), seedMat(p >= 1 ? 0xe07a1f : lerpHex(0x6aa84f, 0xd9892a, (p - 0.4) / 0.6)));
-        pk.position.y = sz * 0.42; g.add(pk);
+      // Big rough vine leaves on the ground, then a ribbed pumpkin that
+      // swells and ripens green → orange, with its woody stalk on top.
+      for (let i = 0; i < 4; i++) {
+        const leaf = new THREE.Mesh(new THREE.CircleGeometry(0.12 + 0.06 * p, 6), seedMat(i % 2 ? 0x4f9a33 : 0x3f8a2e));
+        const ang = (i / 4) * Math.PI * 2 + rnd();
+        leaf.position.set(Math.cos(ang) * 0.3, 0.03 + i * 0.005, Math.sin(ang) * 0.3);
+        leaf.rotation.set(-Math.PI / 2 + (rnd() - 0.5) * 0.4, 0, ang);
+        g.add(leaf);
+      }
+      if (p >= 0.3) {
+        const t = (p - 0.3) / 0.7;
+        const rad = 0.08 + 0.24 * t;
+        const col = p >= 1 ? 0xe07a1f : lerpHex(0x6aa84f, 0xd9892a, t);
+        const ribs = 8;
+        for (let i = 0; i < ribs; i++) { // ribs = squashed spheres arranged round the middle
+          const ang = (i / ribs) * Math.PI * 2;
+          const rib = new THREE.Mesh(new THREE.SphereGeometry(rad * 0.55, 7, 6), seedMat(i % 2 ? col : lerpHex(col, 0x000000, 0.12)));
+          rib.position.set(Math.cos(ang) * rad * 0.5, rad * 0.62, Math.sin(ang) * rad * 0.5);
+          rib.scale.set(0.8, 1.1, 0.8);
+          g.add(rib);
+        }
+        const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.08 + 0.04 * t, 5), seedMat(0x6b5a2b));
+        stalk.position.y = rad * 1.2 + 0.03; stalk.rotation.z = 0.25; g.add(stalk);
       }
     } else { // flower
       const stemH = 0.1 + 0.4 * p;
@@ -19027,7 +19139,7 @@
       const fx = seedFx.get(k);
       if (fx && fx.stage === stage) continue;
       if (fx) disposeSeedGroup(fx.group);
-      const g = buildSeedModel(s.type, stage);
+      const g = buildSeedModel(s.type, stage, x, z);
       g.position.set(x + 0.5, y, z + 0.5);
       scene.add(g);
       seedFx.set(k, { group: g, stage });

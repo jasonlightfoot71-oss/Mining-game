@@ -2160,6 +2160,22 @@
     { name: 'White Picket Fence Corner',mats: TEX.concreteWhite, fence: 'corner',   fenceStyle: 'picket', cost: 4, isVariant: true },
     { name: 'Cobblestone Wall Corner',  mats: TEX.cobblestone,   fence: 'corner',   fenceStyle: 'wall',   cost: 4, isVariant: true },
     { name: 'Iron Railing Corner',      mats: TEX.concreteBlack, fence: 'corner',   fenceStyle: 'iron',   cost: 4, isVariant: true },
+    // Gates, one per fence style. A gate is a fence piece (fence: 'gate') that lines up like a Straight, with a
+    // hinge post at each end and a swinging leaf between them. It only opens and shuts from the build button
+    // (see tryToggleGate) — never on its own like a door. Open and shut are SEPARATE block types, swapped on
+    // each press, so the state saves, syncs to other players and renders through exactly the same path as any
+    // other block edit. The "(Open)" types are never in a menu. The Cobblestone Wall's gate is a dark wooden
+    // one, since a gate that hangs in a stone wall is wood in real life. Appended at the END, as always.
+    { name: 'Oak Gate',                  mats: TEX.planks,        fence: 'gate', fenceStyle: 'rail',   cost: 6 },
+    { name: 'Spruce Panel Gate',         mats: TEX.sprucePlanks,  fence: 'gate', fenceStyle: 'panel',  cost: 6, isVariant: true },
+    { name: 'White Picket Gate',         mats: TEX.concreteWhite, fence: 'gate', fenceStyle: 'picket', cost: 6, isVariant: true },
+    { name: 'Cobblestone Wall Gate',     mats: TEX.darkPlanks,    fence: 'gate', fenceStyle: 'rail',   cost: 6, isVariant: true },
+    { name: 'Iron Gate',                 mats: TEX.concreteBlack, fence: 'gate', fenceStyle: 'iron',   cost: 6, isVariant: true },
+    { name: 'Oak Gate (Open)',              mats: TEX.planks,        fence: 'gate', fenceStyle: 'rail',   gateOpen: true, cost: 6, isVariant: true },
+    { name: 'Spruce Panel Gate (Open)',     mats: TEX.sprucePlanks,  fence: 'gate', fenceStyle: 'panel',  gateOpen: true, cost: 6, isVariant: true },
+    { name: 'White Picket Gate (Open)',     mats: TEX.concreteWhite, fence: 'gate', fenceStyle: 'picket', gateOpen: true, cost: 6, isVariant: true },
+    { name: 'Cobblestone Wall Gate (Open)', mats: TEX.darkPlanks,    fence: 'gate', fenceStyle: 'rail',   gateOpen: true, cost: 6, isVariant: true },
+    { name: 'Iron Gate (Open)',             mats: TEX.concreteBlack, fence: 'gate', fenceStyle: 'iron',   gateOpen: true, cost: 6, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
@@ -2170,10 +2186,11 @@
   // roof-tile slopes), and the current layout 5 has them all (the extra
   // concrete colours), and layout 6 (the current one) has the twelve Curve
   // types on top of that, and layout 7 (the current one) adds the ten Fence
-  // types. ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
+  // types, and layout 8 (the current one) the ten Gate types (five shut, five
+  // open). ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
   // and recording the old count here.
-  const SLOT_LAYOUT = 7;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 8;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.findIndex(e => e.name === 'Iron Railing Corner') + 1, 8: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2231,6 +2248,12 @@
   const FENCE_TYPE = FENCE_TYPES[0], FENCE_CORNER_TYPE = FENCE_CORNER_TYPES[0];
   BLOCK_FAMILIES[FENCE_TYPE] = FENCE_TYPES;
   BLOCK_FAMILIES[FENCE_CORNER_TYPE] = FENCE_CORNER_TYPES;
+  // Gates: the five shut gates are the slot's popup; each one's open twin is looked up by name.
+  const GATE_TYPES = ['Oak Gate', 'Spruce Panel Gate', 'White Picket Gate', 'Cobblestone Wall Gate', 'Iron Gate'].map(typeIndexByName);
+  const GATE_TYPE = GATE_TYPES[0];
+  BLOCK_FAMILIES[GATE_TYPE] = GATE_TYPES;
+  const GATE_TOGGLE = {}; // shut type <-> open type
+  GATE_TYPES.forEach(t => { const o = typeIndexByName(BLOCK_TYPES[t].name + ' (Open)'); GATE_TOGGLE[t] = o; GATE_TOGGLE[o] = t; });
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -2272,6 +2295,7 @@
   const ANIMAL_SLOT = FIRE_SLOT + 5;    // "Animal Seeds" (Landscape menu)
   const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
+  const LEAD_SLOT = FIRE_SLOT + 6;     // "Lead" (Equipment menu) — see LEADING ANIMALS
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -4949,8 +4973,45 @@
       collide: 0.2,
     },
   };
-  // Directions each shape's arms point in, un-rotated.
-  const FENCE_ARMS = { straight: [[1, 0], [-1, 0]], corner: [[1, 0], [0, 1]] };
+  // Directions each shape's arms point in, un-rotated. A Gate joins up like a Straight.
+  const FENCE_ARMS = { straight: [[1, 0], [-1, 0]], corner: [[1, 0], [0, 1]], gate: [[1, 0], [-1, 0]] };
+  // Gates: a hinge post at each end of the cell (x -0.5..-0.4 and 0.4..0.5, so a fence arm running into the
+  // cell edge meets it), and a leaf 0.8 long hung between them. The leaf is described from its hinge, as
+  // [u0, u1, across0, across1, y0, y1] with u running 0 (hinge) .. 0.8 (latch). Shut, it runs along +X from the
+  // hinge at x = -0.4. Open, it has swung a quarter turn about that hinge to stick out along +Z (tryToggleGate
+  // turns the whole block round so that's always AWAY from whoever opened it).
+  const GATE_STYLES = {
+    rail: {
+      post: 0.1,
+      leaf: [[0, 0.08, -0.05, 0.05, 0.1, 0.95], [0.72, 0.8, -0.05, 0.05, 0.1, 0.95], [0.37, 0.43, -0.035, 0.035, 0.1, 0.95],
+             [0, 0.8, -0.04, 0.04, 0.2, 0.32], [0, 0.8, -0.04, 0.04, 0.5, 0.62], [0, 0.8, -0.04, 0.04, 0.8, 0.92]],
+    },
+    panel: {
+      post: 0.1,
+      leaf: [[0, 0.8, -0.045, 0.045, 0.05, 0.9], [0, 0.8, -0.07, 0.07, 0.9, 0.97], [0, 0.07, -0.07, 0.07, 0.05, 0.97], [0.73, 0.8, -0.07, 0.07, 0.05, 0.97]],
+    },
+    picket: {
+      post: 0.06, postTop: 0.9,
+      leaf: [[0, 0.8, -0.03, 0.03, 0.18, 0.26], [0, 0.8, -0.03, 0.03, 0.52, 0.6],
+             ...[0.1, 0.3, 0.5, 0.7].flatMap(c => [[c - 0.05, c + 0.05, -0.04, 0.04, 0.02, 0.74], [c - 0.025, c + 0.025, -0.03, 0.03, 0.74, 0.8]])],
+    },
+    iron: {
+      post: 0.06,
+      leaf: [[0, 0.8, -0.03, 0.03, 0.08, 0.14], [0, 0.8, -0.03, 0.03, 0.82, 0.88], [0, 0.04, -0.03, 0.03, 0.05, 0.92], [0.76, 0.8, -0.03, 0.03, 0.05, 0.92],
+             ...[0.16, 0.28, 0.4, 0.52, 0.64].map(c => [c - 0.02, c + 0.02, -0.02, 0.02, 0.05, 0.92])],
+    },
+  };
+  function gateBoxes(style, open) {
+    const st = GATE_STYLES[style], w = st.post, top = st.postTop || 1;
+    const out = [[-0.5, -0.4, 0, top, -w, w], [0.4, 0.5, 0, top, -w, w]];
+    for (const [u0, u1, c0, c1, y0, y1] of st.leaf) {
+      if (open) out.push([-0.4 + c0, -0.4 + c1, y0, y1, u0, u1]);
+      else out.push([-0.4 + u0, -0.4 + u1, y0, y1, c0, c1]);
+    }
+    return out;
+  }
+  // The boxes for any fence-family block type.
+  const entryBoxes = entry => entry.fence === 'gate' ? gateBoxes(entry.fenceStyle, !!entry.gateOpen) : fenceBoxes(entry.fenceStyle, entry.fence);
   // [x0,x1, y0,y1, z0,z1] boxes for one style + shape, un-rotated.
   function fenceBoxes(style, shape) {
     const st = FENCE_STYLES[style];
@@ -4970,9 +5031,9 @@
   // separate top/side textures. UVs are planar from the cell position (not 0..1 per box face), so the texture
   // keeps its normal scale on thin rails and posts instead of being squashed onto them; on a face that's
   // much longer one way than the other the UV is turned so a plank texture's grain runs along the piece.
-  function buildFenceGeometry(style, shape) {
+  function buildFenceGeometry(boxes) {
     const buckets = [0, 1, 2, 3, 4, 5].map(() => ({ p: [], n: [], u: [], i: [] }));
-    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(style, shape)) {
+    for (const [x0, x1, y0, y1, z0, z1] of boxes) {
       const sx = x1 - x0, sy = y1 - y0, sz = z1 - z0;
       const g = new THREE.BoxGeometry(sx, sy, sz);
       g.translate((x0 + x1) / 2, (y0 + y1) / 2 - 0.5, (z0 + z1) / 2);
@@ -4987,10 +5048,13 @@
             const px = pos.getX(vi), py = pos.getY(vi), pz = pos.getZ(vi);
             const nx = nor.getX(vi), ny = nor.getY(vi), nz = nor.getZ(vi);
             b.p.push(px, py, pz); b.n.push(nx, ny, nz);
-            let u, v, ue, ve; // ue/ve: how long the face is along u and along v
-            if (Math.abs(ny) > 0.5) { u = px + 0.5; v = pz + 0.5; ue = sx; ve = sz; }
-            else if (Math.abs(nx) > 0.5) { u = pz + 0.5; v = py + 0.5; ue = sz; ve = sy; }
-            else { u = px + 0.5; v = py + 0.5; ue = sx; ve = sy; }
+            let u, v, ue, ve, u1, v1; // ue/ve: how long the face is along u and along v; u1/v1: where the box ends along them
+            if (Math.abs(ny) > 0.5) { u = px + 0.5; v = pz + 0.5; ue = sx; ve = sz; u1 = x1 + 0.5; v1 = z1 + 0.5; }
+            else if (Math.abs(nx) > 0.5) { u = pz + 0.5; v = py + 0.5; ue = sz; ve = sy; u1 = z1 + 0.5; v1 = y1; }
+            else { u = px + 0.5; v = py + 0.5; ue = sx; ve = sy; u1 = x1 + 0.5; v1 = y1; }
+            // A part poking out past the cell (an open gate's leaf) would run off the edge of the texture —
+            // start that one at the texture's edge instead.
+            if (u1 > 1 + 1e-6) u -= u1 - ue; if (v1 > 1 + 1e-6) v -= v1 - ve;
             if (ve > ue * 1.5) { const tmp = u; u = v; v = tmp; } // long along v -> turn the grain to follow it
             b.u.push(u, v);
           }
@@ -5016,14 +5080,20 @@
   }
   const fenceGeometryCache = {};
   function fenceGeometryFor(entry) {
-    const k = entry.fenceStyle + '|' + entry.fence;
-    return fenceGeometryCache[k] || (fenceGeometryCache[k] = buildFenceGeometry(entry.fenceStyle, entry.fence));
+    const k = entry.fenceStyle + '|' + entry.fence + (entry.gateOpen ? '|open' : '');
+    return fenceGeometryCache[k] || (fenceGeometryCache[k] = buildFenceGeometry(entryBoxes(entry)));
   }
   // Collision: is the point (lx,lz) — relative to the cell centre, already turned back into the piece's
   // un-rotated frame — inside the fence's footprint? A fixed-width strip along each arm plus a square round
   // the post, wider than the thinnest visible parts (a railing bar is 0.04 wide) so a walking player can't
   // slip between their own collision test points and through it.
   function fenceFootprintHit(entry, lx, lz) {
+    if (entry.fence === 'gate') {
+      // Shut: the whole line, like a Straight. Open: just the two hinge posts — the leaf is swung out of the
+      // way, and the gap between the posts (0.76) is wider than the player (0.6), so you walk straight through.
+      if (entry.gateOpen) return Math.abs(lz) <= 0.2 && Math.abs(lx) >= 0.38;
+      return Math.abs(lz) <= 0.2;
+    }
     const w = FENCE_STYLES[entry.fenceStyle].collide;
     if (Math.abs(lx) <= w && Math.abs(lz) <= w) return true;
     if (entry.fence === 'straight') return Math.abs(lz) <= w;
@@ -5038,7 +5108,7 @@
   function fencePlacementRot(x, y, z, shape) {
     const isFence = (dx, dz) => { const t = blocks.get(key(x + dx, y, z + dz)); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].fence); };
     const pdx = player.pos.x - (x + 0.5), pdz = player.pos.z - (z + 0.5);
-    if (shape === 'straight') {
+    if (shape !== 'corner') { // Straight, or a Gate
       const nX = isFence(1, 0) + isFence(-1, 0), nZ = isFence(0, 1) + isFence(0, -1);
       if (nX !== nZ) return nX > nZ ? 0 : 1;
       return Math.abs(pdx) >= Math.abs(pdz) ? 1 : 0; // standing off to the X side -> run along Z, across your view
@@ -9103,9 +9173,11 @@
     }
   }
   function updateVillageAnimals(dt) {
+    updateLeadRope();
     if (villageAnimals.length === 0) return;
     const t = performance.now() * 0.004;
     villageAnimals.forEach(w => {
+      if (w.leashed) { updateLeashedAnimal(w, dt, t); return; } // on the lead: follows you instead of wandering
       if (!w.escaped) {
         w.fenceCheckTimer -= dt;
         if (w.fenceCheckTimer <= 0) {
@@ -10187,8 +10259,10 @@
     for (let i = 0; i < 8; i++) {
       const x = bounds.xMin + Math.random() * (bounds.xMax - bounds.xMin);
       const z = bounds.zMin + Math.random() * (bounds.zMax - bounds.zMin);
+      if (bounds.cells && !bounds.cells.has(Math.floor(x) + ',' + Math.floor(z))) continue; // a pen that isn't a plain rectangle — only aim for spots actually inside it
       if (!villageNpcBlocked(x, z, bounds)) return { x, z };
     }
+    if (bounds.home) return { x: bounds.home.x, z: bounds.home.z }; // a pen's own centre might be outside an L-shaped pen; where it was let go never is
     return { x: (bounds.xMin + bounds.xMax) / 2, z: (bounds.zMin + bounds.zMax) / 2 };
   }
   function placeVillageNpcMesh(x, y, z, colors) {
@@ -16884,6 +16958,7 @@
   const tiltTargetBlock = () => reorientTargetBlock('tilt');
   let curveHintShown = false;
   let fenceHintShown = false;
+  let gateHintShown = false;
   function selectSlot(i) {
     selectedSlot = i;
     updateRotateButton();
@@ -16891,7 +16966,10 @@
       curveHintShown = true;
       showBriefMessage(isTouchDevice ? 'Curve: tap 🔄 to spin it left/right, ↕️ to spin it up/down' : 'Curve: R spins it left/right, X spins it up/down (aim at it first)');
     }
-    if (!fenceHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) {
+    if (!gateHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence === 'gate') {
+      gateHintShown = true;
+      showBriefMessage('Gate: put it in a gap in a fence — press build on it to open or shut it');
+    } else if (!fenceHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) {
       fenceHintShown = true;
       showBriefMessage(isTouchDevice ? 'Fence: lines up with fences beside it — tap 🔄 to turn it' : 'Fence: lines up with fences beside it — aim at it and press R to turn it');
     }
@@ -16899,6 +16977,7 @@
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
     if (slotElByIndex[highlightIdx]) slotElByIndex[highlightIdx].classList.add('active');
     refreshMenuCategories(highlightIdx); // light up its category in the bottom bar and mirror its icon there
+    if (i === LEAD_SLOT) { heldMesh.visible = false; heldStepGroup.visible = false; return; } // nothing in the hand but the rope itself (see LEADING ANIMALS)
     if (i === WEAPON_SLOT) { heldMesh.visible = false; heldStepGroup.visible = false; return; } // the weapon model itself is shown/positioned every frame — see updateWeaponViewmodel
     if (BLOCK_TYPES[i] && BLOCK_TYPES[i].half) {
       heldMesh.visible = false;
@@ -17972,6 +18051,44 @@
     return withinXZ && withinY;
   }
 
+  // ================= GATES =================
+  // Swaps a gate between its shut and open block types (see the Gate entries in BLOCK_TYPES). On opening, the
+  // block is also turned half round if need be so the leaf swings AWAY from you, like pushing a real gate —
+  // shut, a gate looks the same either way round, so that turn is invisible until it opens. Won't shut on
+  // you if you're standing in the gateway.
+  function tryToggleGate(x, y, z) {
+    const k = key(x, y, z), t = blocks.get(k);
+    const e = t !== undefined ? BLOCK_TYPES[t] : null;
+    if (!e || e.fence !== 'gate') return false;
+    if (!canEditAt(x, z)) { showBriefMessage('🔒 Gates can only be opened in your own world'); return true; }
+    const nt = GATE_TOGGLE[t];
+    if (nt === undefined || nt < 0) return true;
+    let rot = (stepRotations.get(k) || 0) & 3;
+    const opening = !e.gateOpen;
+    if (opening) {
+      let sx = 0, sz = 1; // the open leaf sticks out along local +Z
+      for (let i = 0; i < rot; i++) { const tmp = sx; sx = sz; sz = -tmp; }
+      if (sx * (player.pos.x - (x + 0.5)) + sz * (player.pos.z - (z + 0.5)) > 0) rot ^= 2;
+    }
+    const oldRot = stepRotations.get(k);
+    blocks.set(k, nt);
+    if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+    if (!opening) {
+      const pr = player.radius, py = player.pos.y;
+      const stuck = [[-pr, -pr], [pr, -pr], [-pr, pr], [pr, pr], [0, 0]].some(([ox, oz]) =>
+        isSolid(player.pos.x + ox, py + 0.3, player.pos.z + oz) || isSolid(player.pos.x + ox, py + 1.2, player.pos.z + oz));
+      if (stuck) {
+        blocks.set(k, t);
+        if (oldRot) stepRotations.set(k, oldRot); else stepRotations.delete(k);
+        showBriefMessage('Step out of the gateway to shut the gate');
+        return true;
+      }
+    }
+    recordBlockEdit(x, y, z, nt, rot); // saved, and sent to anyone else in this world
+    handleLocalBlockChange(x, y, z);
+    if (opening) playDoorOpen(); else playDoorClose();
+    return true;
+  }
   function doPlace() {
     // Every vehicle's gun intercepts the build button entirely while
     // riding one — same "reuse an existing input for a vehicle-specific
@@ -18016,6 +18133,10 @@
     // water-displacement logic further down that was specifically
     // written to handle exactly this case using `r.hit` instead. This is
     // the actual reason building underwater wasn't working at all.
+    // A gate opens / shuts from the build button, whatever you're holding (it never swings on its own the way
+    // a door does). Checked before the Lead, so you can let yourself through a gate with an animal on the lead.
+    if (r && r.hit && !r.isWater && !r.isLava && tryToggleGate(r.hit.x, r.hit.y, r.hit.z)) return;
+    if (selectedSlot === LEAD_SLOT) { useLead(); return; } // hooks the nearest animal, or lets go of the one you're leading
     if (!r) return;
     if (!r.isWater && !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
@@ -19743,8 +19864,11 @@
   }
   function spawnHatched(rk, hx, hy, hz, animalIdx) {
     const mesh = ANIMAL_TYPES[animalIdx].build();
-    const bounds = { xMin: hx - 7, xMax: hx + 7, zMin: hz - 7, zMax: hz + 7, y: hy };
-    const sx = hx + 0.5 + (Math.random() < 0.5 ? -1.2 : 1.2), sz = hz + 0.5 + (Math.random() - 0.5) * 1.5;
+    // If its home is inside a fenced pen (it was led there — see LEADING ANIMALS), it keeps to the pen and
+    // starts right where it was let go, rather than a little to one side (which could be over the fence).
+    const pen = penBoundsAround(hx, hy, hz);
+    const bounds = pen || { xMin: hx - 7, xMax: hx + 7, zMin: hz - 7, zMax: hz + 7, y: hy };
+    const sx = pen ? hx + 0.5 : hx + 0.5 + (Math.random() < 0.5 ? -1.2 : 1.2), sz = pen ? hz + 0.5 : hz + 0.5 + (Math.random() - 0.5) * 1.5;
     mesh.position.set(sx, villageSurfaceY(sx, sz, hy - 1) + 1, sz);
     mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(mesh);
@@ -19760,6 +19884,180 @@
     rec.mesh.traverse(o => { if (o.isMesh) { o.geometry.dispose(); if (o.material.dispose) o.material.dispose(); } });
     hatchedLive.delete(rk);
   }
+  // ================= LEADING ANIMALS =================
+  // The Lead (Equipment menu): press build near an animal to put it on the lead, and it follows you — kept a
+  // couple of blocks behind, walking round anything in the way, hopping up single blocks, and blocked by fences
+  // and shut gates just like you are. Press build again (not aimed at a gate) to let go. Where you let go
+  // becomes its new home: if that's inside a fully enclosed pen (fences and SHUT gates all the way round,
+  // found by a flood fill at its feet) it keeps to that pen from then on, otherwise it wanders the area round
+  // the spot as before. Hatched animals save that new home (their seed record moves with them); the animals
+  // in village pens are part of the village and don't, same as always.
+  let leadRec = null, leadRope = null;
+  const LEAD_REACH = 3.5, LEAD_LENGTH = 2.2, LEAD_SEGMENTS = 14, PEN_MAX_CELLS = 900;
+  const _leadA = new THREE.Vector3(), _leadB = new THREE.Vector3(), _leadP = new THREE.Vector3(), _leadQ = new THREE.Vector3(), _leadUp = new THREE.Vector3(0, 1, 0);
+  function useLead() {
+    if (leadRec) { releaseLead(); return; }
+    let best = null, bd = LEAD_REACH * LEAD_REACH;
+    for (const a of villageAnimals) {
+      if (!a.mesh) continue;
+      const dx = a.mesh.position.x - player.pos.x, dz = a.mesh.position.z - player.pos.z;
+      if (Math.abs(a.mesh.position.y - player.pos.y) > 2.5) continue;
+      const d = dx * dx + dz * dz;
+      if (d < bd) { bd = d; best = a; }
+    }
+    if (!best) { showBriefMessage('🪢 Get closer to an animal, then press build to put the lead on'); return; }
+    leadRec = best;
+    best.leashed = true; best.waitTimer = 0; best.fenceKeys = []; best.escaped = false; // no longer tied to its old village pen
+    // Where the rope ties on: near the front of the head, worked out once from the model's own size.
+    const rotY = best.mesh.rotation.y; best.mesh.rotation.y = 0;
+    const box = new THREE.Box3().setFromObject(best.mesh);
+    best.mesh.rotation.y = rotY;
+    best.leadAttach = { y: (box.max.y - best.mesh.position.y) * 0.8, f: Math.max(0.1, box.max.z - best.mesh.position.z) * 0.8 };
+    showBriefMessage('🪢 On the lead — walk it where you want, press build again to let go');
+    playThud(220);
+  }
+  function releaseLead() {
+    const a = leadRec;
+    leadRec = null;
+    if (leadRope) leadRope.visible = false;
+    if (!a || villageAnimals.indexOf(a) < 0) return;
+    a.leashed = false;
+    const hx = Math.floor(a.mesh.position.x), hz = Math.floor(a.mesh.position.z), hy = Math.floor(a.mesh.position.y + 0.01);
+    const pen = penBoundsAround(hx, hy, hz);
+    a.bounds = pen || { xMin: hx - 7, xMax: hx + 7, zMin: hz - 7, zMax: hz + 7, y: hy };
+    a.target = pickVillageWanderTarget(a.bounds);
+    a.waitTimer = 1.5;
+    if (a.hatched) {
+      // Move its saved record to the new home (same record value — same animal, same hatch time).
+      let rk = null;
+      for (const [k2, v] of hatchedLive) if (v === a) { rk = k2; break; }
+      const val = rk ? seedEdits.get(rk) : undefined;
+      if (rk && val !== undefined && hy >= 0) {
+        let n = 0;
+        while (seedEdits.has(key(hx, hy + 100000 * (n + 1), hz)) && n < 50) n++;
+        const nk = key(hx, hy + 100000 * (n + 1), hz);
+        if (recordSeed(hx, hy + 100000 * (n + 1), hz, val)) {
+          const [ox, oy, oz] = rk.split(',').map(Number);
+          recordSeed(ox, oy, oz, -1);
+          hatchedLive.delete(rk);
+          hatchedLive.set(nk, a);
+        }
+      }
+    }
+    showBriefMessage(pen ? '🪢 Let go — it\'ll stay in this pen while the gate\'s shut' : '🪢 Let go');
+    playThud(200);
+  }
+  // Flood fills the open cells at foot level y from (hx,hz). Fences, shut gates and walls stop it; an open gate
+  // (its middle is clear) doesn't. Enclosed (under PEN_MAX_CELLS cells) -> wander bounds for that pen, with
+  // the cell set so wander targets stay inside it even if it isn't a rectangle. Otherwise null.
+  function penBoundsAround(hx, hy, hz) {
+    const open = (x, z) => !isSolid(x + 0.5, hy + 0.1, z + 0.5) && !isSolid(x + 0.5, hy + 0.9, z + 0.5);
+    if (!open(hx, hz)) return null;
+    const cells = new Set([hx + ',' + hz]), queue = [[hx, hz]];
+    let minX = hx, maxX = hx, minZ = hz, maxZ = hz;
+    while (queue.length) {
+      const [x, z] = queue.pop();
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, nz = z + dz, ck = nx + ',' + nz;
+        if (cells.has(ck) || !open(nx, nz)) continue;
+        cells.add(ck); queue.push([nx, nz]);
+        if (cells.size > PEN_MAX_CELLS) return null;
+        if (nx < minX) minX = nx; if (nx > maxX) maxX = nx; if (nz < minZ) minZ = nz; if (nz > maxZ) maxZ = nz;
+      }
+    }
+    return { xMin: minX + 0.25, xMax: maxX + 0.75, zMin: minZ + 0.25, zMax: maxZ + 0.75, y: hy, cells, home: { x: hx + 0.5, z: hz + 0.5 } };
+  }
+  // Where an animal on the lead stands at (x,z): the first real block at or below one step above its current
+  // feet (so it walks up single blocks and down drops, and follows you across built floors, not just natural
+  // ground). Fences don't count as something to stand on — they're what stops it.
+  function leadFootY(x, z, fromY) {
+    const fx = Math.floor(x), fz = Math.floor(z), start = Math.floor(fromY + 1.05);
+    for (let y = start; y > start - 12; y--) {
+      const t = blocks.get(key(fx, y, fz));
+      if (t === undefined) continue;
+      const e = BLOCK_TYPES[t];
+      if (e && e.fence) continue;
+      return y + 1;
+    }
+    return villageSurfaceY(x, z, Math.floor(fromY) - 1) + 1;
+  }
+  function updateLeashedAnimal(w, dt, t) {
+    const m = w.mesh, legs = m.userData.legs || [];
+    const dx = player.pos.x - m.position.x, dz = player.pos.z - m.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist > 10 || Math.abs(player.pos.y - m.position.y) > 6) {
+      // Left well behind (flew, fell, got stuck the far side of something) — it catches up at your heels.
+      const bx = player.pos.x + Math.sin(yaw) * 1.8, bz = player.pos.z + Math.cos(yaw) * 1.8;
+      m.position.set(bx, leadFootY(bx, bz, player.pos.y), bz);
+      return;
+    }
+    if (dist > 0.3) m.rotation.y = Math.atan2(dx, dz);
+    let moved = false;
+    if (dist > LEAD_LENGTH) {
+      const speed = Math.min(7, 1.2 + (dist - LEAD_LENGTH) * 4); // strolls when you do, trots to keep up
+      const step = Math.min(speed * dt, dist - LEAD_LENGTH + 0.05);
+      const ux = dx / dist, uz = dz / dist, cy = m.position.y;
+      const footAt = (nx, nz) => {
+        const fy = leadFootY(nx, nz, cy);
+        if (fy - cy > 1.1) return null; // more than one block up
+        if (isSolid(nx, fy + 0.1, nz) || isSolid(nx, fy + 0.9, nz)) return null; // fence, shut gate, wall
+        return fy;
+      };
+      for (const [ox, oz] of [[ux, uz], [ux, 0], [0, uz]]) { // straight at you, else slide along whatever's in the way
+        if (!ox && !oz) continue;
+        const nx = m.position.x + ox * step, nz = m.position.z + oz * step, fy = footAt(nx, nz);
+        if (fy === null) continue;
+        m.position.x = nx; m.position.z = nz;
+        m.position.y += (fy - m.position.y) * Math.min(1, dt * 12);
+        moved = true;
+        break;
+      }
+    }
+    const swing = moved ? Math.sin(t * 5) * 0.4 : 0;
+    for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
+  }
+  function updateLeadRope() {
+    if (!leadRec) return;
+    if (villageAnimals.indexOf(leadRec) < 0 || !leadRec.mesh) { // it's gone (weapons, or its village unloaded)
+      leadRec = null;
+      if (leadRope) leadRope.visible = false;
+      showBriefMessage('🪢 The lead came loose');
+      return;
+    }
+    if (!leadRope) {
+      leadRope = new THREE.Group();
+      const geo = new THREE.CylinderGeometry(0.022, 0.022, 1, 5), mat = new THREE.MeshPhongMaterial({ color: 0x8a6a3a, shininess: 0 });
+      for (let i = 0; i < LEAD_SEGMENTS; i++) leadRope.add(new THREE.Mesh(geo, mat));
+      scene.add(leadRope);
+    }
+    leadRope.visible = true;
+    // From your hand (a little forward and to the right, at waist height) to the animal's head, sagging more
+    // the slacker it is.
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw);
+    _leadA.set(player.pos.x + fx * 0.35 + rx * 0.25, player.pos.y + player.height * 0.55, player.pos.z + fz * 0.35 + rz * 0.25);
+    const m = leadRec.mesh, at = leadRec.leadAttach || { y: 0.8, f: 0.4 };
+    _leadB.set(m.position.x + Math.sin(m.rotation.y) * at.f, m.position.y + at.y, m.position.z + Math.cos(m.rotation.y) * at.f);
+    const span = _leadA.distanceTo(_leadB), sag = Math.max(0.05, (LEAD_LENGTH + 0.6 - span) * 0.35);
+    const pt = (u, out) => out.lerpVectors(_leadA, _leadB, u).setY(_leadA.y + (_leadB.y - _leadA.y) * u - sag * 4 * u * (1 - u));
+    for (let i = 0; i < LEAD_SEGMENTS; i++) {
+      pt(i / LEAD_SEGMENTS, _leadP); pt((i + 1) / LEAD_SEGMENTS, _leadQ);
+      const seg = leadRope.children[i];
+      seg.position.addVectors(_leadP, _leadQ).multiplyScalar(0.5);
+      _leadQ.sub(_leadP);
+      const len = _leadQ.length();
+      seg.scale.set(1, Math.max(0.001, len), 1);
+      if (len > 1e-6) seg.quaternion.setFromUnitVectors(_leadUp, _leadQ.multiplyScalar(1 / len));
+    }
+  }
+  function leadIconCanvas() {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.strokeStyle = '#b08a52'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.ellipse(14, 15, 10 - i * 3, 7 - i * 2, -0.3, 0, Math.PI * 2); ctx.stroke(); } // the coil
+    ctx.beginPath(); ctx.moveTo(22, 20); ctx.quadraticCurveTo(28, 26, 24, 31); ctx.stroke(); // loose end
+    ctx.fillStyle = '#9a9a9a'; ctx.beginPath(); ctx.arc(24, 31, 2.4, 0, Math.PI * 2); ctx.fill(); // clip
+    return c;
+  }
   // Runs from updateSeeds for every non-plant record.
   function updateIncubatorRecord(k, x, y, z, code) {
     if (code >= HATCHED_BASE) {
@@ -19768,7 +20066,7 @@
       const rec = hatchedLive.get(k);
       if (rec && villageAnimals.indexOf(rec) < 0) { hatchedLive.delete(k); recordSeed(x, y, z, -1); return; } // it died (weapons etc.) — gone for good
       if (loaded && !rec) spawnHatched(k, x, hy, z, code - HATCHED_BASE);
-      else if (!loaded && rec) despawnHatched(k);
+      else if (!loaded && rec && !rec.leashed) despawnHatched(k); // one you're leading stays with you, however far from home
       return;
     }
     if (!groundHeightOnly.has(x + ',' + z)) { const fx = incubatorFx.get(k); if (fx) { scene.remove(fx.group); incubatorFx.delete(k); } return; }
@@ -19981,7 +20279,9 @@
   // and The Mill's grounds never burn.
   const LAVA_BURN_NAMES = ['Wood', 'Leaves', 'Planks', 'Dark Planks', 'Birch Planks', 'Spruce Planks', 'Cracked Planks',
     'Birch Wood', 'Spruce Wood', 'Dark Oak Wood', 'Acacia Wood', 'Wood Step', 'Wood Slope',
-    'Winter Branch A', 'Winter Branch B', 'Winter Branch C'];
+    'Winter Branch A', 'Winter Branch B', 'Winter Branch C',
+    'Oak Fence', 'Spruce Panel Fence', 'Oak Fence Corner', 'Spruce Panel Fence Corner',
+    'Oak Gate', 'Spruce Panel Gate', 'Cobblestone Wall Gate', 'Oak Gate (Open)', 'Spruce Panel Gate (Open)', 'Cobblestone Wall Gate (Open)'];
   const LAVA_FLAMMABLE = new Set(LAVA_BURN_NAMES.map(typeIndexByName).filter(i => i >= 0));
   const LAVA_BURN_MIN_MS = 6000, LAVA_BURN_SPREAD_MS = 10000;
   const LAVA_BURN_SCAN_PER_PASS = 300;
@@ -25219,7 +25519,7 @@
     const plan = entry.fence === 'corner';
     ctx.save();
     ctx.beginPath();
-    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(entry.fenceStyle, entry.fence)) {
+    for (const [x0, x1, y0, y1, z0, z1] of entryBoxes(entry)) {
       if (plan) ctx.rect((x0 + 0.5) * 34, (0.5 - z1) * 34, (x1 - x0) * 34, (z1 - z0) * 34); // +Z up the icon
       else ctx.rect((x0 + 0.5) * 34, (1 - y1) * 34, (x1 - x0) * 34, (y1 - y0) * 34);
     }
@@ -25228,7 +25528,7 @@
     ctx.restore();
     // Thin dark outline on each box, so a white or black fence still shows against the slot.
     ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.75;
-    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(entry.fenceStyle, entry.fence)) {
+    for (const [x0, x1, y0, y1, z0, z1] of entryBoxes(entry)) {
       if (plan) ctx.strokeRect((x0 + 0.5) * 34, (0.5 - z1) * 34, (x1 - x0) * 34, (z1 - z0) * 34);
       else ctx.strokeRect((x0 + 0.5) * 34, (1 - y1) * 34, (x1 - x0) * 34, (y1 - y0) * 34);
     }
@@ -25485,7 +25785,7 @@
   // The two Curve slots sit right after the Slope, then the two Fence slots, with the other shaped blocks.
   {
     let anchor = slotElByIndex[SLOPE_TYPE] || slotElByIndex[9];
-    [CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE].forEach(t => {
+    [CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GATE_TYPE].forEach(t => {
       if (slotElByIndex[t] && anchor) { hotbar.insertBefore(slotElByIndex[t], anchor.nextSibling); anchor = slotElByIndex[t]; }
     });
   }
@@ -26143,6 +26443,19 @@
     addSlotLabel(slot, 'Weapons');
     hotbar.appendChild(slot);
   }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Lead — press build near an animal to put it on the lead, press build again to let go';
+    const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(leadIconCanvas());
+    slot.style.position = 'relative';
+    slot.addEventListener('click', () => selectSlot(LEAD_SLOT));
+    slotElByIndex[LEAD_SLOT] = slot;
+    addSlotLabel(slot, 'Lead');
+    hotbar.appendChild(slot);
+  }
 
   // ── Categorised block menu ───────────────────────────────────────
   // The bottom bar now holds CATEGORIES, not every item. Pressing one slides
@@ -26158,13 +26471,13 @@
   const MENU_CATEGORIES = [
     { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
     { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT] },
-    { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
+    { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GATE_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
     { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT] },
     { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },
     { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
     { name: 'Vehicles',   items: [VEHICLE_SLOT] },
-    { name: 'Weapons',    items: [WEAPON_SLOT] },
+    { name: 'Equipment',  items: [WEAPON_SLOT, LEAD_SLOT] },
   ];
   const MENU_ITEM_ORDER = [];          // every item, category by category — what LB/RB and the mouse wheel step through
   const menuItemCategory = {};         // item slot index -> category index

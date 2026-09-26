@@ -2144,6 +2144,22 @@
     { name: 'White Inverse Curve',     mats: TEX.concreteWhite,    curve: 'in', cost: 4, isVariant: true },
     { name: 'Path Slab Inverse Curve', mats: TEX.pathSlabGrey,     curve: 'in', cost: 4, isVariant: true },
     { name: 'Stone Inverse Curve',     mats: TEX.stone,            curve: 'in', cost: 4, isVariant: true },
+    // Fences, five styles, each as a Straight run and a matching Corner (see FENCE SHAPES below for the
+    // geometry). Every piece is a post in the middle of its cell with arms running out to the cell's edges, so
+    // pieces butt up seamlessly against their neighbours. A Straight's arms run along X at rot 0, a Corner's
+    // along +X and +Z; both turn a quarter at a time (R / the rotate button, stepRotations like the other
+    // shaped blocks), and never tilt. Straight fences are one hotbar slot, corners another, each with the five
+    // styles in its popup. Appended at the very END for the same reason as the Curves above.
+    { name: 'Oak Fence',                mats: TEX.planks,        fence: 'straight', fenceStyle: 'rail',   cost: 4 },
+    { name: 'Spruce Panel Fence',       mats: TEX.sprucePlanks,  fence: 'straight', fenceStyle: 'panel',  cost: 4, isVariant: true },
+    { name: 'White Picket Fence',       mats: TEX.concreteWhite, fence: 'straight', fenceStyle: 'picket', cost: 4, isVariant: true },
+    { name: 'Cobblestone Wall',         mats: TEX.cobblestone,   fence: 'straight', fenceStyle: 'wall',   cost: 4, isVariant: true },
+    { name: 'Iron Railing',             mats: TEX.concreteBlack, fence: 'straight', fenceStyle: 'iron',   cost: 4, isVariant: true },
+    { name: 'Oak Fence Corner',         mats: TEX.planks,        fence: 'corner',   fenceStyle: 'rail',   cost: 4 },
+    { name: 'Spruce Panel Fence Corner',mats: TEX.sprucePlanks,  fence: 'corner',   fenceStyle: 'panel',  cost: 4, isVariant: true },
+    { name: 'White Picket Fence Corner',mats: TEX.concreteWhite, fence: 'corner',   fenceStyle: 'picket', cost: 4, isVariant: true },
+    { name: 'Cobblestone Wall Corner',  mats: TEX.cobblestone,   fence: 'corner',   fenceStyle: 'wall',   cost: 4, isVariant: true },
+    { name: 'Iron Railing Corner',      mats: TEX.concreteBlack, fence: 'corner',   fenceStyle: 'iron',   cost: 4, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
@@ -2153,10 +2169,11 @@
   // layout 3 had 65 (the four material slopes), layout 4 had 67 (the two
   // roof-tile slopes), and the current layout 5 has them all (the extra
   // concrete colours), and layout 6 (the current one) has the twelve Curve
-  // types on top of that. ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
+  // types on top of that, and layout 7 (the current one) adds the ten Fence
+  // types. ADDING ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT
   // and recording the old count here.
-  const SLOT_LAYOUT = 6;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 7;
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2208,6 +2225,12 @@
   const CURVE_TYPE = CURVE_OUT_TYPES[0], CURVE_IN_TYPE = CURVE_IN_TYPES[0];
   BLOCK_FAMILIES[CURVE_TYPE] = CURVE_OUT_TYPES;
   BLOCK_FAMILIES[CURVE_IN_TYPE] = CURVE_IN_TYPES;
+  // Fences: straight runs on one slot, corners on another, each with the same five styles in the same order.
+  const FENCE_TYPES = ['Oak Fence', 'Spruce Panel Fence', 'White Picket Fence', 'Cobblestone Wall', 'Iron Railing'].map(typeIndexByName);
+  const FENCE_CORNER_TYPES = FENCE_TYPES.map(t => typeIndexByName(BLOCK_TYPES[t].name + ' Corner'));
+  const FENCE_TYPE = FENCE_TYPES[0], FENCE_CORNER_TYPE = FENCE_CORNER_TYPES[0];
+  BLOCK_FAMILIES[FENCE_TYPE] = FENCE_TYPES;
+  BLOCK_FAMILIES[FENCE_CORNER_TYPE] = FENCE_CORNER_TYPES;
   // Every block type whose name contains "Glass" (the base pane plus its
   // 4 colour variants) — used to route these types to the merged
   // glassMeshes rendering system (see rebuildGlassGeometry) instead of
@@ -4876,6 +4899,164 @@
   const curveInGeometry = buildCurveGeometry('in');
   const curveGeometryFor = entry => entry.curve === 'in' ? curveInGeometry : curveOutGeometry;
 
+  // ================= FENCE SHAPES =================
+  // Each fence piece is a list of plain axis-aligned boxes, in the cell's own frame: x and z run -0.5..0.5
+  // about the cell centre, y runs 0 (floor) .. 1 (top). Every style is a centre post plus an "arm" of rails,
+  // boards, pickets or bars running from the post out to the edge of the cell. The arm is described once, for
+  // the +X direction, as [along0, along1, across0, across1, y0, y1], and copied onto each direction the piece
+  // has: a Straight has arms to +X and -X, a Corner to +X and +Z (its un-rotated shape — rot turns it a
+  // quarter at a time about Y exactly like a Curve). Arms always reach the cell edge, and repeating details
+  // (pickets, bars) are spaced so they carry on at the same spacing into the next cell, so a run of fences
+  // reads as one continuous fence.
+  const FENCE_STYLES = {
+    // Oak: square post, two horizontal rails.
+    rail: {
+      post: [[-0.125, 0.125, 0, 1, -0.125, 0.125]],
+      arm: [[0.125, 0.5, -0.0625, 0.0625, 0.375, 0.5625], [0.125, 0.5, -0.0625, 0.0625, 0.75, 0.9375]],
+      collide: 0.2,
+    },
+    // Spruce: close-boarded panel between posts, with a capping rail along the top.
+    panel: {
+      post: [[-0.125, 0.125, 0, 1, -0.125, 0.125]],
+      arm: [[0.125, 0.5, -0.05, 0.05, 0.03, 0.9], [0.125, 0.5, -0.08, 0.08, 0.9, 0.97]],
+      collide: 0.2,
+    },
+    // White picket: a picket every 0.2 (so the spacing carries on unbroken into the next cell), each with a
+    // narrower tip, on two backing rails that only show in the gaps. The centre picket stands a little taller
+    // as the "post".
+    picket: {
+      post: [[-0.07, 0.07, 0, 0.86, -0.06, 0.06], [-0.035, 0.035, 0.86, 0.94, -0.045, 0.045]],
+      arm: [
+        [0.15, 0.25, -0.04, 0.04, 0, 0.74], [0.175, 0.225, -0.03, 0.03, 0.74, 0.8],
+        [0.35, 0.45, -0.04, 0.04, 0, 0.74], [0.375, 0.425, -0.03, 0.03, 0.74, 0.8],
+        [0, 0.5, -0.03, 0.03, 0.18, 0.26], [0, 0.5, -0.03, 0.03, 0.52, 0.6],
+      ],
+      collide: 0.2,
+    },
+    // Cobblestone: a thick low wall with a taller square pillar in the middle.
+    wall: {
+      post: [[-0.25, 0.25, 0, 1, -0.25, 0.25]],
+      arm: [[0.25, 0.5, -0.1875, 0.1875, 0, 0.8125]],
+      collide: 0.25,
+    },
+    // Iron: thin post with a cap, top and bottom rails, and a slim bar every 0.125.
+    iron: {
+      post: [[-0.0625, 0.0625, 0, 0.93, -0.0625, 0.0625], [-0.09, 0.09, 0.93, 1, -0.09, 0.09]],
+      arm: [
+        [0.0625, 0.5, -0.03, 0.03, 0.08, 0.14], [0.0625, 0.5, -0.03, 0.03, 0.82, 0.88],
+        [0.1675, 0.2075, -0.02, 0.02, 0, 0.9], [0.2925, 0.3325, -0.02, 0.02, 0, 0.9], [0.4175, 0.4575, -0.02, 0.02, 0, 0.9],
+      ],
+      collide: 0.2,
+    },
+  };
+  // Directions each shape's arms point in, un-rotated.
+  const FENCE_ARMS = { straight: [[1, 0], [-1, 0]], corner: [[1, 0], [0, 1]] };
+  // [x0,x1, y0,y1, z0,z1] boxes for one style + shape, un-rotated.
+  function fenceBoxes(style, shape) {
+    const st = FENCE_STYLES[style];
+    const out = st.post.map(([x0, x1, y0, y1, z0, z1]) => [x0, x1, y0, y1, z0, z1]);
+    for (const [dx, dz] of FENCE_ARMS[shape]) {
+      for (const [a0, a1, c0, c1, y0, y1] of st.arm) {
+        if (dx === 1) out.push([a0, a1, y0, y1, c0, c1]);
+        else if (dx === -1) out.push([-a1, -a0, y0, y1, c0, c1]);
+        else if (dz === 1) out.push([c0, c1, y0, y1, a0, a1]);
+        else out.push([c0, c1, y0, y1, -a1, -a0]);
+      }
+    }
+    return out;
+  }
+  // Merges those boxes into ONE BufferGeometry whose six material groups are in the same order BoxGeometry
+  // uses (+x,-x,+y,-y,+z,-z), so it takes the same material array as any other block — including blocks with
+  // separate top/side textures. UVs are planar from the cell position (not 0..1 per box face), so the texture
+  // keeps its normal scale on thin rails and posts instead of being squashed onto them; on a face that's
+  // much longer one way than the other the UV is turned so a plank texture's grain runs along the piece.
+  function buildFenceGeometry(style, shape) {
+    const buckets = [0, 1, 2, 3, 4, 5].map(() => ({ p: [], n: [], u: [], i: [] }));
+    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(style, shape)) {
+      const sx = x1 - x0, sy = y1 - y0, sz = z1 - z0;
+      const g = new THREE.BoxGeometry(sx, sy, sz);
+      g.translate((x0 + x1) / 2, (y0 + y1) / 2 - 0.5, (z0 + z1) / 2);
+      const pos = g.attributes.position, nor = g.attributes.normal, idx = g.index.array;
+      for (const grp of g.groups) {
+        const b = buckets[grp.materialIndex];
+        const remap = new Map();
+        for (let t = grp.start; t < grp.start + grp.count; t++) {
+          const vi = idx[t];
+          if (!remap.has(vi)) {
+            remap.set(vi, b.p.length / 3);
+            const px = pos.getX(vi), py = pos.getY(vi), pz = pos.getZ(vi);
+            const nx = nor.getX(vi), ny = nor.getY(vi), nz = nor.getZ(vi);
+            b.p.push(px, py, pz); b.n.push(nx, ny, nz);
+            let u, v, ue, ve; // ue/ve: how long the face is along u and along v
+            if (Math.abs(ny) > 0.5) { u = px + 0.5; v = pz + 0.5; ue = sx; ve = sz; }
+            else if (Math.abs(nx) > 0.5) { u = pz + 0.5; v = py + 0.5; ue = sz; ve = sy; }
+            else { u = px + 0.5; v = py + 0.5; ue = sx; ve = sy; }
+            if (ve > ue * 1.5) { const tmp = u; u = v; v = tmp; } // long along v -> turn the grain to follow it
+            b.u.push(u, v);
+          }
+          b.i.push(remap.get(vi));
+        }
+      }
+      g.dispose();
+    }
+    const P = [], N = [], U = [], I = [];
+    const out = new THREE.BufferGeometry();
+    for (let m = 0; m < 6; m++) {
+      const b = buckets[m], base = P.length / 3, start = I.length;
+      P.push(...b.p); N.push(...b.n); U.push(...b.u);
+      for (const ix of b.i) I.push(ix + base);
+      out.addGroup(start, b.i.length, m);
+    }
+    out.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    out.setAttribute('normal', new THREE.Float32BufferAttribute(N, 3));
+    out.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+    out.setIndex(I);
+    out.computeBoundingSphere();
+    return out;
+  }
+  const fenceGeometryCache = {};
+  function fenceGeometryFor(entry) {
+    const k = entry.fenceStyle + '|' + entry.fence;
+    return fenceGeometryCache[k] || (fenceGeometryCache[k] = buildFenceGeometry(entry.fenceStyle, entry.fence));
+  }
+  // Collision: is the point (lx,lz) — relative to the cell centre, already turned back into the piece's
+  // un-rotated frame — inside the fence's footprint? A fixed-width strip along each arm plus a square round
+  // the post, wider than the thinnest visible parts (a railing bar is 0.04 wide) so a walking player can't
+  // slip between their own collision test points and through it.
+  function fenceFootprintHit(entry, lx, lz) {
+    const w = FENCE_STYLES[entry.fenceStyle].collide;
+    if (Math.abs(lx) <= w && Math.abs(lz) <= w) return true;
+    if (entry.fence === 'straight') return Math.abs(lz) <= w;
+    return (lx >= 0 && Math.abs(lz) <= w) || (lz >= 0 && Math.abs(lx) <= w); // corner: +X and +Z arms
+  }
+  // The fence's arm directions in the world for a given rot (0..3). A yaw of rot quarter turns takes local
+  // (x,z) to world (z,-x) once per quarter — the same convention setBlockOrientation draws with.
+  // Which way a fence faces when placed: it joins up with the fences already beside it (same level) —
+  // a Straight lines up with whichever axis has more fence neighbours, a Corner turns so as many of its two
+  // arms as possible point at one. Where that doesn't decide it (the first fence of a run), a Straight runs
+  // across your view and a Corner opens away from you (its post on the side you're standing). R fixes the rest.
+  function fencePlacementRot(x, y, z, shape) {
+    const isFence = (dx, dz) => { const t = blocks.get(key(x + dx, y, z + dz)); return t !== undefined && !!(BLOCK_TYPES[t] && BLOCK_TYPES[t].fence); };
+    const pdx = player.pos.x - (x + 0.5), pdz = player.pos.z - (z + 0.5);
+    if (shape === 'straight') {
+      const nX = isFence(1, 0) + isFence(-1, 0), nZ = isFence(0, 1) + isFence(0, -1);
+      if (nX !== nZ) return nX > nZ ? 0 : 1;
+      return Math.abs(pdx) >= Math.abs(pdz) ? 1 : 0; // standing off to the X side -> run along Z, across your view
+    }
+    let best = 0, bestScore = -Infinity;
+    for (let r = 0; r < 4; r++) {
+      const arms = fenceArmsWorld('corner', r);
+      const joins = arms.reduce((n, [dx, dz]) => n + isFence(dx, dz), 0);
+      const away = -arms.reduce((d, [dx, dz]) => d + dx * pdx + dz * pdz, 0); // bigger = arms point away from the player
+      const score = joins * 1000 + away;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    return best;
+  }
+  function fenceArmsWorld(shape, rot) {
+    return FENCE_ARMS[shape].map(([dx, dz]) => { let x = dx, z = dz; for (let i = 0; i < (rot & 3); i++) { const t = x; x = z; z = -t; } return [x, z]; });
+  }
+
   const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
   const meshes = BLOCK_TYPES.map((entry, i) => {
     const mat = buildMaterialArray(entry);
@@ -4885,8 +5066,8 @@
     // rather than the full MAX_INSTANCES every real block type gets.
     // The twelve Curve types start small (they grow on demand — see growBlockMesh): a per-type buffer at
     // MAX_INSTANCES is ~3MB, and no world has anywhere near 50,000 curve blocks.
-    const cap = GLASS_TYPE_SET.has(i) ? 1 : (entry.curve ? 2048 : MAX_INSTANCES);
-    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : (entry.curve ? curveGeometryFor(entry) : geometry)), mat, cap);
+    const cap = GLASS_TYPE_SET.has(i) ? 1 : ((entry.curve || entry.fence) ? 2048 : MAX_INSTANCES); // fences grow on demand too, same as curves
+    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : (entry.curve ? curveGeometryFor(entry) : (entry.fence ? fenceGeometryFor(entry) : geometry))), mat, cap);
     m.castShadow = !entry.transparent; m.receiveShadow = true;
     m.count = 0;
     scene.add(m);
@@ -5221,7 +5402,7 @@
     if (nt === undefined) return false;
     const nEntry = BLOCK_TYPES[nt];
     if (nEntry && (nEntry.name||'').includes('Glass')) return true;
-    return !(nEntry && (nEntry.half || nEntry.slope || nEntry.curve));
+    return !(nEntry && (nEntry.half || nEntry.slope || nEntry.curve || nEntry.fence));
   }
   // Unit-cube faces are axis-aligned, so the two in-plane coordinates of
   // each corner (the ones NOT along the face's own normal) already run
@@ -5383,7 +5564,7 @@
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
-    if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // a Slope or Curve faces the way it was placed (and may be tilted); every other full block is symmetric
+    if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // a Slope or Curve faces the way it was placed (and may be tilted); every other full block is symmetric
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     mesh.count = idx+1;
@@ -5597,7 +5778,7 @@
       // the ceiling block over them, and the wall blocks at their ends all
       // had every neighbour present (one of them a bar), so none of them
       // were drawn, and the cell looked cut out of the room.
-      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].transparent)); // a Slope only fills half its cell, like a Step — and a Curve part of one
+      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].fence || BLOCK_TYPES[t].transparent)); // a Fence hides nothing behind it either; a Slope only fills half its cell, like a Step — and a Curve part of one
     };
     return solidAt(x+1,y,z) && solidAt(x-1,y,z) && solidAt(x,y+1,z) && solidAt(x,y-1,z) && solidAt(x,y,z+1) && solidAt(x,y,z-1);
   }
@@ -5687,7 +5868,7 @@
         reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
-        if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // same orientation addFullInstance gives a Slope or Curve
+        if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // same orientation addFullInstance gives a Slope or Curve
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
         if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -5766,7 +5947,7 @@
     // drawn inside its empty part (see FLUID-FILLED SHAPED BLOCKS), so
     // the face between them would be an extra inner layer — hidden. One
     // ABOVE the water isn't filled, so the water's top still shows there.
-    if (BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve)) return dy !== undefined && dy <= 0;
+    if (BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].fence)) return dy !== undefined && dy <= 0;
     return true;
   }
   // Flood-fills outward from one water cell through every water cell
@@ -16665,8 +16846,8 @@
       padCycleSlot(e.deltaY > 0 ? 1 : -1); // same stops as LB/RB: each menu item in category order, a family landing on its chosen material
     }
   });
-  // Steps, Slopes and Curves are the blocks that have a facing, and the only ones that can be rotated.
-  function isShapedBlockEntry(entry) { return !!(entry && (entry.half || entry.slope || entry.curve)); }
+  // Steps, Slopes, Curves and Fences are the blocks that have a facing, and the only ones that can be rotated.
+  function isShapedBlockEntry(entry) { return !!(entry && (entry.half || entry.slope || entry.curve || entry.fence)); }
   // Touch only: the rotate button is there exactly while a shaped block is what you're holding.
   function updateRotateButton() {
     const el = document.getElementById('btnRotate');
@@ -16674,7 +16855,7 @@
     const show = (isTouchDevice && isShapedBlockEntry(BLOCK_TYPES[selectedSlot])) ? 'flex' : 'none';
     el.style.display = show;
     const tiltEl = document.getElementById('btnTilt');
-    if (tiltEl) tiltEl.style.display = show;
+    if (tiltEl) tiltEl.style.display = (BLOCK_TYPES[selectedSlot] && BLOCK_TYPES[selectedSlot].fence) ? 'none' : show; // fences only spin, never tip over
   }
   // Turns the Step / Slope / Curve you're aiming at a quarter turn: 'yaw' spins it left/right about the vertical
   // (R on desktop, the 🔄 button on touch), 'tilt' spins it up/down (X, or the ↕️ button) — 0 normal, 1 on its
@@ -16684,7 +16865,8 @@
   function reorientTargetBlock(what) {
     const r = voxelRaycast(true, false);
     const t = r && r.hit ? blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) : undefined;
-    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope or curve to turn it'); return false; }
+    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope, curve or fence to turn it'); return false; }
+    if (BLOCK_TYPES[t].fence && what === 'tilt') { showBriefMessage('Fences only turn left/right'); return false; }
     const { x, y, z } = r.hit;
     if (!canEditAt(x, z)) return false; // view only — same rule as placing and mining
     const k = key(x, y, z);
@@ -16701,12 +16883,17 @@
   const rotateTargetBlock = () => reorientTargetBlock('yaw');
   const tiltTargetBlock = () => reorientTargetBlock('tilt');
   let curveHintShown = false;
+  let fenceHintShown = false;
   function selectSlot(i) {
     selectedSlot = i;
     updateRotateButton();
     if (!curveHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) {
       curveHintShown = true;
       showBriefMessage(isTouchDevice ? 'Curve: tap 🔄 to spin it left/right, ↕️ to spin it up/down' : 'Curve: R spins it left/right, X spins it up/down (aim at it first)');
+    }
+    if (!fenceHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) {
+      fenceHintShown = true;
+      showBriefMessage(isTouchDevice ? 'Fence: lines up with fences beside it — tap 🔄 to turn it' : 'Fence: lines up with fences beside it — aim at it and press R to turn it');
     }
     document.querySelectorAll('.slot.active').forEach(el => el.classList.remove('active'));
     const highlightIdx = (variantToPrimary[i] !== undefined) ? variantToPrimary[i] : i;
@@ -16723,7 +16910,7 @@
     }
     heldMesh.visible = true;
     heldStepGroup.visible = false;
-    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) ? curveGeometryFor(BLOCK_TYPES[i]) : heldGeom); // the Slope shows as a wedge in your hand, a Curve as its quarter-round
+    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) ? curveGeometryFor(BLOCK_TYPES[i]) : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) ? fenceGeometryFor(BLOCK_TYPES[i]) : heldGeom)); // the Slope shows as a wedge in your hand, a Curve as its quarter-round
     if (i === WATER_SLOT) {
       heldMesh.material = new THREE.MeshPhongMaterial({ map: TEX.water, transparent: true, opacity: 0.7, shininess: 0 });
     } else if (i === LIGHT_SLOT) {
@@ -18132,6 +18319,9 @@
         const nearestCorner = pcx < 0 ? (pcz < 0 ? 0 : 1) : (pcz < 0 ? 3 : 2);
         placedRot = type.curve === 'out' ? nearestCorner : (nearestCorner + 2) & 3;
         if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
+      } else if (type && type.fence) {
+        placedRot = fencePlacementRot(x, y, z, type.fence);
+        if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
@@ -18602,8 +18792,31 @@
     const bx=Math.floor(x), by=Math.floor(y), bz=Math.floor(z);
     const k = key(bx,by,bz);
     const type = blocks.get(k);
-    if (type === undefined) return false;
+    if (type === undefined) {
+      // A fence is half a block taller to walk into than it looks (like Minecraft's): the bottom half of the
+      // empty cell above one is solid over the fence's footprint, so it can't be jumped over (a jump reaches
+      // ~1.36 blocks) or stepped up onto — which is the whole point of a fence round a pen.
+      if (y - by < 0.5) {
+        const bk = key(bx, by - 1, bz), bt = blocks.get(bk);
+        const be = bt !== undefined ? BLOCK_TYPES[bt] : null;
+        if (be && be.fence) {
+          const rot = stepRotations.get(bk) || 0;
+          let lx = (x - bx) - 0.5, lz = (z - bz) - 0.5;
+          for (let i = 0; i < (rot & 3); i++) { const t = lx; lx = -lz; lz = t; }
+          return fenceFootprintHit(be, lx, lz);
+        }
+      }
+      return false;
+    }
     const entry = BLOCK_TYPES[type];
+    if (entry && entry.fence) {
+      // Full height of its own cell over its footprint — see fenceFootprintHit. Undo the rotation the same
+      // way the Curve does below.
+      const rot = stepRotations.get(k) || 0;
+      let lx = (x - bx) - 0.5, lz = (z - bz) - 0.5;
+      for (let i = 0; i < (rot & 3); i++) { const t = lx; lx = -lz; lz = t; }
+      return fenceFootprintHit(entry, lx, lz);
+    }
     const orient = (entry && (entry.half || entry.slope || entry.curve)) ? (stepRotations.get(k) || 0) : 0;
     if (orient > 3) {
       // Tilted Step / Slope / Curve: test the point in the block's own frame. Same shapes as the untilted
@@ -20085,7 +20298,7 @@
     startBackgroundMapScan(blocks, (k, t) => {
       if (count >= MAX_INSTANCES) return true;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || type.slope || type.curve || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
+      if (!type || type.half || type.slope || type.curve || type.fence || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as
@@ -24995,7 +25208,33 @@
     ctx.restore();
     return c;
   }
-  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : swatchCanvas(entry);
+  // A Fence's icon: its boxes drawn in the block's own texture — a Straight from the front (posts and rails),
+  // a Corner from above (the L it makes), so the two slots read differently at a glance.
+  function fenceSwatchCanvas(entry) {
+    const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
+    const ctx = c.getContext('2d');
+    const texSrc = entry.mats.top || entry.mats.side || entry.mats;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = 'rgba(255,255,255,0.10)'; ctx.fillRect(0,0,34,34);
+    const plan = entry.fence === 'corner';
+    ctx.save();
+    ctx.beginPath();
+    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(entry.fenceStyle, entry.fence)) {
+      if (plan) ctx.rect((x0 + 0.5) * 34, (0.5 - z1) * 34, (x1 - x0) * 34, (z1 - z0) * 34); // +Z up the icon
+      else ctx.rect((x0 + 0.5) * 34, (1 - y1) * 34, (x1 - x0) * 34, (y1 - y0) * 34);
+    }
+    ctx.clip();
+    ctx.drawImage(texSrc.image, 0,0,34,34);
+    ctx.restore();
+    // Thin dark outline on each box, so a white or black fence still shows against the slot.
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 0.75;
+    for (const [x0, x1, y0, y1, z0, z1] of fenceBoxes(entry.fenceStyle, entry.fence)) {
+      if (plan) ctx.strokeRect((x0 + 0.5) * 34, (0.5 - z1) * 34, (x1 - x0) * 34, (z1 - z0) * 34);
+      else ctx.strokeRect((x0 + 0.5) * 34, (1 - y1) * 34, (x1 - x0) * 34, (y1 - y0) * 34);
+    }
+    return c;
+  }
+  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : entry.fence ? fenceSwatchCanvas(entry) : swatchCanvas(entry);
   // A simple teardrop instead of a flat texture square, for the same
   // "actually looks like the thing" reason as the step icon above.
   function waterDropCanvas() {
@@ -25243,10 +25482,10 @@
   // Step it's the smooth sibling of. Purely where it sits in the row —
   // slots are still selected by block number, so nothing else cares.
   if (slotElByIndex[SLOPE_TYPE] && slotElByIndex[9]) hotbar.insertBefore(slotElByIndex[SLOPE_TYPE], slotElByIndex[9].nextSibling);
-  // The two Curve slots sit right after the Slope, with the other shaped blocks.
+  // The two Curve slots sit right after the Slope, then the two Fence slots, with the other shaped blocks.
   {
     let anchor = slotElByIndex[SLOPE_TYPE] || slotElByIndex[9];
-    [CURVE_TYPE, CURVE_IN_TYPE].forEach(t => {
+    [CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE].forEach(t => {
       if (slotElByIndex[t] && anchor) { hotbar.insertBefore(slotElByIndex[t], anchor.nextSibling); anchor = slotElByIndex[t]; }
     });
   }
@@ -25919,7 +26158,7 @@
   const MENU_CATEGORIES = [
     { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
     { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT] },
-    { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
+    { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
     { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT] },
     { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },

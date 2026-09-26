@@ -18907,12 +18907,21 @@
   // down through a wooden structure a block at a time. Flowing lava
   // above needs nothing extra: it's fed from elsewhere and simply pours
   // down into the gap under the normal rules.
+  // It keeps dropping until it lands on something — a tree's canopy
+  // is mostly air once the leaves go, so stopping after one block left
+  // it hanging where the tree used to be.
   function dropLavaInto(x, y, z) {
     const heights = [];
     for (let yy = y + 1; lava.has(key(x, yy, z)) && !lava.isFlowing(key(x, yy, z)); yy++) heights.push(lava.get(key(x, yy, z)));
     if (!heights.length) return;
-    for (let i = 0; i < heights.length; i++) lava.putStill(x, y + i, z, heights[i]);
-    lava.remove(x, y + heights.length, z); // the top of the stack is now empty
+    let bottom = y;
+    for (let n = 0; n < 64 && bottom > 1; n++) {
+      const bk = key(x, bottom - 1, z);
+      if (fluidTerrainSolidAt(x, bottom - 1, z) || waterBlocks.has(bk) || lava.has(bk)) break;
+      bottom--;
+    }
+    for (let i = 0; i < heights.length; i++) lava.remove(x, y + 1 + i, z); // lift the stack out…
+    for (let i = 0; i < heights.length; i++) lava.putStill(x, bottom + i, z, heights[i]); // …and set it down where it lands
   }
   function updateLavaBurn() {
     const now = performance.now();
@@ -19049,6 +19058,8 @@
       recordBlockEdit(x, y, z, -1, 0);
       removeFixturesForBlock(x, y, z);
       handleLocalBlockChange(x, y, z, removedType);
+      dropLavaInto(x, y, z); // lava sitting on a leaf that drops away comes down too (e.g. lava placed on a tree it's burning)
+      lava.wake(x, y, z);
       if (++dropped >= 6) break; // a big canopy going at once is spread over a few frames
     }
   }

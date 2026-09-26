@@ -2512,7 +2512,23 @@
     constructor() {
       this._data = new Map();
       this.chunkCells = new Map(); // chunkKey -> Set of "x,y,z" keys — explicit entries only (edits/overrides), NOT every natural water cell any more, see has()/get()
-      this.dirtyChunks = new Set(); // chunkKeys touched since last consumed
+      this.dirtyChunks = new Set(); // chunkKeys touched since last consumed — rebuildWaterGeometry redoes each of these AND all four chunks beside it (what chunk streaming etc. still add directly)
+      // Chunks to redo because a water CELL changed — set by this map's own set/delete/clearOverride. Unlike
+      // dirtyChunks, a changed cell only drags in a neighbouring chunk when it's actually on the edge it
+      // shares with it (a cell's geometry only ever looks one block away, diagonals included), instead of
+      // always redoing all four neighbours: a spill in the middle of a lake chunk now redoes 1 chunk, not 5.
+      this.cellDirtyChunks = new Set();
+    }
+    _markCellDirty(k) {
+      const firstComma = k.indexOf(','), lastComma = k.lastIndexOf(',');
+      const x = parseInt(k.slice(0, firstComma), 10), z = parseInt(k.slice(lastComma + 1), 10);
+      const cx = Math.floor(x / CHUNK_SIZE), cz = Math.floor(z / CHUNK_SIZE);
+      const lx = x - cx * CHUNK_SIZE, lz = z - cz * CHUNK_SIZE;
+      const ox = lx === 0 ? -1 : (lx === CHUNK_SIZE - 1 ? 1 : 0), oz = lz === 0 ? -1 : (lz === CHUNK_SIZE - 1 ? 1 : 0);
+      this.cellDirtyChunks.add(cx + '_' + cz);
+      if (ox) this.cellDirtyChunks.add((cx + ox) + '_' + cz);
+      if (oz) this.cellDirtyChunks.add(cx + '_' + (cz + oz));
+      if (ox && oz) this.cellDirtyChunks.add((cx + ox) + '_' + (cz + oz));
     }
     _chunkKeyForK(k) {
       const firstComma = k.indexOf(',');
@@ -2545,7 +2561,7 @@
         if (!set) { set = new Set(); this.chunkCells.set(ck, set); }
         set.add(k);
       }
-      this.dirtyChunks.add(ck); // also covers a level-only change (height fraction) on an existing key — geometry can still differ
+      this._markCellDirty(k); // also covers a level-only change (height fraction) on an existing key — geometry can still differ
       pureOceanChunks.delete(ck); // an explicit entry means this chunk no longer qualifies for the flat-plane fast path — see generateChunkTerrain's own classification
       return this;
     }
@@ -2559,7 +2575,7 @@
       const ck = this._chunkKeyForK(k);
       const set = this.chunkCells.get(ck);
       if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
-      this.dirtyChunks.add(ck);
+      this._markCellDirty(k);
       return true;
     }
     delete(k) {
@@ -2588,7 +2604,7 @@
       const ck = this._chunkKeyForK(k);
       const set = this.chunkCells.get(ck);
       if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
-      this.dirtyChunks.add(ck);
+      this._markCellDirty(k);
       pureOceanChunks.delete(ck); // defensive — shouldn't normally be in there (a non-naturally-wet cell means this chunk was never classified pure ocean to begin with), but costs nothing to be sure
       return true;
     }
@@ -2619,7 +2635,7 @@
       return this._naturalLevel(x, y, z);
     }
     get size() { return this._data.size; }
-    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); flowDist.clear(); stillBase.clear(); activeWaterBlocks.clear(); } // a new/reloaded world starts with nothing mid-flow
+    clear() { this._data.clear(); this.chunkCells.clear(); this.dirtyChunks.clear(); this.cellDirtyChunks.clear(); flowDist.clear(); stillBase.clear(); activeWaterBlocks.clear(); } // a new/reloaded world starts with nothing mid-flow
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
     entries() { return this._data.entries(); }
     keys() { return this._data.keys(); }
@@ -6266,7 +6282,7 @@
     // neighbouring chunk needs to draw. Every other chunk's
     // last-computed geometry is still exactly correct and gets reused
     // untouched below.
-    const toRecompute = new Set();
+    const toRecompute = new Set(waterBlocks.cellDirtyChunks); // cell edits: already includes exactly the neighbours they touch — see WaterBlockMap._markCellDirty
     for (const ck of waterBlocks.dirtyChunks) {
       toRecompute.add(ck);
       const [ccx, ccz] = ck.split('_').map(Number);
@@ -6291,7 +6307,7 @@
         const y = SEA_LEVEL + 1; // matches the per-cell path's own math: a cell's own y is SEA_LEVEL, its rendered top corner is y + topFrac (1 here)
         const cp = [x0,y,z0,  x0,y,z1,  x1,y,z1,  x0,y,z0,  x1,y,z1,  x1,y,z0];
         const cn = [0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0];
-        waterChunkCache.set(ck, { positions: cp, normals: cn });
+        waterChunkCache.set(ck, { positions: new Float32Array(cp), normals: new Float32Array(cn) });
         waterChunkSignatures.set(ck, 1); // constant — this chunk's geometry only ever changes shape by being downgraded out of pureOceanChunks entirely (which clears this entry via the mixed path below instead), never while still classified this way
         continue;
       }
@@ -6317,14 +6333,12 @@
       const fillCheck = chunkHasPlacedShapedNear(ccx, ccz);
       let signature = 0, anyWater = false;
       const consideredExplicit = explicitKeys ? new Set() : null;
-      for (let x = cx0; x < cx0 + CHUNK_SIZE; x++) {
-        for (let z = cz0; z < cz0 + CHUNK_SIZE; z++) {
-          const gh = groundHeightOnly.get(x + ',' + z);
-          if (gh === undefined || gh >= SEA_LEVEL) continue; // ungenerated, or naturally dry here
-          for (let y = gh + 1; y <= SEA_LEVEL; y++) {
+      // One natural-range cell: its faces, exactly as before. (Pulled out into a function so the fast column
+      // path below can call it for just the cells that need it.)
+      const naturalCell = (x, y, z) => {
             const k = key(x, y, z);
             const h = waterRenderHeight(k, x, y, z); // natural default or explicit override, already correctly combined
-            if (h === undefined) continue; // explicitly removed here
+            if (h === undefined) return; // explicitly removed here
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
             if (fillCheck && h > 0.001) noteFluidFill(logged, x, y, z, h);
@@ -6345,7 +6359,48 @@
                 cn.push(dx*nm, dy, dz*nm);
               }
             }
+      };
+      // FAST COLUMN PATH. A lake chunk is 32x32 columns up to ~40 deep — some 40,000 cells, each of which
+      // cost six neighbour look-ups (string keys and all) — and almost every one of them is deep inside the
+      // lake with water on all sides and nothing to draw. That full walk, over the chunk AND its neighbours,
+      // every 300ms while water was flowing, was the stall when you broke into a big lake.
+      // For a column where neither it nor any of its four neighbours has a single explicit water entry (no
+      // flow, no drained or deepened cell — nothing but natural, untouched water) the only cells that CAN
+      // have a visible face are:
+      //   - the top two (the surface, and the one under a shoreline's shallow surface cell),
+      //   - the bottom one (the seabed under it may have been mined),
+      //   - any at or below a neighbouring column's ground height (that side is terrain, which may have been
+      //     mined away).
+      // Every cell in between has natural full water above, below and on all four sides — provably no faces
+      // — so it's skipped. The cells that ARE checked go through exactly the same code as before, so the
+      // result is identical; it's just not asking 40 questions it already knows the answer to.
+      const touchedCols = new Set(); // "x,z" of every column with an explicit water entry, in this chunk and its neighbours
+      if (!fillCheck) {
+        for (const nck of [ck, (ccx+1)+'_'+ccz, (ccx-1)+'_'+ccz, ccx+'_'+(ccz+1), ccx+'_'+(ccz-1)]) {
+          const ks = waterBlocks.chunkCells.get(nck);
+          if (!ks) continue;
+          for (const ek of ks) touchedCols.add(ek.slice(0, ek.indexOf(',')) + ',' + ek.slice(ek.lastIndexOf(',') + 1));
+        }
+      }
+      for (let x = cx0; x < cx0 + CHUNK_SIZE; x++) {
+        for (let z = cz0; z < cz0 + CHUNK_SIZE; z++) {
+          const gh = groundHeightOnly.get(x + ',' + z);
+          if (gh === undefined || gh >= SEA_LEVEL) continue; // ungenerated, or naturally dry here
+          let fast = !fillCheck && !touchedCols.has(x + ',' + z) && !touchedCols.has((x+1) + ',' + z) && !touchedCols.has((x-1) + ',' + z)
+            && !touchedCols.has(x + ',' + (z+1)) && !touchedCols.has(x + ',' + (z-1));
+          let maxSideGround = gh + 1; // cells up to here get the full check
+          if (fast) {
+            for (const [nx, nz] of [[x+1, z], [x-1, z], [x, z+1], [x, z-1]]) {
+              const gn = groundHeightOnly.get(nx + ',' + nz);
+              if (gn === undefined) { fast = false; break; } // not generated — can't vouch for it
+              if (gn > maxSideGround) maxSideGround = gn;
+            }
           }
+          if (!fast) { for (let y = gh + 1; y <= SEA_LEVEL; y++) naturalCell(x, y, z); continue; }
+          const lowEnd = Math.min(maxSideGround, SEA_LEVEL), topStart = Math.max(gh + 1, SEA_LEVEL - 1, lowEnd + 1);
+          for (let y = gh + 1; y <= lowEnd; y++) naturalCell(x, y, z);
+          for (let y = topStart; y <= SEA_LEVEL; y++) naturalCell(x, y, z);
+          anyWater = true; // natural water fills this whole column even where nothing was drawn
         }
       }
       // Explicit water outside any natural range at all — a rooftop
@@ -6390,37 +6445,55 @@
         waterChunkSignatures.delete(ck);
         continue;
       }
-      waterChunkCache.set(ck, { positions: cp, normals: cn });
+      waterChunkCache.set(ck, { positions: new Float32Array(cp), normals: new Float32Array(cn) });
       waterChunkSignatures.set(ck, signature);
     }
     waterBlocks.dirtyChunks.clear();
+    waterBlocks.cellDirtyChunks.clear();
     // Assemble the final merged buffers from every chunk that currently
     // has water — pure-ocean chunks (one flat quad each) plus every
-    // mixed chunk with any cached geometry. Cheap array concatenation
-    // over however many chunks have water at all, not over every
-    // individual cell.
-    const positions = [];
-    const normals = [];
+    // mixed chunk with any cached geometry. Each chunk's geometry is kept
+    // as a ready-made Float32Array and block-copied in with .set() (it
+    // used to be pushed number by number into a plain JS array, then
+    // copied AGAIN into a new typed array — hundreds of thousands of
+    // numbers for a world with a lot of shoreline, on every rebuild). The
+    // GPU buffer is also kept and reused while it's big enough, and only
+    // the part actually in use is re-uploaded, instead of a brand new
+    // buffer every time.
+    let total = 0;
+    const order = [];
     const seen = new Set();
     for (const ck of pureOceanChunks) {
       const g = waterChunkCache.get(ck);
       if (!g) continue; // classified but not yet rendered this session — will be picked up once dirty (see generateChunkTerrain, which marks it dirty at classification time)
-      seen.add(ck);
-      for (let i = 0; i < g.positions.length; i++) positions.push(g.positions[i]);
-      for (let i = 0; i < g.normals.length; i++) normals.push(g.normals[i]);
+      seen.add(ck); order.push(g); total += g.positions.length;
     }
     for (const [ck, g] of waterChunkCache) {
       if (seen.has(ck)) continue;
-      for (let i = 0; i < g.positions.length; i++) positions.push(g.positions[i]);
-      for (let i = 0; i < g.normals.length; i++) normals.push(g.normals[i]);
+      order.push(g); total += g.positions.length;
     }
-
     const geom = waterMesh.geometry;
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    geom.computeBoundingSphere();
-    geom.attributes.position.needsUpdate = true;
-    geom.attributes.normal.needsUpdate = true;
+    let posAttr = geom.getAttribute('position'), norAttr = geom.getAttribute('normal');
+    if (!posAttr || posAttr.array.length < total) {
+      const cap = Math.max(3 * 6 * 64, Math.ceil(total * 1.5 / 3) * 3); // headroom, so a growing spill doesn't reallocate every time
+      posAttr = new THREE.BufferAttribute(new Float32Array(cap), 3);
+      norAttr = new THREE.BufferAttribute(new Float32Array(cap), 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage); norAttr.setUsage(THREE.DynamicDrawUsage);
+      geom.setAttribute('position', posAttr);
+      geom.setAttribute('normal', norAttr);
+      if (!geom.boundingSphere) geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7); // the mesh isn't frustum-culled (see waterMesh); this just stops three.js recomputing one over every vertex
+    }
+    let off = 0;
+    for (const g of order) {
+      posAttr.array.set(g.positions, off);
+      norAttr.array.set(g.normals, off);
+      off += g.positions.length;
+    }
+    geom.setDrawRange(0, total / 3);
+    posAttr.updateRange.offset = 0; posAttr.updateRange.count = Math.max(total, 0);
+    norAttr.updateRange.offset = 0; norAttr.updateRange.count = Math.max(total, 0);
+    posAttr.needsUpdate = true;
+    norAttr.needsUpdate = true;
   }
   // Debounced wrapper for chunk streaming's use specifically — mining/
   // placing water directly still calls rebuildWaterGeometry() itself for

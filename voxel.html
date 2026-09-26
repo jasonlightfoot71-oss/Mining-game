@@ -2467,6 +2467,19 @@
       pureOceanChunks.delete(ck); // an explicit entry means this chunk no longer qualifies for the flat-plane fast path — see generateChunkTerrain's own classification
       return this;
     }
+    // Drop an explicit entry so the cell goes back to whatever the
+    // terrain's own natural water says (used when a deepened shoreline
+    // cell settles back to exactly its natural level — see
+    // restoreStillWater — so it isn't left as a pointless saved edit).
+    clearOverride(k) {
+      if (!this._data.has(k)) return false;
+      this._data.delete(k);
+      const ck = this._chunkKeyForK(k);
+      const set = this.chunkCells.get(ck);
+      if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
+      this.dirtyChunks.add(ck);
+      return true;
+    }
     delete(k) {
       const hadExplicit = this._data.has(k);
       // If this cell would naturally be water (per groundHeightOnly),
@@ -2746,9 +2759,29 @@
   function restoreStillWater(x, y, z, base) {
     const k = key(x, y, z);
     flowDist.delete(k); stillBase.delete(k);
-    waterBlocks.set(k, base);
-    recordWaterEdit(x, y, z, base);
+    const nat = waterBlocks._naturalLevel(x, y, z);
+    if (nat !== undefined && Math.abs(nat - base) < 0.001) {
+      // Exactly the lake's own natural water again — drop the override
+      // and its saved edit entirely rather than storing a copy of it.
+      waterBlocks.clearOverride(k);
+      waterEdits.delete(k);
+      if (terrainStreamingActive) dirtyChunks.add(chunkKeyOf(x, z));
+    } else {
+      waterBlocks.set(k, base);
+      recordWaterEdit(x, y, z, base);
+    }
     wakeWaterAround(x, y, z);
+  }
+  // The lake/sea's own untouched water (not edited, not flowing). Its
+  // shallows are deliberately graded ¼/½/¾ at the shoreline, and it must
+  // never "deepen" itself: letting natural water push into its own
+  // shallower natural neighbours set off a chain reaction round the
+  // whole shoreline of any big lake the moment anything woke it —
+  // thousands of cells simulating, saving and redrawing, which is what
+  // made big bodies of water lag. Deepening shallows is only for water
+  // a player put there (or water flowing from somewhere).
+  function isNaturalStillWater(k, x, y, z) {
+    return !flowDist.has(k) && !waterBlocks._data.has(k) && waterBlocks._naturalLevel(x, y, z) !== undefined;
   }
   function removeFlowingWater(x, y, z) {
     const k = key(x, y, z);
@@ -2780,6 +2813,7 @@
           if (!waterBlocks.has(nk)) continue;
           const nd = flowDist.has(nk) ? flowDist.get(nk) : 0;
           if (nd >= MAX_SPREAD || !waterCanSpread(nx, y, nz, nk)) continue;
+          if (stillBase.has(k) && isNaturalStillWater(nk, nx, y, nz)) continue; // natural water can't hold shallows deepened — see isNaturalStillWater
           const nh = flowHeightFrom(waterBlocks.get(nk));
           // Deepest feed wins; between equally deep ones, the closest.
           // (Deepest first, because deepened shallows sit right next to
@@ -2811,10 +2845,12 @@
     if (d >= MAX_SPREAD || !waterCanSpread(x, y, z, k)) return changed;
     const targets = [];
     let bestDrop = Infinity;
+    const iAmNatural = isNaturalStillWater(k, x, y, z);
     for (const [dx, dz] of WATER_FOUR) {
       const nx = x + dx, nz = z + dz;
       if (waterSolidAt(nx, y, nz)) continue;
       const sk = key(nx, y, nz);
+      if (iAmNatural && waterBlocks.has(sk) && (!flowDist.has(sk) || stillBase.has(sk))) continue; // natural water never deepens other still water — nor feeds shallows someone else deepened (the recession check ignores it as a feed there, so feeding it here flip-flopped forever)
       // Still water can only be flowed into if it's shallower than what
       // this cell would give it (deepening it) — otherwise it's never a
       // direction to aim for.
@@ -5791,6 +5827,15 @@
     if (!walls.length) return { hide: false, asColumn: true, sides: walls };
     return { hide: hasBelow, y0: hasBelow ? 0 : h, y1: 1, sides: walls };
   }
+  const WATER_HAS = k => waterBlocks.has(k), WATER_DIST = k => flowDist.get(k), WATER_GET = k => waterBlocks.get(k);
+  function chunkHasPlacedShapedNear(ccx, ccz) {
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      const m = blockEdits.byChunk.get((ccx + dx) + '_' + (ccz + dz));
+      if (!m) continue;
+      for (const t of m.values()) if (t >= 0 && isShapedBlockEntry(BLOCK_TYPES[t])) return true;
+    }
+    return false;
+  }
   function emitPourSheets(pour, x, y, z, cp, cn) {
     const e = POUR_SHEET_INSET;
     for (const [dx, dz] of pour.sides) {
@@ -5911,6 +5956,11 @@
       const cx0 = ccx * CHUNK_SIZE, cz0 = ccz * CHUNK_SIZE;
       const cp = [], cn = [];
       const logged = new Map(); // shaped cells beside water in this chunk — see FLUID-FILLED SHAPED BLOCKS
+      // The slope/curve gap-fill needs 5 neighbour lookups for every water
+      // cell — tens of thousands in a deep lake chunk — so it's skipped
+      // outright unless a player has actually placed a shaped block in
+      // this chunk or one beside it (the only way one ends up in water).
+      const fillCheck = chunkHasPlacedShapedNear(ccx, ccz);
       let signature = 0, anyWater = false;
       const consideredExplicit = explicitKeys ? new Set() : null;
       for (let x = cx0; x < cx0 + CHUNK_SIZE; x++) {
@@ -5923,10 +5973,10 @@
             if (h === undefined) continue; // explicitly removed here
             if (consideredExplicit) consideredExplicit.add(k);
             anyWater = true;
-            if (h > 0.001) noteFluidFill(logged, x, y, z, h);
+            if (fillCheck && h > 0.001) noteFluidFill(logged, x, y, z, h);
             const nm = flowDist.get(k) === 0 && waterBlocks.has(key(x, y - 1, z)) ? 2 : 1; // streaks only while it's still falling — the cell it lands in is a pool, not a fall (its sides were streaking where nothing pours)
             signature = (signature + waterCellHash(x, y, z, h)) | 0;
-            const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
+            const pour = flowDist.get(k) === 0 ? fluidPour(WATER_HAS, WATER_DIST, WATER_GET, x, y, z, h) : null; // only falling cells can need a pour sheet — skips the call (and its lookups) for every other cell
             if (pour) emitPourSheets(pour, x, y, z, cp, cn);
             const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
             if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {
@@ -5955,10 +6005,10 @@
           const h = waterRenderHeight(k, x, y, z);
           if (h === undefined) continue;
           anyWater = true;
-          if (h > 0.001) noteFluidFill(logged, x, y, z, h);
+          if (fillCheck && h > 0.001) noteFluidFill(logged, x, y, z, h);
           const nm = flowDist.get(k) === 0 && waterBlocks.has(key(x, y - 1, z)) ? 2 : 1; // streaks only while it's still falling — the cell it lands in is a pool, not a fall (its sides were streaking where nothing pours)
           signature = (signature + waterCellHash(x, y, z, h)) | 0;
-          const pour = fluidPour(wk => waterBlocks.has(wk), wk => flowDist.get(wk), wk => waterBlocks.get(wk), x, y, z, h);
+          const pour = flowDist.get(k) === 0 ? fluidPour(WATER_HAS, WATER_DIST, WATER_GET, x, y, z, h) : null; // only falling cells can need a pour sheet — skips the call (and its lookups) for every other cell
           if (pour) emitPourSheets(pour, x, y, z, cp, cn);
           const drawH = pour && pour.asColumn ? 1 : h; // see fluidPour
           if (h > 0.001 && !(pour && pour.hide)) for (const face of WATER_FACES) {

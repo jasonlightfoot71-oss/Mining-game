@@ -320,6 +320,30 @@
     display: flex; align-items: center; justify-content: center; user-select: none;
   }
   #btnMine { left: 40px; bottom: 210px; }
+  /* Harvest bag — sits under the left joystick. */
+  #btnBag {
+    position: fixed; left: 44px; bottom: 26px; width: 52px; height: 52px; border-radius: 50%;
+    background: rgba(0,0,0,0.45); border: 2px solid rgba(255,255,255,0.45); color: #fff; font-size: 24px;
+    z-index: 16; display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+  }
+  #bagCount {
+    position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; border-radius: 9px; padding: 0 4px;
+    background: #d9302a; color: #fff; font-size: 11px; font-weight: 700; display: none; align-items: center; justify-content: center;
+  }
+  #bagPanel {
+    position: fixed; left: 12px; bottom: 90px; width: 250px; max-height: 55vh; overflow-y: auto; display: none;
+    background: rgba(20,24,30,0.94); border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; z-index: 40;
+    color: #fff; font: 14px system-ui, sans-serif; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #bagPanel .bagHead { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.12); position: sticky; top: 0; background: rgba(20,24,30,0.98); }
+  #bagClose { background: none; border: none; color: #fff; font-size: 16px; cursor: pointer; }
+  #bagList { padding: 6px 8px 10px; }
+  .bagItem { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; }
+  .bagItem:nth-child(odd) { background: rgba(255,255,255,0.05); }
+  .bagIcon { font-size: 20px; width: 26px; text-align: center; }
+  .bagName { flex: 1; }
+  .bagQty { font-weight: 700; color: #ffd666; }
+  .bagEmpty { padding: 10px 6px; color: rgba(255,255,255,0.7); line-height: 1.4; }
   /* Moved in from right:40 to sit right next to btnJump instead of a big
      gap away from it — build and jump are used together constantly
      (build a step, jump up it), so keeping them adjacent makes sense. */
@@ -650,6 +674,8 @@
 
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
+  <button id="btnBag" title="Harvest bag">🎒<span id="bagCount"></span></button>
+  <div id="bagPanel"><div class="bagHead"><span>🎒 Harvest bag</span><button id="bagClose">✕</button></div><div id="bagList"></div></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
   <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:5; touch-action:none;"></div>
   <button class="touchBtn" id="btnMine">⛏️</button>
@@ -2219,6 +2245,8 @@
   const DRAIN_SLOT = VEHICLE_SLOT + 1; // "Drain" hotbar entry — flood-fills and removes a connected body of water in one go, for clearing out a sealed underwater build instead of mining it out one quarter-block at a time
   const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
   const SEED_SLOT = FIRE_SLOT + 3; // "Seeds" hotbar entry — see SEEDS
+  const INCUBATOR_SLOT = FIRE_SLOT + 4; // "Incubator" (Action menu) — see INCUBATOR & ANIMAL SEEDS
+  const ANIMAL_SLOT = FIRE_SLOT + 5;    // "Animal Seeds" (Landscape menu)
   const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
@@ -16720,6 +16748,10 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xff5a10 });
     } else if (i === SEED_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x6b8e3a });
+    } else if (i === ANIMAL_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xf1e6cf });
+    } else if (i === INCUBATOR_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xd9d4c8 });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }
@@ -17658,17 +17690,29 @@
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
+    // Fully-grown vegetables and flowers are harvested into the bag by
+    // mining them with anything — before the block under them is dug.
+    if (!r.isWater && !r.isLava) {
+      const pk = key(r.hit.x, r.hit.y + 1, r.hit.z);
+      const sd = seedAt(pk);
+      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { harvestSeed(pk, r.hit.x, r.hit.y + 1, r.hit.z, sd); playThud(220); mineHeld = false; return; }
+    }
+    if (selectedSlot === INCUBATOR_SLOT) {
+      // Picks the incubator back up (and anything in it) off the block you aim at.
+      if (r.isWater || r.isLava) return;
+      const ik = key(r.hit.x, r.hit.y + 1, r.hit.z);
+      if (incubatorAt({ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z })) { recordSeed(r.hit.x, r.hit.y + 1, r.hit.z, -1); seedNextPass = 0; playThud(220); }
+      return;
+    }
     if (selectedSlot === SEED_SLOT) {
-      // With Seeds in hand, "mining" pulls up the plant on the mud you're
-      // aiming at (never digs the block itself — so holding the button
-      // can't carry on into the mud after the plant's gone).
+      // With Seeds in hand, "mining" pulls up a plant that ISN'T ready yet
+      // (never digs the block itself — so holding the button can't carry
+      // on into the mud after the plant's gone).
       if (r.isWater || r.isLava) return;
       const pk = key(r.hit.x, r.hit.y + 1, r.hit.z);
       const sd = seedAt(pk);
       if (!sd || !sd.type) return;
-      const grown = seedProgress(sd) >= 1;
       removeSeed(pk, r.hit.x, r.hit.y + 1, r.hit.z);
-      if (grown && sd.type.harvest) { addCoins(sd.type.harvest); showSaveStatus('🌾 Harvested ' + sd.type.name + ' +💰' + sd.type.harvest); }
       playThud(220);
       return;
     }
@@ -17974,6 +18018,32 @@
         return true;
       };
       if ((r.isWater && topUp(r.hit)) || topUp(r.before)) return;
+    }
+    // Incubator: sits on top of whatever block you're aiming at.
+    if (selectedSlot === INCUBATOR_SLOT) {
+      if (r.isWater || r.isLava || !r.before) return;
+      const { x: ix, y: iy, z: iz } = r.before, ik = key(ix, iy, iz);
+      if (!blocks.has(key(ix, iy - 1, iz))) { showSaveStatus('🥚 The incubator needs a block underneath it', true); return; }
+      if (blocks.has(ik) || waterBlocks.has(ik) || lava.has(ik) || seedEdits.has(ik)) return;
+      if (blockOverlapsPlayer(ix, iy, iz)) return;
+      if (!recordSeed(ix, iy, iz, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec())) { showSaveStatus('🥚 Incubators can only go in your own worlds', true); return; }
+      seedNextPass = 0; playThud(260);
+      return;
+    }
+    // Animal seeds: aimed at an empty incubator (the ray passes through
+    // the incubator's cell, so check the cell in front and the one on top
+    // of the block that was hit).
+    if (selectedSlot === ANIMAL_SLOT) {
+      if (!r.hit) return;
+      const cands = [r.before, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }];
+      const inc = cands.find(c => incubatorAt(c));
+      if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Action menu', true); return; }
+      const ik = key(inc.x, inc.y, inc.z);
+      if (seedCode(ik) !== INCUBATOR_EMPTY) { showSaveStatus('🥚 That incubator is already hatching something', true); return; }
+      recordSeed(inc.x, inc.y, inc.z, (INCUBATING_BASE + animalTypeIdx) * SEED_VALUE_MUL + nowSec());
+      showSaveStatus('🥚 ' + ANIMAL_TYPES[animalTypeIdx].name + ' egg incubating… ' + ANIMAL_EMOJI[animalTypeIdx]);
+      seedNextPass = 0; playThud(300);
+      return;
     }
     // Seeds: plant on top of the Mud block you're aiming at.
     if (selectedSlot === SEED_SLOT) {
@@ -18954,19 +19024,35 @@
   // Saved per chunk alongside water and lava: [x,y,z,value,2] in the
   // chunk row's water array, value = typeIdx * 1e10 + planted-at time in
   // whole seconds (so no new table column was needed).
+  // Indices 0-11 must never be reordered — planted seeds are saved by
+  // their index here. New types only ever go on the end.
   const SEED_TYPES = [
     { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 150 },
     { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 150 },
     { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 180 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 90,  harvest: 8 },
-    { name: 'Carrots',        kind: 'carrot',  growSec: 90,  harvest: 8 },
-    { name: 'Cabbage',        kind: 'cabbage', growSec: 100, harvest: 10 },
-    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 120, harvest: 15 },
-    { name: 'Red Flowers',    kind: 'flower',  color: 0xd23a3a, growSec: 60 },
-    { name: 'Yellow Flowers', kind: 'flower',  color: 0xe8c52a, growSec: 60 },
-    { name: 'Purple Flowers', kind: 'flower',  color: 0x8e44ad, growSec: 60 },
-    { name: 'Blue Flowers',   kind: 'flower',  color: 0x2f6fd6, growSec: 60 },
-    { name: 'White Flowers',  kind: 'flower',  color: 0xf0f0f0, growSec: 60 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 90,  produce: 'Wheat',    yield: 3 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 90,  produce: 'Carrot',   yield: 3 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 100, produce: 'Cabbage',  yield: 1 },
+    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 120, produce: 'Pumpkin',  yield: 1 },
+    // Flowers: species index into FLOWER_TYPES + colour index into
+    // FLOWER_COLORS, so a sown flower is exactly the same shape and
+    // colour as the wild ones (0 daisy, 1 peony, 2 tulip, 3 cluster, 4 poppy).
+    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 60, produce: 'Red Poppies',    yield: 1 },
+    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 60, produce: 'Yellow Daisies', yield: 1 },
+    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 60, produce: 'Purple Peonies', yield: 1 },
+    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 60, produce: 'Blue Clusters',  yield: 1 },
+    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 60, produce: 'White Daisies',  yield: 1 },
+    { name: 'Potatoes',       kind: 'potato',     growSec: 110, produce: 'Potato',     yield: 4 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 120, produce: 'Tomato',     yield: 4 },
+    { name: 'Lettuce',        kind: 'lettuce',    growSec: 80,  produce: 'Lettuce',    yield: 1 },
+    { name: 'Beetroot',       kind: 'beetroot',   growSec: 90,  produce: 'Beetroot',   yield: 2 },
+    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 140, produce: 'Sweetcorn',  yield: 2 },
+    { name: 'Onions',         kind: 'onion',      growSec: 100, produce: 'Onion',      yield: 3 },
+    { name: 'Peas',           kind: 'peas',       growSec: 100, produce: 'Peas',       yield: 5 },
+    { name: 'Strawberries',   kind: 'strawberry', growSec: 110, produce: 'Strawberry', yield: 5 },
+    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 60, produce: 'Pink Peonies',   yield: 1 },
+    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 60, produce: 'Red Tulips',     yield: 1 },
+    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 60, produce: 'Orange Tulips',  yield: 1 },
   ];
   let seedTypeIdx = 0;
   const MUD_TYPE = typeIndexByName('Mud');
@@ -19085,18 +19171,125 @@
         const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.08 + 0.04 * t, 5), seedMat(0x6b5a2b));
         stalk.position.y = rad * 1.2 + 0.03; stalk.rotation.z = 0.25; g.add(stalk);
       }
-    } else { // flower
-      const stemH = 0.1 + 0.4 * p;
-      const stem = new THREE.Mesh(new THREE.BoxGeometry(0.04, stemH, 0.04), seedMat(0x4f9a33)); stem.position.y = stemH / 2; g.add(stem);
-      if (p >= 0.5) {
-        const pr = 0.06 + 0.1 * ((p - 0.5) / 0.5);
-        const petals = new THREE.Mesh(new THREE.CylinderGeometry(pr, pr, 0.03, 8), seedMat(type.color)); petals.position.y = stemH; g.add(petals);
-        const centre = new THREE.Mesh(new THREE.CylinderGeometry(pr * 0.35, pr * 0.35, 0.04, 6), seedMat(0xf2c230)); centre.position.y = stemH + 0.005; g.add(centre);
+    } else if (type.kind === 'potato') {
+      // A low, bushy mound of dark leaf clusters; small white-and-yellow
+      // flowers open on top when the potatoes underneath are ready.
+      const n = 5 + Math.round(p * 6), spread = 0.1 + 0.22 * p;
+      for (let i = 0; i < n; i++) {
+        const r = 0.05 + 0.06 * p;
+        const lf = new THREE.Mesh(new THREE.SphereGeometry(r, 6, 5), seedMat(i % 2 ? 0x3f7f2e : 0x4c8f35));
+        const ang = rnd() * Math.PI * 2, d = rnd() * spread;
+        lf.position.set(Math.cos(ang) * d, 0.05 + rnd() * (0.12 + 0.25 * p), Math.sin(ang) * d); lf.scale.y = 0.6; g.add(lf);
       }
+      if (p >= 0.8) for (let i = 0; i < 3; i++) {
+        const fl = new THREE.Mesh(new THREE.SphereGeometry(0.028, 5, 4), seedMat(0xf4f1e8));
+        fl.position.set((rnd() - 0.5) * 0.3, 0.3 + 0.12 * p, (rnd() - 0.5) * 0.3); g.add(fl);
+      }
+    } else if (type.kind === 'tomato') {
+      // Tied to a cane: a climbing vine with leaves, yellow flowers, then
+      // trusses of fruit that swell green and ripen to red.
+      const h = 0.25 + 0.75 * p;
+      const cane = new THREE.Mesh(new THREE.BoxGeometry(0.025, 1.0, 0.025), seedMat(0xb08850)); cane.position.set(0.06, 0.5, 0); g.add(cane);
+      const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.02, h, 5), seedMat(0x4f8a33)); vine.position.y = h / 2; g.add(vine);
+      const leaves = 3 + Math.round(p * 5);
+      for (let i = 0; i < leaves; i++) {
+        const lf = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08), seedMat(i % 2 ? 0x4c8f35 : 0x3f7f2e));
+        const ang = i * 2.4;
+        lf.position.set(Math.cos(ang) * 0.08, 0.1 + (i / leaves) * h, Math.sin(ang) * 0.08); lf.rotation.set(0.5, -ang, 0.3); g.add(lf);
+      }
+      if (p >= 0.5 && p < 0.7) for (let i = 0; i < 3; i++) { const f = new THREE.Mesh(new THREE.SphereGeometry(0.02, 5, 4), seedMat(0xf2d230)); f.position.set((rnd() - 0.5) * 0.18, h * (0.5 + rnd() * 0.4), (rnd() - 0.5) * 0.18); g.add(f); }
+      if (p >= 0.7) {
+        const t = (p - 0.7) / 0.3, col = p >= 1 ? 0xd9302a : lerpHex(0x6aa84f, 0xd9582a, t);
+        for (let i = 0; i < 5; i++) {
+          const fr = new THREE.Mesh(new THREE.SphereGeometry(0.035 + 0.025 * t, 7, 6), seedMat(col));
+          fr.position.set((rnd() - 0.5) * 0.2, h * (0.35 + rnd() * 0.5), (rnd() - 0.5) * 0.2); g.add(fr);
+        }
+      }
+    } else if (type.kind === 'lettuce') {
+      // A loose rosette of pale, frilly leaves cupping up round a centre.
+      const n = 6 + Math.round(p * 6), r = 0.07 + 0.13 * p;
+      for (let i = 0; i < n; i++) {
+        const lf = new THREE.Mesh(new THREE.SphereGeometry(r, 7, 5, 0, Math.PI), seedMat(i < n / 2 ? 0x9fd66a : 0x7cc050));
+        const ang = (i / n) * Math.PI * 2 + rnd() * 0.3, inner = i < n / 2;
+        lf.position.set(Math.cos(ang) * r * (inner ? 0.25 : 0.55), r * 0.5, Math.sin(ang) * r * (inner ? 0.25 : 0.55));
+        lf.rotation.set(0, -ang, inner ? 0.2 : 0.8); lf.scale.set(1, 1, 0.3); g.add(lf);
+      }
+    } else if (type.kind === 'beetroot') {
+      // Glossy leaves on red stems; the top of the deep red-purple root
+      // pushes up out of the soil as it matures.
+      const n = 5, lh = 0.12 + 0.28 * p;
+      for (let i = 0; i < n; i++) {
+        const f = new THREE.Group(); f.rotation.y = (i / n) * Math.PI * 2 + rnd() * 0.4;
+        const st = new THREE.Mesh(new THREE.BoxGeometry(0.015, lh, 0.015), seedMat(0xa3203a)); st.position.y = lh / 2; st.rotation.z = 0.3; f.add(st);
+        const lf = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.16 + 0.08 * p), seedMat(0x3f7a2e)); lf.position.set(0.1 * lh * 3, lh, 0); lf.rotation.z = 0.5; f.add(lf);
+        g.add(f);
+      }
+      if (p >= 0.6) { const r = 0.04 + 0.05 * ((p - 0.6) / 0.4); const root = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), seedMat(0x7a1535)); root.position.y = r * 0.3; g.add(root); }
+    } else if (type.kind === 'sweetcorn') {
+      // Grows taller than you: a thick stalk with long arching leaves,
+      // cobs wrapped in husk down the side, and a tassel on top.
+      const h = 0.3 + 1.4 * p;
+      const st = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.035, h, 6), seedMat(0x6ea03e)); st.position.y = h / 2; g.add(st);
+      const leaves = 3 + Math.round(p * 5);
+      for (let i = 0; i < leaves; i++) {
+        const lf = new THREE.Mesh(new THREE.PlaneGeometry(0.06, 0.35 + 0.15 * p), seedMat(i % 2 ? 0x5f9a38 : 0x6fae42));
+        const ang = i * 2.1; lf.position.set(Math.cos(ang) * 0.1, 0.1 + (i / leaves) * h * 0.9, Math.sin(ang) * 0.1); lf.rotation.set(0, -ang, 0.9); g.add(lf);
+      }
+      if (p >= 0.6) for (let i = 0; i < 2; i++) {
+        const t = (p - 0.6) / 0.4;
+        const cob = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.12 + 0.1 * t, 6), seedMat(p >= 1 ? 0xb5c46a : 0x8fb04a));
+        const ang = i * Math.PI + 0.5; cob.position.set(Math.cos(ang) * 0.06, h * (0.45 + i * 0.12), Math.sin(ang) * 0.06); cob.rotation.z = (i ? -1 : 1) * 0.35; g.add(cob);
+      }
+      if (p >= 0.8) { const tas = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.18, 5), seedMat(0xc9a95a)); tas.position.y = h + 0.08; g.add(tas); }
+    } else if (type.kind === 'onion') {
+      // Tall hollow green leaves from a bulb that swells up out of the
+      // soil; the leaves flop over and yellow when it's ready to lift.
+      const ripe = p >= 1, lh = 0.15 + 0.35 * p;
+      for (let i = 0; i < 5; i++) {
+        const lf = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.014, lh, 5), seedMat(ripe ? 0xa8a84a : 0x5a9e3a));
+        const ang = (i / 5) * Math.PI * 2; lf.position.set(Math.cos(ang) * 0.02, lh / 2 + 0.03, Math.sin(ang) * 0.02);
+        lf.rotation.set(Math.sin(ang) * (ripe ? 1.1 : 0.15), 0, -Math.cos(ang) * (ripe ? 1.1 : 0.15)); g.add(lf);
+      }
+      if (p >= 0.4) { const r = 0.03 + 0.06 * ((p - 0.4) / 0.6); const bulb = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), seedMat(0xc9a35a)); bulb.position.y = r * 0.6; bulb.scale.y = 0.85; g.add(bulb); }
+    } else if (type.kind === 'peas') {
+      // Climbing up a wigwam of three canes: tendrilled vines, white
+      // flowers, then plump green pods hanging off them.
+      const h = 0.2 + 0.75 * p;
+      for (let i = 0; i < 3; i++) {
+        const ang = (i / 3) * Math.PI * 2;
+        const cane = new THREE.Mesh(new THREE.BoxGeometry(0.02, 1.05, 0.02), seedMat(0xb08850));
+        cane.position.set(Math.cos(ang) * 0.14, 0.5, Math.sin(ang) * 0.14); cane.rotation.set(-Math.sin(ang) * 0.25, 0, Math.cos(ang) * 0.25); g.add(cane);
+        const vine = new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.012, h, 4), seedMat(0x5fa83a));
+        vine.position.set(Math.cos(ang) * 0.12, h / 2, Math.sin(ang) * 0.12); g.add(vine);
+        for (let j = 0; j < 2 + Math.round(p * 2); j++) {
+          const lf = new THREE.Mesh(new THREE.SphereGeometry(0.035, 5, 4), seedMat(0x6ab842));
+          lf.position.set(Math.cos(ang) * 0.12 + (rnd() - 0.5) * 0.07, 0.1 + rnd() * h, Math.sin(ang) * 0.12 + (rnd() - 0.5) * 0.07); lf.scale.y = 0.5; g.add(lf);
+        }
+        if (p >= 0.5 && p < 0.75) { const f = new THREE.Mesh(new THREE.SphereGeometry(0.022, 5, 4), seedMat(0xf4f1e8)); f.position.set(Math.cos(ang) * 0.1, h * 0.8, Math.sin(ang) * 0.1); g.add(f); }
+        if (p >= 0.75) { const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.1, 5), seedMat(0x7cc84a)); pod.position.set(Math.cos(ang) * 0.09, h * 0.6, Math.sin(ang) * 0.09); pod.rotation.z = 0.5; g.add(pod); }
+      }
+    } else if (type.kind === 'strawberry') {
+      // Low plant of three-lobed leaves; white flowers, then berries that
+      // go green → white → red and hang down onto the soil.
+      const n = 4 + Math.round(p * 4), lh = 0.08 + 0.14 * p;
+      for (let i = 0; i < n; i++) {
+        const f = new THREE.Group(); f.rotation.y = (i / n) * Math.PI * 2 + rnd() * 0.5;
+        const st = new THREE.Mesh(new THREE.BoxGeometry(0.01, lh, 0.01), seedMat(0x4f8a33)); st.position.set(0.04, lh / 2, 0); st.rotation.z = -0.4; f.add(st);
+        for (let j = -1; j <= 1; j++) { const lf = new THREE.Mesh(new THREE.CircleGeometry(0.045, 6), seedMat(0x3f8a2e)); lf.position.set(0.09 + Math.abs(j) * 0.01, lh + 0.01, j * 0.04); lf.rotation.x = -Math.PI / 2 + 0.3; f.add(lf); }
+        g.add(f);
+      }
+      if (p >= 0.5 && p < 0.7) for (let i = 0; i < 3; i++) { const fl = new THREE.Mesh(new THREE.SphereGeometry(0.02, 5, 4), seedMat(0xf6f3ec)); fl.position.set((rnd() - 0.5) * 0.25, lh + 0.03, (rnd() - 0.5) * 0.25); g.add(fl); }
+      if (p >= 0.7) {
+        const t = (p - 0.7) / 0.3, col = p >= 1 ? 0xd2222e : lerpHex(0x9fd66a, 0xf0e8d0, t);
+        for (let i = 0; i < 6; i++) { const b = new THREE.Mesh(new THREE.ConeGeometry(0.025 + 0.012 * t, 0.05 + 0.02 * t, 7), seedMat(col)); b.rotation.x = Math.PI; b.position.set((rnd() - 0.5) * 0.35, 0.03, (rnd() - 0.5) * 0.35); g.add(b); }
+      }
+    } else { // flower — built from the SAME species shapes as the flowers that grow wild (see FLOWER_TYPES / buildFlowerModel)
+      const fm = buildFlowerModel(type.species, FLOWER_COLORS[type.colorIdx], p);
+      g.add(fm);
     }
     return g;
   }
-  function disposeSeedGroup(g) { g.traverse(o => { if (o.isMesh) o.geometry.dispose(); }); scene.remove(g); } // materials are cached/shared
+  function disposeSeedGroup(g) { g.traverse(o => { if (o.isMesh && !o.geometry.userData.shared) o.geometry.dispose(); }); scene.remove(g); } // materials are cached/shared
   function recordSeed(x, y, z, v) {
     if (!terrainStreamingActive) return false;
     const k = key(x, y, z);
@@ -19108,6 +19301,7 @@
     const v = seedEdits.get(k);
     if (v === undefined) return null;
     const typeIdx = Math.floor(v / SEED_VALUE_MUL);
+    if (typeIdx >= 100) return null; // an incubator or animal record, not a plant — see INCUBATOR & ANIMAL SEEDS
     return { type: SEED_TYPES[typeIdx], typeIdx, plantedAt: v - typeIdx * SEED_VALUE_MUL };
   }
   function seedProgress(s) { return Math.max(0, Math.min(1, (Date.now() / 1000 - s.plantedAt) / s.type.growSec)); }
@@ -19144,6 +19338,8 @@
     for (const [k] of seedEdits) {
       const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      const code = seedCode(k);
+      if (code >= INCUBATOR_EMPTY) { updateIncubatorRecord(k, x, y, z, code); continue; }
       if (!groundHeightOnly.has(x + ',' + z)) { const fx = seedFx.get(k); if (fx) { disposeSeedGroup(fx.group); seedFx.delete(k); } continue; } // not loaded — hide, keep growing
       const s = seedAt(k);
       if (!s || !s.type || blocks.get(key(x, y - 1, z)) !== MUD_TYPE || blocks.has(k)) { removeSeed(k, x, y, z); continue; } // mud dug out, or built over
@@ -19159,6 +19355,8 @@
       seedFx.set(k, { group: g, stage });
     }
     for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) { disposeSeedGroup(seedFx.get(k).group); seedFx.delete(k); } // world changed / removed elsewhere
+    for (const k of [...incubatorFx.keys()]) if (!seedEdits.has(k)) { scene.remove(incubatorFx.get(k).group); incubatorFx.delete(k); }
+    for (const k of [...hatchedLive.keys()]) if (!seedEdits.has(k)) despawnHatched(k);
   }
   function seedIconCanvas(idx) {
     const t = SEED_TYPES[idx];
@@ -19166,7 +19364,9 @@
     const ctx = c.getContext('2d');
     ctx.fillStyle = '#5a3d24'; ctx.fillRect(4, 24, 26, 7); // mud
     ctx.fillStyle = '#4f9a33'; ctx.fillRect(16, 12, 2, 12); // stem
-    const hex = '#' + (t.kind === 'tree' ? t.leaf : t.kind === 'flower' ? t.color : t.kind === 'wheat' ? 0xd4b83a : t.kind === 'carrot' ? 0xe8762a : t.kind === 'pumpkin' ? 0xe07a1f : 0x6fae4a).toString(16).padStart(6, '0');
+    const ICON_HEX = { wheat: 0xd4b83a, carrot: 0xe8762a, pumpkin: 0xe07a1f, cabbage: 0x6fae4a, potato: 0xc9a35a, tomato: 0xd9302a, lettuce: 0x9fd66a,
+      beetroot: 0x7a1535, sweetcorn: 0xe8cf4a, onion: 0xc9a35a, peas: 0x7cc84a, strawberry: 0xd2222e };
+    const hex = '#' + (t.kind === 'tree' ? t.leaf : t.kind === 'flower' ? FLOWER_COLORS[t.colorIdx] : (ICON_HEX[t.kind] || 0x6fae4a)).toString(16).padStart(6, '0');
     ctx.fillStyle = hex; ctx.beginPath(); ctx.arc(17, 11, 6, 0, Math.PI * 2); ctx.fill();
     return c;
   }
@@ -19190,6 +19390,366 @@
         if (slotIcon) slotIcon.remove();
         slotElByIndex[SEED_SLOT].insertBefore(seedIconCanvas(idx), slotElByIndex[SEED_SLOT].querySelector('.family-badge'));
         selectSlot(SEED_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    mountPopup(popup, slotEl);
+  }
+
+
+  // ================= HARVEST BAG (INVENTORY) =================
+  // Everything harvested goes in here — opened from the 🎒 button under
+  // the left joystick. Groundwork for lives: produce is kept as named
+  // items with counts so it can later be eaten/spent.
+  // Saved to this device's localStorage straight away, and also to the
+  // player's Supabase row as an `inventory` jsonb column when that
+  // column exists — sent in its OWN request, separate from coins/hours,
+  // so a database without the column yet never breaks the stats save.
+  const PRODUCE_EMOJI = {
+    Wheat: '🌾', Carrot: '🥕', Cabbage: '🥬', Pumpkin: '🎃', Potato: '🥔', Tomato: '🍅', Lettuce: '🥬',
+    Beetroot: '🟣', Sweetcorn: '🌽', Onion: '🧅', Peas: '🟢', Strawberry: '🍓',
+  };
+  let inventory = {};
+  let inventorySaveTimer = null;
+  function inventoryStorageKey() { return 'voxelInventory:' + (playerUid || 'guest'); }
+  function loadInventory() {
+    try { inventory = JSON.parse(localStorage.getItem(inventoryStorageKey()) || '{}') || {}; } catch (e) { inventory = {}; }
+    renderInventory();
+    if (!playerUid) return;
+    fetch(`${SB_URL}/rest/v1/taskmill_voxel_players?uid=eq.${encodeURIComponent(playerUid)}&select=inventory`, { headers: SB_HEADERS })
+      .then(r => r.ok ? r.json() : null)
+      .then(rows => {
+        const remote = rows && rows[0] && rows[0].inventory;
+        if (remote && typeof remote === 'object') {
+          // Keep whichever copy has more in it per item — never lose a harvest to a stale copy.
+          for (const [k, v] of Object.entries(remote)) inventory[k] = Math.max(inventory[k] || 0, v || 0);
+          try { localStorage.setItem(inventoryStorageKey(), JSON.stringify(inventory)); } catch (e) {}
+          renderInventory();
+        }
+      }).catch(() => {});
+  }
+  function saveInventory() {
+    try { localStorage.setItem(inventoryStorageKey(), JSON.stringify(inventory)); } catch (e) {}
+    clearTimeout(inventorySaveTimer);
+    inventorySaveTimer = setTimeout(() => {
+      if (!playerUid) return;
+      fetch(`${SB_URL}/rest/v1/taskmill_voxel_players`, {
+        method: 'POST', headers: { ...SB_HEADERS, Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify([{ uid: playerUid, inventory }]),
+      }).catch(() => {});
+    }, 3000);
+  }
+  function addToInventory(name, n) {
+    inventory[name] = (inventory[name] || 0) + n;
+    saveInventory();
+    renderInventory();
+  }
+  function renderInventory() {
+    const list = document.getElementById('bagList');
+    const count = document.getElementById('bagCount');
+    const entries = Object.entries(inventory).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0]));
+    const total = entries.reduce((t, [, n]) => t + n, 0);
+    if (count) { count.textContent = total > 99 ? '99+' : String(total); count.style.display = total ? 'flex' : 'none'; }
+    if (!list) return;
+    list.innerHTML = '';
+    if (!entries.length) { list.innerHTML = '<div class="bagEmpty">Nothing yet — grow vegetables or flowers from seed, then mine them once they are fully grown to harvest them into here.</div>'; return; }
+    for (const [name, n] of entries) {
+      const row = document.createElement('div'); row.className = 'bagItem';
+      const icon = PRODUCE_EMOJI[name] || '💐';
+      row.innerHTML = `<span class="bagIcon">${icon}</span><span class="bagName">${name}</span><span class="bagQty">×${n}</span>`;
+      list.appendChild(row);
+    }
+  }
+  function toggleBag(force) {
+    const panel = document.getElementById('bagPanel');
+    if (!panel) return;
+    const show = force !== undefined ? force : panel.style.display !== 'block';
+    panel.style.display = show ? 'block' : 'none';
+    if (show) renderInventory();
+  }
+  document.getElementById('btnBag').addEventListener('click', e => { e.stopPropagation(); toggleBag(); });
+  document.getElementById('bagClose').addEventListener('click', e => { e.stopPropagation(); toggleBag(false); });
+  // Harvest a fully-grown vegetable/flower into the bag.
+  function harvestSeed(pk, x, y, z, sd) {
+    removeSeed(pk, x, y, z);
+    const n = sd.type.yield || 1, item = sd.type.produce || sd.type.name;
+    addToInventory(item, n);
+    showSaveStatus('🎒 +' + n + ' ' + item + (PRODUCE_EMOJI[item] ? ' ' + PRODUCE_EMOJI[item] : ''));
+  }
+
+  // ================= INCUBATOR & ANIMAL SEEDS =================
+  // The Incubator (Action menu) is placed on top of any block. Aim Animal
+  // Seeds (Landscape menu) at an empty incubator to start one: an egg
+  // appears under the heat lamp, wobbles more as it's nearly ready, and
+  // hatches the chosen animal next to the incubator — which then lives
+  // there, wandering the area round it, and is saved with the world.
+  // All stored in seedEdits too (same save row as seeds), using codes
+  // above the plant range: 100 = empty incubator, 101+ = incubating that
+  // animal, 200+ = a hatched animal (its record's key carries its home
+  // position — y + 100000 × (n+1) so several can share one incubator).
+  const ANIMAL_TYPES = [
+    { name: 'Cow',     hatchSec: 120, build: () => buildRealCow() },
+    { name: 'Sheep',   hatchSec: 110, build: () => buildRealSheep() },
+    { name: 'Chicken', hatchSec: 60,  build: () => buildRealChicken() },
+    { name: 'Dog',     hatchSec: 90,  build: () => buildRealDog() },
+    { name: 'Cat',     hatchSec: 90,  build: () => buildRealCat() },
+    { name: 'Horse',   hatchSec: 150, build: () => buildRealHorse() },
+    { name: 'Pig',     hatchSec: 100, build: () => buildRealPig() },
+  ];
+  const ANIMAL_EMOJI = ['🐄', '🐑', '🐔', '🐕', '🐈', '🐎', '🐖'];
+  let animalTypeIdx = 0;
+  const INCUBATOR_EMPTY = 100, INCUBATING_BASE = 101, HATCHED_BASE = 200;
+  const incubatorFx = new Map(); // key -> { group, egg, state }
+  const hatchedLive = new Map(); // record key -> villageAnimals entry
+  function seedCode(k) { const v = seedEdits.get(k); return v === undefined ? -1 : Math.floor(v / SEED_VALUE_MUL); }
+  function seedTime(k) { const v = seedEdits.get(k); return v - Math.floor(v / SEED_VALUE_MUL) * SEED_VALUE_MUL; }
+  const nowSec = () => Math.floor(Date.now() / 1000);
+  const phong = (hex) => new THREE.MeshPhongMaterial({ color: hex, flatShading: true, shininess: 0 });
+  function buildIncubatorModel() {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.22, 0.86), phong(0xd9d4c8)); base.position.y = 0.11; g.add(base);
+    const trim = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.04, 0.9), phong(0x5a6a78)); trim.position.y = 0.23; g.add(trim);
+    const nest = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.22, 0.06, 10), phong(0xc9a35a)); nest.position.y = 0.27; g.add(nest);
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.42, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshPhongMaterial({ color: 0xcfe8ff, transparent: true, opacity: 0.28, shininess: 90, depthWrite: false }));
+    dome.position.y = 0.25; dome.scale.y = 1.1; g.add(dome);
+    const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 0.08, 8), new THREE.MeshBasicMaterial({ color: 0xff5a2a })); lamp.position.y = 0.72; g.add(lamp);
+    const dial = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.02), new THREE.MeshBasicMaterial({ color: 0x46e07a })); dial.position.set(0, 0.12, 0.44); g.add(dial);
+    const egg = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), phong(0xf1e6cf)); egg.scale.y = 1.3; egg.position.y = 0.4; egg.visible = false; g.add(egg);
+    g.userData.egg = egg; g.userData.lamp = lamp; g.userData.dial = dial;
+    return g;
+  }
+  function incubatorAt(c) { return c && seedCode(key(c.x, c.y, c.z)) >= INCUBATOR_EMPTY && seedCode(key(c.x, c.y, c.z)) < HATCHED_BASE; }
+  function hatchAnimal(x, y, z, animalIdx) {
+    let n = 0;
+    while (seedEdits.has(key(x, y + 100000 * (n + 1), z)) && n < 50) n++;
+    recordSeed(x, y + 100000 * (n + 1), z, (HATCHED_BASE + animalIdx) * SEED_VALUE_MUL + nowSec());
+    recordSeed(x, y, z, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec());
+    showSaveStatus('🐣 A ' + ANIMAL_TYPES[animalIdx].name.toLowerCase() + ' hatched! ' + ANIMAL_EMOJI[animalIdx]);
+  }
+  function spawnHatched(rk, hx, hy, hz, animalIdx) {
+    const mesh = ANIMAL_TYPES[animalIdx].build();
+    const bounds = { xMin: hx - 7, xMax: hx + 7, zMin: hz - 7, zMax: hz + 7, y: hy };
+    const sx = hx + 0.5 + (Math.random() < 0.5 ? -1.2 : 1.2), sz = hz + 0.5 + (Math.random() - 0.5) * 1.5;
+    mesh.position.set(sx, villageSurfaceY(sx, sz, hy - 1) + 1, sz);
+    mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(mesh);
+    const rec = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck: 'hatched', fenceKeys: [], escaped: false, fenceCheckTimer: 1, hatched: true };
+    villageAnimals.push(rec);
+    hatchedLive.set(rk, rec);
+  }
+  function despawnHatched(rk) {
+    const rec = hatchedLive.get(rk);
+    if (!rec) return;
+    const i = villageAnimals.indexOf(rec); if (i >= 0) villageAnimals.splice(i, 1);
+    scene.remove(rec.mesh);
+    rec.mesh.traverse(o => { if (o.isMesh) { o.geometry.dispose(); if (o.material.dispose) o.material.dispose(); } });
+    hatchedLive.delete(rk);
+  }
+  // Runs from updateSeeds for every non-plant record.
+  function updateIncubatorRecord(k, x, y, z, code) {
+    if (code >= HATCHED_BASE) {
+      const hy = y % 100000;
+      const loaded = groundHeightOnly.has(x + ',' + z);
+      const rec = hatchedLive.get(k);
+      if (rec && villageAnimals.indexOf(rec) < 0) { hatchedLive.delete(k); recordSeed(x, y, z, -1); return; } // it died (weapons etc.) — gone for good
+      if (loaded && !rec) spawnHatched(k, x, hy, z, code - HATCHED_BASE);
+      else if (!loaded && rec) despawnHatched(k);
+      return;
+    }
+    if (!groundHeightOnly.has(x + ',' + z)) { const fx = incubatorFx.get(k); if (fx) { scene.remove(fx.group); incubatorFx.delete(k); } return; }
+    if (!blocks.has(key(x, y - 1, z)) || blocks.has(k)) { // its base was dug out, or something was built in it
+      const fx = incubatorFx.get(k); if (fx) { scene.remove(fx.group); incubatorFx.delete(k); }
+      recordSeed(x, y, z, -1); return;
+    }
+    let fx = incubatorFx.get(k);
+    if (!fx) { const g = buildIncubatorModel(); g.position.set(x + 0.5, y, z + 0.5); scene.add(g); fx = { group: g }; incubatorFx.set(k, fx); }
+    const egg = fx.group.userData.egg;
+    if (code === INCUBATOR_EMPTY) { egg.visible = false; fx.group.userData.dial.material.color.setHex(0x46e07a); return; }
+    const a = code - INCUBATING_BASE, t = ANIMAL_TYPES[a];
+    if (!t) { recordSeed(x, y, z, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec()); return; }
+    const p = Math.min(1, (nowSec() - seedTime(k)) / t.hatchSec);
+    egg.visible = true;
+    egg.material.color.setHex(a === 2 ? 0xe9d2a8 : 0xf1e6cf);
+    fx.group.userData.dial.material.color.setHex(0xffb020);
+    fx.wobble = p; // animated in animateIncubators
+    if (p >= 1) hatchAnimal(x, y, z, a);
+  }
+  function animateIncubators() {
+    const t = performance.now() / 1000;
+    for (const fx of incubatorFx.values()) {
+      const egg = fx.group.userData.egg;
+      if (!egg.visible) continue;
+      const w = fx.wobble || 0, amt = w > 0.75 ? 0.25 : 0.06; // rocks harder when it's about to hatch
+      egg.rotation.z = Math.sin(t * (w > 0.75 ? 9 : 3)) * amt;
+      fx.group.userData.lamp.material.color.setHex(Math.sin(t * 2) > 0 ? 0xff5a2a : 0xff7a3a);
+    }
+  }
+  function clearFarmWorldState() {
+    for (const fx of incubatorFx.values()) scene.remove(fx.group);
+    incubatorFx.clear();
+    for (const rk of [...hatchedLive.keys()]) despawnHatched(rk);
+  }
+
+  // ---- Realistic animal models (shared leg-swing animation expects
+  //      g.userData.legs; front legs at +z) ----
+  function addLegs(g, mat, spots, w, h, hoofMat) {
+    const legs = [];
+    for (const [x, z] of spots) {
+      const leg = new THREE.Group(); leg.position.set(x, h, z);
+      const upper = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), mat); upper.position.y = -h / 2; leg.add(upper);
+      if (hoofMat) { const hoof = new THREE.Mesh(new THREE.BoxGeometry(w * 1.1, h * 0.14, w * 1.1), hoofMat); hoof.position.y = -h + h * 0.07; leg.add(hoof); }
+      g.add(leg); legs.push(leg);
+    }
+    g.userData.legs = legs;
+  }
+  function eyes(g, y, z, xOff, r) {
+    const m = new THREE.MeshBasicMaterial({ color: 0x111111 });
+    for (const sx of [-1, 1]) { const e = new THREE.Mesh(new THREE.SphereGeometry(r, 5, 4), m); e.position.set(sx * xOff, y, z); g.add(e); }
+  }
+  function buildRealCow() {
+    const g = new THREE.Group();
+    const hide = phong(0xf3efe6), patch = phong(0x2b2622), pink = phong(0xe8a6a0), horn = phong(0xe8dcc0), hoof = phong(0x2b2622);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.55, 1.1), hide); body.position.y = 0.82; g.add(body);
+    for (const [x, y, z, sx, sz] of [[0.312, 0.86, 0.15, 0.01, 0.4], [-0.312, 0.8, -0.25, 0.01, 0.35], [0, 1.1, -0.1, 0.35, 0.3], [0.2, 1.1, 0.3, 0.2, 0.2]]) {
+      const pch = new THREE.Mesh(new THREE.BoxGeometry(sx || 0.01, 0.25, sz), patch); pch.position.set(x, y, z); if (!sx || sx < 0.02) pch.scale.x = 1; g.add(pch);
+    }
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.32, 0.25), hide); neck.position.set(0, 0.95, 0.6); g.add(neck);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.36, 0.38), hide); head.position.set(0, 1.0, 0.8); g.add(head);
+    const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.14), pink); muzzle.position.set(0, 0.9, 1.02); g.add(muzzle);
+    for (const sx of [-1, 1]) {
+      const ear = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.08), patch); ear.position.set(sx * 0.24, 1.1, 0.74); ear.rotation.z = sx * 0.3; g.add(ear);
+      const hn = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.12, 5), horn); hn.position.set(sx * 0.13, 1.23, 0.74); hn.rotation.z = -sx * 0.4; g.add(hn);
+    }
+    eyes(g, 1.06, 0.99, 0.12, 0.028);
+    const udder = new THREE.Mesh(new THREE.SphereGeometry(0.1, 7, 5), pink); udder.position.set(0, 0.52, -0.28); g.add(udder);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.45, 0.04), hide); tail.position.set(0, 0.8, -0.57); tail.rotation.x = 0.15; g.add(tail);
+    const tuft = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.08), patch); tuft.position.set(0, 0.55, -0.6); g.add(tuft);
+    addLegs(g, hide, [[-0.2, 0.4], [0.2, 0.4], [-0.2, -0.38], [0.2, -0.38]], 0.13, 0.55, hoof);
+    return g;
+  }
+  function buildRealSheep() {
+    const g = new THREE.Group();
+    const wool = phong(0xefeae0), face = phong(0x2e2723);
+    for (let i = 0; i < 9; i++) { // lumpy fleece from overlapping puffs
+      const puff = new THREE.Mesh(new THREE.SphereGeometry(0.2 + (i % 3) * 0.03, 8, 6), wool);
+      puff.position.set(((i % 3) - 1) * 0.15, 0.62 + ((i >> 1) % 2) * 0.08, (Math.floor(i / 3) - 1) * 0.22); g.add(puff);
+    }
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.24, 0.3), face); head.position.set(0, 0.72, 0.46); head.rotation.x = 0.3; g.add(head);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.13, 7, 5), wool); cap.position.set(0, 0.84, 0.4); g.add(cap);
+    for (const sx of [-1, 1]) { const ear = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.04, 0.06), face); ear.position.set(sx * 0.14, 0.78, 0.4); ear.rotation.z = sx * -0.4; g.add(ear); }
+    eyes(g, 0.78, 0.56, 0.08, 0.022);
+    addLegs(g, face, [[-0.14, 0.24], [0.14, 0.24], [-0.14, -0.24], [0.14, -0.24]], 0.08, 0.42);
+    return g;
+  }
+  function buildRealChicken() {
+    const g = new THREE.Group();
+    const white = phong(0xf6f1e4), red = phong(0xd62a2a), beak = phong(0xf0a22a), legM = phong(0xe8a53a);
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.16, 9, 7), white); body.scale.set(0.9, 0.85, 1.15); body.position.y = 0.3; g.add(body);
+    const tail = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.2, 6), white); tail.position.set(0, 0.42, -0.17); tail.rotation.x = -0.9; g.add(tail);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 6), white); head.position.set(0, 0.5, 0.14); g.add(head);
+    const comb = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.1), red); comb.position.set(0, 0.6, 0.14); g.add(comb);
+    const wattle = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4), red); wattle.position.set(0, 0.43, 0.22); wattle.scale.y = 1.5; g.add(wattle);
+    const bk = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.07, 5), beak); bk.position.set(0, 0.49, 0.24); bk.rotation.x = Math.PI / 2; g.add(bk);
+    for (const sx of [-1, 1]) { const wing = new THREE.Mesh(new THREE.SphereGeometry(0.1, 7, 5), white); wing.scale.set(0.3, 0.7, 1.1); wing.position.set(sx * 0.14, 0.32, 0); g.add(wing); }
+    eyes(g, 0.53, 0.2, 0.05, 0.013);
+    addLegs(g, legM, [[-0.05, 0], [0.05, 0]], 0.025, 0.16);
+    g.scale.setScalar(0.9);
+    return g;
+  }
+  function buildRealDog() {
+    const g = new THREE.Group();
+    const fur = phong(0xa8733f), light = phong(0xe8d2b0), dark = phong(0x3a2616);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.62), fur); body.position.y = 0.48; g.add(body);
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.22, 0.1), light); chest.position.set(0, 0.44, 0.3); g.add(chest);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.25, 0.26), fur); head.position.set(0, 0.7, 0.38); g.add(head);
+    const snout = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.12, 0.16), light); snout.position.set(0, 0.64, 0.56); g.add(snout);
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.03), dark); nose.position.set(0, 0.68, 0.64); g.add(nose);
+    for (const sx of [-1, 1]) { const ear = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.16, 0.1), dark); ear.position.set(sx * 0.14, 0.72, 0.34); ear.rotation.z = sx * 0.2; g.add(ear); }
+    eyes(g, 0.75, 0.51, 0.07, 0.02);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.28), fur); tail.position.set(0, 0.62, -0.38); tail.rotation.x = -0.7; g.add(tail);
+    g.userData.tail = tail;
+    addLegs(g, fur, [[-0.1, 0.22], [0.1, 0.22], [-0.1, -0.22], [0.1, -0.22]], 0.08, 0.34);
+    return g;
+  }
+  function buildRealCat() {
+    const g = new THREE.Group();
+    const fur = phong(0x7a7a80), stripe = phong(0x4a4a50), pinkM = phong(0xe8a6a0), eyeM = new THREE.MeshBasicMaterial({ color: 0x9ccf3a });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.46), fur); body.position.y = 0.33; g.add(body);
+    for (let i = 0; i < 3; i++) { const st = new THREE.Mesh(new THREE.BoxGeometry(0.205, 0.04, 0.05), stripe); st.position.set(0, 0.42, -0.12 + i * 0.12); g.add(st); }
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.18, 0.18), fur); head.position.set(0, 0.48, 0.28); g.add(head);
+    const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 0.05), fur); muzzle.position.set(0, 0.44, 0.38); g.add(muzzle);
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.02, 0.02), pinkM); nose.position.set(0, 0.47, 0.41); g.add(nose);
+    for (const sx of [-1, 1]) {
+      const ear = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 4), fur); ear.position.set(sx * 0.065, 0.6, 0.26); ear.rotation.y = Math.PI / 4; g.add(ear);
+      const e = new THREE.Mesh(new THREE.SphereGeometry(0.02, 5, 4), eyeM); e.position.set(sx * 0.05, 0.51, 0.37); g.add(e);
+    }
+    const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.025, 0.4, 5), fur); tail.position.set(0, 0.5, -0.3); tail.rotation.x = -0.6; g.add(tail);
+    addLegs(g, fur, [[-0.06, 0.16], [0.06, 0.16], [-0.06, -0.16], [0.06, -0.16]], 0.05, 0.24);
+    return g;
+  }
+  function buildRealHorse() {
+    const g = new THREE.Group();
+    const coat = phong(0x7a4a26), mane = phong(0x2a1c12), hoof = phong(0x1e1a18), blaze = phong(0xf0ebe0);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 1.2), coat); body.position.y = 1.12; g.add(body);
+    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.6, 0.3), coat); neck.position.set(0, 1.52, 0.6); neck.rotation.x = 0.55; g.add(neck);
+    const maneM = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.62, 0.12), mane); maneM.position.set(0, 1.62, 0.5); maneM.rotation.x = 0.55; g.add(maneM);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.26, 0.52), coat); head.position.set(0, 1.78, 0.92); head.rotation.x = 0.35; g.add(head);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, 0.4), blaze); stripe.position.set(0, 1.9, 0.95); stripe.rotation.x = 0.35; g.add(stripe);
+    for (const sx of [-1, 1]) { const ear = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.12, 4), coat); ear.position.set(sx * 0.08, 1.98, 0.74); g.add(ear); }
+    eyes(g, 1.86, 0.86, 0.125, 0.025);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.65, 0.1), mane); tail.position.set(0, 0.95, -0.66); tail.rotation.x = 0.25; g.add(tail);
+    addLegs(g, coat, [[-0.17, 0.45], [0.17, 0.45], [-0.17, -0.45], [0.17, -0.45]], 0.12, 0.88, hoof);
+    return g;
+  }
+  function buildRealPig() {
+    const g = new THREE.Group();
+    const skin = phong(0xf0a8a8), dark = phong(0xc97a80);
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), skin); body.scale.set(0.95, 0.85, 1.4); body.position.y = 0.5; g.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.28, 0.24), skin); head.position.set(0, 0.54, 0.46); g.add(head);
+    const snout = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.08, 10), dark); snout.rotation.x = Math.PI / 2; snout.position.set(0, 0.5, 0.6); g.add(snout);
+    for (const sx of [-1, 1]) {
+      const n = new THREE.Mesh(new THREE.SphereGeometry(0.015, 4, 3), new THREE.MeshBasicMaterial({ color: 0x5a2a2a })); n.position.set(sx * 0.03, 0.5, 0.645); g.add(n);
+      const ear = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.03, 0.1), dark); ear.position.set(sx * 0.12, 0.7, 0.42); ear.rotation.set(0.5, 0, sx * -0.4); g.add(ear);
+    }
+    eyes(g, 0.6, 0.58, 0.09, 0.02);
+    const tail = new THREE.Mesh(new THREE.TorusGeometry(0.04, 0.012, 4, 8, Math.PI * 1.6), skin); tail.position.set(0, 0.58, -0.43); g.add(tail);
+    addLegs(g, skin, [[-0.13, 0.2], [0.13, 0.2], [-0.13, -0.2], [0.13, -0.2]], 0.1, 0.26, dark);
+    return g;
+  }
+  function animalIconCanvas(idx) {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#f1e6cf'; ctx.beginPath(); ctx.ellipse(17, 19, 9, 12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '15px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(ANIMAL_EMOJI[idx], 17, 20);
+    return c;
+  }
+  function incubatorIconCanvas() {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#d9d4c8'; ctx.fillRect(4, 22, 26, 8);
+    ctx.fillStyle = 'rgba(190,225,255,0.55)'; ctx.beginPath(); ctx.arc(17, 22, 11, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#f1e6cf'; ctx.beginPath(); ctx.ellipse(17, 18, 4, 5, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#ff5a2a'; ctx.fillRect(14, 6, 6, 4);
+    return c;
+  }
+  function showAnimalPopup(slotEl) {
+    if (togglePopupFor(slotEl)) return;
+    const popup = document.createElement('div');
+    popup.style.cssText = popupCss(slotEl);
+    ANIMAL_TYPES.forEach((t, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item'; btn.title = t.name;
+      btn.appendChild(animalIconCanvas(idx));
+      const label = document.createElement('span'); label.className = 'popup-item-label'; label.textContent = t.name + ' seed'; btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        animalTypeIdx = idx;
+        const slot = slotElByIndex[ANIMAL_SLOT];
+        const old = slot.querySelector('canvas.swatch'); if (old) old.remove();
+        slot.insertBefore(animalIconCanvas(idx), slot.querySelector('.family-badge'));
+        selectSlot(ANIMAL_SLOT);
         closeFamilyPopup();
       });
       popup.appendChild(btn);
@@ -19654,17 +20214,32 @@
   const flowerStemMat = new THREE.MeshBasicMaterial({ color: 0x4a9d3f });
   const flowerCenterMat = new THREE.MeshBasicMaterial({ color: 0xb89c37 }); // dimmed to match the petals above, same reasoning
   const FLOWER_MESH_CAP = 6000; // per (species, colour) pair — 5 × 7 = 35 of these, so the old single-mesh 40000 cap would be wasteful overkill repeated 35 times over
+  // Two slim leaves part-way up every stem — wild flowers and sown ones
+  // alike (buildFlowerModel uses these same geometries and materials, so
+  // the two always match exactly).
+  const flowerLeafMat = new THREE.MeshBasicMaterial({ color: 0x3b8a35, side: THREE.DoubleSide });
+  const flowerLeafGeom = new THREE.SphereGeometry(0.06, 6, 4);
+  flowerLeafGeom.scale(1, 0.16, 0.38);
+  flowerLeafGeom.translate(0.055, 0, 0); // pivot at the stem end, so rotating it fans the leaf outwards
+  flowerLeafGeom.userData.shared = true; // also used by sown flowers — never dispose with one of them
+  const FLOWER_LEAF_CAP = 12000; // per species (2 per flower)
   FLOWER_TYPES.forEach(type => {
+    type.leafMesh = new THREE.InstancedMesh(flowerLeafGeom, flowerLeafMat, FLOWER_LEAF_CAP);
+    type.leafMesh.count = 0;
+    scene.add(type.leafMesh);
     const stemGeom = new THREE.CylinderGeometry(0.02, 0.02, type.stemH, 5);
+    type.stemGeom = stemGeom; stemGeom.userData.shared = true;
     type.stemMesh = new THREE.InstancedMesh(stemGeom, flowerStemMat, MAX_INSTANCES);
     type.stemMesh.count = 0;
     scene.add(type.stemMesh);
     const centerGeom = new THREE.SphereGeometry(Math.max(0.01, type.centerSize), 6, 5);
+    type.centerGeom = centerGeom; centerGeom.userData.shared = true;
     type.centerMesh = new THREE.InstancedMesh(centerGeom, flowerCenterMat, MAX_INSTANCES);
     type.centerMesh.count = 0;
     scene.add(type.centerMesh);
     const petalGeom = new THREE.SphereGeometry(type.petalSize, 6, 5);
     petalGeom.scale(type.petalScale[0], type.petalScale[1], type.petalScale[2]);
+    type.petalGeom = petalGeom; petalGeom.userData.shared = true;
     type.petalMeshesByColor = FLOWER_COLORS.map(hex => {
       const mat = new THREE.MeshBasicMaterial({ color: hex });
       const mesh = new THREE.InstancedMesh(petalGeom, mat, FLOWER_MESH_CAP);
@@ -19675,7 +20250,8 @@
   });
   function rebuildFlowerOverlay() {
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
-    const counts = FLOWER_TYPES.map(() => ({ stem: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
+    const counts = FLOWER_TYPES.map(() => ({ stem: 0, leaf: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
+    const dummyLeaf = new THREE.Object3D();
     let totalPlaced = 0;
     startBackgroundMapScan(blocks, (k, t) => {
       if (totalPlaced >= MAX_INSTANCES) return true;
@@ -19735,6 +20311,13 @@
         }
         c.stem++;
         totalPlaced++;
+        if (c.leaf + 2 <= FLOWER_LEAF_CAP) for (let li = 0; li < 2; li++) {
+          const la = ht * 9 + li * Math.PI;
+          dummyLeaf.position.set(fx, y + 1 + type.stemH * (0.3 + li * 0.18), fz);
+          dummyLeaf.rotation.set(0, la, 0.55);
+          dummyLeaf.updateMatrix();
+          type.leafMesh.setMatrixAt(c.leaf++, dummyLeaf.matrix);
+        }
         const petalMesh = type.petalMeshesByColor[colorIdx];
         const baseAngle = ht * Math.PI * 2; // reuses the species hash so petals aren't all aligned the same way
         type.rings.forEach(ring => {
@@ -19752,6 +20335,7 @@
     }, () => {
       FLOWER_TYPES.forEach((type, i) => {
         type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
+        type.leafMesh.count = counts[i].leaf; type.leafMesh.instanceMatrix.needsUpdate = true;
         type.centerMesh.count = type.centerSize > 0 ? counts[i].stem : 0; type.centerMesh.instanceMatrix.needsUpdate = true;
         type.petalMeshesByColor.forEach((mesh, ci) => {
           mesh.count = counts[i].petalByColor[ci];
@@ -19760,7 +20344,48 @@
       });
     }, 5000); // smaller batch than snow's — each block here can do a whole extra loop over FLOWER_SLOTS plus several hash calls, so it costs more per item
   }
-  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
+  // One flower, built from exactly the same species shape, geometries
+  // and materials as the wild ones above — used for flowers grown from
+  // seed (SEEDS). p = growth 0..1: the stem rises, then a closed bud
+  // swells and takes on colour, then the petals open out.
+  const flowerBudMats = new Map();
+  function buildFlowerModel(speciesIdx, colorHex, p) {
+    const type = FLOWER_TYPES[speciesIdx] || FLOWER_TYPES[0];
+    const colorIdx = Math.max(0, FLOWER_COLORS.indexOf(colorHex));
+    const g = new THREE.Group();
+    const grow = 0.35 + 0.65 * Math.min(1, p / 0.6); // stem height fraction
+    const stem = new THREE.Mesh(type.stemGeom, flowerStemMat);
+    stem.scale.y = grow; stem.position.y = type.stemH * grow / 2; g.add(stem);
+    for (let li = 0; li < 2; li++) {
+      const lf = new THREE.Mesh(flowerLeafGeom, flowerLeafMat);
+      lf.position.y = type.stemH * grow * (0.3 + li * 0.18); lf.rotation.set(0, 0.7 + li * Math.PI, 0.55); g.add(lf);
+    }
+    const topY = type.stemH * grow;
+    if (p < 0.6) {
+      const budHex = lerpHex(0x4a9d3f, colorHex, Math.max(0, (p - 0.3) / 0.3));
+      let budMat = flowerBudMats.get(budHex); if (!budMat) { budMat = new THREE.MeshBasicMaterial({ color: budHex }); flowerBudMats.set(budHex, budMat); }
+      const bud = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 5), budMat);
+      bud.scale.y = 1.4; bud.position.y = topY + 0.03; g.add(bud);
+      return g;
+    }
+    const open = Math.min(1, (p - 0.6) / 0.4); // petals spread out as it opens
+    const petalMat = type.petalMeshesByColor[colorIdx].material;
+    const bloomY = h => topY + (h - 1 - type.stemH) * 1; // ring heights are given above the block top; re-base onto this stem
+    type.rings.forEach((ring, ri) => {
+      for (let i = 0; i < ring.count; i++) {
+        const ang = ri * 0.4 + (i / ring.count) * Math.PI * 2;
+        const pm = new THREE.Mesh(type.petalGeom, petalMat);
+        const rad = ring.radius * (0.4 + 0.6 * open);
+        pm.position.set(Math.cos(ang) * rad, bloomY(ring.height), Math.sin(ang) * rad);
+        pm.rotation.set(ring.tilt * open - 0.9 * (1 - open), ang, 0);
+        pm.scale.setScalar(0.6 + 0.4 * open);
+        g.add(pm);
+      }
+    });
+    if (type.centerSize > 0) { const c = new THREE.Mesh(type.centerGeom, flowerCenterMat); c.position.y = bloomY(type.centerY); g.add(c); }
+    return g;
+  }
+  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.leafMesh.count = 0; type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
 
   // One shared particle system for both rain and snow — same falling-box
   // technique either way (a cloud of points that always re-centres on the
@@ -23550,6 +24175,7 @@
     lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
     updateSeeds(); // planted seeds growing — see SEEDS
+    animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
     try { updateGamepad(dt); } catch (err) { console.warn('updateGamepad error (recovered):', err); } // controller -> the same inputs the other devices give; a no-op unless a controller is connected
@@ -24671,6 +25297,34 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
+    slot.title = 'Animal Seeds — aim at an empty Incubator to start one hatching';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(animalIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showAnimalPopup(slot); });
+    slotElByIndex[ANIMAL_SLOT] = slot;
+    addSlotLabel(slot, 'Animals');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Incubator — place on top of any block, then aim Animal Seeds at it. Mine the block under it with this selected to pick it back up';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(incubatorIconCanvas());
+    slot.addEventListener('click', () => selectSlot(INCUBATOR_SLOT));
+    slotElByIndex[INCUBATOR_SLOT] = slot;
+    addSlotLabel(slot, 'Incubator');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
     slot.title = 'LED Spotlight' + costLabel(LIGHT_COST) + ' — tap a block face to attach it there, tap the same face again to remove';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'L';
     slot.appendChild(keyEl);
@@ -25264,10 +25918,10 @@
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
     { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
-    { name: 'Landscape',  items: [3, 4, SEED_SLOT] },
+    { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
-    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT] },
+    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT] },
     { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },
     { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
     { name: 'Vehicles',   items: [VEHICLE_SLOT] },
@@ -26001,6 +26655,7 @@
     if (isStandalone) document.getElementById('standaloneNotice').style.display = 'block';
     renderWorldList();
     fetchPlayerStats().then(s => { coins = s.coins; hoursWorked = s.hours; rank = s.rank; promoThreshold = s.promoThreshold; updateCoinsDisplay(); updateRoleTag(); });
+    loadInventory(); // the harvest bag — see HARVEST BAG
     // Flush coins on tab-hide/unload — registered once here (not per
     // beginPlaying call, which can run more than once per session) so a
     // balance never gets lost to a closed tab regardless of which world's

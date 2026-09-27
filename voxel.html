@@ -17812,7 +17812,10 @@
   function swimFluidHas(k) { return (waterBlocks.has(k) || lava.has(k)) && !blocks.has(k); }
   function waterSurfaceNear(x, z) {
     const px = Math.floor(x), pz = Math.floor(z);
-    const base = Math.floor(player.pos.y);
+    // +0.05: standing on a block puts your feet at its top face, and a hair of float error below that made
+    // "the cell you're in" the block itself — then "the cell below" was the water under the block.
+    const base = Math.floor(player.pos.y + 0.05);
+    if (blocks.has(key(px, base, pz))) return null;
     let anchor = null;
     if (swimFluidHas(key(px, base, pz))) anchor = base;
     else if (swimFluidHas(key(px, base-1, pz))) anchor = base-1;
@@ -26227,7 +26230,14 @@
       // heights) is what every previous attempt at this got tangled up
       // in, and it still couldn't actually tell wading from swimming.
       const waterDepthHere = flying ? 0 : waterDepthAt(player.pos.x, player.pos.z);
-      const submerged = !flying && waterDepthHere >= 2;
+      // Standing on something with no water at your feet is never swimming, however deep the water measured
+      // under your centre is. The depth is sampled at the single column under the middle of the player — on a
+      // 1-wide path/bridge at the waterline, standing near its edge put that column over the lake beside it
+      // (feet dry, on the block), which read as deep water, flipped you into swimming, and swim movement then
+      // sank you into the bridge.
+      const feetCellK = key(Math.floor(player.pos.x), Math.floor(player.pos.y + 0.05), Math.floor(player.pos.z));
+      const standingDry = player.onGround && !swimFluidHas(feetCellK);
+      const submerged = !flying && waterDepthHere >= 2 && !standingDry;
       // Golf: build charges power (handled entirely by the build-button
       // handlers themselves — mousedown/touchstart call golfStartCharge,
       // mouseup/touchend call golfPauseCharge), jump actually takes the

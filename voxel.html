@@ -9233,16 +9233,19 @@
     g.add(head);
     return g;
   }
-  // Tilled dirt as the base (block 1 — matches "farmland" better than
-  // leaving it as plain grass), planted in rows rather than covering
-  // every single tile — every other row, all columns within it, which
-  // both reads as a real planted field and keeps the prop count for a
-  // field this size reasonable.
+  // A bare Mud field, ready for the player's own Seeds (see SEEDS) —
+  // no decorative crop props any more, so every tile is plantable
+  // straight away. It's generated terrain, not a player edit, so it's
+  // rebuilt the same every time the farm loads; anything planted in it
+  // is saved separately as a seed record like any other planting. Grass
+  // never creeps onto it (grassBlockedHere skips building footprints).
+  // cropBuilder is no longer used — kept in the signature so the callers
+  // (and buildWheatStalk/buildCabbageHead) don't need touching.
   function buildCropField(x0, x1, z0, z1, gy, cropBuilder, reg) {
+    const mud = typeIndexByName('Mud');
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {
-        blocks.set(key(x, gy, z), 1); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
-        if ((z - z0) % 2 === 0) placeVillageProp(cropBuilder, x, gy, z, 0, reg);
+        blocks.set(key(x, gy, z), mud); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
       }
     }
   }
@@ -18599,7 +18602,13 @@
       if (blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) !== MUD_TYPE) { showSaveStatus('🌱 Seeds only grow in Mud — plant them on top of a Mud block', true); return; }
       const px = r.hit.x, py = r.hit.y + 1, pz = r.hit.z, pk = key(px, py, pz);
       if (blocks.has(pk) || waterBlocks.has(pk) || lava.has(pk) || seedEdits.has(pk)) return; // something's already there
+      const st = SEED_TYPES[seedTypeIdx], cost = seedCost(st);
+      if (coins < cost) { showSaveStatus('⚠ ' + st.name + ' seeds cost 💰' + cost + ' (have ' + coins + ')', true); return; }
       if (!plantSeed(px, py, pz, seedTypeIdx)) { showSaveStatus('🌱 Seeds can only be planted in your own worlds', true); return; }
+      if (cost > 0) { // charged in every world, not just The Mill (unlike trySpendCoins) — and only once it's actually planted
+        coins -= cost; updateCoinsDisplay(); scheduleStatsSave();
+        showSaveStatus('🌱 Planted ' + st.name + ' (−💰' + cost + ', ready in ' + fmtGrow(st.growSec) + ')');
+      }
       seedNextPass = 0; // show the new sprout straight away
       playThud(300);
       return;
@@ -19598,35 +19607,40 @@
   // Saved per chunk alongside water and lava: [x,y,z,value,2] in the
   // chunk row's water array, value = typeIdx * 1e10 + planted-at time in
   // whole seconds (so no new table column was needed).
+  // Grow times are real time, and keep counting while nobody's playing
+  // (see seedProgress): from 5 minutes for the smallest vegetable
+  // (strawberries) up to an hour for the biggest (pumpkin); flowers 10
+  // minutes, saplings 20-25.
+  // Seeds cost half what one plant's harvest sells for (see seedCost).
   // Indices 0-11 must never be reordered — planted seeds are saved by
   // their index here. New types only ever go on the end.
   const SEED_TYPES = [
-    { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 150 },
-    { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 150 },
-    { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 180 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 90,  produce: 'Wheat',    yield: 3 },
-    { name: 'Carrots',        kind: 'carrot',  growSec: 90,  produce: 'Carrot',   yield: 3 },
-    { name: 'Cabbage',        kind: 'cabbage', growSec: 100, produce: 'Cabbage',  yield: 1 },
-    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 120, produce: 'Pumpkin',  yield: 1 },
+    { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 1200 },
+    { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 1200 },
+    { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 1500 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1 },
+    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1 },
     // Flowers: species index into FLOWER_TYPES + colour index into
     // FLOWER_COLORS, so a sown flower is exactly the same shape and
     // colour as the wild ones (0 daisy, 1 peony, 2 tulip, 3 cluster, 4 poppy).
-    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 60, produce: 'Red Poppies',    yield: 1 },
-    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 60, produce: 'Yellow Daisies', yield: 1 },
-    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 60, produce: 'Purple Peonies', yield: 1 },
-    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 60, produce: 'Blue Clusters',  yield: 1 },
-    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 60, produce: 'White Daisies',  yield: 1 },
-    { name: 'Potatoes',       kind: 'potato',     growSec: 110, produce: 'Potato',     yield: 4 },
-    { name: 'Tomatoes',       kind: 'tomato',     growSec: 120, produce: 'Tomato',     yield: 4 },
-    { name: 'Lettuce',        kind: 'lettuce',    growSec: 80,  produce: 'Lettuce',    yield: 1 },
-    { name: 'Beetroot',       kind: 'beetroot',   growSec: 90,  produce: 'Beetroot',   yield: 2 },
-    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 140, produce: 'Sweetcorn',  yield: 2 },
-    { name: 'Onions',         kind: 'onion',      growSec: 100, produce: 'Onion',      yield: 3 },
-    { name: 'Peas',           kind: 'peas',       growSec: 100, produce: 'Peas',       yield: 5 },
-    { name: 'Strawberries',   kind: 'strawberry', growSec: 110, produce: 'Strawberry', yield: 5 },
-    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 60, produce: 'Pink Peonies',   yield: 1 },
-    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 60, produce: 'Red Tulips',     yield: 1 },
-    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 60, produce: 'Orange Tulips',  yield: 1 },
+    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1 },
+    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1 },
+    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1 },
+    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1 },
+    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1 },
+    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4 },
+    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1 },
+    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2 },
+    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2 },
+    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3 },
+    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5 },
+    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5 },
+    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1 },
+    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1 },
+    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1 },
   ];
   let seedTypeIdx = 0;
   const MUD_TYPE = typeIndexByName('Mud');
@@ -19951,11 +19965,12 @@
     SEED_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
       btn.className = 'popup-item';
-      btn.title = t.name;
+      const cost = seedCost(t);
+      btn.title = t.name + ' — ' + (cost ? '💰' + cost : 'free') + ', grows in ' + fmtGrow(t.growSec);
       btn.appendChild(seedIconCanvas(idx));
       const label = document.createElement('span');
       label.className = 'popup-item-label';
-      label.textContent = t.name;
+      label.textContent = t.name + ' · ' + (cost ? '💰' + cost : 'free') + ' · ' + fmtGrow(t.growSec);
       btn.appendChild(label);
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -20062,6 +20077,11 @@
   };
   const FLOWER_PRICE = 8;
   const producePrice = name => PRODUCE_PRICES[name] || FLOWER_PRICE;
+  // A packet of seeds costs half of what that one plant's full harvest
+  // sells for (yield x price), rounded up. Saplings produce nothing to
+  // sell, so they stay free.
+  function seedCost(t) { return t && t.produce ? Math.ceil((t.yield || 1) * producePrice(t.produce) / 2) : 0; }
+  function fmtGrow(sec) { return sec >= 3600 ? (sec / 3600) + 'h' : Math.round(sec / 60) + 'm'; }
   const SHOPKEEPER_LINES = [
     "Morning! What've you grown for me?", "Fresh from the field? Let's have a look.", "I'll take whatever you've got — fair prices, mind.",
     "Busy day. What are you selling?", "Ah, a farmer! Show me the bag.",

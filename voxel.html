@@ -942,6 +942,11 @@
         const parts = k.split(',');
         waterOut.push([+parts[0], +parts[1], +parts[2], v, 2]); // 5th element 2 = a planted seed, see SEEDS
       }
+      const chunkNameEdits = nameEdits.byChunk.get(ck);
+      if (chunkNameEdits) for (const [k, nm] of chunkNameEdits) {
+        const parts = k.split(',');
+        waterOut.push([+parts[0], +parts[1], +parts[2], nm, 3]); // 5th element 3 = a creature's name (a string in the level slot), see NAMING CREATURES
+      }
       const chunkLavaEdits = lavaEdits.byChunk.get(ck);
       if (chunkLavaEdits) for (const [k, level] of chunkLavaEdits) {
         const parts = k.split(',');
@@ -980,6 +985,7 @@
         for (const [x,y,z,lvl,isLava] of (row.water||[])) {
           if (isLava === 1) lavaEdits.set(key(x,y,z), lvl); // see LAVA — rides along in the water array
           else if (isLava === 2) seedEdits.set(key(x,y,z), lvl); // see SEEDS — same trick
+          else if (isLava === 3) { if (typeof lvl === 'string') nameEdits.set(key(x,y,z), lvl); } // a creature's name — see NAMING CREATURES
           else waterEdits.set(key(x,y,z), lvl);
         }
       }
@@ -1225,7 +1231,7 @@
     // turns streaming back on itself, only once position and world state
     // are fully settled, right before beginPlaying().
     terrainStreamingActive = false;
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); nameEdits.clear(); dirtyChunks.clear();
     structureSpecs.clear(); pendingStructureReplays.length = 0;
     // Session-only placement state that was never reset between worlds either.
     houseRegionClaimed.clear(); shopRegionClaimed.clear(); churchRegionClaimed.clear(); landmarkRegionClaimed.clear(); farmRegionClaimed.clear();
@@ -3526,6 +3532,7 @@
   const stepRotEdits = new Map(); // cellKey -> rotation, only present alongside a half-block blockEdits entry
   const waterEdits = new EditsMap();   // cellKey -> level (-1 = removed)
   const lavaEdits = new EditsMap();    // cellKey -> level, same encoding as waterEdits — see LAVA
+  const nameEdits = new EditsMap();    // creature cell key -> the name a player gave it — see NAMING CREATURES
   const seedEdits = new EditsMap();    // cellKey -> planted seed (type + planted-at time) — see SEEDS
   const dirtyChunks = new Set();  // chunkKey -> has at least one edit not yet saved
   // Freezes the terrain height under any column a player has ever built
@@ -9310,11 +9317,17 @@
     for (let i = 0; i < count; i++) {
       const spot = pickVillageWanderTarget(bounds);
       const mesh = (i % 2 === 0 ? buildRealCow : buildRealSheep)(); // the same realistic models as hatched animals (see Realistic animal models) — the old blocky buildCowModel/buildSheepModel are no longer used
+      const st = ANIMAL_TYPES[i % 2 === 0 ? 0 : 1];
+      // A stable id for this pen animal (its pen's corner + its place in the pen, which is the same every time
+      // the farm generates) — lets it keep a name and be hit in sync with other players. The y is a
+      // never-real negative so it can't collide with a block or a seed record.
+      const penId = key(Math.floor(bounds.xMin), -1000 - i, Math.floor(bounds.zMin));
       mesh.position.set(spot.x, villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1, spot.z);
       mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       scene.add(mesh);
       reg.props = reg.props || []; reg.props.push(mesh); // reuses the same village-teardown disposal path as any other decorative prop
-      villageAnimals.push({ mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck, fenceKeys, escaped: false, fenceCheckTimer: Math.random() });
+      villageAnimals.push({ mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck, fenceKeys, escaped: false, fenceCheckTimer: Math.random(),
+        cid: penId, nameKey: penId, kindName: st.name, hp: st.hp, maxHp: st.hp, bite: st.bite });
     }
   }
   // Puts an animal / villager's feet at footY: straight up for a step (one block, it just walks up it), but
@@ -9332,6 +9345,8 @@
     if (villageAnimals.length === 0) return;
     const t = performance.now() * 0.004;
     villageAnimals.forEach(w => {
+      if (w.angryAt && updateAngryCreature(w, dt, t)) return; // hit and fighting back — see FIGHTING BACK
+      if (w.mesh.rotation.x) w.mesh.rotation.x = 0;
       if (w.leashed) { updateLeashedAnimal(w, dt, t); return; } // on the lead: follows you instead of wandering
       if (!w.escaped) {
         w.fenceCheckTimer -= dt;
@@ -11633,6 +11648,7 @@
     const i = villageAnimals.indexOf(rec);
     if (i < 0) return;
     villageAnimals.splice(i, 1);
+    if (rec.nameTag) { disposeTextLabel(rec.nameTag); rec.nameTag = null; } // off the mesh before disposeObject3D — a Sprite's geometry is three.js's shared one
     if (rec.mesh) { scene.remove(rec.mesh); disposeObject3D(rec.mesh); }
   }
   function destroyAmbientFish(rec) {
@@ -12193,6 +12209,182 @@
     Array.from(ambientFish).forEach(f => strike(f, destroyAmbientFish));
   }
 
+  // ── FIGHTING BACK ───────────────────────────────────────────────
+  // Animals and Mods (everything in villageAnimals) have health now instead
+  // of dying to one hit: a Chicken takes 1, a Cow 5, a Stone Guardian 14
+  // (see hp on ANIMAL_TYPES / MOD_TYPES; weapon damage from WEAPON_TYPES).
+  // Hit one without killing it and it turns on whoever hit it — runs at them
+  // and bites/strikes every ~1.1s while in reach, for 25s or until it loses
+  // them (30+ blocks, or they're taken out). A fence still stops it, so a
+  // penned cow can only glare at you over the rails. Each strike costs
+  // `bite` lives, through damageMe — so only when someone else is in the
+  // world (livesActive), same as any other damage; alone you just get the
+  // red flash and a shove. Explosions still kill outright.
+  // Multiplayer: the hit is sent ('creatureHit', by the creature's stable
+  // cid) so everyone's copy loses the same health and chases the same
+  // player; only the victim's own client ever takes the life (the usual
+  // victim-applies rule). Village people (the NPCs) still go down in one hit.
+  const CREATURE_ANGER_MS = 25000, CREATURE_BITE_MS = 1100, CREATURE_GIVE_UP_DIST = 30;
+  function hurtCreature(rec, dmg, attacker) {
+    if (villageAnimals.indexOf(rec) < 0) return;
+    if (rec.hp === undefined) { rec.hp = rec.maxHp = 3; rec.bite = 0.5; }
+    rec.hp -= dmg;
+    if (rec.hp <= 0) { destroyVillageAnimal(rec); return; }
+    if (rec.leashed && typeof leadRec !== 'undefined' && leadRec === rec) releaseLead(); // it pulls free of the lead
+    const now = performance.now();
+    rec.angryAt = attacker; rec.angryUntil = now + CREATURE_ANGER_MS;
+    rec.nextBite = Math.max(rec.nextBite || 0, now + 500);
+    rec.waitTimer = 0;
+    rec.hurtFlashUntil = now + 180;
+  }
+  function hitCreatureAndSend(rec, dmg) {
+    hurtCreature(rec, dmg, 'me');
+    if (rec.cid) sendWeaponMsg('creatureHit', { cid: rec.cid, dmg });
+  }
+  function onRemoteCreatureHit(p) {
+    if (!p || !p.cid) return;
+    const rec = villageAnimals.find(a => a.cid === p.cid);
+    if (rec) hurtCreature(rec, p.dmg || 1, p.uid);
+  }
+  function creatureDisplayName(rec) {
+    const nm = rec.nameKey && nameEdits.get(rec.nameKey);
+    return nm || ('a ' + (rec.kindName || 'creature').toLowerCase());
+  }
+  // One frame of an angry creature. Returns false once it's calmed down (the normal wander takes over again).
+  function updateAngryCreature(w, dt, t) {
+    const now = performance.now(), p = w.mesh.position;
+    let tx, ty, tz;
+    if (w.angryAt === 'me') {
+      if (playerDead) { w.angryAt = null; return false; }
+      tx = player.pos.x; ty = player.pos.y; tz = player.pos.z;
+    } else {
+      const op = otherPlayers.get(w.angryAt);
+      if (!op || !op.group) { w.angryAt = null; return false; }
+      tx = op.group.position.x; ty = op.group.position.y; tz = op.group.position.z;
+    }
+    const dx = tx - p.x, dz = tz - p.z, dist = Math.sqrt(dx * dx + dz * dz);
+    if (now > w.angryUntil || dist > CREATURE_GIVE_UP_DIST) { w.angryAt = null; w.target = pickVillageWanderTarget(w.bounds); w.waitTimer = 1; return false; }
+    w.mesh.rotation.y = Math.atan2(dx, dz);
+    const legs = w.mesh.userData.legs || [];
+    const reach = 1.1 + (w.maxHp >= 10 ? 0.5 : 0);
+    const bounds = { y: Math.floor(p.y) };
+    if (dist > reach) {
+      const speed = w.maxHp >= 10 ? 1.7 : 2.4;
+      const nx = p.x + (dx / dist) * speed * dt, nz = p.z + (dz / dist) * speed * dt;
+      const nFoot = villageSurfaceY(nx, nz, bounds.y - 1) + 1;
+      if (!villageNpcBlocked(nx, nz, bounds) && nFoot - p.y <= 1.1) { p.x = nx; p.z = nz; settleOnGround(w, nFoot, dt); }
+      else settleOnGround(w, villageSurfaceY(p.x, p.z, bounds.y - 1) + 1, dt); // something's in the way (a fence) — it waits there
+      const swing = Math.sin(t * 9) * 0.55;
+      for (const leg of legs) leg.rotation.x = swing * (leg.position.x < 0 ? 1 : -1);
+    } else {
+      settleOnGround(w, villageSurfaceY(p.x, p.z, bounds.y - 1) + 1, dt);
+      for (const leg of legs) leg.rotation.x = 0;
+      if (now >= (w.nextBite || 0) && Math.abs(ty - p.y) < 2.2) {
+        w.nextBite = now + CREATURE_BITE_MS;
+        w.lungeUntil = now + 220;
+        if (w.angryAt === 'me') creatureStrikesMe(w, dx / (dist || 1), dz / (dist || 1));
+      }
+    }
+    // A quick forward lunge on each strike, and a red-ish flinch when hit.
+    const lunge = w.lungeUntil && now < w.lungeUntil ? Math.sin((1 - (w.lungeUntil - now) / 220) * Math.PI) * 0.35 : 0;
+    w.mesh.rotation.x = lunge;
+    return true;
+  }
+  function creatureStrikesMe(w, ux, uz) {
+    player.vel.x += ux * 5; player.vel.z += uz * 5; // shoved back
+    if (!flying) player.vel.y = Math.max(player.vel.y, 3);
+    const who = creatureDisplayName(w);
+    if (livesActive()) damageMe(w.bite || 0.5, who.charAt(0).toUpperCase() + who.slice(1));
+    else { flashDamage(); playThud(200); }
+  }
+
+  // ── NAMING CREATURES ────────────────────────────────────────────
+  // Aim at an animal or Mod and press ✋: a box pops up to name it. The name
+  // floats over it, saves with the world and is shared live ('nameEdit').
+  // Stored in nameEdits under the creature's own cell key — a hatched one's
+  // seed record key (the name follows it when the lead moves it, and goes
+  // when it dies), a farm pen animal's stable pen id — and saved per chunk
+  // in the water array with flag 3, like seeds (flag 2).
+  function recordName(x, y, z, name) {
+    if (!terrainStreamingActive) return false;
+    const k = key(x, y, z);
+    if (name) nameEdits.set(k, name); else nameEdits.delete(k);
+    dirtyChunks.add(chunkKeyOf(x, z));
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'nameEdit', payload: { uid: playerUid, x, y, z, name: name || '' } }); } catch (e) {}
+    }
+    return true;
+  }
+  function onRemoteNameEdit(p) {
+    if (!p || typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.z !== 'number') return;
+    const k = key(p.x, p.y, p.z), nm = typeof p.name === 'string' ? p.name.slice(0, 24) : '';
+    if (nm) nameEdits.set(k, nm); else nameEdits.delete(k);
+    dirtyChunks.add(chunkKeyOf(p.x, p.z));
+  }
+  let nameModalEl = null, nameModalRec = null;
+  function openNameModal(rec) {
+    if (!rec || !rec.nameKey) return;
+    if (!terrainStreamingActive || !canEditAt(Math.floor(rec.mesh.position.x), Math.floor(rec.mesh.position.z))) { showBriefMessage('🏷️ You can only name animals in your own worlds'); return; }
+    if (!nameModalEl) {
+      nameModalEl = document.createElement('div');
+      nameModalEl.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      nameModalEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(300px,90vw);color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div id="nameModalTitle" style="font-weight:700;margin-bottom:10px;"></div>'
+        + '<input id="nameModalInput" maxlength="24" autocomplete="off" style="width:100%;box-sizing:border-box;padding:9px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:15px;">'
+        + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">'
+        + '<button id="nameModalClear" style="margin-right:auto;background:none;border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:7px 10px;cursor:pointer;">Remove name</button>'
+        + '<button id="nameModalCancel" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:7px 12px;cursor:pointer;">Cancel</button>'
+        + '<button id="nameModalSave" style="background:#2f7d46;border:none;color:#fff;border-radius:6px;padding:7px 14px;font-weight:600;cursor:pointer;">Save</button></div></div>';
+      document.body.appendChild(nameModalEl);
+      const close = () => { nameModalEl.style.display = 'none'; nameModalRec = null; };
+      const commit = (nm) => {
+        const rec2 = nameModalRec; close();
+        if (!rec2 || villageAnimals.indexOf(rec2) < 0) return;
+        const [x, y, z] = rec2.nameKey.split(',').map(Number);
+        const clean = (nm || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+        if (!recordName(x, y, z, clean || null)) { showBriefMessage('🏷️ You can only name animals in your own worlds'); return; }
+        showBriefMessage(clean ? '🏷️ Named ' + clean : '🏷️ Name removed');
+      };
+      document.getElementById('nameModalSave').addEventListener('click', () => commit(document.getElementById('nameModalInput').value));
+      document.getElementById('nameModalClear').addEventListener('click', () => commit(''));
+      document.getElementById('nameModalCancel').addEventListener('click', close);
+      document.getElementById('nameModalInput').addEventListener('keydown', e => { if (e.key === 'Enter') commit(e.target.value); else if (e.key === 'Escape') close(); e.stopPropagation(); });
+    }
+    nameModalRec = rec;
+    document.exitPointerLock && document.exitPointerLock();
+    const current = nameEdits.get(rec.nameKey) || '';
+    document.getElementById('nameModalTitle').textContent = '🏷️ Name this ' + (rec.kindName || 'animal').toLowerCase();
+    const inp = document.getElementById('nameModalInput');
+    inp.value = current; inp.placeholder = rec.kindName || 'Name';
+    nameModalEl.style.display = 'flex';
+    setTimeout(() => { inp.focus(); inp.select(); }, 30);
+  }
+  // Keeps each creature's floating name tag in step with nameEdits (and hides far-off ones).
+  let nameTagsNext = 0;
+  function updateCreatureNameTags() {
+    const now = performance.now();
+    if (now < nameTagsNext) return;
+    nameTagsNext = now + 300;
+    for (const w of villageAnimals) {
+      if (!w.mesh) continue;
+      const nm = w.nameKey ? nameEdits.get(w.nameKey) : null;
+      if (!nm) { if (w.nameTag) { disposeTextLabel(w.nameTag); w.nameTag = null; } continue; }
+      if (!w.nameTag) {
+        w.nameTag = makeTextLabel();
+        const ry = w.mesh.rotation.y, rx = w.mesh.rotation.x; w.mesh.rotation.set(0, 0, 0);
+        const box = new THREE.Box3().setFromObject(w.mesh);
+        w.mesh.rotation.set(rx, ry, 0);
+        const s = w.mesh.scale.y || 1;
+        w.nameTag.position.y = (box.max.y - w.mesh.position.y) / s + 0.35 / s;
+        w.nameTag.scale.set(1.5 / s, 0.3 / s, 1);
+        w.mesh.add(w.nameTag);
+      }
+      setTextLabel(w.nameTag, '🏷️ ' + nm);
+      const dx = w.mesh.position.x - player.pos.x, dz = w.mesh.position.z - player.pos.z;
+      w.nameTag.visible = dx * dx + dz * dz < 22 * 22;
+    }
+  }
+
   // ── Sounds ───────────────────────────────────────────────────────
   // Filtered noise with soft attack, per the same lesson the footstep and
   // splash sounds already learned — bare oscillators come out thin or
@@ -12600,7 +12792,7 @@
   }
   function applyEntityDamage(hit, dmg, weaponKind) {
     if (hit.kind === 'npc') destroyVillageNPC(hit.rec);
-    else if (hit.kind === 'animal') destroyVillageAnimal(hit.rec);
+    else if (hit.kind === 'animal') hitCreatureAndSend(hit.rec, dmg);
     else if (hit.kind === 'fish') destroyAmbientFish(hit.rec);
     else if (hit.kind === 'player') {
       if (hit.rec && hit.rec.uid) sendWeaponMsg('weaponHit', { targetUid: hit.rec.uid, shooterUid: playerUid, shooterName: getMyDisplayName(), dmg, w: weaponKind });
@@ -13239,7 +13431,7 @@
       showImpactExplosion(winner.point);
       playThud(180);
     } else if (winner.kind === 'animal') {
-      destroyVillageAnimal(winner.rec);
+      hitCreatureAndSend(winner.rec, 1); // vehicle gun: one point a hit, and it fights back — see FIGHTING BACK
       showImpactExplosion(winner.point);
       playThud(180);
     } else if (winner.kind === 'fish') {
@@ -16081,7 +16273,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); nameEdits.clear(); dirtyChunks.clear();
     player.pos.set(13.5, 2, -2); // set before the network await below, not after — belt-and-braces alongside terrainStreamingActive staying off, in case anything else ever reads player.pos meanwhile
     yaw = Math.PI; pitch = 0;
     const [, savedData] = await Promise.all([
@@ -16123,7 +16315,7 @@
     generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
     chunkGenQueue.length = 0; chunkGenQueued.clear();
     chunkUnloadQueue.length = 0; chunkUnloadQueued.clear();
-    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
+    blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); nameEdits.clear(); dirtyChunks.clear();
     generatePubWorld();
     visitMode = false;
     currentRole = null;
@@ -18340,6 +18532,9 @@
     if (ft && ft.kind === 'treasure' && ft.dist < blockDist) { collectTreasureChest(ft.fk); return; } // no ownership check — see collectTreasureChest
     if (r && r.hit && !r.isWater && !r.isLava && tryToggleGate(r.hit.x, r.hit.y, r.hit.z)) return;
     if (selectedSlot === LEAD_SLOT) { useLead(); return; }
+    // Aiming at an animal or Mod: name it (see NAMING CREATURES).
+    const ent = vehicleGunEntityRaycast(6);
+    if (ent && ent.kind === 'animal' && ent.dist < blockDist) { openNameModal(ent.rec); return; }
     if (!r || !r.hit || r.isWater || r.isLava) return;
     // Harvest a ripe vegetable/flower, whatever's in your hand.
     for (const c of [{ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }, r.before]) {
@@ -20187,13 +20382,13 @@
   // animal, 200+ = a hatched animal (its record's key carries its home
   // position — y + 100000 × (n+1) so several can share one incubator).
   const ANIMAL_TYPES = [
-    { name: 'Cow',     hatchSec: 120, build: () => buildRealCow() },
-    { name: 'Sheep',   hatchSec: 110, build: () => buildRealSheep() },
-    { name: 'Chicken', hatchSec: 60,  build: () => buildRealChicken() },
-    { name: 'Dog',     hatchSec: 90,  build: () => buildRealDog() },
-    { name: 'Cat',     hatchSec: 90,  build: () => buildRealCat() },
-    { name: 'Horse',   hatchSec: 150, build: () => buildRealHorse() },
-    { name: 'Pig',     hatchSec: 100, build: () => buildRealPig() },
+    { name: 'Cow',     hatchSec: 120, hp: 5, bite: 1, build: () => buildRealCow() },
+    { name: 'Sheep',   hatchSec: 110, hp: 3, bite: 0.5, build: () => buildRealSheep() },
+    { name: 'Chicken', hatchSec: 60, hp: 1, bite: 0.25,  build: () => buildRealChicken() },
+    { name: 'Dog',     hatchSec: 90, hp: 3, bite: 1,  build: () => buildRealDog() },
+    { name: 'Cat',     hatchSec: 90, hp: 2, bite: 0.5,  build: () => buildRealCat() },
+    { name: 'Horse',   hatchSec: 150, hp: 6, bite: 1.5, build: () => buildRealHorse() },
+    { name: 'Pig',     hatchSec: 100, hp: 3, bite: 0.5, build: () => buildRealPig() },
   ];
   const ANIMAL_EMOJI = ['🐄', '🐑', '🐔', '🐕', '🐈', '🐎', '🐖'];
   let animalTypeIdx = 0;
@@ -20249,7 +20444,8 @@
     else showSaveStatus('🐣 A ' + ANIMAL_TYPES[idx].name.toLowerCase() + ' hatched! ' + ANIMAL_EMOJI[idx]);
   }
   function spawnHatched(rk, hx, hy, hz, animalIdx, types) {
-    const mesh = (types || ANIMAL_TYPES)[animalIdx].build(seedTime(rk)); // hatch time: a stable per-creature seed (Mods use it for their look)
+    const type = (types || ANIMAL_TYPES)[animalIdx];
+    const mesh = type.build(seedTime(rk)); // hatch time: a stable per-creature seed (Mods use it for their look)
     // If its home is inside a fenced pen (it was led there — see LEADING ANIMALS), it keeps to the pen and
     // starts right where it was let go, rather than a little to one side (which could be over the fence).
     const pen = penBoundsAround(hx, hy, hz);
@@ -20258,7 +20454,8 @@
     mesh.position.set(sx, villageSurfaceY(sx, sz, hy - 1) + 1, sz);
     mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(mesh);
-    const rec = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck: 'hatched', fenceKeys: [], escaped: false, fenceCheckTimer: 1, hatched: true };
+    const rec = { mesh, target: pickVillageWanderTarget(bounds), waitTimer: Math.random() * 2, bounds, ck: 'hatched', fenceKeys: [], escaped: false, fenceCheckTimer: 1, hatched: true,
+      cid: rk, nameKey: rk, kindName: type.name, hp: type.hp || 3, maxHp: type.hp || 3, bite: type.bite || 0.5 }; // cid/nameKey follow the record if it moves — see releaseLead
     villageAnimals.push(rec);
     hatchedLive.set(rk, rec);
   }
@@ -20266,6 +20463,7 @@
     const rec = hatchedLive.get(rk);
     if (!rec) return;
     const i = villageAnimals.indexOf(rec); if (i >= 0) villageAnimals.splice(i, 1);
+    if (rec.nameTag) { disposeTextLabel(rec.nameTag); rec.nameTag = null; }
     scene.remove(rec.mesh);
     rec.mesh.traverse(o => { if (o.isMesh) { o.geometry.dispose(); if (o.material.dispose) o.material.dispose(); } });
     hatchedLive.delete(rk);
@@ -20324,9 +20522,12 @@
         const nk = key(hx, hy + 100000 * (n + 1), hz);
         if (recordSeed(hx, hy + 100000 * (n + 1), hz, val)) {
           const [ox, oy, oz] = rk.split(',').map(Number);
+          const nm = nameEdits.get(rk);
+          if (nm) { recordName(hx, hy + 100000 * (n + 1), hz, nm); recordName(ox, oy, oz, null); } // its name moves home with it
           recordSeed(ox, oy, oz, -1);
           hatchedLive.delete(rk);
           hatchedLive.set(nk, a);
+          a.cid = nk; a.nameKey = nk;
         }
       }
     }
@@ -20459,7 +20660,7 @@
       const hy = y % 100000;
       const loaded = groundHeightOnly.has(x + ',' + z);
       const rec = hatchedLive.get(k);
-      if (rec && villageAnimals.indexOf(rec) < 0) { hatchedLive.delete(k); recordSeed(x, y, z, -1); return; } // it died (weapons etc.) — gone for good
+      if (rec && villageAnimals.indexOf(rec) < 0) { hatchedLive.delete(k); recordSeed(x, y, z, -1); if (nameEdits.has(k)) recordName(x, y, z, null); return; } // it died (weapons etc.) — gone for good, name and all
       if (loaded && !rec) spawnHatched(k, x, hy, z, info.idx, info.people ? MOD_TYPES : ANIMAL_TYPES);
       else if (!loaded && rec && !rec.leashed) despawnHatched(k); // one you're leading stays with you, however far from home
       return;
@@ -20577,12 +20778,12 @@
   // INCUBATOR & ANIMAL SEEDS; its own code range, see PEOPLE_INC_EMPTY).
   // Indices are saved — never reorder, only append.
   const MOD_TYPES = [
-    { name: 'Skeleton',       emoji: '💀', hatchSec: 120, build: () => buildModSkeleton() },
-    { name: 'Dog Skeleton',   emoji: '🦴', hatchSec: 90,  build: () => buildModDogSkeleton() },
-    { name: 'Zombie',         emoji: '🧟', hatchSec: 150, build: () => buildModZombie() },
-    { name: 'Villager',       emoji: '🧑‍🌾', hatchSec: 120, build: seed => buildModVillager(seed) },
-    { name: 'Scarecrow',      emoji: '🌾', hatchSec: 120, build: () => buildModScarecrow() },
-    { name: 'Stone Guardian', emoji: '🗿', hatchSec: 240, build: () => buildModStoneGuardian() },
+    { name: 'Skeleton',       emoji: '💀', hatchSec: 120, hp: 4, bite: 1, build: () => buildModSkeleton() },
+    { name: 'Dog Skeleton',   emoji: '🦴', hatchSec: 90, hp: 3, bite: 1,  build: () => buildModDogSkeleton() },
+    { name: 'Zombie',         emoji: '🧟', hatchSec: 150, hp: 6, bite: 1.5, build: () => buildModZombie() },
+    { name: 'Villager',       emoji: '🧑‍🌾', hatchSec: 120, hp: 3, bite: 0.5, build: seed => buildModVillager(seed) },
+    { name: 'Scarecrow',      emoji: '🌾', hatchSec: 120, hp: 4, bite: 1, build: () => buildModScarecrow() },
+    { name: 'Stone Guardian', emoji: '🗿', hatchSec: 240, hp: 14, bite: 3, build: () => buildModStoneGuardian() },
   ];
   let modTypeIdx = 0;
   function buildPeopleIncubatorModel() {
@@ -22098,6 +22299,16 @@
       // its next pass (forced to run now). Marked dirty like a remote
       // blockEdit, so this player's own save of the chunk carries it rather
       // than overwriting it.
+      channel.on('broadcast', { event: 'nameEdit' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return;
+        if (currentWorldId !== mpConnectedWorldId || !terrainStreamingActive) return;
+        onRemoteNameEdit(payload);
+      });
+      channel.on('broadcast', { event: 'creatureHit' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return;
+        if (currentWorldId !== mpConnectedWorldId) return;
+        onRemoteCreatureHit(payload);
+      });
       channel.on('broadcast', { event: 'seedEdit' }, ({ payload }) => {
         if (!payload || payload.uid === playerUid) return;
         if (currentWorldId !== mpConnectedWorldId || !terrainStreamingActive) return;
@@ -25482,6 +25693,7 @@
     updateSeeds(); // planted seeds growing — see SEEDS
     if (actionHeld && (ridingVehicle || weaponEquipped())) doAction(); // held ✋ keeps firing; the gun's own cooldown sets the pace
     updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
+    updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -28000,7 +28212,7 @@
       // with the chunks around spawn (0,0).
       infiniteWorldActive = true;
       terrainStreamingActive = true;
-      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); dirtyChunks.clear();
+      blockEdits.clear(); stepRotEdits.clear(); waterEdits.clear(); lavaEdits.clear(); lava.clear(); seedEdits.clear(); nameEdits.clear(); dirtyChunks.clear();
       generatedChunks.clear(); pureOceanChunks.clear(); lastStreamChunkKey = null;
       blocks.clear(); waterBlocks.clear(); stepRotations.clear(); clearAmbientFish(); // this world's water is gone, so any fish swimming in it should be too — nothing here was ever persisted anyway
       clearAllFixtures(); clearAllLadders(); clearAllWallpapers(); clearAllSigns(); clearAllDoors(); clearAllFurniture(); clearAllVehicles();

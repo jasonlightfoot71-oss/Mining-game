@@ -18701,8 +18701,11 @@
       if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Action menu', true); return; }
       const ik = key(inc.x, inc.y, inc.z);
       if (seedCode(ik) !== INCUBATOR_EMPTY) { showSaveStatus('🥚 That incubator is already hatching something', true); return; }
-      recordSeed(inc.x, inc.y, inc.z, (INCUBATING_BASE + animalTypeIdx) * SEED_VALUE_MUL + nowSec());
-      showSaveStatus('🥚 ' + ANIMAL_TYPES[animalTypeIdx].name + ' egg incubating… ' + ANIMAL_EMOJI[animalTypeIdx]);
+      const at = ANIMAL_TYPES[animalTypeIdx], acost = at.cost || 0;
+      if (coins < acost) { showSaveStatus('⚠ A ' + at.name + ' seed costs 💰' + acost + ' (you have ' + coins + ')', true); return; }
+      if (!recordSeed(inc.x, inc.y, inc.z, (INCUBATING_BASE + animalTypeIdx) * SEED_VALUE_MUL + nowSec())) return;
+      if (acost) { coins -= acost; updateCoinsDisplay(); scheduleStatsSave(); }
+      showSaveStatus('🥚 ' + at.name + ' egg incubating… ' + ANIMAL_EMOJI[animalTypeIdx] + (acost ? ' (−💰' + acost + ', ready in ' + fmtGrow(at.hatchSec) + ')' : ''));
       seedNextPass = 0; playThud(300);
       return;
     }
@@ -19990,36 +19993,52 @@
   // (see seedProgress): from 5 minutes for the smallest vegetable
   // (strawberries) up to an hour for the biggest (pumpkin); flowers 10
   // minutes, saplings 20-25.
-  // Seeds cost half what one plant's harvest sells for (see seedCost).
+  // ECONOMY — the longer something takes, the better it pays, both in total
+  // and per minute (so a long crop is never a worse deal than a short one):
+  //   crop            time  seed → harvest  profit  (x back)
+  //   Strawberries     5m    10 →  15        5     1.5x
+  //   Peas             8m    12 →  20        8     1.7x
+  //   Flowers         10m    10 →  20       10     2x
+  //   Wheat           15m    12 →  27       15     2.25x
+  //   Carrots/Onions  20m    14 →  36       22     2.6x
+  //   Potatoes/Beet.  25m    16 →  44       28     2.75x
+  //   Tomatoes        30m    18 →  56       38     3.1x
+  //   Lettuce         35m    20 →  64       44     3.2x
+  //   Sweetcorn       45m    24 →  84       60     3.5x
+  //   Cabbage         50m    26 →  96       70     3.7x
+  //   Pumpkin         60m    30 → 120       90     4x
+  // Harvest value = yield x PRODUCE_PRICES (FLOWER_PRICE for flowers); seed
+  // price is each type's `cost`. Animals: see ANIMAL_TYPES (meat sells for 3x
+  // the animal seed). Saplings are free — they just grow a tree.
   // Indices 0-11 must never be reordered — planted seeds are saved by
   // their index here. New types only ever go on the end.
   const SEED_TYPES = [
     { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 1200 },
     { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 1200 },
     { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 1500 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3 },
-    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3 },
-    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1 },
-    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3, cost: 12 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3, cost: 14 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1, cost: 26 },
+    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1, cost: 30 },
     // Flowers: species index into FLOWER_TYPES + colour index into
     // FLOWER_COLORS, so a sown flower is exactly the same shape and
     // colour as the wild ones (0 daisy, 1 peony, 2 tulip, 3 cluster, 4 poppy).
-    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1 },
-    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1 },
-    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1 },
-    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1 },
-    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1 },
-    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4 },
-    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4 },
-    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1 },
-    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2 },
-    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2 },
-    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3 },
-    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5 },
-    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5 },
-    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1 },
-    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1 },
-    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1 },
+    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1, cost: 10 },
+    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1, cost: 10 },
+    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1, cost: 10 },
+    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1, cost: 10 },
+    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1, cost: 10 },
+    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4, cost: 16 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4, cost: 18 },
+    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1, cost: 20 },
+    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2, cost: 16 },
+    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2, cost: 24 },
+    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3, cost: 14 },
+    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5, cost: 12 },
+    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5, cost: 10 },
+    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1, cost: 10 },
+    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1, cost: 10 },
+    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1, cost: 10 },
   ];
   let seedTypeIdx = 0;
   const MUD_TYPE = typeIndexByName('Mud');
@@ -20377,11 +20396,11 @@
       const btn = document.createElement('div');
       btn.className = 'popup-item';
       const cost = seedCost(t);
-      btn.title = t.name + ' — ' + (cost ? '💰' + cost : 'free') + ', grows in ' + fmtGrow(t.growSec);
+      btn.title = t.name + ' — ' + (cost ? 'seeds 💰' + cost + ', sells for 💰' + harvestValue(t) : 'free') + ', grows in ' + fmtGrow(t.growSec);
       btn.appendChild(seedIconCanvas(idx));
       const label = document.createElement('span');
       label.className = 'popup-item-label';
-      label.textContent = t.name + ' · ' + (cost ? '💰' + cost : 'free') + ' · ' + fmtGrow(t.growSec);
+      label.textContent = t.name + ' · ' + fmtGrow(t.growSec) + ' · ' + (cost ? '💰' + cost + ' → 💰' + harvestValue(t) : 'free');
       btn.appendChild(label);
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -20484,18 +20503,19 @@
   // gives per plant (a pumpkin is one slow plant; peas give five quick ones). Anything not listed (all the
   // flowers) goes for FLOWER_PRICE.
   const PRODUCE_PRICES = {
-    Wheat: 4, Carrot: 5, Potato: 5, Onion: 6, Peas: 3, Strawberry: 6, Tomato: 6, Beetroot: 7,
-    Sweetcorn: 10, Lettuce: 12, Cabbage: 15, Pumpkin: 25,
+    Wheat: 9, Carrot: 12, Potato: 11, Onion: 12, Peas: 4, Strawberry: 3, Tomato: 14, Beetroot: 22,
+    Sweetcorn: 42, Lettuce: 64, Cabbage: 96, Pumpkin: 120, // per item — see ECONOMY by SEED_TYPES for the whole table
   };
-  const FLOWER_PRICE = 8;
+  const FLOWER_PRICE = 20;
   // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
-  const MEAT_PRICES = { Beef: 10, Pork: 8, Mutton: 8, 'Chicken Meat': 7 };
+  const MEAT_PRICES = { Beef: 50, Pork: 45, Mutton: 45, 'Chicken Meat': 60 }; // an animal's meat sells for 3x its seed — see ANIMAL_TYPES
   const isMeat = name => MEAT_PRICES[name] !== undefined;
   const producePrice = name => MEAT_PRICES[name] || PRODUCE_PRICES[name] || FLOWER_PRICE;
   // A packet of seeds costs half of what that one plant's full harvest
   // sells for (yield x price), rounded up. Saplings produce nothing to
   // sell, so they stay free.
-  function seedCost(t) { return t && t.produce ? Math.ceil((t.yield || 1) * producePrice(t.produce) / 2) : 0; }
+  function seedCost(t) { return (t && t.cost) || 0; } // see ECONOMY by SEED_TYPES
+  function harvestValue(t) { return t && t.produce ? (t.yield || 1) * producePrice(t.produce) : 0; }
   function fmtGrow(sec) { return sec >= 3600 ? (sec / 3600) + 'h' : Math.round(sec / 60) + 'm'; }
   const SHOPKEEPER_LINES = [
     "Morning! What've you grown for me?", "Fresh from the field? Let's have a look.", "I'll take whatever you've got — fair prices, mind.",
@@ -20762,10 +20782,10 @@
   // a farm pen animal is marked gone (PEN_GONE in nameEdits) so the pen
   // doesn't grow it back next load. The BBQ Shop's chef buys the meat.
   const BUTCHER_JOBS = {
-    Cow:     { meat: 'Beef',         n: 3, fee: 10 },
-    Pig:     { meat: 'Pork',         n: 2, fee: 6 },
-    Sheep:   { meat: 'Mutton',       n: 2, fee: 6 },
-    Chicken: { meat: 'Chicken Meat', n: 1, fee: 3 },
+    Cow:     { meat: 'Beef',         n: 3, fee: 12 }, // 3 x 50 = 150 = 3x the 50 cow seed
+    Pig:     { meat: 'Pork',         n: 2, fee: 8 },  // 2 x 45 = 90  = 3x 30
+    Sheep:   { meat: 'Mutton',       n: 2, fee: 8 },  // 2 x 45 = 90  = 3x 30
+    Chicken: { meat: 'Chicken Meat', n: 1, fee: 5 },  // 1 x 60 = 60  = 3x 20
   };
   const PEN_GONE = '#gone'; // stored as a pen animal's "name" — see spawnPenAnimals
   function tryButcher(keeper) {
@@ -20878,13 +20898,16 @@
   // animal, 200+ = a hatched animal (its record's key carries its home
   // position — y + 100000 × (n+1) so several can share one incubator).
   const ANIMAL_TYPES = [
-    { name: 'Cow',     hatchSec: 120, hp: 5, bite: 1, build: () => buildRealCow() },
-    { name: 'Sheep',   hatchSec: 110, hp: 3, bite: 0.5, build: () => buildRealSheep() },
-    { name: 'Chicken', hatchSec: 60, hp: 1, bite: 0.25,  build: () => buildRealChicken() },
-    { name: 'Dog',     hatchSec: 90, hp: 3, bite: 1,  build: () => buildRealDog() },
-    { name: 'Cat',     hatchSec: 90, hp: 2, bite: 0.5,  build: () => buildRealCat() },
-    { name: 'Horse',   hatchSec: 150, hp: 6, bite: 1.5, build: () => buildRealHorse() },
-    { name: 'Pig',     hatchSec: 100, hp: 3, bite: 0.5, build: () => buildRealPig() },
+    // cost = the animal seed's price. Farm animals' meat (BUTCHER_JOBS x MEAT_PRICES) sells for 3x that, and
+    // the longer the hatch, the bigger the profit: Chicken 20 → 60 (20m), Sheep/Pig 30 → 90 (30m),
+    // Cow 50 → 150 (45m), before the butcher's fee. Dog, Cat and Horse are pets — bought, never sold.
+    { name: 'Cow',     hatchSec: 2700, cost: 50, hp: 5, bite: 1, build: () => buildRealCow() },
+    { name: 'Sheep',   hatchSec: 1800, cost: 30, hp: 3, bite: 0.5, build: () => buildRealSheep() },
+    { name: 'Chicken', hatchSec: 1200, cost: 20, hp: 1, bite: 0.25,  build: () => buildRealChicken() },
+    { name: 'Dog',     hatchSec: 600, cost: 40, hp: 3, bite: 1,  build: () => buildRealDog() },
+    { name: 'Cat',     hatchSec: 600, cost: 30, hp: 2, bite: 0.5,  build: () => buildRealCat() },
+    { name: 'Horse',   hatchSec: 1200, cost: 80, hp: 6, bite: 1.5, build: () => buildRealHorse() },
+    { name: 'Pig',     hatchSec: 1800, cost: 30, hp: 3, bite: 0.5, build: () => buildRealPig() },
   ];
   const ANIMAL_EMOJI = ['🐄', '🐑', '🐔', '🐕', '🐈', '🐎', '🐖'];
   let animalTypeIdx = 0;
@@ -21636,9 +21659,12 @@
     popup.style.cssText = popupCss(slotEl);
     ANIMAL_TYPES.forEach((t, idx) => {
       const btn = document.createElement('div');
-      btn.className = 'popup-item'; btn.title = t.name;
+      const job = BUTCHER_JOBS[t.name], ret = job ? job.n * MEAT_PRICES[job.meat] : 0;
+      btn.className = 'popup-item';
+      btn.title = t.name + ' seed — 💰' + t.cost + ', hatches in ' + fmtGrow(t.hatchSec) + (ret ? ', its meat sells for 💰' + ret + ' (butcher 💰' + job.fee + ')' : ' — a pet, not for selling');
       btn.appendChild(animalIconCanvas(idx));
-      const label = document.createElement('span'); label.className = 'popup-item-label'; label.textContent = t.name + ' seed'; btn.appendChild(label);
+      const label = document.createElement('span'); label.className = 'popup-item-label';
+      label.textContent = t.name + ' · ' + fmtGrow(t.hatchSec) + ' · 💰' + t.cost + (ret ? ' → 💰' + ret : ' · pet'); btn.appendChild(label);
       btn.addEventListener('click', e => {
         e.stopPropagation();
         animalTypeIdx = idx;
@@ -27367,25 +27393,25 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'Incubator — place on top of any block, then aim Animal Seeds at it. Mine the block under it with this selected to pick it back up';
+    slot.title = 'Incubator — 💰' + INCUBATOR_PRICE + ': place on top of any block, then aim Animal Seeds at it and press ✋. Mine with this selected to pick it back up (no refund)';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
     slot.appendChild(keyEl);
     slot.appendChild(incubatorIconCanvas());
     slot.addEventListener('click', () => selectSlot(INCUBATOR_SLOT));
     slotElByIndex[INCUBATOR_SLOT] = slot;
-    addSlotLabel(slot, 'Incubator');
+    addSlotLabel(slot, 'Incubator 💰' + INCUBATOR_PRICE);
     hotbar.appendChild(slot);
   }
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'People Incubator — a tall growing-tube: place it on top of any block, then aim a Mod at it and press ✋. Mine with this selected to pick it back up';
+    slot.title = 'People Incubator — 💰' + PEOPLE_INCUBATOR_PRICE + ': a tall growing-tube. Place it on top of any block, then aim a Mod at it and press ✋. Mine with this selected to pick it back up (no refund)';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
     slot.appendChild(keyEl);
     slot.appendChild(peopleIncubatorIconCanvas());
     slot.addEventListener('click', () => selectSlot(PEOPLE_INCUBATOR_SLOT));
     slotElByIndex[PEOPLE_INCUBATOR_SLOT] = slot;
-    addSlotLabel(slot, 'People Inc.');
+    addSlotLabel(slot, 'People Inc. 💰' + PEOPLE_INCUBATOR_PRICE);
     hotbar.appendChild(slot);
   }
   {

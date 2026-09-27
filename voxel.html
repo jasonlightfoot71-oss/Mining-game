@@ -16401,6 +16401,9 @@
     console.log('[voxel] assignRandomRole — rank idx', idx, 'pool:', pool.map(r=>r.name), 'picked:', currentRole && currentRole.name);
   }
   function nearestBarCounter() {
+    // The Mill's bar only. A Bar Counter placed in any other world (in a bought building, say) is just
+    // furniture — without this it counted as a work spot and paid wages as if you were on shift at the Mill.
+    if (currentWorldId !== PUB_WORLD_ID) return null;
     return nearestFixtureOfType(f => FURNITURE_TYPES[f.typeIdx]?.isWorkSpot);
   }
   function nearestFixtureOfType(matchFn) {
@@ -16461,7 +16464,10 @@
     // but still bounded vertically by isAnywhereInPub's own roof-height
     // cutoff, or flying straight up and over the whole building counted
     // as being on duty everywhere underneath it at once.
-    const onDuty = rankIndex() >= 6 && currentRole === null && (currentWorldId === PUB_WORLD_ID)
+    // Work (and wages) only ever happen in The Mill. The role zones below are fixed x/z boxes around the
+    // Mill's own coordinates, so in any other world standing near the origin also used to count as on duty.
+    const onDuty = currentWorldId !== PUB_WORLD_ID ? false
+      : rankIndex() >= 6 && currentRole === null
       ? isAnywhereInPub()
       : currentRole ? isOnDutyForRole(currentRole) : !!nearestBarCounter();
     if (!onDuty) {
@@ -20433,15 +20439,15 @@
   // live for anyone else in the world. Your own worlds only, and one building
   // per 32x32 chunk (the building system keys each one to a chunk).
   const BUILDING_TYPES = [
-    { t: 'house',     name: 'House',          emoji: '🏠', price: 150, sx: 15, sz: 15 },
-    { t: 'shop',      name: "Grocer's Shop",  emoji: '🧺', price: 120, sx: 15, sz: 15, note: 'buys vegetables and flowers' },
-    { t: 'bbq',       name: 'BBQ Shop',       emoji: '🍖', price: 150, sx: 15, sz: 15, note: 'buys meat' },
-    { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 200, sx: 15, sz: 15, note: 'turns animals into meat' },
-    { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 250, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
-    { t: 'church',    name: 'Church',         emoji: '⛪', price: 400, sx: 19, sz: 25 },
-    { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 40,  sx: 7,  sz: 7, kind: 0 },
-    { t: 'landmark',  name: 'Statue',         emoji: '🗿', price: 60,  sx: 7,  sz: 7, kind: 1 },
-    { t: 'landmark',  name: 'Bell',           emoji: '🔔', price: 50,  sx: 7,  sz: 7, kind: 2 },
+    { t: 'house',     name: 'House',          emoji: '🏠', price: 1500, sx: 15, sz: 15 },
+    { t: 'shop',      name: "Grocer's Shop",  emoji: '🧺', price: 1200, sx: 15, sz: 15, note: 'buys vegetables and flowers' },
+    { t: 'bbq',       name: 'BBQ Shop',       emoji: '🍖', price: 1500, sx: 15, sz: 15, note: 'buys meat' },
+    { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 2000, sx: 15, sz: 15, note: 'turns animals into meat' },
+    { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 2500, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
+    { t: 'church',    name: 'Church',         emoji: '⛪', price: 4000, sx: 19, sz: 25 },
+    { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
+    { t: 'landmark',  name: 'Statue',         emoji: '🗿', price: 600,  sx: 7,  sz: 7, kind: 1 },
+    { t: 'landmark',  name: 'Bell',           emoji: '🔔', price: 500,  sx: 7,  sz: 7, kind: 2 },
   ];
   let propertyTypeIdx = 0;
   function propertyIconCanvas(idx) {

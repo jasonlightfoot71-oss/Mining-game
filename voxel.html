@@ -19778,8 +19778,22 @@
   // something at head height that isn't really blocking the swim.
   function trySwimMove(newPos) {
     const r = player.radius;
-    const test = (x,y,z) => isSolid(x,y,z) || isSolid(x-r,y,z) || isSolid(x+r,y,z) || isSolid(x,y,z-r) || isSolid(x,y,z+r);
+    // The whole body, not just the feet. This used to test only at foot height, so while swimming (feet
+    // down in the water) a block at chest height — a path or bridge laid at the waterline — never registered:
+    // you swam straight into it, and once inside, every direction tested as blocked so you couldn't get out.
+    const test = (x,y,z) => {
+      for (const h of [0.05, player.height * 0.5, player.height - 0.05]) {
+        const yy = y + h;
+        if (isSolid(x,yy,z) || isSolid(x-r,yy,z-r) || isSolid(x+r,yy,z-r) || isSolid(x-r,yy,z+r) || isSolid(x+r,yy,z+r)) return true;
+      }
+      return false;
+    };
     let {x,y,z} = player.pos;
+    // Already inside something (e.g. stuck from before this fix): float up out of it — up and onto the block
+    // is the natural way out of water anyway.
+    if (test(x, y, z)) {
+      for (let lift = 0.1; lift <= 2.5; lift += 0.1) { if (!test(x, y + lift, z)) { player.pos.y = y + lift; return; } }
+    }
     // If horizontal movement is blocked at the player's current height,
     // try lifting a little before giving up on it. This is what was
     // missing and caused the actual reported bug: unlike walking's

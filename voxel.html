@@ -1276,6 +1276,65 @@
   function newWorldId() {
     return (crypto.randomUUID ? crypto.randomUUID() : 'w-'+Date.now()+'-'+Math.random().toString(36).slice(2));
   }
+  // ================= VISITOR CHARGES =================
+  // In someone else's world (visitMode), using what they own costs you and
+  // pays them: harvesting their crops, selling to their shops, using their
+  // butcher. The coins go into a small ledger table (taskmill_voxel_payments)
+  // rather than straight into the owner's stats row — their own game keeps
+  // its coin balance in memory and writes it back every few seconds, so a
+  // direct change from outside would just get overwritten. Their game
+  // collects anything owed to them when it starts, every minute, and the
+  // moment a visitor pays (a live 'ownerPaid' nudge if they're online).
+  const VISITOR_SHOP_CUT = 0.2; // the owner's share of what you sell in their shops
+  let worldOwnerUid = null;
+  async function fetchWorldOwner(id) {
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_worlds?id=eq.${encodeURIComponent(id)}&select=uid`, { headers: SB_HEADERS });
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return rows[0] ? rows[0].uid : null;
+    } catch (e) { return null; }
+  }
+  function chargingVisitor() { return visitMode && !!worldOwnerUid && worldOwnerUid !== playerUid && currentWorldId !== PUB_WORLD_ID; }
+  // Takes `amount` off you now and records it as owed to the world's owner. Refunded if the ledger write fails.
+  function payWorldOwner(amount, reason) {
+    amount = Math.floor(amount);
+    if (!chargingVisitor() || amount <= 0) return;
+    coins -= amount; updateCoinsDisplay(); scheduleStatsSave();
+    fetch(`${SB_URL}/rest/v1/taskmill_voxel_payments`, {
+      method: 'POST', headers: { ...SB_HEADERS, Prefer: 'return=minimal' },
+      body: JSON.stringify([{ to_uid: worldOwnerUid, from_uid: playerUid, world_id: currentWorldId, amount, reason }])
+    }).then(res => {
+      if (!res.ok) throw new Error('payment insert ' + res.status);
+      if (mpChannel) { try { mpChannel.send({ type: 'broadcast', event: 'ownerPaid', payload: { to: worldOwnerUid } }); } catch (e) {} }
+    }).catch(e => {
+      console.error('[voxel] visitor charge failed — refunded', e);
+      coins += amount; updateCoinsDisplay(); scheduleStatsSave();
+    });
+  }
+  let collectingPayments = false, statsLoaded = false;
+  async function collectPayments() {
+    if (!playerUid || collectingPayments || !statsLoaded) return;
+    collectingPayments = true;
+    try {
+      const res = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_payments?to_uid=eq.${encodeURIComponent(playerUid)}&select=id,amount`, { headers: SB_HEADERS });
+      if (!res.ok) return;
+      const rows = await res.json();
+      if (!rows.length) return;
+      const ids = rows.map(r => r.id);
+      const del = await fetch(`${SB_URL}/rest/v1/taskmill_voxel_payments?id=in.(${ids.join(',')})`, { method: 'DELETE', headers: SB_HEADERS });
+      if (!del.ok) return; // not removed = not collected — try again next time rather than risk paying out twice
+      const total = rows.reduce((t, r) => t + (r.amount || 0), 0);
+      if (total > 0) {
+        coins += total; updateCoinsDisplay(); flushPlayerStats();
+        showSaveStatus('💰 +' + total + ' from visitors using your world');
+        try { playCoin(); } catch (e) {}
+      }
+    } catch (e) { console.warn('[voxel] collect payments error', e); }
+    finally { collectingPayments = false; }
+  }
+  setInterval(collectPayments, 60000);
+
   // ================= PLAYER STATS (Supabase) =================
   // Separate table from taskmill_voxel_worlds — one row per player, keyed
   // by uid. Needs to exist before any of this works; see the SQL in the
@@ -3875,6 +3934,7 @@
     // finite world has neither flag set, so this stays a no-op there.
     if (!terrainStreamingActive) return;
     const k = key(x, y, z);
+    seedGroundEdited(x, y, z, type);
     blockEdits.set(k, type);
     if (rot) stepRotEdits.set(k, rot); else stepRotEdits.delete(k);
     // First-ever touch of this column: freeze whatever height it has
@@ -6857,6 +6917,14 @@
   const signs = new Map(); // faceKey -> { mesh, bx,by,bz,nx,ny,nz, sizeIdx, text }
   function wrapCanvasText(ctx, text, cx, cy, maxWidth, lineHeight) {
     const words = (text || '').split(/\s+/).filter(Boolean);
+    // A single word too long for the sign (can't be wrapped) — shrink the font until it fits instead of
+    // letting it run off both edges.
+    let longest = 0;
+    for (const w of words) longest = Math.max(longest, ctx.measureText(w).width);
+    if (longest > maxWidth) {
+      const m = ctx.font.match(/(\d+)px/);
+      if (m) { const px = Math.max(8, Math.floor(+m[1] * maxWidth / longest)); ctx.font = ctx.font.replace(/\d+px/, px + 'px'); lineHeight *= px / +m[1]; }
+    }
     const lines = [];
     let line = '';
     words.forEach(word => {
@@ -17737,7 +17805,11 @@
   // Swimming works the same in lava as in water — the swim depth and
   // surface checks below count either fluid (a column is never both;
   // they harden where they touch).
-  function swimFluidHas(k) { return waterBlocks.has(k) || lava.has(k); }
+  // A cell only counts as swimmable if there's no block in it. Water can still be recorded in a cell a block
+  // was later placed into (a path laid across a pond) — counting that let the block you were standing ON read
+  // as water, so a bridge at (or just under) the waterline measured as 2+ deep, flipped you into swimming, and
+  // swim movement then sank you into the bridge and stuck you there.
+  function swimFluidHas(k) { return (waterBlocks.has(k) || lava.has(k)) && !blocks.has(k); }
   function waterSurfaceNear(x, z) {
     const px = Math.floor(x), pz = Math.floor(z);
     const base = Math.floor(player.pos.y);
@@ -18431,6 +18503,7 @@
     if (!r.isWater && !r.isLava) {
       const sd = seedAt(key(r.hit.x, r.hit.y + 1, r.hit.z));
       if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { mineHeld = false; showBriefMessage('✅ ' + sd.type.name + ' is ready — press ✋ to harvest'); return; }
+      if (sd && sd.type && chargingVisitor()) { mineHeld = false; showBriefMessage('🌱 That\u2019s the owner\u2019s crop — you can\u2019t dig it up'); return; } // visitors can't wreck someone's planting
     }
     if (selectedSlot === INCUBATOR_SLOT) {
       // Picks the incubator back up (and anything in it) off the block you aim at.
@@ -18608,7 +18681,15 @@
     for (const c of [{ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }, r.before]) {
       if (!c) continue;
       const pk = key(c.x, c.y, c.z), sd = seedAt(pk);
-      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { harvestSeed(pk, c.x, c.y, c.z, sd); playThud(220); return; }
+      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) {
+        if (chargingVisitor()) { // someone else's crop — you pay them for it (see VISITOR CHARGES)
+          const fee = seedCost(sd.type);
+          if (coins < fee) { showSaveStatus('⚠ Picking this costs 💰' + fee + ' (paid to the owner) — you have ' + coins, true); return; }
+          payWorldOwner(fee, 'harvest');
+          showSaveStatus('🧺 Paid the owner 💰' + fee + ' for the ' + sd.type.name);
+        }
+        harvestSeed(pk, c.x, c.y, c.z, sd); playThud(220); return;
+      }
     }
     if (!canEditAt(r.hit.x, r.hit.z)) return;
     // Animal seed into an incubator (the ray passes through its cell, so try the cell in front and the one on top of what was hit).
@@ -18887,8 +18968,15 @@
       if (!blocks.has(key(ix, iy - 1, iz))) { showSaveStatus('🥚 The incubator needs a block underneath it', true); return; }
       if (blocks.has(ik) || waterBlocks.has(ik) || lava.has(ik) || seedEdits.has(ik)) return;
       if (blockOverlapsPlayer(ix, iy, iz)) return;
-      if (!recordSeed(ix, iy, iz, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec())) { showSaveStatus('🥚 Incubators can only go in your own worlds', true); return; }
-      seedNextPass = 0; playThud(260);
+      if (!terrainStreamingActive) { showSaveStatus('🥚 Incubators can only go in your own worlds', true); return; }
+      if (coins < INCUBATOR_PRICE) { showSaveStatus('⚠ An Incubator costs 💰' + INCUBATOR_PRICE + ' (you have ' + coins + ')', true); return; }
+      placingHeld = false;
+      askConfirm('Place an Incubator here for 💰' + INCUBATOR_PRICE + '? (Picking it back up later doesn\u2019t refund it.)', 'Buy · 💰' + INCUBATOR_PRICE, () => {
+        if (blocks.has(ik) || seedEdits.has(ik) || coins < INCUBATOR_PRICE) return;
+        if (!recordSeed(ix, iy, iz, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec())) return;
+        coins -= INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave();
+        seedNextPass = 0; playThud(260); playCoin();
+      });
       return;
     }
     // People Incubator: same, but it's two blocks tall, so the cell above needs to be clear too.
@@ -18899,8 +18987,15 @@
       if (blocks.has(ik) || waterBlocks.has(ik) || lava.has(ik) || seedEdits.has(ik)) return;
       if (blocks.has(ak) || waterBlocks.has(ak) || lava.has(ak)) { showSaveStatus('🧬 Needs two blocks of headroom', true); return; }
       if (blockOverlapsPlayer(ix, iy, iz) || blockOverlapsPlayer(ix, iy + 1, iz)) return;
-      if (!recordSeed(ix, iy, iz, PEOPLE_INC_EMPTY * SEED_VALUE_MUL + nowSec())) { showSaveStatus('🧬 People Incubators can only go in your own worlds', true); return; }
-      seedNextPass = 0; playThud(240);
+      if (!terrainStreamingActive) { showSaveStatus('🧬 People Incubators can only go in your own worlds', true); return; }
+      if (coins < PEOPLE_INCUBATOR_PRICE) { showSaveStatus('⚠ A People Incubator costs 💰' + PEOPLE_INCUBATOR_PRICE + ' (you have ' + coins + ')', true); return; }
+      placingHeld = false;
+      askConfirm('Place a People Incubator here for 💰' + PEOPLE_INCUBATOR_PRICE + '? (Picking it back up later doesn\u2019t refund it.)', 'Buy · 💰' + PEOPLE_INCUBATOR_PRICE, () => {
+        if (blocks.has(ik) || blocks.has(ak) || seedEdits.has(ik) || coins < PEOPLE_INCUBATOR_PRICE) return;
+        if (!recordSeed(ix, iy, iz, PEOPLE_INC_EMPTY * SEED_VALUE_MUL + nowSec())) return;
+        coins -= PEOPLE_INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave();
+        seedNextPass = 0; playThud(240); playCoin();
+      });
       return;
     }
     // Lava's version of the top-up above — same two cells checked (the
@@ -20210,6 +20305,22 @@
     put(x, top + 2, z, leafT);
   }
   let seedNextPass = 0;
+  // A player's own block edit that ruins a planting or an incubator: the Mud under a crop dug out or swapped,
+  // the block under an incubator removed, or a block placed into either one's cell. This (not the per-second
+  // pass) is what deletes those records — and recordSeed sends the deletion to everyone else.
+  function seedGroundEdited(x, y, z, type) {
+    const above = key(x, y + 1, z), here = key(x, y, z);
+    if (seedEdits.has(above)) {
+      const code = seedCode(above);
+      if (code < INCUBATOR_EMPTY) { if (type !== MUD_TYPE) removeSeed(above, x, y + 1, z); }
+      else if (type === -1 && incInfo(code) && incInfo(code).state !== 'hatched') recordSeed(x, y + 1, z, -1);
+    }
+    if (type !== -1 && seedEdits.has(here)) {
+      const code = seedCode(here);
+      if (code < INCUBATOR_EMPTY) removeSeed(here, x, y, z);
+      else if (incInfo(code) && incInfo(code).state !== 'hatched') recordSeed(x, y, z, -1);
+    }
+  }
   function updateSeeds() {
     const now = performance.now();
     if (now < seedNextPass) return;
@@ -20221,7 +20332,13 @@
       if (code >= INCUBATOR_EMPTY) { updateIncubatorRecord(k, x, y, z, code); continue; }
       if (!groundHeightOnly.has(x + ',' + z)) { const fx = seedFx.get(k); if (fx) { disposeSeedGroup(fx.group); seedFx.delete(k); } continue; } // not loaded — hide, keep growing
       const s = seedAt(k);
-      if (!s || !s.type || blocks.get(key(x, y - 1, z)) !== MUD_TYPE || blocks.has(k)) { removeSeed(k, x, y, z); continue; } // mud dug out, or built over
+      if (!s || !s.type) { removeSeed(k, x, y, z); continue; } // not a valid record
+      // No Mud under it right now (or something in its cell): just don't draw it — never delete it from here.
+      // This pass used to delete the record, and on re-entering a world it runs before everything has been
+      // rebuilt: a bought Farm's mud fields only appear once its building replays (after the world's first
+      // redraw), so every crop in them was wiped a second or two after you arrived. Seeds are only removed for
+      // real when a player actually digs out the mud or builds over them — see seedGroundEdited.
+      if (blocks.get(key(x, y - 1, z)) !== MUD_TYPE || blocks.has(k)) { const fx0 = seedFx.get(k); if (fx0) { disposeSeedGroup(fx0.group); seedFx.delete(k); } continue; }
       const p = seedProgress(s);
       if (s.type.kind === 'tree' && p >= 1) { removeSeed(k, x, y, z); growSeedTree(x, y, z, s.type); continue; }
       const stage = Math.round(p * 10) / 10;
@@ -20411,6 +20528,10 @@
     renderInventory();
     const earned = n * producePrice(name);
     addCoins(earned);
+    if (chargingVisitor()) { // selling in someone else's shop — they take a cut (see VISITOR CHARGES)
+      const cut = Math.floor(earned * VISITOR_SHOP_CUT);
+      if (cut > 0) { payWorldOwner(cut, 'shop'); return earned - cut; }
+    }
     return earned;
   }
   function renderShopPanel() {
@@ -20656,7 +20777,8 @@
     askConfirm('Turn ' + who + ' into ' + job.n + ' ' + job.meat + ' ' + (PRODUCE_EMOJI[job.meat] || '') + ' for 💰' + job.fee + '?', 'Yes · 💰' + job.fee, () => {
       if (leadRec !== a || villageAnimals.indexOf(a) < 0) return; // it got away while the box was open
       if (coins < job.fee) return;
-      coins -= job.fee; updateCoinsDisplay(); scheduleStatsSave();
+      if (chargingVisitor()) payWorldOwner(job.fee, 'butcher'); // their slaughterhouse — the fee goes to them (see VISITOR CHARGES)
+      else { coins -= job.fee; updateCoinsDisplay(); scheduleStatsSave(); }
       leadRec = null; a.leashed = false; if (leadRope) leadRope.visible = false;
       if (a.hatched) {
         let rk = null; for (const [k2, v] of hatchedLive) if (v === a) { rk = k2; break; }
@@ -20705,7 +20827,7 @@
     const shell = buildShell(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, 11, 11, 5, floor, palette, doorSide, 'flat');
     for (let x = shell.x0; x <= shell.x1; x++) for (let z = shell.z0; z <= shell.z1; z++) blocks.set(key(x, floor, z), 2); // bare stone floor, easy to hose down
     carveDoorGap(shell, doorSide, 2); // a wide open doorway, no door — so an animal on the lead can walk straight in
-    placeShellSign(shell, doorSide, 'Slaughterhouse', reg);
+    placeShellSign(shell, doorSide, 'Slaughter House', reg); // two words, so it wraps onto two lines across the 2-wide sign
     placeShellLight(shell, doorSide, reg);
     const backSide = HOUSE_BACK_SIDE[doorSide], rot = HOUSE_SIDE_ROT[backSide];
     if (backSide === 'north') addFurnitureTracked(shell.midX, floor, shell.z0 + 2, rot, 5, reg);
@@ -20767,6 +20889,7 @@
   // People Incubator (see PEOPLE INCUBATOR & MODS below) — its own code range,
   // above the animal one so nothing already saved changes meaning:
   // 400 = empty, 401+ = growing that Mod, 500+ = a hatched Mod.
+  const INCUBATOR_PRICE = 3000, PEOPLE_INCUBATOR_PRICE = 5000; // paid when placed — see doPlace
   const PEOPLE_INC_EMPTY = 400, PEOPLE_INCUBATING_BASE = 401, MOD_HATCHED_BASE = 500, MOD_CODE_END = 600;
   // What a record code means: which incubator kind, which state, which type.
   function incInfo(code) {
@@ -21037,9 +21160,9 @@
       return;
     }
     if (!groundHeightOnly.has(x + ',' + z)) { removeIncubatorFx(k); return; }
-    if (!blocks.has(key(x, y - 1, z)) || blocks.has(k)) { // its base was dug out, or something was built in it
+    if (!blocks.has(key(x, y - 1, z)) || blocks.has(k)) { // no base (yet) or something in its cell — hide, don't delete (same reason as crops in updateSeeds; real removal is seedGroundEdited)
       removeIncubatorFx(k);
-      recordSeed(x, y, z, -1); return;
+      return;
     }
     let fx = incubatorFx.get(k);
     if (fx && fx.people !== info.people) { removeIncubatorFx(k); fx = null; }
@@ -22670,6 +22793,9 @@
       // its next pass (forced to run now). Marked dirty like a remote
       // blockEdit, so this player's own save of the chunk carries it rather
       // than overwriting it.
+      channel.on('broadcast', { event: 'ownerPaid' }, ({ payload }) => {
+        if (payload && payload.to === playerUid) collectPayments(); // a visitor just paid you — see VISITOR CHARGES
+      });
       channel.on('broadcast', { event: 'nameEdit' }, ({ payload }) => {
         if (!payload || payload.uid === playerUid) return;
         if (currentWorldId !== mpConnectedWorldId || !terrainStreamingActive) return;
@@ -28541,6 +28667,7 @@
             currentWorldId = id;
             currentWorldName = row.querySelector('.wName').firstChild.textContent;
             visitMode = true;
+            worldOwnerUid = await fetchWorldOwner(id); // who gets paid when you use things here — see VISITOR CHARGES
             currentRole = null; // guard against a stale role from a previous Mill visit
             document.getElementById('visitBannerName').textContent = currentWorldName;
             terrainStreamingActive = infiniteWorldActive; // turned on only now — see loadWorldData()'s own comment on why
@@ -28630,7 +28757,7 @@
     setupTitleAvatarPreview();
     if (isStandalone) document.getElementById('standaloneNotice').style.display = 'block';
     renderWorldList();
-    fetchPlayerStats().then(s => { coins = s.coins; hoursWorked = s.hours; rank = s.rank; promoThreshold = s.promoThreshold; updateCoinsDisplay(); updateRoleTag(); });
+    fetchPlayerStats().then(s => { coins = s.coins; hoursWorked = s.hours; rank = s.rank; promoThreshold = s.promoThreshold; updateCoinsDisplay(); updateRoleTag(); statsLoaded = true; collectPayments(); }); // collect only once the balance is loaded, or the load would overwrite what was collected
     loadInventory(); // the harvest bag — see HARVEST BAG
     // Flush coins on tab-hide/unload — registered once here (not per
     // beginPlaying call, which can run more than once per session) so a

@@ -2214,6 +2214,7 @@
   // one of them at the wrong block the moment anything was appended after
   // them — Slope is exactly that.
   const typeIndexByName = name => BLOCK_TYPES.findIndex(e => e.name === name);
+  const PODZOL_TYPE = typeIndexByName('Podzol'); // generates in patches on the floor of wet, dense forest (generateChunkTerrain); wild mushrooms grow on it (see WILD MUSHROOMS)
   const BARS_TYPE = typeIndexByName('Bars');
   const GREY_SLAB_TYPE = typeIndexByName('Grey Path Slab'); // first of the five consecutive path slabs
   const WINTER_BRANCH_A = typeIndexByName('Winter Branch A');
@@ -3006,7 +3007,7 @@
     // Snow/flower overlay re-check, same as before — water arriving
     // somewhere new can leave snow sitting on top of it otherwise.
     const flowSeason = getSeasonState().season;
-    if (flowSeason === 0 || flowSeason === 1 || flowSeason === 2) scheduleOverlayRebuild(flowSeason);
+    scheduleOverlayRebuild(flowSeason);
   }
   // Throttled rather than debounced: scheduleWaterRebuild restarts its
   // one-second timer on every call, so a spill that keeps changing every
@@ -4089,6 +4090,17 @@
     const pad = spec.t === 'castle' ? 12 : 0; // the castle's levelSite reaches well past its core
     return { x0: spec.site.sx0 - pad, x1: spec.site.sx1 + pad, z0: spec.site.sz0 - pad, z1: spec.site.sz1 + pad };
   }
+  // Podzol: only inside the dense-woodland moisture band (> 0.55, the
+  // same band that gets the heaviest tree cover), and only where a
+  // smooth blob-noise field crosses its threshold — so it shows up as
+  // irregular patches of dark forest floor a handful of blocks to a
+  // couple of dozen across, with ordinary grass forest between them,
+  // never as scattered single blocks. Only on gentle ground (the grass
+  // tier); steep steps still show dirt/stone as before. Deterministic
+  // from x/z like the rest of the terrain, so every player sees the
+  // same patches. Grass never spreads onto it (see GRASS SPREAD).
+  const PODZOL_PATCH_SCALE = 1/23;
+  const PODZOL_PATCH_THRESHOLD = 0.58;
   function generateChunkTerrain(cx, cz) {
     const ck = cx + '_' + cz;
     if (generatedChunks.has(ck)) return;
@@ -4359,11 +4371,12 @@
           : (h <= SEA_LEVEL ? 5 /*sand at the waterline*/
           : (elevation > 0.55 && h > SEA_LEVEL+5 ? 2 /*stone peaks — a flat-ish high plateau still reads as rocky even without a steep local step*/
           : (moisture < 0.35 ? 5 /*dry/desert-like ground, independent of height*/
-          : 0 /*grass*/)))));
+          : (moisture > 0.55 && smoothNoise(x*PODZOL_PATCH_SCALE + 9000, z*PODZOL_PATCH_SCALE + 9000) > PODZOL_PATCH_THRESHOLD ? PODZOL_TYPE /*forest-floor patch in the dense-woodland band — see PODZOL_PATCH_SCALE*/
+          : 0 /*grass*/))))));
         // Forest density now follows moisture, not elevation — dense
         // woodland can happen on a hill OR a plain, sparse/none in dry
         // areas regardless of how high or low they are.
-        const treeChance = (blend < 1 || surfaceType === 1 || surfaceType === 2) ? 0 : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
+        const treeChance = (blend < 1 || surfaceType === 1 || surfaceType === 2) ? 0 : surfaceType === PODZOL_TYPE ? 0.07 /*podzol patches are the thickest bit of forest*/ : (moisture > 0.55 ? 0.045 : moisture > 0.35 ? 0.015 : 0.002);
         // Fills all the way down to bedrock within the Mill's blend zone
         // specifically (blend < 1), rather than the normal capped depth
         // — this is a narrow, bounded area (only ever relevant inside
@@ -4423,7 +4436,7 @@
         // stone, which the old check let through occasionally in dry
         // biomes (low-moisture ground generates as sand, and treeChance
         // was still nonzero there).
-        if (treeChance && !structureColumn && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24) && chunkTreeRoll(x,z,0) < treeChance) {
+        if (treeChance && !structureColumn && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24 || surfaceType === PODZOL_TYPE) && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
           for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
           const topY = h + trunkH;
@@ -4819,7 +4832,7 @@
     // definition), so calling it on every streaming update is cheap —
     // it only actually rescans the world at most a couple of times a
     // second regardless of how often this fires.
-    if (changed) { const s = getSeasonState().season; if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s); }
+    if (changed) { const s = getSeasonState().season; scheduleOverlayRebuild(s); }
   }
   // Synchronously generates a wider ring of chunks around wherever the
   // player currently is, all at once, rather than letting the normal
@@ -5870,7 +5883,7 @@
     // used to refresh on much rarer full-rebuild events. Debounced, so
     // safe to call on every edit.
     const s = getSeasonState().season;
-    if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s);
+    scheduleOverlayRebuild(s);
     grassNoteAround(x, y, z); // dirt/mud beside or beneath whatever just changed may now qualify (or stop qualifying) to turn to grass — see GRASS SPREAD
   }
 
@@ -12123,7 +12136,7 @@
     rebuildWaterGeometry();
     if (glassNear) rebuildGlassGeometry();
     const season = getSeasonState().season;
-    if (season === 0 || season === 1 || season === 2) scheduleOverlayRebuild(season);
+    scheduleOverlayRebuild(season);
     return removed.length;
   }
   // The cells a blast removes. The edge is ragged (each cell's own radius
@@ -13007,8 +13020,10 @@
   }
 
   // ================= GRASS SPREAD =================
-  // A Dirt or Mud block that touches grass turns into grass after a
-  // little while. "Touches" means the four blocks beside it at the SAME
+  // A Dirt, Coarse Dirt, Clay or Mud block that touches grass turns into
+  // grass after a little while — except Mud the PLAYER placed, which
+  // always stays Mud (it's for planting seeds in; a vegetable patch
+  // shouldn't grass over). Natural Mud still greens over as before. "Touches" means the four blocks beside it at the SAME
   // height (north/south/east/west) — not above, below or diagonal. The
   // more of them that are grass, the sooner:
   //     4 grass neighbours -> 1s     3 -> 2s     2 -> 3s     1 -> 4s
@@ -13031,7 +13046,8 @@
   // garden stays as it grew. Nothing happens in The Mill, in protected game
   // structures, or on generated buildings (a farm's soil should stay soil).
   const GRASS_BLOCK = 0;
-  const GRASS_SPREADS_ONTO = new Set([1, 24]); // Dirt, Mud. Coarse Dirt, Podzol and Clay are deliberately left alone.
+  const GRASS_MUD = typeIndexByName('Mud');
+  const GRASS_SPREADS_ONTO = new Set([typeIndexByName('Dirt'), typeIndexByName('Coarse Dirt'), typeIndexByName('Clay'), GRASS_MUD]); // Podzol is deliberately left alone; player-placed Mud is excluded in grassEligibleCount
   const GRASS_STEP_MS = 1000;                  // delay = (5 - grass neighbours) * this
   const GRASS_TICK_MS = 100;
   const GRASS_MAX_PER_TICK = 40;               // caps a burst (e.g. coming back to a hidden tab) so it can't hitch a frame
@@ -13046,7 +13062,9 @@
   }
   // 0 = not eligible right now, otherwise how many grass neighbours it has.
   function grassEligibleCount(x, y, z) {
-    if (!GRASS_SPREADS_ONTO.has(blocks.get(key(x, y, z)))) return 0;
+    const k = key(x, y, z), t = blocks.get(k);
+    if (!GRASS_SPREADS_ONTO.has(t)) return 0;
+    if (t === GRASS_MUD && blockEdits.get(k) === GRASS_MUD) return 0; // player-placed Mud (local, remote or saved — all land in blockEdits) never turns to grass
     if (blocks.has(key(x, y + 1, z)) || waterBlocks.has(key(x, y + 1, z))) return 0; // covered, or underwater
     return grassGrassNeighbours(x, y, z);
   }
@@ -13103,11 +13121,12 @@
     if (!converted.length) return;
     for (const e of converted) for (const d of GRASS_DIRS) grassNote(e.x + d[0], e.y, e.z + d[1]); // spread outward
     const season = getSeasonState().season;
-    if (season === 0 || season === 1 || season === 2) scheduleOverlayRebuild(season); // flowers/snow follow grass — see handleLocalBlockChange
+    scheduleOverlayRebuild(season); // flowers/snow follow grass — see handleLocalBlockChange
   }
   // Called once for each chunk as it finishes generating: finds the natural
   // dirt that already borders grass (which starts it growing straight
-  // away), plus any dirt/mud the player placed in this chunk.
+  // away), plus any dirt/coarse dirt/clay the player placed in this chunk
+  // (placed Mud is skipped by grassEligibleCount).
   function grassScanChunk(ck) {
     if (currentWorldId === PUB_WORLD_ID) return;
     const parts = ck.split('_'), x0 = +parts[0] * CHUNK_SIZE, z0 = +parts[1] * CHUNK_SIZE;
@@ -18862,7 +18881,7 @@
     rebuildWaterGeometry();
     rebuildGlassGeometry();
     const s = getSeasonState().season;
-    if (s === 0 || s === 1 || s === 2) scheduleOverlayRebuild(s);
+    scheduleOverlayRebuild(s);
     playThud(320);
     showSaveStatus('Filled ' + placed + ' block' + (placed === 1 ? '' : 's'));
   }
@@ -21059,14 +21078,98 @@
       return mesh;
     });
   });
+  // ================= WILD MUSHROOMS =================
+  // Small clusters of mushrooms on Podzol — natural or player-placed,
+  // either way. Same approach as the wild flowers: nothing is stored,
+  // it's all hashed from x/z, so every player sees the same mushrooms
+  // in the same spots, and they come and go with the block (dig the
+  // podzol out or build on top and they're gone; lay podzol and they
+  // appear on the next overlay rebuild). Unlike flowers they don't need
+  // open sky — they're a forest-floor thing and happily grow under the
+  // canopy — just an empty, dry block above.
+  // Two species, one per cluster: red-capped with white spots, and a
+  // plain tan/brown cap. Seasons: spring and summer have a few, autumn
+  // is their season and has noticeably more, winter has none (snow).
+  // Rebuilt inside rebuildFlowerOverlay's own scan rather than a scan of
+  // their own — startBackgroundMapScan only runs one scan at a time, so
+  // a second one would cancel the flowers' mid-way through.
+  const MUSHROOM_CAP = 8000;            // per species
+  const MUSHROOM_SPOTS = 4;             // white spots per red cap
+  const MUSHROOM_SLOTS = [[0, 0], [-0.24, -0.2], [0.22, -0.16], [-0.18, 0.24], [0.2, 0.22]];
+  const mushroomStemGeom = new THREE.CylinderGeometry(0.028, 0.036, 1, 6); // unit height, scaled per instance
+  mushroomStemGeom.translate(0, 0.5, 0);
+  const mushroomCapGeom = new THREE.SphereGeometry(1, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2); // dome, scaled per instance
+  const mushroomSpotGeom = new THREE.SphereGeometry(0.014, 5, 4);
+  [mushroomStemGeom, mushroomCapGeom, mushroomSpotGeom].forEach(g => { g.userData.shared = true; });
+  // Unlit and dimmed, same reasoning as the flower palette above.
+  const MUSHROOM_SPECIES = [
+    { capColor: 0x9e2622, spots: true,  capR: 0.075, capH: 0.055, stemH: 0.11 }, // red, white-spotted
+    { capColor: 0x9a7650, spots: false, capR: 0.09,  capH: 0.04,  stemH: 0.08 }, // tan/brown, flatter and wider
+  ];
+  const mushroomStemMat = new THREE.MeshBasicMaterial({ color: 0xbdb49e });
+  const mushroomSpotMat = new THREE.MeshBasicMaterial({ color: 0xcfcbc0 });
+  MUSHROOM_SPECIES.forEach(sp => {
+    sp.stemMesh = new THREE.InstancedMesh(mushroomStemGeom, mushroomStemMat, MUSHROOM_CAP);
+    sp.capMesh = new THREE.InstancedMesh(mushroomCapGeom, new THREE.MeshBasicMaterial({ color: sp.capColor }), MUSHROOM_CAP);
+    sp.stemMesh.count = 0; sp.capMesh.count = 0;
+    scene.add(sp.stemMesh); scene.add(sp.capMesh);
+  });
+  const mushroomSpotMesh = new THREE.InstancedMesh(mushroomSpotGeom, mushroomSpotMat, MUSHROOM_CAP * MUSHROOM_SPOTS);
+  mushroomSpotMesh.count = 0;
+  scene.add(mushroomSpotMesh);
+  function clearMushroomOverlay() { MUSHROOM_SPECIES.forEach(sp => { sp.stemMesh.count = 0; sp.capMesh.count = 0; }); mushroomSpotMesh.count = 0; }
+  // Places one podzol block's cluster (if it has one) into the running
+  // counts. autumn = the busier season.
+  function placeMushroomsOn(x, y, z, autumn, mc, dummy) {
+    const aboveKey = key(x, y + 1, z);
+    if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) return;
+    if (flowerHash(x, z, 70) > (autumn ? 0.34 : 0.16)) return;            // most podzol has none
+    const sp = MUSHROOM_SPECIES[flowerHash(x, z, 71) < 0.45 ? 0 : 1];     // one species per cluster
+    const c = mc[sp === MUSHROOM_SPECIES[0] ? 0 : 1];
+    const n = 1 + Math.floor(flowerHash(x, z, 72) * (autumn ? 4 : 3));  // 1-3 (autumn 1-4)
+    const start = Math.floor(flowerHash(x, z, 73) * MUSHROOM_SLOTS.length);
+    for (let i = 0; i < n; i++) {
+      if (c.n >= MUSHROOM_CAP) return;
+      const slot = MUSHROOM_SLOTS[(start + i) % MUSHROOM_SLOTS.length];
+      const sc = 0.7 + flowerHash(x, z, 80 + i) * 0.6;                   // size varies within the cluster
+      const fx = x + 0.5 + slot[0] + (flowerHash(x, z, 90 + i) - 0.5) * 0.1;
+      const fz = z + 0.5 + slot[1] + (flowerHash(x, z, 100 + i) - 0.5) * 0.1;
+      const stemH = sp.stemH * sc, lean = (flowerHash(x, z, 110 + i) - 0.5) * 0.25, yaw = flowerHash(x, z, 120 + i) * Math.PI * 2;
+      dummy.position.set(fx, y + 1, fz); dummy.rotation.set(lean, yaw, 0); dummy.scale.set(sc, stemH, sc); dummy.updateMatrix();
+      sp.stemMesh.setMatrixAt(c.n, dummy.matrix);
+      // Cap sits on top of the (leaning) stem.
+      dummy.position.set(fx + Math.sin(lean) * stemH * Math.sin(yaw), y + 1 + stemH * Math.cos(lean) - 0.004, fz + Math.sin(lean) * stemH * Math.cos(yaw)); // stem tip (rotation order YXZ: lean first, then yaw)
+      dummy.scale.set(sp.capR * sc, sp.capH * sc, sp.capR * sc); dummy.updateMatrix();
+      sp.capMesh.setMatrixAt(c.n, dummy.matrix);
+      if (sp.spots && mc.spots + MUSHROOM_SPOTS <= MUSHROOM_CAP * MUSHROOM_SPOTS) {
+        const cx = dummy.position.x, cy = dummy.position.y, cz = dummy.position.z;
+        for (let p = 0; p < MUSHROOM_SPOTS; p++) {
+          const a = yaw + p * (Math.PI * 2 / MUSHROOM_SPOTS) + 0.4, r = sp.capR * sc * 0.6;
+          dummy.position.set(cx + Math.cos(a) * r, cy + sp.capH * sc * 0.78, cz + Math.sin(a) * r);
+          dummy.rotation.set(0, 0, 0); dummy.scale.set(sc, 0.6 * sc, sc); dummy.updateMatrix();
+          mushroomSpotMesh.setMatrixAt(mc.spots++, dummy.matrix);
+        }
+      }
+      c.n++;
+    }
+  }
   function rebuildFlowerOverlay() {
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
     const counts = FLOWER_TYPES.map(() => ({ stem: 0, leaf: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
     const dummyLeaf = new THREE.Object3D();
     let totalPlaced = 0;
+    const season = getSeasonState().season;
+    const flowersOn = season === 1 || season === 2; // autumn gets here too, for mushrooms only — see WILD MUSHROOMS
+    const mc = [{ n: 0 }, { n: 0 }]; mc.spots = 0;
+    const dummyMush = new THREE.Object3D(); dummyMush.rotation.order = 'YXZ'; // lean the stem, then turn it — placeMushroomsOn's cap position assumes this order
     startBackgroundMapScan(blocks, (k, t) => {
-      if (totalPlaced >= MAX_INSTANCES) return true;
-      if (t !== 0) return false; // Grass only
+      if (t === PODZOL_TYPE) {
+        const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1);
+        placeMushroomsOn(+k.slice(0, c1), +k.slice(c1+1, c2), +k.slice(c2+1), season === 3, mc, dummyMush);
+        return false;
+      }
+      if (totalPlaced >= MAX_INSTANCES) return false; // flowers are full — keep scanning for mushrooms, though
+      if (t !== 0 || !flowersOn) return false; // Grass only
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch's own grass — flowers scattered
@@ -21088,7 +21191,7 @@
       if (patchNoise < FLOWER_PATCH_THRESHOLD) return false;
       const cx = x+0.5, cz = z+0.5;
       for (let s = 0; s < FLOWER_SLOTS.length; s++) {
-        if (totalPlaced >= MAX_INSTANCES) return true;
+        if (totalPlaced >= MAX_INSTANCES) return false; // flowers full — but don't end the scan, mushrooms still need it
         // Independent per-slot bloom chance so a blooming tile isn't a
         // uniform stamped grid — most of its five slots fill, not all.
         if (flowerHash(x, z, 10+s) > 0.72) continue;
@@ -21144,6 +21247,11 @@
       }
       return false;
     }, () => {
+      MUSHROOM_SPECIES.forEach((sp, i) => {
+        sp.stemMesh.count = mc[i].n; sp.capMesh.count = mc[i].n;
+        sp.stemMesh.instanceMatrix.needsUpdate = true; sp.capMesh.instanceMatrix.needsUpdate = true;
+      });
+      mushroomSpotMesh.count = mc.spots; mushroomSpotMesh.instanceMatrix.needsUpdate = true;
       FLOWER_TYPES.forEach((type, i) => {
         type.stemMesh.count = counts[i].stem; type.stemMesh.instanceMatrix.needsUpdate = true;
         type.leafMesh.count = counts[i].leaf; type.leafMesh.instanceMatrix.needsUpdate = true;
@@ -21196,7 +21304,7 @@
     if (type.centerSize > 0) { const c = new THREE.Mesh(type.centerGeom, flowerCenterMat); c.position.y = bloomY(type.centerY); g.add(c); }
     return g;
   }
-  function clearFlowerOverlay() { FLOWER_TYPES.forEach(type => { type.leafMesh.count = 0; type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
+  function clearFlowerOverlay() { clearMushroomOverlay(); FLOWER_TYPES.forEach(type => { type.leafMesh.count = 0; type.stemMesh.count = 0; type.centerMesh.count = 0; type.petalMeshesByColor.forEach(mesh => mesh.count = 0); }); }
 
   // One shared particle system for both rain and snow — same falling-box
   // technique either way (a cloud of points that always re-centres on the
@@ -21309,7 +21417,7 @@
     // which is an easy trade for something this decorative.
     clearTimeout(overlayRebuildTimer);
     overlayRebuildTimer = setTimeout(() => {
-      if (season === 0) rebuildSnowOverlay(); else rebuildFlowerOverlay();
+      if (season === 0) rebuildSnowOverlay(); else rebuildFlowerOverlay(); // spring/summer: flowers + mushrooms; autumn: mushrooms only; winter: snow only (mushrooms were cleared with the flowers)
     }, 3000);
   }
   function updateWeather(dt) {
@@ -21343,9 +21451,9 @@
       if (season === 0) { rebuildSnowOverlay(); clearFlowerOverlay(); }
       else if (season === 1) { clearSnowOverlay(); rebuildFlowerOverlay(); }
       else if (season === 2) { clearSnowOverlay(); rebuildFlowerOverlay(); }
-      else { clearSnowOverlay(); clearFlowerOverlay(); }
+      else { clearSnowOverlay(); clearFlowerOverlay(); rebuildFlowerOverlay(); } // autumn: no flowers, but mushrooms (rebuildFlowerOverlay skips flowers in autumn)
       if (season === 0) applyWinterBranchVariety(); else revertWinterBranchVariety();
-    } else if (needsRebuild && (season === 0 || season === 1 || season === 2)) {
+    } else if (needsRebuild) { // every season — autumn has mushrooms to keep in sync too
       // Keep the overlay in sync as the player builds/mines mid-season.
       scheduleOverlayRebuild(season);
     }

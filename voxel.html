@@ -343,6 +343,23 @@
   .bagIcon { font-size: 20px; width: 26px; text-align: center; }
   .bagName { flex: 1; }
   .bagQty { font-weight: 700; color: #ffd666; }
+  /* Shopkeeper's sell panel — see SHOPKEEPER. */
+  #shopPanel {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(340px, 92vw); max-height: 75vh; overflow-y: auto; display: none;
+    background: rgba(20,24,30,0.96); border: 1px solid rgba(255,255,255,0.22); border-radius: 14px; z-index: 45;
+    color: #fff; font: 14px system-ui, sans-serif; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+  #shopPanel .shopHead { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.12); position: sticky; top: 0; background: rgba(20,24,30,0.99); }
+  #shopPanel .shopSay { padding: 10px 14px 4px; color: #cfd6df; font-style: italic; }
+  #shopClose { background: none; border: none; color: #fff; font-size: 18px; cursor: pointer; }
+  #shopList { padding: 6px 10px 6px; }
+  .shopItem { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-radius: 8px; }
+  .shopItem:nth-child(odd) { background: rgba(255,255,255,0.05); }
+  .shopItem .bagName { flex: 1; }
+  .shopItem .shopPrice { color: #ffd666; font-size: 12px; white-space: nowrap; }
+  .shopBtn { background: #2f7d46; color: #fff; border: none; border-radius: 7px; padding: 7px 9px; font: 600 13px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+  .shopBtn:active { filter: brightness(1.2); }
+  #shopSellAll { display: block; width: calc(100% - 20px); margin: 6px 10px 12px; padding: 11px; font-size: 15px; background: #c7901d; }
   .bagEmpty { padding: 10px 6px; color: rgba(255,255,255,0.7); line-height: 1.4; }
   /* Moved in from right:40 to sit right next to btnJump instead of a big
      gap away from it — build and jump are used together constantly
@@ -676,6 +693,7 @@
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
   <button id="btnBag" title="Harvest bag">🎒<span id="bagCount"></span></button>
   <div id="bagPanel"><div class="bagHead"><span>🎒 Harvest bag</span><button id="bagClose">✕</button></div><div id="bagList"></div></div>
+  <div id="shopPanel"><div class="shopHead"><span>🧺 Shopkeeper</span><button id="shopClose">✕</button></div><div class="shopSay" id="shopSay"></div><div id="shopList"></div><button class="shopBtn" id="shopSellAll"></button></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
   <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:5; touch-action:none;"></div>
   <button class="touchBtn" id="btnMine">⛏️</button>
@@ -10388,6 +10406,67 @@
     if (bounds.home) return { x: bounds.home.x, z: bounds.home.z }; // a pen's own centre might be outside an L-shaped pen; where it was let go never is
     return { x: (bounds.xMin + bounds.xMax) / 2, z: (bounds.zMin + bounds.zMax) / 2 };
   }
+  // ================= SHOPKEEPER =================
+  // Every generated shop has a shopkeeper standing behind its counter, facing the door. He doesn't wander —
+  // he's a prop in the shop's own registry (reg.props), so he's built and cleared with the shop exactly like
+  // the castle's prisoner. Press MINE on him and he offers to buy what's in your harvest bag (see SELLING).
+  const shopkeepers = []; // their meshes — the ones mine is tested against (dropped here once their shop unloads)
+  function spawnShopkeeper(shell, doorSide, reg, rng) {
+    const back = HOUSE_BACK_SIDE[doorSide];
+    let x = shell.midX + 0.5, z = shell.midZ + 0.5, ry = 0;
+    if (back === 'north') { z = shell.z0 + 1.5; ry = 0; }            // between the back wall and the counter (see buildVillageShop), facing the door
+    else if (back === 'south') { z = shell.z1 - 0.5; ry = Math.PI; }
+    else if (back === 'west') { x = shell.x0 + 1.5; ry = Math.PI / 2; }
+    else { x = shell.x1 - 0.5; ry = -Math.PI / 2; }
+    const colors = {
+      skinIdx: Math.floor(rng() * AVATAR_SKIN_TONES.length),
+      hairIdx: Math.floor(rng() * AVATAR_HAIR_TONES.length),
+      shirtIdx: Math.floor(rng() * AVATAR_SHIRT_TONES.length),
+      pantsIdx: Math.floor(rng() * AVATAR_PANTS_TONES.length),
+    };
+    const mesh = placeVillageNpcMesh(x, shell.gy + 1, z, colors);
+    mesh.rotation.y = ry;
+    // A green grocer's apron over the front, so he reads as the shopkeeper rather than just another villager.
+    // (Figure's torso spans y 0.72..1.30, 0.22 deep; legs below — see buildCustomerFigure.)
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: 0x2f7d46 }));
+    apron.position.set(0, 0.84, 0.13);
+    mesh.add(apron);
+    mesh.userData.shopkeeper = true;
+    reg.props = reg.props || [];
+    reg.props.push(mesh);
+    shopkeepers.push(mesh);
+    return mesh;
+  }
+  // The shopkeeper the crosshair is on, if he's within reach and nothing solid is in the way; else null.
+  const _shopRay = new THREE.Raycaster();
+  function shopkeeperInSight(blockHit) {
+    for (let i = shopkeepers.length - 1; i >= 0; i--) if (!shopkeepers[i].parent) shopkeepers.splice(i, 1); // his shop's been unloaded
+    if (!shopkeepers.length) return null;
+    _shopRay.setFromCamera({ x: 0, y: 0 }, camera);
+    _shopRay.far = 6;
+    const hits = _shopRay.intersectObjects(shopkeepers, true);
+    if (!hits.length) return null;
+    if (blockHit) { // a wall or window between you and him wins
+      const bx = blockHit.x + 0.5, by = blockHit.y + 0.5, bz = blockHit.z + 0.5;
+      const bd = camera.position.distanceTo(new THREE.Vector3(bx, by, bz));
+      if (bd + 0.3 < hits[0].distance) return null;
+    }
+    return hits[0];
+  }
+  // A one-off pointer the first time you walk up to a shopkeeper each session.
+  let shopkeeperHintShown = false;
+  function updateShopkeeperHint() {
+    if (shopkeeperHintShown || !shopkeepers.length) return;
+    for (const m of shopkeepers) {
+      if (!m.parent) continue;
+      const dx = m.position.x - player.pos.x, dz = m.position.z - player.pos.z;
+      if (dx * dx + dz * dz < 25 && Math.abs(m.position.y - player.pos.y) < 3) {
+        shopkeeperHintShown = true;
+        showBriefMessage(isTouchDevice ? '🧺 Shopkeeper — tap ⛏ on him to sell your harvest' : '🧺 Shopkeeper — mine him (left click) to sell your harvest');
+        return;
+      }
+    }
+  }
   function placeVillageNpcMesh(x, y, z, colors) {
     const g = buildCustomerFigure(false, colors);
     g.position.set(x, y, z);
@@ -10436,6 +10515,7 @@
     return w;
   }
   function updateVillageNPCs(dt) {
+    updateShopkeeperHint();
     if (villageNPCs.length === 0) return;
     const t = performance.now() * 0.005;
     villageNPCs.forEach(w => {
@@ -10685,7 +10765,7 @@
     const doorSide = ['south','north','east','west'][Math.floor(rng()*4)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
-    reg.npcs.push(spawnBuildingResident(shopShell, doorSide, ck, rng));
+    spawnShopkeeper(shopShell, doorSide, reg, rng); // stands behind the counter all day — see SHOPKEEPER (replaced the shop's wandering resident)
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
@@ -17855,6 +17935,21 @@
       o.start(start); o.stop(start + dur);
     });
   }
+  // Selling to a shopkeeper — a quick two-note "ka-ching", shorter than the treasure arpeggio.
+  function playCoin() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    [1318.5, 1975.5].forEach((freq, i) => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'triangle'; o.frequency.value = freq;
+      const start = now + i * 0.07, dur = 0.25;
+      g.gain.setValueAtTime(0.0001, start);
+      g.gain.exponentialRampToValueAtTime(0.18, start + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(start); o.stop(start + dur);
+    });
+  }
   // A short organ phrase — three sustained chords in sequence, each
   // built from a stack of square-wave oscillators (square, not sine,
   // for the reedy organ-pipe character) with a slow attack rather than
@@ -18026,6 +18121,8 @@
     // reaches the actual terrain instead of just clearing the water in
     // front of it.
     const r = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing'));
+    // Mining a shopkeeper opens his shop instead (see SELLING).
+    if (shopkeeperInSight(r && r.hit)) { mineHeld = false; openShopPanel(); return; }
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
     // over a block if it's actually the closer of the two along the
@@ -19935,6 +20032,83 @@
     addToInventory(item, n);
     showSaveStatus('🎒 +' + n + ' ' + item + (PRODUCE_EMOJI[item] ? ' ' + PRODUCE_EMOJI[item] : ''));
   }
+
+  // ================= SELLING =================
+  // What the shopkeeper pays, per item. Roughly in line with how long each crop takes to grow and how many it
+  // gives per plant (a pumpkin is one slow plant; peas give five quick ones). Anything not listed (all the
+  // flowers) goes for FLOWER_PRICE.
+  const PRODUCE_PRICES = {
+    Wheat: 4, Carrot: 5, Potato: 5, Onion: 6, Peas: 3, Strawberry: 6, Tomato: 6, Beetroot: 7,
+    Sweetcorn: 10, Lettuce: 12, Cabbage: 15, Pumpkin: 25,
+  };
+  const FLOWER_PRICE = 8;
+  const producePrice = name => PRODUCE_PRICES[name] || FLOWER_PRICE;
+  const SHOPKEEPER_LINES = [
+    "Morning! What've you grown for me?", "Fresh from the field? Let's have a look.", "I'll take whatever you've got — fair prices, mind.",
+    "Busy day. What are you selling?", "Ah, a farmer! Show me the bag.",
+  ];
+  function shopPanelOpen() { const p = document.getElementById('shopPanel'); return !!p && p.style.display === 'block'; }
+  function openShopPanel() {
+    document.exitPointerLock && document.exitPointerLock(); // so the buttons can be clicked on desktop
+    toggleBag(false);
+    document.getElementById('shopSay').textContent = '"' + SHOPKEEPER_LINES[Math.floor(Math.random() * SHOPKEEPER_LINES.length)] + '"';
+    document.getElementById('shopPanel').style.display = 'block';
+    renderShopPanel();
+    playThud(260);
+  }
+  function closeShopPanel() { const p = document.getElementById('shopPanel'); if (p) p.style.display = 'none'; }
+  function sellProduce(name, n) {
+    const have = inventory[name] || 0;
+    n = Math.min(n, have);
+    if (n <= 0) return 0;
+    inventory[name] = have - n;
+    if (inventory[name] <= 0) delete inventory[name];
+    saveInventory();
+    renderInventory();
+    const earned = n * producePrice(name);
+    addCoins(earned);
+    return earned;
+  }
+  function renderShopPanel() {
+    const list = document.getElementById('shopList'), all = document.getElementById('shopSellAll');
+    if (!list || !all) return;
+    const entries = Object.entries(inventory).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0]));
+    list.innerHTML = '';
+    if (!entries.length) {
+      list.innerHTML = '<div class="bagEmpty">Your bag\'s empty — grow some vegetables or flowers from seed and bring them back.</div>';
+      all.style.display = 'none';
+      return;
+    }
+    let total = 0;
+    for (const [name, n] of entries) {
+      const price = producePrice(name);
+      total += price * n;
+      const row = document.createElement('div'); row.className = 'shopItem';
+      row.innerHTML = `<span class="bagIcon">${PRODUCE_EMOJI[name] || '💐'}</span><span class="bagName">${name} <span class="bagQty">×${n}</span><br><span class="shopPrice">💰${price} each</span></span>`;
+      const one = document.createElement('button'); one.className = 'shopBtn'; one.textContent = 'Sell 1';
+      one.addEventListener('click', e => { e.stopPropagation(); const got = sellProduce(name, 1); if (got) { showSaveStatus('💰 +' + got + ' for 1 ' + name); playCoin(); } renderShopPanel(); });
+      const every = document.createElement('button'); every.className = 'shopBtn'; every.textContent = 'All · 💰' + (price * n);
+      every.addEventListener('click', e => { e.stopPropagation(); const got = sellProduce(name, n); if (got) { showSaveStatus('💰 +' + got + ' for ' + n + ' ' + name); playCoin(); } renderShopPanel(); });
+      row.appendChild(one); row.appendChild(every);
+      list.appendChild(row);
+    }
+    all.style.display = 'block';
+    all.textContent = 'Sell everything · 💰' + total;
+  }
+  document.getElementById('shopSellAll').addEventListener('click', e => {
+    e.stopPropagation();
+    let got = 0, n = 0;
+    for (const [name, c] of Object.entries(inventory)) if (c > 0) { n += c; got += sellProduce(name, c); }
+    if (got) { showSaveStatus('💰 +' + got + ' for ' + n + ' item' + (n === 1 ? '' : 's') + ' — "Pleasure doing business!"'); playCoin(); }
+    renderShopPanel();
+  });
+  document.getElementById('shopClose').addEventListener('click', e => { e.stopPropagation(); closeShopPanel(); });
+  // Walking away closes it.
+  setInterval(() => {
+    if (!shopPanelOpen()) return;
+    const near = shopkeepers.some(m => m.parent && Math.hypot(m.position.x - player.pos.x, m.position.z - player.pos.z) < 7);
+    if (!near) closeShopPanel();
+  }, 500);
 
   // ================= INCUBATOR & ANIMAL SEEDS =================
   // The Incubator (Action menu) is placed on top of any block. Aim Animal

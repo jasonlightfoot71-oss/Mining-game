@@ -365,6 +365,8 @@
      gap away from it — build and jump are used together constantly
      (build a step, jump up it), so keeping them adjacent makes sense. */
   #btnPlace { right: 200px; bottom: 210px; }
+  /* Action (use / interact) — directly under the 💬 chat button. */
+  #btnAction { right: 60px; bottom: 148px; background: rgba(40,90,60,0.55); }
   #btnJump {
     right: 136px; bottom: 210px;
     width: 54px; height: 54px; font-size: 22px;
@@ -699,6 +701,7 @@
   <button class="touchBtn" id="btnMine">⛏️</button>
   <button class="touchBtn" id="btnPlace">🧱</button>
   <button class="touchBtn" id="btnJump">⤴️</button>
+  <button class="touchBtn" id="btnAction" title="Action — use / interact: fire weapons, sell to the shopkeeper, harvest, sow seeds, fill incubators, gates, the lead…">✋</button>
   <button class="touchBtn" id="btnRotate" style="display:none;" title="Spin the step, slope or curve you're aiming at left/right">🔄</button>
   <button class="touchBtn" id="btnTilt" style="display:none;" title="Spin the step, slope or curve you're aiming at up/down">↕️</button>
 </div>
@@ -2315,6 +2318,8 @@
   const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LEAD_SLOT = FIRE_SLOT + 6;     // "Lead" (Equipment menu) — see LEADING ANIMALS
+  const PEOPLE_INCUBATOR_SLOT = FIRE_SLOT + 7; // "People Incubator" (Action menu) — see PEOPLE INCUBATOR & MODS
+  const MOD_SLOT = FIRE_SLOT + 8;              // "Mods" (Landscape menu)
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -9304,7 +9309,7 @@
   function spawnPenAnimals(ck, bounds, count, rng, fenceKeys, reg) {
     for (let i = 0; i < count; i++) {
       const spot = pickVillageWanderTarget(bounds);
-      const mesh = (i % 2 === 0 ? buildCowModel : buildSheepModel)();
+      const mesh = (i % 2 === 0 ? buildRealCow : buildRealSheep)(); // the same realistic models as hatched animals (see Realistic animal models) — the old blocky buildCowModel/buildSheepModel are no longer used
       mesh.position.set(spot.x, villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1, spot.z);
       mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       scene.add(mesh);
@@ -10478,7 +10483,7 @@
       const dx = m.position.x - player.pos.x, dz = m.position.z - player.pos.z;
       if (dx * dx + dz * dz < 25 && Math.abs(m.position.y - player.pos.y) < 3) {
         shopkeeperHintShown = true;
-        showBriefMessage(isTouchDevice ? '🧺 Shopkeeper — tap ⛏ on him to sell your harvest' : '🧺 Shopkeeper — mine him (left click) to sell your harvest');
+        showBriefMessage(isTouchDevice ? '🧺 Shopkeeper — tap ✋ on him to sell your harvest' : '🧺 Shopkeeper — press C (or middle-click) on him to sell your harvest');
         return;
       }
     }
@@ -12459,14 +12464,14 @@
   }
   let weaponBtnLabelSet = false;
   function updateWeaponBtnLabel() {
-    const btn = document.getElementById('btnPlace');
+    const btn = document.getElementById('btnAction');
     if (!btn) return;
     if (weaponEquipped()) {
       const em = WEAPON_TYPES[weaponTypeIdx].emoji;
-      if (btn.textContent !== em) btn.textContent = em; // the touch build button IS the fire button while a weapon is out
+      if (btn.textContent !== em) btn.textContent = em; // the action button IS the fire button while a weapon is out
       weaponBtnLabelSet = true;
     } else if (weaponBtnLabelSet) {
-      if (!ridingVehicle) btn.textContent = '🧱';
+      if (!ridingVehicle) btn.textContent = '✋';
       weaponBtnLabelSet = false;
     }
   }
@@ -13276,8 +13281,8 @@
       if (vehicleCamWasActive) {
         vehicleCamWasActive = false;
         vehicleGunGroup.visible = false;
-        const btnPlaceEl = document.getElementById('btnPlace');
-        if (btnPlaceEl) btnPlaceEl.textContent = '🧱'; // back to the normal build icon
+        const btnActEl = document.getElementById('btnAction');
+        if (btnActEl) btnActEl.textContent = '✋'; // back to the normal action icon
         const crosshairEl = document.getElementById('crosshair');
         if (crosshairEl && !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive) crosshairEl.style.display = 'block';
         if (currentWorkHeldKind) { heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = true; }
@@ -13294,9 +13299,9 @@
     if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
     const ridingTank = !!(VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank;
-    vehicleGunGroup.visible = !ridingTank; // the build button fires this vehicle's gun now, not a block — see doPlace's vehicle interception. The Tank has its own barrel instead.
-    const btnPlaceEl = document.getElementById('btnPlace');
-    if (btnPlaceEl) btnPlaceEl.textContent = ridingTank ? '💥' : '🔫'; // the touch build button IS the fire button while riding — same doPlace interception fireVehicleGun relies on
+    vehicleGunGroup.visible = !ridingTank; // the action button fires this vehicle's gun — see doAction. The Tank has its own barrel instead.
+    const btnActEl = document.getElementById('btnAction');
+    if (btnActEl) btnActEl.textContent = ridingTank ? '💥' : '🔫'; // the action button IS the fire button while riding — see doAction
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
     v.group.rotation.order = 'YXZ'; // yaw first, then tilt about the vehicle's OWN side axis — the default XYZ order would tilt about the world X axis whatever way it's facing
@@ -17119,6 +17124,7 @@
     if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
     if (e.code === 'KeyR' && !e.repeat && document.pointerLockElement === renderer.domElement) rotateTargetBlock();
     if (e.code === 'KeyX' && !e.repeat && document.pointerLockElement === renderer.domElement) tiltTargetBlock();
+    if (e.code === 'KeyC' && !e.repeat && document.pointerLockElement === renderer.domElement) actionPress(); // ✋ action — see ACTION
     if (e.code === 'KeyE') {
       // Vehicles: E both gets in and gets back out — added specifically
       // because the on-screen Enter/Exit Vehicle buttons are unreliable
@@ -17140,6 +17146,7 @@
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     keys[e.code] = false;
     if (ARROW_AS_WASD[e.code]) keys[ARROW_AS_WASD[e.code]] = false;
+    if (e.code === 'KeyC' && actionHeld) actionRelease();
   });
   document.addEventListener('wheel', e => {
     if (document.pointerLockElement) {
@@ -17194,7 +17201,7 @@
     }
     if (!gateHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence === 'gate') {
       gateHintShown = true;
-      showBriefMessage('Gate: put it in a gap in a fence — press build on it to open or shut it');
+      showBriefMessage('Gate: put it in a gap in a fence — press ✋ on it to open or shut it');
     } else if (!fenceHintShown && BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) {
       fenceHintShown = true;
       showBriefMessage(isTouchDevice ? 'Fence: lines up with fences beside it — tap 🔄 to turn it' : 'Fence: lines up with fences beside it — aim at it and press R to turn it');
@@ -17242,8 +17249,10 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x6b8e3a });
     } else if (i === ANIMAL_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xf1e6cf });
-    } else if (i === INCUBATOR_SLOT) {
+    } else if (i === INCUBATOR_SLOT || i === PEOPLE_INCUBATOR_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xd9d4c8 });
+    } else if (i === MOD_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x9fd6b0 });
     } else {
       heldMesh.material = buildMaterialArrayForHand(i);
     }
@@ -18113,38 +18122,16 @@
   const PLACE_COOLDOWN = 220; // ms — minimum gap between continuous placements, so a fast sweep doesn't wall you in instantly
 
   function doMine() {
-    if (weaponEquipped()) { fireWeapon(); return; } // a weapon in hand turns mine into fire — see WEAPONS & LIVES (held mine auto-repeats through this too; the weapon's own cooldown paces it)
-    // Battleship firing intercepts a normal mine-click when a battle is
-    // actually underway and the player is looking at their own grid —
-    // reuses the same input rather than adding a whole separate control,
-    // matching "press the grid number" as literally as this game's own
-    // input model allows.
-    if (bsGame && bsGame.started && !bsGame.won) {
-      const mySide = bsMySide();
-      if (mySide) {
-        const cell = bsGetLookedAtCell(mySide);
-        if (cell !== null) {
-          bsFireAt(cell);
-          // Normal mining sets `mining` to a timed state, which is what
-          // stops the "keep mining while held" logic further down from
-          // re-triggering every single frame the button stays down —
-          // firing never sets that, so without this, one held click was
-          // repeatedly re-firing (or re-hitting the same rejected shot)
-          // for as long as the button was physically down, which is
-          // exactly what "not your turn yet, over and over" was.
-          mineHeld = false;
-          return;
-        }
-      }
-    }
+    // Mine only mines now. Firing weapons, Battleship shots, the shopkeeper,
+    // bells, treasure and harvesting all moved to the action button — see ACTION.
     // Sees straight through water to whatever's behind/under it unless
     // the water bucket itself is selected — the bucket's still how you
     // deliberately scoop water up, but mining with anything else now
     // reaches the actual terrain instead of just clearing the water in
     // front of it.
     const r = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing'));
-    // Mining a shopkeeper opens his shop instead (see SELLING).
-    if (shopkeeperInSight(r && r.hit)) { mineHeld = false; openShopPanel(); return; }
+    // Aiming at the shopkeeper: he's traded with via ✋, never mined through.
+    if (shopkeeperInSight(r && r.hit)) { mineHeld = false; showBriefMessage('🧺 Press ✋ to trade with the shopkeeper'); return; }
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
     // over a block if it's actually the closer of the two along the
@@ -18158,26 +18145,11 @@
       blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x+0.5, r.hit.y+0.5, r.hit.z+0.5));
     }
     const furnitureTarget = raycastFurniture(6);
-    // The bell rings rather than being deleted — same targeting as
-    // every other non-block object here, but it's a permanent village
-    // fixture, not something a single hit removes the way furniture or
-    // a fixture/torch does.
-    if (furnitureTarget && furnitureTarget.kind === 'bell' && furnitureTarget.dist < blockDist) {
-      const b = bells.get(furnitureTarget.fk);
-      if (!b || !canEditAt(b.bx, b.bz)) { mineHeld = false; return; }
-      ringBell(furnitureTarget.fk);
+    // Bells ring and treasure is collected with ✋ (see doAction) — mining
+    // them does nothing, so neither can be deleted by accident.
+    if (furnitureTarget && (furnitureTarget.kind === 'bell' || furnitureTarget.kind === 'treasure') && furnitureTarget.dist < blockDist) {
       mineHeld = false;
-      return;
-    }
-    // Treasure is collected, not deleted like ordinary furniture — one
-    // hit, coins added, gone for good. No canEditAt/ownership check:
-    // it's not editing the world in any lasting way, and coins are a
-    // per-player stat, not a per-world one, so finding it visiting
-    // someone else's world is exactly as valid as finding it in your
-    // own.
-    if (furnitureTarget && furnitureTarget.kind === 'treasure' && furnitureTarget.dist < blockDist) {
-      collectTreasureChest(furnitureTarget.fk);
-      mineHeld = false;
+      showBriefMessage(furnitureTarget.kind === 'bell' ? '🔔 Press ✋ to ring the bell' : '💰 Press ✋ to open the treasure');
       return;
     }
     if (furnitureTarget && furnitureTarget.dist < blockDist) {
@@ -18199,12 +18171,11 @@
     if (!r) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
     if (isProtectedStructuralBlock(r.hit.x, r.hit.y, r.hit.z) && !landscapeModeEnabled) return; // the football pitch, S&L tower, and Battleship arena can't be mined away — but anything ELSE sitting in that area (like a stray block someone accidentally placed) still can be, see its own comment. landscapeModeEnabled (toggle with G) is a deliberate, temporary override for actual landscaping work
-    // Fully-grown vegetables and flowers are harvested into the bag by
-    // mining them with anything — before the block under them is dug.
+    // A ripe crop on top of this block: don't dig it out from under the
+    // crop by habit — harvesting is ✋ now (see doAction).
     if (!r.isWater && !r.isLava) {
-      const pk = key(r.hit.x, r.hit.y + 1, r.hit.z);
-      const sd = seedAt(pk);
-      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { harvestSeed(pk, r.hit.x, r.hit.y + 1, r.hit.z, sd); playThud(220); mineHeld = false; return; }
+      const sd = seedAt(key(r.hit.x, r.hit.y + 1, r.hit.z));
+      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { mineHeld = false; showBriefMessage('✅ ' + sd.type.name + ' is ready — press ✋ to harvest'); return; }
     }
     if (selectedSlot === INCUBATOR_SLOT) {
       // Picks the incubator back up (and anything in it) off the block you aim at.
@@ -18213,16 +18184,10 @@
       if (incubatorAt({ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z })) { recordSeed(r.hit.x, r.hit.y + 1, r.hit.z, -1); seedNextPass = 0; playThud(220); }
       return;
     }
-    if (selectedSlot === SEED_SLOT) {
-      // With Seeds in hand, "mining" pulls up a plant that ISN'T ready yet
-      // (never digs the block itself — so holding the button can't carry
-      // on into the mud after the plant's gone).
+    if (selectedSlot === PEOPLE_INCUBATOR_SLOT) {
+      // Same pick-up for the tall one.
       if (r.isWater || r.isLava) return;
-      const pk = key(r.hit.x, r.hit.y + 1, r.hit.z);
-      const sd = seedAt(pk);
-      if (!sd || !sd.type) return;
-      removeSeed(pk, r.hit.x, r.hit.y + 1, r.hit.z);
-      playThud(220);
+      if (peopleIncubatorAt({ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z })) { recordSeed(r.hit.x, r.hit.y + 1, r.hit.z, -1); seedNextPass = 0; playThud(220); }
       return;
     }
     if (r.isLava) {
@@ -18332,28 +18297,113 @@
     if (opening) playDoorOpen(); else playDoorClose();
     return true;
   }
+  // ================= ACTION =================
+  // The ✋ button (touch), middle mouse or C (desktop), R3 (controller):
+  // everything that USES or INTERACTS with something, so mine only mines and
+  // build only builds. First match wins:
+  //   vehicle gun / weapon (held = auto-fire, paced by the weapon's cooldown)
+  //   → Battleship shot / ship placement → kick the football / hit the tennis
+  //   ball (held = charge, as build used to) → shopkeeper → bell / treasure →
+  //   gate → lead → harvest a ripe crop (whatever you're holding) → put an
+  //   animal in an incubator / a Mod in a People Incubator → sow seeds in Mud.
+  let actionHeld = false;
+  function actionPress() {
+    ensureAudio();
+    actionHeld = true;
+    if (!ridingVehicle && !weaponEquipped()) {
+      if (tennisChargeEligible()) { tennisStartCharge(); return; }
+      if (golfChargeEligible()) { golfStartCharge(); return; }
+    }
+    doAction();
+  }
+  function actionRelease() {
+    actionHeld = false;
+    tennisReleaseCharge(); golfPauseCharge(); // harmless no-ops unless one was charging
+  }
+  function doAction() {
+    if (ridingVehicle) { fireVehicleGun(); return; }
+    if (weaponEquipped()) { fireWeapon(); return; }
+    if (bsGame && bsGame.started && !bsGame.won) {
+      const mySide = bsMySide();
+      if (mySide) { const cell = bsGetLookedAtCell(mySide); if (cell !== null) { actionHeld = false; bsFireAt(cell); return; } }
+    }
+    if (bsPlacing) { const cell = bsGetLookedAtCell(bsPlacing.side); if (cell !== null) { actionHeld = false; bsHandlePlacementClick(cell); return; } }
+    actionHeld = false; // everything from here on is a single press, not a held repeat
+    if (tryKickFootball()) return;
+    if (tryHitTennisBall()) return;
+    const r = voxelRaycast(true, true);
+    if (shopkeeperInSight(r && r.hit)) { openShopPanel(); return; }
+    let blockDist = Infinity;
+    if (r) { const camPos = camera.getWorldPosition(new THREE.Vector3()); blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x + 0.5, r.hit.y + 0.5, r.hit.z + 0.5)); }
+    const ft = raycastFurniture(6);
+    if (ft && ft.kind === 'bell' && ft.dist < blockDist) { const b = bells.get(ft.fk); if (b && canEditAt(b.bx, b.bz)) ringBell(ft.fk); return; }
+    if (ft && ft.kind === 'treasure' && ft.dist < blockDist) { collectTreasureChest(ft.fk); return; } // no ownership check — see collectTreasureChest
+    if (r && r.hit && !r.isWater && !r.isLava && tryToggleGate(r.hit.x, r.hit.y, r.hit.z)) return;
+    if (selectedSlot === LEAD_SLOT) { useLead(); return; }
+    if (!r || !r.hit || r.isWater || r.isLava) return;
+    // Harvest a ripe vegetable/flower, whatever's in your hand.
+    for (const c of [{ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }, r.before]) {
+      if (!c) continue;
+      const pk = key(c.x, c.y, c.z), sd = seedAt(pk);
+      if (sd && sd.type && sd.type.kind !== 'tree' && seedProgress(sd) >= 1) { harvestSeed(pk, c.x, c.y, c.z, sd); playThud(220); return; }
+    }
+    if (!canEditAt(r.hit.x, r.hit.z)) return;
+    // Animal seed into an incubator (the ray passes through its cell, so try the cell in front and the one on top of what was hit).
+    if (selectedSlot === ANIMAL_SLOT) {
+      const inc = [r.before, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }].find(c => incubatorAt(c));
+      if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Action menu', true); return; }
+      const ik = key(inc.x, inc.y, inc.z);
+      if (seedCode(ik) !== INCUBATOR_EMPTY) { showSaveStatus('🥚 That incubator is already hatching something', true); return; }
+      recordSeed(inc.x, inc.y, inc.z, (INCUBATING_BASE + animalTypeIdx) * SEED_VALUE_MUL + nowSec());
+      showSaveStatus('🥚 ' + ANIMAL_TYPES[animalTypeIdx].name + ' egg incubating… ' + ANIMAL_EMOJI[animalTypeIdx]);
+      seedNextPass = 0; playThud(300);
+      return;
+    }
+    // A Mod into a People Incubator — it's two blocks tall, so aiming at its upper half counts too.
+    if (selectedSlot === MOD_SLOT) {
+      const b = r.before;
+      const inc = [b, b && { x: b.x, y: b.y - 1, z: b.z }, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }].find(c => peopleIncubatorAt(c));
+      if (!inc) { showSaveStatus('🧬 Aim at a People Incubator — build one from the Action menu', true); return; }
+      const ik = key(inc.x, inc.y, inc.z);
+      if (seedCode(ik) !== PEOPLE_INC_EMPTY) { showSaveStatus('🧬 That incubator is already growing something', true); return; }
+      recordSeed(inc.x, inc.y, inc.z, (PEOPLE_INCUBATING_BASE + modTypeIdx) * SEED_VALUE_MUL + nowSec());
+      showSaveStatus('🧬 ' + MOD_TYPES[modTypeIdx].name + ' growing… ' + MOD_TYPES[modTypeIdx].emoji);
+      seedNextPass = 0; playThud(300);
+      return;
+    }
+    // Seeds: sow on top of the Mud block you're aiming at.
+    if (selectedSlot === SEED_SLOT) {
+      const px = r.hit.x, py = r.hit.y + 1, pz = r.hit.z, pk = key(px, py, pz);
+      const growing = seedAt(pk);
+      if (growing && growing.type) { showBriefMessage('🌱 ' + growing.type.name + ' — ' + fmtCountdown(growing.type.growSec - (Date.now() / 1000 - growing.plantedAt)) + ' to go'); return; }
+      if (blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) !== MUD_TYPE) { showSaveStatus('🌱 Seeds only grow in Mud — sow them on top of a Mud block', true); return; }
+      if (blocks.has(pk) || waterBlocks.has(pk) || lava.has(pk) || seedEdits.has(pk)) return; // something's already there
+      const st = SEED_TYPES[seedTypeIdx], cost = seedCost(st);
+      if (coins < cost) { showSaveStatus('⚠ ' + st.name + ' seeds cost 💰' + cost + ' (have ' + coins + ')', true); return; }
+      if (!plantSeed(px, py, pz, seedTypeIdx)) { showSaveStatus('🌱 Seeds can only be planted in your own worlds', true); return; }
+      if (cost > 0) { // charged in every world, not just The Mill (unlike trySpendCoins) — and only once it's actually planted
+        coins -= cost; updateCoinsDisplay(); scheduleStatsSave();
+        showSaveStatus('🌱 Planted ' + st.name + ' (−💰' + cost + ', ready in ' + fmtGrow(st.growSec) + ')');
+      }
+      seedNextPass = 0; // show the new sprout straight away
+      playThud(300);
+      return;
+    }
+  }
   function doPlace() {
     // Every vehicle's gun intercepts the build button entirely while
     // riding one — same "reuse an existing input for a vehicle-specific
     // action" idea as the minigame interceptions below, just gated on
     // the vehicle instead of a minigame being active.
-    if (ridingVehicle) { fireVehicleGun(); return; }
-    if (weaponEquipped()) { fireWeapon(); return; } // same for build
-    // Battleship ship placement intercepts a normal place-click while
-    // actively placing a ship — look at your starting square and press
-    // build, then look in the direction you want the ship to extend and
-    // press build again.
-    if (bsPlacing) {
-      const cell = bsGetLookedAtCell(bsPlacing.side);
-      if (cell !== null) { bsHandlePlacementClick(cell); return; }
+    // Build only builds now: vehicle guns, weapons, Battleship moves, kicking
+    // the football, gates, the lead, sowing seeds and filling incubators are
+    // all on the action button — see ACTION.
+    if (ridingVehicle) return;
+    if (weaponEquipped()) { showBriefMessage('Press ✋ to fire'); return; }
+    if (selectedSlot === LEAD_SLOT || selectedSlot === SEED_SLOT || selectedSlot === ANIMAL_SLOT || selectedSlot === MOD_SLOT) {
+      showBriefMessage(selectedSlot === LEAD_SLOT ? '🪢 Press ✋ near an animal to use the lead' : selectedSlot === SEED_SLOT ? '🌱 Press ✋ on Mud to sow seeds' : selectedSlot === MOD_SLOT ? '🧬 Aim at a People Incubator and press ✋' : '🥚 Aim at an Incubator and press ✋');
+      return;
     }
-    // Standing right next to the football kicks it (in whichever
-    // direction you're currently facing) instead of doing normal
-    // placement — tryKickFootball itself checks distance/whether it's
-    // already airborne and returns false if this isn't a valid kick, so
-    // normal placement still works everywhere else as usual.
-    if (tryKickFootball()) return;
-    if (tryHitTennisBall()) return;
     // Second argument skips any cell that overlaps the player's own
     // body — without it, the very first thing this raycast ever sees
     // while swimming is the water the player is themselves sitting in,
@@ -18376,10 +18426,6 @@
     // water-displacement logic further down that was specifically
     // written to handle exactly this case using `r.hit` instead. This is
     // the actual reason building underwater wasn't working at all.
-    // A gate opens / shuts from the build button, whatever you're holding (it never swings on its own the way
-    // a door does). Checked before the Lead, so you can let yourself through a gate with an animal on the lead.
-    if (r && r.hit && !r.isWater && !r.isLava && tryToggleGate(r.hit.x, r.hit.y, r.hit.z)) return;
-    if (selectedSlot === LEAD_SLOT) { useLead(); return; } // hooks the nearest animal, or lets go of the one you're leading
     if (!r) return;
     if (!r.isWater && !r.before) return;
     if (!canEditAt(r.hit.x, r.hit.z)) return; // view only — either visiting someone else's world, or standing within The Mill's protected building footprint
@@ -18581,36 +18627,16 @@
       seedNextPass = 0; playThud(260);
       return;
     }
-    // Animal seeds: aimed at an empty incubator (the ray passes through
-    // the incubator's cell, so check the cell in front and the one on top
-    // of the block that was hit).
-    if (selectedSlot === ANIMAL_SLOT) {
-      if (!r.hit) return;
-      const cands = [r.before, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }];
-      const inc = cands.find(c => incubatorAt(c));
-      if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Action menu', true); return; }
-      const ik = key(inc.x, inc.y, inc.z);
-      if (seedCode(ik) !== INCUBATOR_EMPTY) { showSaveStatus('🥚 That incubator is already hatching something', true); return; }
-      recordSeed(inc.x, inc.y, inc.z, (INCUBATING_BASE + animalTypeIdx) * SEED_VALUE_MUL + nowSec());
-      showSaveStatus('🥚 ' + ANIMAL_TYPES[animalTypeIdx].name + ' egg incubating… ' + ANIMAL_EMOJI[animalTypeIdx]);
-      seedNextPass = 0; playThud(300);
-      return;
-    }
-    // Seeds: plant on top of the Mud block you're aiming at.
-    if (selectedSlot === SEED_SLOT) {
-      if (r.isWater || r.isLava || !r.hit) return;
-      if (blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) !== MUD_TYPE) { showSaveStatus('🌱 Seeds only grow in Mud — plant them on top of a Mud block', true); return; }
-      const px = r.hit.x, py = r.hit.y + 1, pz = r.hit.z, pk = key(px, py, pz);
-      if (blocks.has(pk) || waterBlocks.has(pk) || lava.has(pk) || seedEdits.has(pk)) return; // something's already there
-      const st = SEED_TYPES[seedTypeIdx], cost = seedCost(st);
-      if (coins < cost) { showSaveStatus('⚠ ' + st.name + ' seeds cost 💰' + cost + ' (have ' + coins + ')', true); return; }
-      if (!plantSeed(px, py, pz, seedTypeIdx)) { showSaveStatus('🌱 Seeds can only be planted in your own worlds', true); return; }
-      if (cost > 0) { // charged in every world, not just The Mill (unlike trySpendCoins) — and only once it's actually planted
-        coins -= cost; updateCoinsDisplay(); scheduleStatsSave();
-        showSaveStatus('🌱 Planted ' + st.name + ' (−💰' + cost + ', ready in ' + fmtGrow(st.growSec) + ')');
-      }
-      seedNextPass = 0; // show the new sprout straight away
-      playThud(300);
+    // People Incubator: same, but it's two blocks tall, so the cell above needs to be clear too.
+    if (selectedSlot === PEOPLE_INCUBATOR_SLOT) {
+      if (r.isWater || r.isLava || !r.before) return;
+      const { x: ix, y: iy, z: iz } = r.before, ik = key(ix, iy, iz), ak = key(ix, iy + 1, iz);
+      if (!blocks.has(key(ix, iy - 1, iz))) { showSaveStatus('🧬 The People Incubator needs a block underneath it', true); return; }
+      if (blocks.has(ik) || waterBlocks.has(ik) || lava.has(ik) || seedEdits.has(ik)) return;
+      if (blocks.has(ak) || waterBlocks.has(ak) || lava.has(ak)) { showSaveStatus('🧬 Needs two blocks of headroom', true); return; }
+      if (blockOverlapsPlayer(ix, iy, iz) || blockOverlapsPlayer(ix, iy + 1, iz)) return;
+      if (!recordSeed(ix, iy, iz, PEOPLE_INC_EMPTY * SEED_VALUE_MUL + nowSec())) { showSaveStatus('🧬 People Incubators can only go in your own worlds', true); return; }
+      seedNextPass = 0; playThud(240);
       return;
     }
     // Lava's version of the top-up above — same two cells checked (the
@@ -18899,22 +18925,13 @@
     if (document.pointerLockElement !== renderer.domElement) return;
     ensureAudio();
     if (e.button === 0) { mineHeld = true; doMine(); }
-    else if (e.button === 2) {
-      // Holding build right next to the tennis ball charges a harder hit
-      // instead of doing normal placement — see tennisChargeEligible/
-      // tennisStartCharge. Golf's own build button now does the same
-      // thing (build power); jump is what actually takes the golf shot
-      // — see golfFireShot's own call site further down in the movement
-      // code. Everywhere else build still works exactly as it always
-      // did.
-      if (tennisChargeEligible()) tennisStartCharge();
-      else if (golfChargeEligible()) golfStartCharge();
-      else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
-    }
+    else if (e.button === 1) { e.preventDefault(); actionPress(); } // middle click = ✋ action (C does the same)
+    else if (e.button === 2) { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
   });
   document.addEventListener('mouseup', e => {
     if (e.button === 0) { mineHeld = false; mining = null; }
-    else if (e.button === 2) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); } // both are harmless no-ops if nothing was actually in progress
+    else if (e.button === 1) actionRelease();
+    else if (e.button === 2) placingHeld = false;
   });
 
   // ================= TOUCH CONTROLS =================
@@ -19077,10 +19094,12 @@
     btnMine.addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); mineHeld = true; doMine(); });
     btnMine.addEventListener('touchend', e => { e.preventDefault(); mineHeld = false; mining = null; });
     btnMine.addEventListener('touchcancel', e => { mineHeld = false; mining = null; });
+    const btnAction = document.getElementById('btnAction');
+    btnAction.addEventListener('touchstart', e => { e.preventDefault(); actionPress(); });
+    btnAction.addEventListener('touchend', e => { e.preventDefault(); actionRelease(); });
+    btnAction.addEventListener('touchcancel', () => actionRelease());
     btnPlace.addEventListener('touchstart', e => {
       e.preventDefault(); ensureAudio();
-      if (tennisChargeEligible()) tennisStartCharge();
-      else if (golfChargeEligible()) golfStartCharge();
       // Only defer to a hold-timer when the crosshair is actually over a
       // valid sealed pocket of the selected material right now —
       // everywhere else (the vast majority of ordinary building),
@@ -19088,7 +19107,7 @@
       // quick release before the timer fires falls back to a normal
       // single placement (see touchend below); holding past it fills the
       // whole pocket instead.
-      else if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
+      if (fillTargetAvailable()) fillHoldTimer = setTimeout(() => { fillHoldTimer = null; doFill(); }, FILL_HOLD_MS);
       else {
         // Deliberately a single placement only, on touch — no
         // placingHeld/continuous repeat here anymore. That repeat-while-
@@ -19105,11 +19124,9 @@
     btnPlace.addEventListener('touchend', e => {
       e.preventDefault();
       if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; doPlace(); } // released before the hold fired — treat as an ordinary tap
-      tennisReleaseCharge(); golfPauseCharge();
     });
     btnPlace.addEventListener('touchcancel', e => {
       if (fillHoldTimer) { clearTimeout(fillHoldTimer); fillHoldTimer = null; }
-      tennisReleaseCharge(); golfPauseCharge();
     });
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
@@ -19883,6 +19900,16 @@
     const k = key(x, y, z);
     if (v === -1) seedEdits.delete(k); else seedEdits.set(k, v);
     dirtyChunks.add(chunkKeyOf(x, z));
+    // Live to everyone else in this world — same reason as recordBlockEdit's
+    // blockEdit broadcast. Without it, other players' plants, incubators and
+    // hatched animals only showed up after a full reload, and worse, your own
+    // save of that chunk (rows are per chunk, last write wins) could wipe
+    // theirs out because you never knew they were there. Covers every seed
+    // record in one place: planting, harvesting, incubator placed/started/
+    // hatched, an animal moved by the lead or killed.
+    if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
+      try { mpChannel.send({ type: 'broadcast', event: 'seedEdit', payload: { uid: playerUid, x, y, z, v } }); } catch (e) {}
+    }
     return true;
   }
   function seedAt(k) {
@@ -19943,7 +19970,7 @@
       seedFx.set(k, { group: g, stage });
     }
     for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) { disposeSeedGroup(seedFx.get(k).group); seedFx.delete(k); } // world changed / removed elsewhere
-    for (const k of [...incubatorFx.keys()]) if (!seedEdits.has(k)) { scene.remove(incubatorFx.get(k).group); incubatorFx.delete(k); }
+    for (const k of [...incubatorFx.keys()]) if (!seedEdits.has(k)) removeIncubatorFx(k);
     for (const k of [...hatchedLive.keys()]) if (!seedEdits.has(k)) despawnHatched(k);
   }
   function seedIconCanvas(idx) {
@@ -20171,12 +20198,26 @@
   const ANIMAL_EMOJI = ['🐄', '🐑', '🐔', '🐕', '🐈', '🐎', '🐖'];
   let animalTypeIdx = 0;
   const INCUBATOR_EMPTY = 100, INCUBATING_BASE = 101, HATCHED_BASE = 200;
+  // People Incubator (see PEOPLE INCUBATOR & MODS below) — its own code range,
+  // above the animal one so nothing already saved changes meaning:
+  // 400 = empty, 401+ = growing that Mod, 500+ = a hatched Mod.
+  const PEOPLE_INC_EMPTY = 400, PEOPLE_INCUBATING_BASE = 401, MOD_HATCHED_BASE = 500, MOD_CODE_END = 600;
+  // What a record code means: which incubator kind, which state, which type.
+  function incInfo(code) {
+    if (code === INCUBATOR_EMPTY) return { people: false, state: 'empty' };
+    if (code > INCUBATOR_EMPTY && code < HATCHED_BASE) return { people: false, state: 'incubating', idx: code - INCUBATING_BASE };
+    if (code >= HATCHED_BASE && code < PEOPLE_INC_EMPTY) return { people: false, state: 'hatched', idx: code - HATCHED_BASE };
+    if (code === PEOPLE_INC_EMPTY) return { people: true, state: 'empty' };
+    if (code > PEOPLE_INC_EMPTY && code < MOD_HATCHED_BASE) return { people: true, state: 'incubating', idx: code - PEOPLE_INCUBATING_BASE };
+    if (code >= MOD_HATCHED_BASE && code < MOD_CODE_END) return { people: true, state: 'hatched', idx: code - MOD_HATCHED_BASE };
+    return null;
+  }
   const incubatorFx = new Map(); // key -> { group, egg, state }
   const hatchedLive = new Map(); // record key -> villageAnimals entry
   function seedCode(k) { const v = seedEdits.get(k); return v === undefined ? -1 : Math.floor(v / SEED_VALUE_MUL); }
   function seedTime(k) { const v = seedEdits.get(k); return v - Math.floor(v / SEED_VALUE_MUL) * SEED_VALUE_MUL; }
   const nowSec = () => Math.floor(Date.now() / 1000);
-  const phong = (hex) => new THREE.MeshPhongMaterial({ color: hex, flatShading: true, shininess: 0 });
+  function phong(hex) { return new THREE.MeshPhongMaterial({ color: hex, flatShading: true, shininess: 0 }); } // a hoisted function (was a const) — farm pens now build these models during chunk generation, which mustn't depend on this line having run yet
   function buildIncubatorModel() {
     const g = new THREE.Group();
     const base = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.22, 0.86), phong(0xd9d4c8)); base.position.y = 0.11; g.add(base);
@@ -20192,15 +20233,23 @@
     return g;
   }
   function incubatorAt(c) { return c && seedCode(key(c.x, c.y, c.z)) >= INCUBATOR_EMPTY && seedCode(key(c.x, c.y, c.z)) < HATCHED_BASE; }
-  function hatchAnimal(x, y, z, animalIdx) {
+  function peopleIncubatorAt(c) { if (!c) return false; const code = seedCode(key(c.x, c.y, c.z)); return code >= PEOPLE_INC_EMPTY && code < MOD_HATCHED_BASE; }
+  function hatchAnimal(x, y, z, idx, people) {
     let n = 0;
     while (seedEdits.has(key(x, y + 100000 * (n + 1), z)) && n < 50) n++;
-    recordSeed(x, y + 100000 * (n + 1), z, (HATCHED_BASE + animalIdx) * SEED_VALUE_MUL + nowSec());
-    recordSeed(x, y, z, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec());
-    showSaveStatus('🐣 A ' + ANIMAL_TYPES[animalIdx].name.toLowerCase() + ' hatched! ' + ANIMAL_EMOJI[animalIdx]);
+    // Incubator back to empty FIRST, then the animal — both go out live (see
+    // recordSeed), and every client in the world runs this same hatch check.
+    // In this order, anyone who hears about the hatch already has an empty
+    // incubator and won't hatch a second copy; the other way round, the
+    // animal's record arriving first forced their next pass while their
+    // incubator still read "ready", and they hatched a duplicate.
+    recordSeed(x, y, z, (people ? PEOPLE_INC_EMPTY : INCUBATOR_EMPTY) * SEED_VALUE_MUL + nowSec());
+    recordSeed(x, y + 100000 * (n + 1), z, ((people ? MOD_HATCHED_BASE : HATCHED_BASE) + idx) * SEED_VALUE_MUL + nowSec());
+    if (people) showSaveStatus('🧬 A ' + MOD_TYPES[idx].name.toLowerCase() + ' stepped out! ' + MOD_TYPES[idx].emoji);
+    else showSaveStatus('🐣 A ' + ANIMAL_TYPES[idx].name.toLowerCase() + ' hatched! ' + ANIMAL_EMOJI[idx]);
   }
-  function spawnHatched(rk, hx, hy, hz, animalIdx) {
-    const mesh = ANIMAL_TYPES[animalIdx].build();
+  function spawnHatched(rk, hx, hy, hz, animalIdx, types) {
+    const mesh = (types || ANIMAL_TYPES)[animalIdx].build(seedTime(rk)); // hatch time: a stable per-creature seed (Mods use it for their look)
     // If its home is inside a fenced pen (it was led there — see LEADING ANIMALS), it keeps to the pen and
     // starts right where it was let go, rather than a little to one side (which could be over the fence).
     const pen = penBoundsAround(hx, hy, hz);
@@ -20242,7 +20291,7 @@
       const d = dx * dx + dz * dz;
       if (d < bd) { bd = d; best = a; }
     }
-    if (!best) { showBriefMessage('🪢 Get closer to an animal, then press build to put the lead on'); return; }
+    if (!best) { showBriefMessage('🪢 Get closer to an animal, then press ✋ to put the lead on'); return; }
     leadRec = best;
     best.leashed = true; best.waitTimer = 0; best.fenceKeys = []; best.escaped = false; // no longer tied to its old village pen
     // Where the rope ties on: near the front of the head, worked out once from the model's own size.
@@ -20250,7 +20299,7 @@
     const box = new THREE.Box3().setFromObject(best.mesh);
     best.mesh.rotation.y = rotY;
     best.leadAttach = { y: (box.max.y - best.mesh.position.y) * 0.8, f: Math.max(0.1, box.max.z - best.mesh.position.z) * 0.8 };
-    showBriefMessage('🪢 On the lead — walk it where you want, press build again to let go');
+    showBriefMessage('🪢 On the lead — walk it where you want, press ✋ again to let go');
     playThud(220);
   }
   function releaseLead() {
@@ -20396,33 +20445,52 @@
     return c;
   }
   // Runs from updateSeeds for every non-plant record.
+  function removeIncubatorFx(k) {
+    const fx = incubatorFx.get(k);
+    if (!fx) return;
+    scene.remove(fx.group);
+    if (fx.label) disposeTextLabel(fx.label);
+    incubatorFx.delete(k);
+  }
   function updateIncubatorRecord(k, x, y, z, code) {
-    if (code >= HATCHED_BASE) {
+    const info = incInfo(code);
+    if (!info) return;
+    if (info.state === 'hatched') {
       const hy = y % 100000;
       const loaded = groundHeightOnly.has(x + ',' + z);
       const rec = hatchedLive.get(k);
       if (rec && villageAnimals.indexOf(rec) < 0) { hatchedLive.delete(k); recordSeed(x, y, z, -1); return; } // it died (weapons etc.) — gone for good
-      if (loaded && !rec) spawnHatched(k, x, hy, z, code - HATCHED_BASE);
+      if (loaded && !rec) spawnHatched(k, x, hy, z, info.idx, info.people ? MOD_TYPES : ANIMAL_TYPES);
       else if (!loaded && rec && !rec.leashed) despawnHatched(k); // one you're leading stays with you, however far from home
       return;
     }
-    if (!groundHeightOnly.has(x + ',' + z)) { const fx = incubatorFx.get(k); if (fx) { scene.remove(fx.group); incubatorFx.delete(k); } return; }
+    if (!groundHeightOnly.has(x + ',' + z)) { removeIncubatorFx(k); return; }
     if (!blocks.has(key(x, y - 1, z)) || blocks.has(k)) { // its base was dug out, or something was built in it
-      const fx = incubatorFx.get(k); if (fx) { scene.remove(fx.group); incubatorFx.delete(k); }
+      removeIncubatorFx(k);
       recordSeed(x, y, z, -1); return;
     }
     let fx = incubatorFx.get(k);
-    if (!fx) { const g = buildIncubatorModel(); g.position.set(x + 0.5, y, z + 0.5); scene.add(g); fx = { group: g }; incubatorFx.set(k, fx); }
+    if (fx && fx.people !== info.people) { removeIncubatorFx(k); fx = null; }
+    if (!fx) {
+      const g = info.people ? buildPeopleIncubatorModel() : buildIncubatorModel();
+      g.position.set(x + 0.5, y, z + 0.5); scene.add(g);
+      const label = makeTextLabel(); label.position.y = info.people ? 2.55 : 1.1; label.visible = false; g.add(label);
+      fx = { group: g, people: info.people, label }; incubatorFx.set(k, fx);
+    }
     const egg = fx.group.userData.egg;
-    if (code === INCUBATOR_EMPTY) { egg.visible = false; fx.group.userData.dial.material.color.setHex(0x46e07a); return; }
-    const a = code - INCUBATING_BASE, t = ANIMAL_TYPES[a];
-    if (!t) { recordSeed(x, y, z, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec()); return; }
-    const p = Math.min(1, (nowSec() - seedTime(k)) / t.hatchSec);
+    if (info.state === 'empty') { egg.visible = false; fx.label.visible = false; fx.group.userData.dial.material.color.setHex(0x46e07a); return; }
+    const types = info.people ? MOD_TYPES : ANIMAL_TYPES, a = info.idx, t = types[a];
+    if (!t) { recordSeed(x, y, z, (info.people ? PEOPLE_INC_EMPTY : INCUBATOR_EMPTY) * SEED_VALUE_MUL + nowSec()); return; }
+    const elapsed = nowSec() - seedTime(k), p = Math.min(1, elapsed / t.hatchSec);
     egg.visible = true;
-    egg.material.color.setHex(a === 2 ? 0xe9d2a8 : 0xf1e6cf);
+    if (info.people) egg.scale.setScalar(0.25 + 0.75 * p); // the figure in the tube grows as it nears ready
+    else egg.material.color.setHex(a === 2 ? 0xe9d2a8 : 0xf1e6cf);
     fx.group.userData.dial.material.color.setHex(0xffb020);
     fx.wobble = p; // animated in animateIncubators
-    if (p >= 1) hatchAnimal(x, y, z, a);
+    // Countdown over the incubator for as long as something's in it.
+    fx.label.visible = true;
+    setTextLabel(fx.label, (info.people ? t.emoji : ANIMAL_EMOJI[a]) + ' ' + t.name + ' · ' + fmtCountdown(t.hatchSec - elapsed));
+    if (p >= 1) hatchAnimal(x, y, z, a, info.people);
   }
   function animateIncubators() {
     const t = performance.now() / 1000;
@@ -20430,14 +20498,296 @@
       const egg = fx.group.userData.egg;
       if (!egg.visible) continue;
       const w = fx.wobble || 0, amt = w > 0.75 ? 0.25 : 0.06; // rocks harder when it's about to hatch
-      egg.rotation.z = Math.sin(t * (w > 0.75 ? 9 : 3)) * amt;
+      egg.rotation.z = Math.sin(t * (w > 0.75 ? 9 : 3)) * amt * (fx.people ? 0.25 : 1); // a figure in a tube sways a little, not rocks like an egg
       fx.group.userData.lamp.material.color.setHex(Math.sin(t * 2) > 0 ? 0xff5a2a : 0xff7a3a);
     }
   }
   function clearFarmWorldState() {
-    for (const fx of incubatorFx.values()) scene.remove(fx.group);
-    incubatorFx.clear();
+    for (const k of [...incubatorFx.keys()]) removeIncubatorFx(k);
     for (const rk of [...hatchedLive.keys()]) despawnHatched(rk);
+  }
+
+  // ================= FLOATING TEXT LABELS =================
+  // A small always-facing text tag (canvas texture on a sprite) — used for the
+  // incubator countdowns and the "what's growing here" tag over a crop you're
+  // aiming at. Redraws only when its text actually changes.
+  function makeTextLabel() {
+    const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 64;
+    const tex = new THREE.CanvasTexture(canvas);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    const sp = new THREE.Sprite(mat);
+    sp.scale.set(1.5, 0.3, 1);
+    sp.renderOrder = 999; // drawn over the dome/glass it sits above
+    sp.userData = { canvas, ctx: canvas.getContext('2d'), tex, text: null };
+    return sp;
+  }
+  function setTextLabel(sp, text) {
+    const u = sp.userData;
+    if (u.text === text) return;
+    u.text = text;
+    const c = u.ctx, W = u.canvas.width, H = u.canvas.height;
+    c.clearRect(0, 0, W, H);
+    c.font = 'bold 30px system-ui, sans-serif';
+    const w = Math.min(W - 4, c.measureText(text).width + 28);
+    c.fillStyle = 'rgba(15,18,24,0.72)';
+    const x0 = (W - w) / 2, r = 16;
+    c.beginPath(); c.moveTo(x0 + r, 4); c.arcTo(x0 + w, 4, x0 + w, H - 4, r); c.arcTo(x0 + w, H - 4, x0, H - 4, r); c.arcTo(x0, H - 4, x0, 4, r); c.arcTo(x0, 4, x0 + w, 4, r); c.fill();
+    c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(text, W / 2, H / 2 + 1, W - 20);
+    u.tex.needsUpdate = true;
+  }
+  function disposeTextLabel(sp) { sp.userData.tex.dispose(); sp.material.dispose(); if (sp.parent) sp.parent.remove(sp); }
+  function fmtCountdown(sec) {
+    sec = Math.max(0, Math.ceil(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), ss = sec % 60, p2 = n => (n < 10 ? '0' : '') + n;
+    return h ? h + ':' + p2(m) + ':' + p2(ss) : m + ':' + p2(ss);
+  }
+  // Crop tag: shown only while the crosshair is on a planted seed — what it
+  // is and how long it has left (or that it's ready). One shared label.
+  let seedAimLabel = null, seedAimNext = 0;
+  function updateSeedAimLabel() {
+    const now = performance.now();
+    if (now < seedAimNext) return;
+    seedAimNext = now + 150;
+    if (!seedAimLabel) { seedAimLabel = makeTextLabel(); seedAimLabel.visible = false; scene.add(seedAimLabel); }
+    let found = null;
+    if (terrainStreamingActive && seedEdits.size) {
+      const r = voxelRaycast(true);
+      if (r && r.hit && !r.isLava) {
+        for (const c of [{ x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }, r.before]) {
+          if (!c) continue;
+          const sd = seedAt(key(c.x, c.y, c.z));
+          if (sd && sd.type) { found = { c, sd }; break; }
+        }
+      }
+    }
+    if (!found) { seedAimLabel.visible = false; return; }
+    const { c, sd } = found, left = sd.type.growSec - (Date.now() / 1000 - sd.plantedAt);
+    const ready = left <= 0;
+    setTextLabel(seedAimLabel, sd.type.name + ' · ' + (ready ? (sd.type.kind === 'tree' ? 'growing now' : '✅ ready — ✋ to harvest') : fmtCountdown(left)));
+    seedAimLabel.position.set(c.x + 0.5, c.y + (sd.type.kind === 'tree' ? 1.2 : 0.95), c.z + 0.5);
+    seedAimLabel.visible = true;
+  }
+
+  // ================= PEOPLE INCUBATOR & MODS =================
+  // A taller incubator (Action menu) — a glass growing-tube two blocks high.
+  // Aim a Mod (Landscape menu) at an empty one and press ✋: a figure appears
+  // in the tube, grows over the countdown, then steps out and wanders the
+  // area like a hatched animal (same records, same lead, same saving — see
+  // INCUBATOR & ANIMAL SEEDS; its own code range, see PEOPLE_INC_EMPTY).
+  // Indices are saved — never reorder, only append.
+  const MOD_TYPES = [
+    { name: 'Skeleton',       emoji: '💀', hatchSec: 120, build: () => buildModSkeleton() },
+    { name: 'Dog Skeleton',   emoji: '🦴', hatchSec: 90,  build: () => buildModDogSkeleton() },
+    { name: 'Zombie',         emoji: '🧟', hatchSec: 150, build: () => buildModZombie() },
+    { name: 'Villager',       emoji: '🧑‍🌾', hatchSec: 120, build: seed => buildModVillager(seed) },
+    { name: 'Scarecrow',      emoji: '🌾', hatchSec: 120, build: () => buildModScarecrow() },
+    { name: 'Stone Guardian', emoji: '🗿', hatchSec: 240, build: () => buildModStoneGuardian() },
+  ];
+  let modTypeIdx = 0;
+  function buildPeopleIncubatorModel() {
+    const g = new THREE.Group();
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.5, 0.26, 16), phong(0xd9d4c8)); base.position.y = 0.13; g.add(base);
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.47, 0.47, 0.05, 16), phong(0x5a6a78)); ring.position.y = 0.28; g.add(ring);
+    const fluid = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.36, 1.78, 16),
+      new THREE.MeshPhongMaterial({ color: 0x9fe3c0, transparent: true, opacity: 0.16, shininess: 60, depthWrite: false }));
+    fluid.position.y = 1.2; g.add(fluid);
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 1.84, 18, 1, true),
+      new THREE.MeshPhongMaterial({ color: 0xcfe8ff, transparent: true, opacity: 0.24, shininess: 90, depthWrite: false, side: THREE.DoubleSide }));
+    glass.position.y = 1.2; g.add(glass);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.46, 0.2, 16), phong(0xd9d4c8)); cap.position.y = 2.2; g.add(cap);
+    const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.1, 0.08, 8), new THREE.MeshBasicMaterial({ color: 0x57d6ff })); lamp.position.y = 2.34; g.add(lamp);
+    const dial = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, 0.02), new THREE.MeshBasicMaterial({ color: 0x46e07a })); dial.position.set(0, 0.14, 0.5); g.add(dial);
+    for (const a of [0, Math.PI / 2, Math.PI, Math.PI * 1.5]) { // four support struts
+      const st = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.84, 0.05), phong(0x8a96a2)); st.position.set(Math.cos(a) * 0.42, 1.2, Math.sin(a) * 0.42); g.add(st);
+    }
+    // The growing figure — a simple pale silhouette, origin at its feet so it grows up from the base.
+    const fig = new THREE.Group(); fig.position.y = 0.32;
+    const figMat = new THREE.MeshPhongMaterial({ color: 0x9fd6b0, transparent: true, opacity: 0.8, flatShading: true });
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.1, 0.9, 8), figMat); body.position.y = 0.95; fig.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 6), figMat); head.position.y = 1.55; fig.add(head);
+    for (const sx of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.045, 0.55, 6), figMat); leg.position.set(sx * 0.07, 0.28, 0); fig.add(leg);
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.035, 0.7, 6), figMat); arm.position.set(sx * 0.18, 1.05, 0); arm.rotation.z = sx * 0.15; fig.add(arm);
+    }
+    fig.visible = false; g.add(fig);
+    g.userData.egg = fig; g.userData.lamp = lamp; g.userData.dial = dial;
+    return g;
+  }
+  function peopleIncubatorIconCanvas() {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#d9d4c8'; ctx.fillRect(9, 28, 16, 4); ctx.fillRect(9, 3, 16, 3);
+    ctx.fillStyle = 'rgba(160,230,200,0.5)'; ctx.fillRect(11, 6, 12, 22);
+    ctx.fillStyle = '#6fb88c'; ctx.beginPath(); ctx.arc(17, 11, 3, 0, Math.PI * 2); ctx.fill(); ctx.fillRect(15, 14, 4, 11);
+    return c;
+  }
+  function modIconCanvas(idx) {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = 'rgba(160,230,200,0.45)'; ctx.fillRect(7, 3, 20, 28);
+    ctx.font = '17px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(MOD_TYPES[idx].emoji, 17, 18);
+    return c;
+  }
+  function showModPopup(slotEl) {
+    if (togglePopupFor(slotEl)) return;
+    const popup = document.createElement('div');
+    popup.style.cssText = popupCss(slotEl);
+    MOD_TYPES.forEach((t, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item'; btn.title = t.name + ' — grows in ' + fmtCountdown(t.hatchSec);
+      btn.appendChild(modIconCanvas(idx));
+      const label = document.createElement('span'); label.className = 'popup-item-label'; label.textContent = t.name; btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        modTypeIdx = idx;
+        const slot = slotElByIndex[MOD_SLOT];
+        const old = slot.querySelector('canvas.swatch'); if (old) old.remove();
+        slot.insertBefore(modIconCanvas(idx), slot.querySelector('.family-badge'));
+        selectSlot(MOD_SLOT);
+        closeFamilyPopup();
+      });
+      popup.appendChild(btn);
+    });
+    mountPopup(popup, slotEl);
+  }
+  // ---- Mod models. All stand with feet at y=0, face +z, and give
+  //      userData.legs (left/right by x sign) for the shared walk swing. ----
+  function boneLimb(g, mat, x, hipY, len, w) { // a leg that pivots at the hip: thigh, knee knob, shin
+    const leg = new THREE.Group(); leg.position.set(x, hipY, 0);
+    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(w, w * 0.85, len * 0.5, 6), mat); thigh.position.y = -len * 0.25; leg.add(thigh);
+    const knee = new THREE.Mesh(new THREE.SphereGeometry(w * 1.5, 6, 5), mat); knee.position.y = -len * 0.5; leg.add(knee);
+    const shin = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.85, w * 0.7, len * 0.5, 6), mat); shin.position.y = -len * 0.75; leg.add(shin);
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(w * 3, w * 1.2, w * 5), mat); foot.position.set(0, -len + w * 0.6, w * 1.5); leg.add(foot);
+    g.add(leg); return leg;
+  }
+  function buildModSkeleton() {
+    const g = new THREE.Group();
+    const bone = phong(0xe9e2cf), dark = new THREE.MeshBasicMaterial({ color: 0x141210 });
+    const legs = [-0.1, 0.1].map(x => boneLimb(g, bone, x, 0.92, 0.92, 0.035));
+    const pelvis = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.12, 0.14), bone); pelvis.position.y = 0.96; g.add(pelvis);
+    for (let i = 0; i < 7; i++) { const v = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.06), bone); v.position.set(0, 1.06 + i * 0.075, -0.05); g.add(v); } // spine
+    for (let i = 0; i < 5; i++) { // ribs: open-fronted hoops, shrinking toward the bottom
+      const rr = 0.15 - Math.abs(i - 1.5) * 0.012;
+      const rib = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.014, 4, 12, Math.PI * 1.7), bone);
+      rib.rotation.set(Math.PI / 2, 0, Math.PI * 0.65); rib.position.set(0, 1.2 + i * 0.07, 0); g.add(rib);
+    }
+    const shoulders = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.04, 0.05), bone); shoulders.position.y = 1.6; g.add(shoulders);
+    for (const sx of [-1, 1]) {
+      const arm = new THREE.Group(); arm.position.set(sx * 0.23, 1.6, 0);
+      const up = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.024, 0.34, 6), bone); up.position.y = -0.17; arm.add(up);
+      const lo = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.02, 0.32, 6), bone); lo.position.y = -0.5; arm.add(lo);
+      const hand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.03), bone); hand.position.y = -0.7; arm.add(hand);
+      arm.rotation.z = sx * 0.08; g.add(arm);
+    }
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.08, 6), bone); neck.position.y = 1.66; g.add(neck);
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), bone); skull.scale.set(0.95, 1.05, 1.05); skull.position.y = 1.82; g.add(skull);
+    const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.06, 0.12), bone); jaw.position.set(0, 1.7, 0.05); g.add(jaw);
+    for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 5), dark); eye.position.set(sx * 0.05, 1.83, 0.11); g.add(eye); }
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.018, 0.04, 3), dark); nose.position.set(0, 1.77, 0.125); nose.rotation.x = Math.PI; g.add(nose);
+    g.userData.legs = legs;
+    return g;
+  }
+  function buildModDogSkeleton() {
+    const g = new THREE.Group();
+    const bone = phong(0xe9e2cf), dark = new THREE.MeshBasicMaterial({ color: 0x141210 });
+    for (let i = 0; i < 9; i++) { const v = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.06), bone); v.position.set(0, 0.52, -0.26 + i * 0.065); g.add(v); } // spine
+    for (let i = 0; i < 5; i++) {
+      const rib = new THREE.Mesh(new THREE.TorusGeometry(0.1 - i * 0.008, 0.012, 4, 10, Math.PI * 1.6), bone);
+      rib.rotation.set(0, 0, Math.PI * 1.2); rib.position.set(0, 0.44, -0.02 + i * 0.06); g.add(rib);
+    }
+    const hips = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.06, 0.08), bone); hips.position.set(0, 0.5, -0.24); g.add(hips);
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.14, 6), bone); neck.position.set(0, 0.6, 0.33); neck.rotation.x = -0.8; g.add(neck);
+    const skull = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.13, 0.16), bone); skull.position.set(0, 0.68, 0.42); g.add(skull);
+    const snout = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.06, 0.13), bone); snout.position.set(0, 0.64, 0.55); g.add(snout);
+    for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4), dark); eye.position.set(sx * 0.045, 0.71, 0.5); g.add(eye); }
+    for (let i = 0; i < 6; i++) { const t = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.05), bone); t.position.set(0, 0.54 + i * 0.03, -0.32 - i * 0.04); g.add(t); } // tail curling up
+    const legs = [];
+    for (const [x, z] of [[-0.07, 0.2], [0.07, 0.2], [-0.07, -0.24], [0.07, -0.24]]) { const l = boneLimb(g, bone, x, 0.47, 0.47, 0.02); l.position.z = z; legs.push(l); }
+    g.userData.legs = legs;
+    return g;
+  }
+  function buildModZombie() {
+    const g = new THREE.Group();
+    const skin = phong(0x7d8f6a), shirt = phong(0x5a4a3a), trousers = phong(0x4a4a48), dark = new THREE.MeshBasicMaterial({ color: 0x1a120e }), blood = phong(0x5a1a14);
+    const legs = [];
+    for (const x of [-0.1, 0.1]) {
+      const leg = new THREE.Group(); leg.position.set(x, 0.75, 0);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.75, 0.18), trousers); m.position.y = -0.375; leg.add(m);
+      const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.08, 0.26), dark); shoe.position.set(0, -0.71, 0.03); leg.add(shoe);
+      g.add(leg); legs.push(leg);
+    }
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.58, 0.22), shirt); torso.position.y = 1.04; torso.rotation.x = 0.12; g.add(torso); // hunched
+    for (let i = 0; i < 4; i++) { const rag = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08 + (i % 2) * 0.06, 0.225), shirt); rag.position.set(-0.15 + i * 0.1, 0.72, 0.01); g.add(rag); } // torn hem
+    const stain = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.01), blood); stain.position.set(0.08, 1.1, 0.13); g.add(stain);
+    for (const sx of [-1, 1]) { // arms held out in front
+      const arm = new THREE.Group(); arm.position.set(sx * 0.27, 1.28, 0.02);
+      const sleeve = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.24, 0.16), shirt); sleeve.position.y = -0.12; arm.add(sleeve);
+      const fore = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.34, 0.13), skin); fore.position.y = -0.4; arm.add(fore);
+      arm.rotation.x = -1.35 + sx * 0.12; g.add(arm);
+    }
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.32), skin); head.position.set(0, 1.52, 0.06); head.rotation.z = 0.12; g.add(head);
+    for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.05, 0.02), dark); eye.position.set(sx * 0.075, 1.56, 0.225); g.add(eye); }
+    const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), dark); mouth.position.set(0.01, 1.43, 0.225); g.add(mouth);
+    const hair = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.06, 0.33), phong(0x2e2a24)); hair.position.set(0, 1.71, 0.06); hair.rotation.z = 0.12; g.add(hair);
+    g.userData.legs = legs;
+    return g;
+  }
+  function buildModVillager(seed) {
+    let rs = Math.abs(Math.sin((seed || 1) * 12.9898) * 43758.5453) % 1;
+    const rnd = () => { rs = (rs * 9301 + 0.49297) % 1; return rs; };
+    const colors = {
+      skinIdx: Math.floor(rnd() * AVATAR_SKIN_TONES.length), hairIdx: Math.floor(rnd() * AVATAR_HAIR_TONES.length),
+      shirtIdx: Math.floor(rnd() * AVATAR_SHIRT_TONES.length), pantsIdx: Math.floor(rnd() * AVATAR_PANTS_TONES.length),
+    };
+    return buildCustomerFigure(false, colors); // the same figure the game's own villagers use — its legs already swing with the walk
+  }
+  function buildModScarecrow() {
+    const g = new THREE.Group();
+    const straw = phong(0xd9b44a), sack = phong(0xc2a878), shirt = phong(0x8a3a2a), patch = phong(0x3f6a8a), trousers = phong(0x5a4a30), hatM = phong(0x9a7a3a), dark = new THREE.MeshBasicMaterial({ color: 0x1c140c });
+    const legs = [];
+    for (const x of [-0.1, 0.1]) {
+      const leg = new THREE.Group(); leg.position.set(x, 0.72, 0);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.66, 0.16), trousers); m.position.y = -0.33; leg.add(m);
+      for (let i = 0; i < 3; i++) { const w = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.12, 3), straw); w.position.set(-0.05 + i * 0.05, -0.7, 0); w.rotation.x = Math.PI; leg.add(w); } // straw poking out the cuffs
+      g.add(leg); legs.push(leg);
+    }
+    const torso = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.55, 0.22), shirt); torso.position.y = 1.0; g.add(torso);
+    const p1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.01), patch); p1.position.set(-0.08, 1.08, 0.115); g.add(p1);
+    const belt = new THREE.Mesh(new THREE.BoxGeometry(0.41, 0.05, 0.23), phong(0x6a4a2a)); belt.position.y = 0.76; g.add(belt);
+    // arms out straight to the sides, straw hands
+    const armBar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.13, 0.14), shirt); armBar.position.y = 1.18; g.add(armBar);
+    for (const sx of [-1, 1]) for (let i = 0; i < 3; i++) { const w = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.14, 3), straw); w.position.set(sx * 0.62, 1.16 + (i - 1) * 0.04, 0); w.rotation.z = -sx * Math.PI / 2; g.add(w); }
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 8, 7), sack); head.scale.y = 1.1; head.position.y = 1.47; g.add(head);
+    const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.05, 8), phong(0x6a4a2a)); tie.position.y = 1.29; g.add(tie);
+    for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.02), dark); eye.position.set(sx * 0.06, 1.5, 0.16); g.add(eye); }
+    for (let i = 0; i < 5; i++) { const st = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.012, 0.02), dark); st.position.set(-0.06 + i * 0.03, 1.4 + (i % 2) * 0.012, 0.165); g.add(st); } // stitched mouth
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.03, 14), hatM); brim.position.y = 1.62; brim.rotation.z = 0.08; g.add(brim);
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.17, 0.16, 12), hatM); crown.position.y = 1.71; g.add(crown);
+    g.userData.legs = legs;
+    return g;
+  }
+  function buildModStoneGuardian() {
+    const g = new THREE.Group();
+    const stone = phong(0x8a8a86), stoneDark = phong(0x6a6a66), glow = new THREE.MeshBasicMaterial({ color: 0xffb040 });
+    const legs = [];
+    for (const x of [-0.22, 0.22]) {
+      const leg = new THREE.Group(); leg.position.set(x, 0.8, 0);
+      const m = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.8, 0.36), stoneDark); m.position.y = -0.4; leg.add(m);
+      g.add(leg); legs.push(leg);
+    }
+    const body = new THREE.Mesh(new THREE.DodecahedronGeometry(0.62, 0), stone); body.scale.set(1.05, 1.0, 0.8); body.position.y = 1.42; g.add(body);
+    const crack = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.45, 0.02), glow); crack.position.set(0.06, 1.45, 0.49); crack.rotation.z = 0.35; g.add(crack);
+    for (const sx of [-1, 1]) { // short, heavy boulder fists
+      const arm = new THREE.Group(); arm.position.set(sx * 0.62, 1.7, 0);
+      const up = new THREE.Mesh(new THREE.DodecahedronGeometry(0.2, 0), stoneDark); up.position.y = -0.18; arm.add(up);
+      const fist = new THREE.Mesh(new THREE.DodecahedronGeometry(0.24, 0), stone); fist.position.y = -0.5; arm.add(fist);
+      arm.rotation.z = sx * 0.2; g.add(arm);
+    }
+    const head = new THREE.Mesh(new THREE.DodecahedronGeometry(0.28, 0), stone); head.position.y = 2.2; g.add(head);
+    for (const sx of [-1, 1]) { const eye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.02), glow); eye.position.set(sx * 0.1, 2.22, 0.25); g.add(eye); }
+    g.userData.legs = legs;
+    return g;
   }
 
   // ---- Realistic animal models (shared leg-swing animation expects
@@ -21742,6 +22092,22 @@
       // its spec; if this client already has that chunk's terrain, build
       // the structure onto it now, otherwise it replays when the chunk
       // generates. Ignored if this client is itself deciding structures.
+      // Another player's seed record (plant / incubator / hatched animal) —
+      // see recordSeed. Applied straight into seedEdits and NOT re-sent;
+      // updateSeeds then builds/removes the plant, incubator or animal on
+      // its next pass (forced to run now). Marked dirty like a remote
+      // blockEdit, so this player's own save of the chunk carries it rather
+      // than overwriting it.
+      channel.on('broadcast', { event: 'seedEdit' }, ({ payload }) => {
+        if (!payload || payload.uid === playerUid) return;
+        if (currentWorldId !== mpConnectedWorldId || !terrainStreamingActive) return;
+        const { x, y, z, v } = payload;
+        if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number' || typeof v !== 'number') return;
+        const k = key(x, y, z);
+        if (v === -1) seedEdits.delete(k); else seedEdits.set(k, v);
+        dirtyChunks.add(chunkKeyOf(x, z));
+        seedNextPass = 0;
+      });
       channel.on('broadcast', { event: 'structure' }, ({ payload }) => {
         if (!payload || !payload.ck || !payload.t) return;
         if (currentWorldId !== mpConnectedWorldId || !structureSpecsActive() || !visitMode) return;
@@ -24698,7 +25064,7 @@
     else if (s.uid !== playerUid) { showChatLogLine('🚢', 'Someone is already playing that side.'); return; }
     if (s.ships.length >= BS_SHIP_SIZES.length) { showChatLogLine('🚢', "You've already placed your fleet — waiting for your opponent."); return; }
     bsPlacing = { side, shipIdx: s.ships.length, startCell: null };
-    showChatLogLine('🚢', 'Place your ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
+    showChatLogLine('🚢', 'Place your ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press ✋.');
   }
   // Places a full fleet randomly, respecting the exact same straight-
   // line/bounds/no-overlap rules a real player's placement has to follow
@@ -24800,7 +25166,7 @@
     if (!bsPlacing) return;
     if (bsPlacing.startCell === null) {
       bsPlacing.startCell = cell;
-      showChatLogLine('🚢', 'Start square set to ' + cell + ' — now look in the direction you want it to extend and press build again.');
+      showChatLogLine('🚢', 'Start square set to ' + cell + ' — now look in the direction you want it to extend and press ✋ again.');
       return;
     }
     const size = BS_SHIP_SIZES[bsPlacing.shipIdx];
@@ -24838,7 +25204,7 @@
     showChatLogLine('🚢', BS_SHIP_NAMES[bsPlacing.shipIdx] + ' placed at ' + cellNums.join(', ') + '.');
     if (s.ships.length < BS_SHIP_SIZES.length) {
       bsPlacing = { side: bsPlacing.side, shipIdx: s.ships.length, startCell: null };
-      showChatLogLine('🚢', 'Next: ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press build.');
+      showChatLogLine('🚢', 'Next: ' + BS_SHIP_NAMES[bsPlacing.shipIdx] + ' (' + BS_SHIP_SIZES[bsPlacing.shipIdx] + ') — look at its starting square and press ✋.');
     } else {
       showChatLogLine('🚢', s.name + ' has placed their whole fleet.');
       bsHideOwnFleet(bsPlacing.side); // no need to keep looking at your own ships once they're placed — see its own comment
@@ -25071,7 +25437,8 @@
     if (down(12)) tiltTargetBlock();
     if (down(13)) padCycleVariant(1);
     if (down(15)) padCycleVariant(-1);
-    if (down(11) && ridingVehicle) document.getElementById('vehicleViewToggleBtn').click();
+    if (down(11)) { if (ridingVehicle) document.getElementById('vehicleViewToggleBtn').click(); else actionPress(); } // R3: ✋ action on foot (in a vehicle it keeps the view toggle — fire with RT there, below)
+    if (up(11) && actionHeld) actionRelease();
     if (down(9)) { const hint = document.getElementById('hint'); if (hint) hint.style.display = hint.style.display === 'none' ? 'block' : 'none'; }
     if (down(8)) padDebugOn = !padDebugOn; // Select: show / hide the controller test readout
 
@@ -25080,11 +25447,10 @@
     if (up(6)) { mineHeld = false; mining = null; }
     if (down(7)) {
       ensureAudio();
-      if (tennisChargeEligible()) tennisStartCharge();
-      else if (golfChargeEligible()) golfStartCharge();
+      if (ridingVehicle) actionPress(); // nothing to build from a vehicle, and R3 is the view toggle there — so RT fires the gun
       else { placingHeld = true; lastPlaceKey = currentPlaceTargetKey(); lastPlaceTime = performance.now(); doPlace(); }
     }
-    if (up(7)) { placingHeld = false; tennisReleaseCharge(); golfPauseCharge(); }
+    if (up(7)) { placingHeld = false; if (actionHeld) actionRelease(); }
 
     for (let i = 0; i < padPrev.length; i++) padPrev[i] = cur[i];
   }
@@ -25114,6 +25480,8 @@
     lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
     updateSeeds(); // planted seeds growing — see SEEDS
+    if (actionHeld && (ridingVehicle || weaponEquipped())) doAction(); // held ✋ keeps firing; the gun's own cooldown sets the pace
+    updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -25515,7 +25883,7 @@
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
       updateGolfCameraFocus(dt); // ditto again, near the golf course
-      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnPlaceRecoverEl = document.getElementById('btnPlace'); if (btnPlaceRecoverEl) btnPlaceRecoverEl.textContent = '🧱'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
+      try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnActRecoverEl = document.getElementById('btnAction'); if (btnActRecoverEl) btnActRecoverEl.textContent = '✋'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       updateVehicleEngineSound();
       // Single authoritative crosshair check, run after all four camera
       // modes above have settled for this frame — replaces relying on
@@ -26263,7 +26631,7 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'Animal Seeds — aim at an empty Incubator to start one hatching';
+    slot.title = 'Animal Seeds — aim at an empty Incubator and press ✋ to start one hatching';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
     slot.appendChild(keyEl);
     slot.appendChild(animalIconCanvas(0));
@@ -26286,6 +26654,34 @@
     slot.addEventListener('click', () => selectSlot(INCUBATOR_SLOT));
     slotElByIndex[INCUBATOR_SLOT] = slot;
     addSlotLabel(slot, 'Incubator');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'People Incubator — a tall growing-tube: place it on top of any block, then aim a Mod at it and press ✋. Mine with this selected to pick it back up';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(peopleIncubatorIconCanvas());
+    slot.addEventListener('click', () => selectSlot(PEOPLE_INCUBATOR_SLOT));
+    slotElByIndex[PEOPLE_INCUBATOR_SLOT] = slot;
+    addSlotLabel(slot, 'People Inc.');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
+    slot.title = 'Mods — aim at an empty People Incubator and press ✋ to grow one';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(modIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showModPopup(slot); });
+    slotElByIndex[MOD_SLOT] = slot;
+    addSlotLabel(slot, 'Mods');
     hotbar.appendChild(slot);
   }
   {
@@ -26873,7 +27269,7 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
-    slot.title = 'Lead — press build near an animal to put it on the lead, press build again to let go';
+    slot.title = 'Lead — press ✋ near an animal to put it on the lead, press ✋ again to let go';
     const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = '';
     slot.appendChild(keyEl);
     slot.appendChild(leadIconCanvas());
@@ -26897,10 +27293,10 @@
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
     { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
-    { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT] },
+    { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT, MOD_SLOT] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GATE_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
-    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT] },
+    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT, PEOPLE_INCUBATOR_SLOT] },
     { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },
     { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
     { name: 'Vehicles',   items: [VEHICLE_SLOT] },
@@ -27388,8 +27784,8 @@
     } else {
       document.getElementById('hint').style.display = 'block';
       document.getElementById('hint').innerHTML = visitMode
-        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — hold LMB mine · RMB place · 1-9/scroll select · H fill sealed square'
-        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · 1-9/scroll select · H fill sealed square';
+        ? 'WASD move · Space jump/up · Shift sprint/down · F toggle fly<br>Visiting — hold LMB mine · RMB place · C / middle-click ✋ action · 1-9/scroll select · H fill sealed square'
+        : 'WASD move · Space jump/up · Shift sprint/down · F toggle fly · E enter/exit vehicle<br>Hold LMB mine · RMB place · C / middle-click ✋ action (fire, sell, harvest, sow…) · 1-9/scroll select · H fill sealed square';
       renderer.domElement.requestPointerLock();
     }
     if (visitMode) document.getElementById('visitBanner').style.display = 'flex';

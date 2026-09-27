@@ -10816,6 +10816,7 @@
     const doorSide = ['north','south','east','west'][Math.floor(rng() * 4)]; // no road to face any more — any side is equally valid
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const houseShell = buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
+    placeShellSign(houseShell, doorSide, 'House', reg); // every building says what it is over its door
     reg.npcs.push(spawnBuildingResident(houseShell, doorSide, ck, rng));
     const entry = { x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true };
     registerBuildingFootprint(entry, ck);
@@ -10847,6 +10848,7 @@
     const doorSide = ['south','north','east','west'][Math.floor(rng()*4)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    placeShellSign(shopShell, doorSide, "Grocer's", reg);
     spawnShopkeeper(shopShell, doorSide, reg, rng); // stands behind the counter all day — see SHOPKEEPER (replaced the shop's wandering resident)
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
@@ -10874,6 +10876,7 @@
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const churchShell = buildVillageChurch(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, reg, ck);
+    placeShellSign(churchShell, 'north', 'Church', reg);
     reg.npcs.push(spawnBuildingResident(churchShell, 'north', ck, rng));
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide: 'north', standalone: true, shapeFn: churchShell.shapeFn }, ck);
     villageRegistry.set(ck, reg);
@@ -10939,6 +10942,7 @@
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const farmhouseShell = buildFarmhouse(ffx0, ffz0, floor, palette, reg);
+    placeShellSign(farmhouseShell, 'south', 'Farm', reg);
     reg.npcs.push(spawnBuildingResident(farmhouseShell, 'south', ck, rng));
     buildCropField(fwx0, fwx1, fwz0, fwz1, floor, buildWheatStalk, reg);
     buildCropField(fgx0, fgx1, fgz0, fgz1, floor, buildCabbageHead, reg);
@@ -12016,7 +12020,7 @@
   // own client subtracts lives); explosions are applied by each client to
   // itself, by its own distance from the blast.
   //
-  // LIVES — 10, only while other players are actually in the world.
+  // LIVES — 10, in every world except The Mill (single player too).
   // They regenerate slowly once nobody has hurt you for a while.
   const WEAPON_TYPES = [
     { name: 'Sword',     kind: 'sword',    emoji: '⚔️', cooldown: 420,  range: 3.6, damage: 2 },
@@ -12039,7 +12043,9 @@
   const OFF7 = [[0,0,0],[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
 
   function livesActive() {
-    return !!(mpChannel && currentWorldId === mpConnectedWorldId && currentWorldId !== PUB_WORLD_ID && otherPlayers.size > 0);
+    // Every world except The Mill (a social space with no weapons) — single player included now, so explosions,
+    // your own blasts (at half strength) and animals/Mods fighting back all cost lives even when you're alone.
+    return !!(currentWorldId && currentWorldId !== PUB_WORLD_ID && terrainStreamingActive);
   }
   function terrainDamageAllowed() {
     // In an infinite world, weapon damage never touches the saved diff,
@@ -12140,7 +12146,7 @@
   }
   function updateLives(dt) {
     if (!livesActive()) {
-      if (!playerDead) lives = LIVES_MAX; // nobody else here — nothing can hurt you, so there's nothing to regenerate
+      if (!playerDead) lives = LIVES_MAX; // The Mill (or a legacy world) — nothing can hurt you there
     } else if (!playerDead && lives < LIVES_MAX && performance.now() - lastDamageAt > LIVES_REGEN_DELAY_MS) {
       lives = Math.min(LIVES_MAX, lives + LIVES_REGEN_PER_SEC * dt);
     }
@@ -12263,8 +12269,8 @@
   // and bites/strikes every ~1.1s while in reach, for 25s or until it loses
   // them (30+ blocks, or they're taken out). A fence still stops it, so a
   // penned cow can only glare at you over the rails. Each strike costs
-  // `bite` lives, through damageMe — so only when someone else is in the
-  // world (livesActive), same as any other damage; alone you just get the
+  // `bite` lives, through damageMe — in any world but The Mill (livesActive),
+  // same as any other damage; where lives are off you just get the
   // red flash and a shove. Explosions still kill outright.
   // Multiplayer: the hit is sent ('creatureHit', by the creature's stable
   // cid) so everyone's copy loses the same health and chases the same

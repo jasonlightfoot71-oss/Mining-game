@@ -3721,6 +3721,13 @@
   // PLAYER_BUILD_SAFE_MARGIN of the player), so wait until they step away.
   function queueStructureReplay(spec) { pendingStructureReplays.push(spec); }
   function processPendingStructureReplays() {
+    // Never while a full mesh rebuild is still draining (rebuildMeshes/continueRebuild — the one that runs over
+    // several frames right after entering a world). That rebuild works from a snapshot of the block map taken
+    // when it started and re-lays every instance slot from zero, so a building added part-way through got
+    // instances that the rebuild then overwrote and cut off: its blocks existed (solid to walk into) but were
+    // never drawn. Bought buildings hit this every time, because they wait here until their chunks load —
+    // which is exactly during that rebuild. Waiting a tick costs nothing.
+    if (rebuildInProgress || needsRebuild) return; // (needsRebuild: one is about to start next frame)
     for (let i = pendingStructureReplays.length - 1; i >= 0; i--) {
       const spec = pendingStructureReplays[i];
       if (villageFootprintChunkKeys.has(spec.ck) || !generatedChunks.has(spec.ck) || structureSpecs.get(spec.ck) !== spec) {

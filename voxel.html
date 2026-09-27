@@ -3699,6 +3699,15 @@
     console.info('[voxel] replaying ' + spec.t + ' in chunk ' + spec.ck + (visitMode ? ' (from host)' : ''));
     const parts = spec.ck.split('_');
     const cx = +parts[0], cz = +parts[1];
+    try { replayStructureSwitch(spec, cx, cz); }
+    finally {
+      // Always redraw the area it touched, even if a builder threw part-way — otherwise the blocks it had
+      // already placed stay in the map (solid) but never get drawn.
+      const b = structureSpecBox(spec);
+      if (b) resyncChunksInRange(b.x0 - 10, b.x1 + 10, b.z0 - 10, b.z1 + 10);
+    }
+  }
+  function replayStructureSwitch(spec, cx, cz) {
     switch (spec.t) {
       case 'house': maybeBuildSettlement(cx, cz, spec); break;
       case 'shop': maybeBuildShop(cx, cz, spec); break;
@@ -3728,6 +3737,7 @@
     // never drawn. Bought buildings hit this every time, because they wait here until their chunks load —
     // which is exactly during that rebuild. Waiting a tick costs nothing.
     if (rebuildInProgress || needsRebuild) return; // (needsRebuild: one is about to start next frame)
+    let redrawAfter = false;
     for (let i = pendingStructureReplays.length - 1; i >= 0; i--) {
       const spec = pendingStructureReplays[i];
       if (villageFootprintChunkKeys.has(spec.ck) || !generatedChunks.has(spec.ck) || structureSpecs.get(spec.ck) !== spec) {
@@ -3746,8 +3756,15 @@
         if (player.pos.x >= b.x0 - m && player.pos.x <= b.x1 + m && player.pos.z >= b.z0 - m && player.pos.z <= b.z1 + m) continue; // still standing there — try again next tick
       }
       pendingStructureReplays.splice(i, 1);
-      try { replayStructureSpec(spec); } catch (e) { console.warn('[voxel] structure replay failed', spec.t, spec.ck, e); }
+      try { replayStructureSpec(spec); } catch (e) { console.error('[voxel] structure replay failed', spec.t, spec.ck, e); }
+      if (spec.bought) redrawAfter = true;
     }
+    // A bought building is added into chunks that are already generated and already drawn, after the
+    // world-entry redraw — and its walls kept coming back invisible (solid, but not drawn) on re-entry. Rather
+    // than rely on the per-chunk instance patching getting every block of it, redraw the whole world once from
+    // the block map as it now stands (the same chunked redraw that runs on entering a world). Anything in the
+    // block map gets drawn by that, whatever went wrong with the incremental path.
+    if (redrawAfter) { needsRebuild = true; console.info('[voxel] bought building(s) rebuilt — redrawing'); }
   }
   setInterval(() => { if (pendingStructureReplays.length) processPendingStructureReplays(); }, 1000);
   // How many of the player's OWN placed blocks (recorded edits, not
@@ -20601,7 +20618,7 @@
       const spec = { t: bt.t, ck, site: { sx0: site.sx0, sz0: site.sz0, sx1: site.sx1, sz1: site.sz1, floor: site.floor }, rs, bought: true };
       claimRegionForSpec(spec);
       recordStructureSpec(spec); // saved (promptly) and sent live to anyone else here
-      try { replayStructureSpec(spec); } catch (e) { console.warn('[voxel] bought building failed to build', e); }
+      try { replayStructureSpec(spec); } catch (e) { console.error('[voxel] bought building failed to build', e); }
       playCoin(); playThud(420);
       showSaveStatus(bt.emoji + ' ' + bt.name + ' built! (−💰' + bt.price + ')');
     });

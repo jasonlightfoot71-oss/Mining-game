@@ -191,7 +191,7 @@
     text-align: right; display: none;
   }
   #roleTag {
-    position: fixed; top: 80px; right: 12px; z-index: 10; color: #cdd6ff; font-size: 12px;
+    position: fixed; top: 116px; right: 12px; /* under the chat/mic buttons, which now sit just below the coins */ z-index: 10; color: #cdd6ff; font-size: 12px;
     background: rgba(0,0,0,0.35); padding: 5px 10px; border-radius: 6px; text-align: right;
     display: none;
   }
@@ -319,7 +319,9 @@
     color: #fff; font-size: 24px; z-index: 15; touch-action: none;
     display: flex; align-items: center; justify-content: center; user-select: none;
   }
-  #btnMine { left: 40px; bottom: 210px; }
+  /* Above the gap between the move joystick and the fly lever, a little bigger than the other buttons.
+     Build sits at the same height on the far right edge (see #btnPlace). */
+  #btnMine { left: 80px; bottom: 206px; width: 74px; height: 74px; font-size: 30px; }
   /* Harvest bag — sits under the left joystick. */
   #btnBag {
     position: fixed; left: 44px; bottom: 26px; width: 52px; height: 52px; border-radius: 50%;
@@ -364,13 +366,14 @@
   /* Moved in from right:40 to sit right next to btnJump instead of a big
      gap away from it — build and jump are used together constantly
      (build a step, jump up it), so keeping them adjacent makes sense. */
-  #btnPlace { right: 200px; bottom: 210px; }
-  /* Action (use / interact) — directly under the 💬 chat button. */
-  #btnAction { right: 60px; bottom: 148px; background: rgba(40,90,60,0.55); }
+  /* Right-edge column, top to bottom: build (level with mine, same size), jump, action. Chat/mic sit up by
+     the coins instead (see #chatOpenBtn). */
+  #btnPlace { right: 14px; bottom: 206px; width: 74px; height: 74px; font-size: 30px; }
   #btnJump {
-    right: 136px; bottom: 210px;
-    width: 54px; height: 54px; font-size: 22px;
+    right: 21px; bottom: 138px;
+    width: 60px; height: 60px; font-size: 24px;
   }
+  #btnAction { right: 21px; bottom: 70px; background: rgba(40,90,60,0.55); }
   /* Only shown while a Step / Slope / Curve is the selected block (see updateRotateButton) — sits just above
      the build and jump buttons, out of the way of both. */
   #btnRotate {
@@ -645,9 +648,9 @@
     </div>
   </div>
 </div>
-<button id="chatOpenBtn" style="display:none;position:fixed;bottom:222px;right:70px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
-<button id="chatVoiceMicBtn" style="display:none;position:fixed;bottom:222px;right:22px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">🎤</button>
-<div id="chatVoiceMicStatus" style="display:none;position:fixed;bottom:256px;right:70px;z-index:10;background:rgba(0,0,0,0.55);color:#fff;padding:3px 8px;border-radius:5px;font-size:11px;white-space:nowrap;pointer-events:none;"></div>
+<button id="chatOpenBtn" style="display:none;position:fixed;top:80px;right:60px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
+<button id="chatVoiceMicBtn" style="display:none;position:fixed;top:80px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">🎤</button>
+<div id="chatVoiceMicStatus" style="display:none;position:fixed;top:150px;right:12px;z-index:10;background:rgba(0,0,0,0.55);color:#fff;padding:3px 8px;border-radius:5px;font-size:11px;white-space:nowrap;pointer-events:none;"></div>
 <div id="chatLog" style="display:none;position:fixed;left:106px;bottom:216px;z-index:12;max-width:220px;flex-direction:column;gap:2px;pointer-events:none;"></div>
 <div id="promoOfferModal" style="display:none;position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
   <div style="background:#1c1c22;border-radius:10px;padding:20px;max-width:340px;width:90%;color:#fff;font-size:13px;text-align:center;">
@@ -1390,12 +1393,11 @@
   }
   // Returns true and deducts if affordable, false (and shows a warning) if not.
   function trySpendCoins(cost, itemLabel) {
-    // Flipped from the old rule (free in your own Mill, costs everywhere
-    // else) — building is now free in any world you create yourself,
-    // and costs normally in The Mill specifically (your own copy or
-    // someone else's), since that's the shared social space where
-    // spending coins is meant to mean something.
-    if (currentWorldId !== PUB_WORLD_ID) return true;
+    // Charges in EVERY world now. It used to return true (free) everywhere
+    // except The Mill — so blocks, fences, doors, furniture, signs, lights,
+    // wallpaper, vehicles and fills were all free in your own worlds.
+    // Natural terrain blocks (grass, dirt, sand, leaves…) have no cost, so
+    // they stay free.
     if (cost <= 0) return true;
     if (coins < cost) {
       showSaveStatus('⚠ Need 💰'+cost+' for '+itemLabel+' (have '+coins+')', true);
@@ -2379,12 +2381,12 @@
   const FIRE_SLOT = DRAIN_SLOT + 1; // "Open Log Fire" hotbar entry — a single fixed item (FURNITURE_TYPES' own 'fire' category, only one entry in it), so unlike ROOM_SLOT/BATHROOM_SLOT/etc. this doesn't need its own typeIdx cycling variable
   const SEED_SLOT = FIRE_SLOT + 3; // "Seeds" hotbar entry — see SEEDS
   const INCUBATOR_SLOT = FIRE_SLOT + 4; // "Incubator" (Action menu) — see INCUBATOR & ANIMAL SEEDS
-  const ANIMAL_SLOT = FIRE_SLOT + 5;    // "Animal Seeds" (Landscape menu)
+  const ANIMAL_SLOT = FIRE_SLOT + 5;    // "Animal Seeds" (Farming menu)
   const LAVA_SLOT = FIRE_SLOT + 2; // "Lava" hotbar entry — see LAVA (declared after WEAPON_SLOT's number so nothing that assumed the old order shifts)
   const WEAPON_SLOT = FIRE_SLOT + 1; // "Weapons" hotbar entry — see WEAPON_TYPES and the WEAPONS & LIVES section
   const LEAD_SLOT = FIRE_SLOT + 6;     // "Lead" (Equipment menu) — see LEADING ANIMALS
   const PEOPLE_INCUBATOR_SLOT = FIRE_SLOT + 7; // "People Incubator" (Action menu) — see PEOPLE INCUBATOR & MODS
-  const MOD_SLOT = FIRE_SLOT + 8;              // "Mods" (Landscape menu)
+  const MOD_SLOT = FIRE_SLOT + 8;              // "Mods" (Farming menu)
   const PROPERTY_SLOT = FIRE_SLOT + 9;         // "Property" — buy and place buildings, see PROPERTY
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
@@ -3679,6 +3681,7 @@
   // are untouched.
   const structureSpecs = new Map(); // home chunkKey -> spec
   const pendingStructureReplays = []; // live specs waiting for the player to step away from the site
+  let worldLoading = false; // true while beginPlaying holds the loading screen — movement is frozen (see the movement block in animate)
   function structureSpecsActive() {
     return !!(terrainStreamingActive && infiniteWorldActive && currentWorldId && currentWorldId !== PUB_WORLD_ID);
   }
@@ -18698,7 +18701,7 @@
     // Animal seed into an incubator (the ray passes through its cell, so try the cell in front and the one on top of what was hit).
     if (selectedSlot === ANIMAL_SLOT) {
       const inc = [r.before, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }].find(c => incubatorAt(c));
-      if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Action menu', true); return; }
+      if (!inc) { showSaveStatus('🥚 Aim at an Incubator to hatch an animal — build one from the Farming menu', true); return; }
       const ik = key(inc.x, inc.y, inc.z);
       if (seedCode(ik) !== INCUBATOR_EMPTY) { showSaveStatus('🥚 That incubator is already hatching something', true); return; }
       const at = ANIMAL_TYPES[animalTypeIdx], acost = at.cost || 0;
@@ -18713,7 +18716,7 @@
     if (selectedSlot === MOD_SLOT) {
       const b = r.before;
       const inc = [b, b && { x: b.x, y: b.y - 1, z: b.z }, { x: r.hit.x, y: r.hit.y + 1, z: r.hit.z }].find(c => peopleIncubatorAt(c));
-      if (!inc) { showSaveStatus('🧬 Aim at a People Incubator — build one from the Action menu', true); return; }
+      if (!inc) { showSaveStatus('🧬 Aim at a People Incubator — build one from the Farming menu', true); return; }
       const ik = key(inc.x, inc.y, inc.z);
       if (seedCode(ik) !== PEOPLE_INC_EMPTY) { showSaveStatus('🧬 That incubator is already growing something', true); return; }
       recordSeed(inc.x, inc.y, inc.z, (PEOPLE_INCUBATING_BASE + modTypeIdx) * SEED_VALUE_MUL + nowSec());
@@ -20889,7 +20892,7 @@
 
   // ================= INCUBATOR & ANIMAL SEEDS =================
   // The Incubator (Action menu) is placed on top of any block. Aim Animal
-  // Seeds (Landscape menu) at an empty incubator to start one: an egg
+  // Seeds (Farming menu) at an empty incubator to start one: an egg
   // appears under the heat lamp, wobbles more as it's nearly ready, and
   // hatches the chosen animal next to the incubator — which then lives
   // there, wandering the area round it, and is saved with the world.
@@ -21291,8 +21294,8 @@
   }
 
   // ================= PEOPLE INCUBATOR & MODS =================
-  // A taller incubator (Action menu) — a glass growing-tube two blocks high.
-  // Aim a Mod (Landscape menu) at an empty one and press ✋: a figure appears
+  // A taller incubator (Farming menu) — a glass growing-tube two blocks high.
+  // Aim a Mod (Farming menu) at an empty one and press ✋: a figure appears
   // in the tube, grows over the countdown, then steps out and wanders the
   // area like a hatched animal (same records, same lead, same saving — see
   // INCUBATOR & ANIMAL SEEDS; its own code range, see PEOPLE_INC_EMPTY).
@@ -26060,7 +26063,7 @@
   // The hotbar as LB/RB walk it: one stop per slot in the row (a family slot lands on whichever material is
   // currently chosen for it), not one per block type — the wheel's stop-per-type would be dozens of presses.
   function padCycleSlot(dir) {
-    const order = MENU_ITEM_ORDER; // the category menu's own order, so stepping walks Terrain, then Landscape, ...
+    const order = MENU_ITEM_ORDER; // the category menu's own order, so stepping walks Terrain, then Farming, ...
     const primary = variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot;
     let at = order.indexOf(primary); if (at < 0) at = 0;
     const next = order[(at + dir + order.length) % order.length];
@@ -26238,7 +26241,7 @@
     // live yaw/pitch this block would otherwise touch, and no movement
     // keys are pressed during it anyway), but it was luck, not
     // correctness, and kitchenAuto needs the same treatment properly.
-    if (locked && !appMakeAuto.active && !barServeAuto.active && !kitchenAuto.active) {
+    if (locked && !worldLoading && !appMakeAuto.active && !barServeAuto.active && !kitchenAuto.active) {
       // Touch look is no longer handled here — setupFreeLookZone updates
       // yaw/pitch directly the moment a touchmove event fires, the same
       // way the desktop mousemove listener already does, instead of
@@ -28054,11 +28057,11 @@
   // Purely a UI grouping — slot numbers, saves and selectSlot are untouched.
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
-    { name: 'Terrain',    items: [0, 1, 2, 5, WATER_SLOT, LAVA_SLOT] },
-    { name: 'Landscape',  items: [3, 4, SEED_SLOT, ANIMAL_SLOT, MOD_SLOT] },
+    { name: 'Terrain',    items: [0, 1, 2, 3, 4, 5, WATER_SLOT, LAVA_SLOT] },
+    { name: 'Farming',    items: [SEED_SLOT, ANIMAL_SLOT, INCUBATOR_SLOT, MOD_SLOT, PEOPLE_INCUBATOR_SLOT] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GATE_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT] },
-    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT, INCUBATOR_SLOT, PEOPLE_INCUBATOR_SLOT] },
+    { name: 'Action',     items: [DRAIN_SLOT, SIGN_SLOT] },
     { name: 'Furniture',  items: [ROOM_SLOT, BATHROOM_SLOT, KITCHEN_SLOT, BEDROOM_SLOT] },
     { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
     { name: 'Vehicles',   items: [VEHICLE_SLOT] },
@@ -28572,6 +28575,20 @@
     return Math.floor(s/86400)+'d ago';
   }
 
+  // Puts you on the first free spot at or above where you were saved (the load adds a +25 safety margin; this
+  // takes it back off) — so you arrive standing, not dropping from the sky, and never inside a wall.
+  function settlePlayerOnGround() {
+    const x = player.pos.x, z = player.pos.z;
+    let y = Math.floor(player.pos.y - 25);
+    const bx = Math.floor(x), bz = Math.floor(z);
+    const g = groundHeightOnly.get(bx + ',' + bz);
+    if (g !== undefined && y < g + 1 - 3) y = g + 1; // saved spot is well underground (terrain changed) — start at the surface
+    for (let i = 0; i < 60; i++, y++) {
+      if (!isSolid(x, y + 0.1, z) && !isSolid(x, y + 1.0, z) && !isSolid(x, y + 1.7, z)) break;
+    }
+    player.pos.y = y + 0.01;
+    player.vel.set(0, 0, 0);
+  }
   async function beginPlaying() {
     document.getElementById('worldSelect').style.display = 'none'; // hidden first — otherwise it sits on top of (z-index 25) and completely hides the loading overlay below (z-index 22)
     stopTitleAvatarPreview(); // no point rendering the title screen's own avatar thumbnail while it isn't even visible
@@ -28598,6 +28615,28 @@
     }
     updateChunkStreaming(); // catches anything eagerGenerateAroundPlayer didn't cover (e.g. for non-streaming worlds, this is just a no-op)
     rebuildMeshes();
+    if (terrainStreamingActive) {
+      // Stay on the loading screen until the world is actually finished: the chunked redraw has drained,
+      // nothing is still queued to generate, and every bought building whose ground is loaded has been
+      // rebuilt (and redrawn). Movement is frozen meanwhile (worldLoading — see the movement block in
+      // animate), so you can't start falling before the ground is drawn, or have a building rebuild
+      // around you after you've landed. Capped at 25s so a problem can never leave you stuck here.
+      worldLoading = true;
+      document.getElementById('terrainLoadingOverlay').style.display = 'flex';
+      const t0 = performance.now();
+      await new Promise(res => {
+        const tick = () => {
+          if (pendingStructureReplays.length) processPendingStructureReplays();
+          const busy = needsRebuild || rebuildInProgress || chunkGenQueue.length > 0
+            || pendingStructureReplays.some(sp => sp.bought && generatedChunks.has(sp.ck));
+          if (!busy || performance.now() - t0 > 25000) res(); else setTimeout(tick, 100);
+        };
+        setTimeout(tick, 100);
+      });
+      settlePlayerOnGround();
+      worldLoading = false;
+      document.getElementById('terrainLoadingOverlay').style.display = 'none';
+    }
     document.getElementById('overlay').style.display = 'flex';
     if (currentWorldId) {
       if (window._voxelAutosave) clearInterval(window._voxelAutosave);

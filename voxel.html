@@ -2326,6 +2326,7 @@
   const LEAD_SLOT = FIRE_SLOT + 6;     // "Lead" (Equipment menu) — see LEADING ANIMALS
   const PEOPLE_INCUBATOR_SLOT = FIRE_SLOT + 7; // "People Incubator" (Action menu) — see PEOPLE INCUBATOR & MODS
   const MOD_SLOT = FIRE_SLOT + 8;              // "Mods" (Landscape menu)
+  const PROPERTY_SLOT = FIRE_SLOT + 9;         // "Property" — buy and place buildings, see PROPERTY
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
   function buildMaterialArray(entry) {
@@ -3707,6 +3708,8 @@
       case 'windmill': maybeBuildWindmill(cx, cz, spec); break;
       case 'castle': maybeBuildCastle(cx, cz, spec); break;
       case 'shipwreck': maybeBuildShipwreck(cx, cz, spec); break;
+      case 'slaughter': maybeBuildSlaughterhouse(cx, cz, spec); break;
+      case 'bbq': maybeBuildBbqShop(cx, cz, spec); break;
       default: return;
     }
     reapplyEditsAroundStructure(spec.ck);
@@ -3725,8 +3728,16 @@
         continue;
       }
       const b = spec.spot ? { x0: spec.spot.padX0, x1: spec.spot.padX1, z0: spec.spot.padZ0, z1: spec.spot.padZ1 } : { x0: spec.site.sx0, x1: spec.site.sx1, z0: spec.site.sz0, z1: spec.site.sz1 };
-      const m = (spec.t === 'castle' ? 9 : 0) + 16;
-      if (player.pos.x >= b.x0 - m && player.pos.x <= b.x1 + m && player.pos.z >= b.z0 - m && player.pos.z <= b.z1 + m) continue; // still standing there — try again next tick
+      if (spec.bought) {
+        // Bought (see PROPERTY): wait for every chunk under it, but never for the player to walk away — it's
+        // theirs, and on a reload they may well be standing inside it.
+        let allLoaded = true;
+        for (const tck of chunksTouchedByBox(b.x0, b.x1, b.z0, b.z1)) if (!generatedChunks.has(tck)) { allLoaded = false; break; }
+        if (!allLoaded) continue;
+      } else {
+        const m = (spec.t === 'castle' ? 9 : 0) + 16;
+        if (player.pos.x >= b.x0 - m && player.pos.x <= b.x1 + m && player.pos.z >= b.z0 - m && player.pos.z <= b.z1 + m) continue; // still standing there — try again next tick
+      }
       pendingStructureReplays.splice(i, 1);
       try { replayStructureSpec(spec); } catch (e) { console.warn('[voxel] structure replay failed', spec.t, spec.ck, e); }
     }
@@ -4541,13 +4552,15 @@
       // simply waits for the host's spec (see structureSpecs).
       const structSpec = structureSpecsActive() ? structureSpecs.get(ck) : null;
       if (structSpec) {
-        replayStructureSpec(structSpec);
+        // A bought building can straddle chunk borders (the player chose where it goes), so it waits until every
+        // chunk under it has generated — otherwise a neighbour generating afterwards would lay natural ground over
+        // its floor/fields. See processPendingStructureReplays.
+        if (structSpec.bought) queueStructureReplay(structSpec); else replayStructureSpec(structSpec);
       } else if (!(visitMode && structureSpecsActive())) {
-        maybeBuildSettlement(cx, cz);
-        maybeBuildShop(cx, cz);
-        maybeBuildChurch(cx, cz);
-        maybeBuildLandmark(cx, cz);
-        maybeBuildFarm(cx, cz);
+        // Houses, shops, churches, landmarks and farms are no longer
+        // generated — they're bought and placed from the Property menu (see
+        // PROPERTY). Ones a world already has are still replayed from their
+        // saved specs above. Only these three still appear on their own:
         maybeBuildWindmill(cx, cz);
         maybeBuildCastle(cx, cz);
         maybeBuildShipwreck(cx, cz);
@@ -9322,6 +9335,7 @@
       // the farm generates) — lets it keep a name and be hit in sync with other players. The y is a
       // never-real negative so it can't collide with a block or a seed record.
       const penId = key(Math.floor(bounds.xMin), -1000 - i, Math.floor(bounds.zMin));
+      if (nameEdits.get(penId) === PEN_GONE) { scene.remove(mesh); disposeObject3D(mesh); continue; } // taken to the slaughterhouse — stays gone
       mesh.position.set(spot.x, villageSurfaceY(spot.x, spot.z, bounds.y - 1) + 1, spot.z);
       mesh.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       scene.add(mesh);
@@ -10447,7 +10461,7 @@
   // he's a prop in the shop's own registry (reg.props), so he's built and cleared with the shop exactly like
   // the castle's prisoner. Press MINE on him and he offers to buy what's in your harvest bag (see SELLING).
   const shopkeepers = []; // their meshes — the ones mine is tested against (dropped here once their shop unloads)
-  function spawnShopkeeper(shell, doorSide, reg, rng) {
+  function spawnShopkeeper(shell, doorSide, reg, rng, kind) {
     const back = HOUSE_BACK_SIDE[doorSide];
     let x = shell.midX + 0.5, z = shell.midZ + 0.5, ry = 0;
     if (back === 'north') { z = shell.z0 + 1.5; ry = 0; }            // between the back wall and the counter (see buildVillageShop), facing the door
@@ -10464,10 +10478,16 @@
     mesh.rotation.y = ry;
     // A green grocer's apron over the front, so he reads as the shopkeeper rather than just another villager.
     // (Figure's torso spans y 0.72..1.30, 0.22 deep; legs below — see buildCustomerFigure.)
-    const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: 0x2f7d46 }));
+    // kind: 'veg' (the grocer, green apron), 'meat' (the BBQ chef, black apron + cap), 'butcher' (white, stained).
+    kind = kind || 'veg';
+    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : 0x2f7d46;
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: apronHex }));
     apron.position.set(0, 0.84, 0.13);
     mesh.add(apron);
+    if (kind === 'butcher') { const st = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.01), new THREE.MeshLambertMaterial({ color: 0x8a1a14 })); st.position.set(0.07, 0.75, 0.15); mesh.add(st); }
+    if (kind === 'meat') { const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.22, 10), new THREE.MeshLambertMaterial({ color: 0xf4f4f0 })); cap.position.y = 1.86; mesh.add(cap); }
     mesh.userData.shopkeeper = true;
+    mesh.userData.shopKind = kind;
     reg.props = reg.props || [];
     reg.props.push(mesh);
     shopkeepers.push(mesh);
@@ -10482,6 +10502,8 @@
     _shopRay.far = 6;
     const hits = _shopRay.intersectObjects(shopkeepers, true);
     if (!hits.length) return null;
+    let root = hits[0].object; while (root && !root.userData.shopkeeper) root = root.parent;
+    hits[0].keeper = root; // the whole figure, which carries userData.shopKind
     if (blockHit) { // a wall or window between you and him wins
       const bx = blockHit.x + 0.5, by = blockHit.y + 0.5, bz = blockHit.z + 0.5;
       const bd = camera.position.distanceTo(new THREE.Vector3(bx, by, bz));
@@ -12248,7 +12270,7 @@
   }
   function creatureDisplayName(rec) {
     const nm = rec.nameKey && nameEdits.get(rec.nameKey);
-    return nm || ('a ' + (rec.kindName || 'creature').toLowerCase());
+    return (nm && nm !== PEN_GONE) ? nm : ('a ' + (rec.kindName || 'creature').toLowerCase());
   }
   // One frame of an angry creature. Returns false once it's calmed down (the normal wander takes over again).
   function updateAngryCreature(w, dt, t) {
@@ -12320,6 +12342,7 @@
     const k = key(p.x, p.y, p.z), nm = typeof p.name === 'string' ? p.name.slice(0, 24) : '';
     if (nm) nameEdits.set(k, nm); else nameEdits.delete(k);
     dirtyChunks.add(chunkKeyOf(p.x, p.z));
+    if (nm === PEN_GONE) { const rec = villageAnimals.find(a => a.nameKey === k); if (rec) destroyVillageAnimal(rec); } // someone else took it to the slaughterhouse
   }
   let nameModalEl = null, nameModalRec = null;
   function openNameModal(rec) {
@@ -12341,7 +12364,8 @@
         const rec2 = nameModalRec; close();
         if (!rec2 || villageAnimals.indexOf(rec2) < 0) return;
         const [x, y, z] = rec2.nameKey.split(',').map(Number);
-        const clean = (nm || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+        let clean = (nm || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+        if (clean === PEN_GONE) clean = clean.slice(1); // reserved — see PEN_GONE
         if (!recordName(x, y, z, clean || null)) { showBriefMessage('🏷️ You can only name animals in your own worlds'); return; }
         showBriefMessage(clean ? '🏷️ Named ' + clean : '🏷️ Name removed');
       };
@@ -12352,7 +12376,7 @@
     }
     nameModalRec = rec;
     document.exitPointerLock && document.exitPointerLock();
-    const current = nameEdits.get(rec.nameKey) || '';
+    const cur0 = nameEdits.get(rec.nameKey), current = (cur0 && cur0 !== PEN_GONE) ? cur0 : '';
     document.getElementById('nameModalTitle').textContent = '🏷️ Name this ' + (rec.kindName || 'animal').toLowerCase();
     const inp = document.getElementById('nameModalInput');
     inp.value = current; inp.placeholder = rec.kindName || 'Name';
@@ -12367,7 +12391,8 @@
     nameTagsNext = now + 300;
     for (const w of villageAnimals) {
       if (!w.mesh) continue;
-      const nm = w.nameKey ? nameEdits.get(w.nameKey) : null;
+      let nm = w.nameKey ? nameEdits.get(w.nameKey) : null;
+      if (nm === PEN_GONE) nm = null;
       if (!nm) { if (w.nameTag) { disposeTextLabel(w.nameTag); w.nameTag = null; } continue; }
       if (!w.nameTag) {
         w.nameTag = makeTextLabel();
@@ -17443,6 +17468,8 @@
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xf1e6cf });
     } else if (i === INCUBATOR_SLOT || i === PEOPLE_INCUBATOR_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xd9d4c8 });
+    } else if (i === PROPERTY_SLOT) {
+      heldMesh.material = new THREE.MeshBasicMaterial({ color: 0xc7901d });
     } else if (i === MOD_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x9fd6b0 });
     } else {
@@ -18524,7 +18551,12 @@
     if (tryKickFootball()) return;
     if (tryHitTennisBall()) return;
     const r = voxelRaycast(true, true);
-    if (shopkeeperInSight(r && r.hit)) { openShopPanel(); return; }
+    const keeperHit = shopkeeperInSight(r && r.hit);
+    if (keeperHit) {
+      const kind = (keeperHit.keeper && keeperHit.keeper.userData.shopKind) || 'veg';
+      if (kind === 'butcher') tryButcher(keeperHit.keeper); else openShopPanel(kind);
+      return;
+    }
     let blockDist = Infinity;
     if (r) { const camPos = camera.getWorldPosition(new THREE.Vector3()); blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x + 0.5, r.hit.y + 0.5, r.hit.z + 0.5)); }
     const ft = raycastFurniture(6);
@@ -18595,6 +18627,7 @@
     // all on the action button — see ACTION.
     if (ridingVehicle) return;
     if (weaponEquipped()) { showBriefMessage('Press ✋ to fire'); return; }
+    if (selectedSlot === PROPERTY_SLOT) { placingHeld = false; tryBuyBuilding(); return; } // see PROPERTY
     if (selectedSlot === LEAD_SLOT || selectedSlot === SEED_SLOT || selectedSlot === ANIMAL_SLOT || selectedSlot === MOD_SLOT) {
       showBriefMessage(selectedSlot === LEAD_SLOT ? '🪢 Press ✋ near an animal to use the lead' : selectedSlot === SEED_SLOT ? '🌱 Press ✋ on Mud to sow seeds' : selectedSlot === MOD_SLOT ? '🧬 Aim at a People Incubator and press ✋' : '🥚 Aim at an Incubator and press ✋');
       return;
@@ -20220,6 +20253,7 @@
   const PRODUCE_EMOJI = {
     Wheat: '🌾', Carrot: '🥕', Cabbage: '🥬', Pumpkin: '🎃', Potato: '🥔', Tomato: '🍅', Lettuce: '🥬',
     Beetroot: '🟣', Sweetcorn: '🌽', Onion: '🧅', Peas: '🟢', Strawberry: '🍓',
+    Beef: '🥩', Pork: '🥓', Mutton: '🍖', 'Chicken Meat': '🍗',
   };
   let inventory = {};
   let inventorySaveTimer = null;
@@ -20264,7 +20298,7 @@
     if (count) { count.textContent = total > 99 ? '99+' : String(total); count.style.display = total ? 'flex' : 'none'; }
     if (!list) return;
     list.innerHTML = '';
-    if (!entries.length) { list.innerHTML = '<div class="bagEmpty">Nothing yet — grow vegetables or flowers from seed, then mine them once they are fully grown to harvest them into here.</div>'; return; }
+    if (!entries.length) { list.innerHTML = '<div class="bagEmpty">Nothing yet — grow vegetables or flowers from seed and press ✋ on them once they are fully grown, or take an animal to a Slaughterhouse for meat.</div>'; return; }
     for (const [name, n] of entries) {
       const row = document.createElement('div'); row.className = 'bagItem';
       const icon = PRODUCE_EMOJI[name] || '💐';
@@ -20298,7 +20332,10 @@
     Sweetcorn: 10, Lettuce: 12, Cabbage: 15, Pumpkin: 25,
   };
   const FLOWER_PRICE = 8;
-  const producePrice = name => PRODUCE_PRICES[name] || FLOWER_PRICE;
+  // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
+  const MEAT_PRICES = { Beef: 10, Pork: 8, Mutton: 8, 'Chicken Meat': 7 };
+  const isMeat = name => MEAT_PRICES[name] !== undefined;
+  const producePrice = name => MEAT_PRICES[name] || PRODUCE_PRICES[name] || FLOWER_PRICE;
   // A packet of seeds costs half of what that one plant's full harvest
   // sells for (yield x price), rounded up. Saplings produce nothing to
   // sell, so they stay free.
@@ -20308,11 +20345,21 @@
     "Morning! What've you grown for me?", "Fresh from the field? Let's have a look.", "I'll take whatever you've got — fair prices, mind.",
     "Busy day. What are you selling?", "Ah, a farmer! Show me the bag.",
   ];
+  const BBQ_LINES = [
+    "Fire's lit! What meat have you brought?", "I'll take the lot — straight on the grill.", "Beef? Pork? Let's see it.",
+    "Smells good already. What've you got?",
+  ];
+  // 'veg' = the grocer (vegetables and flowers, never meat), 'meat' = the BBQ chef (meat only).
+  let shopMode = 'veg';
+  function shopBuys(name) { return shopMode === 'meat' ? isMeat(name) : !isMeat(name); }
   function shopPanelOpen() { const p = document.getElementById('shopPanel'); return !!p && p.style.display === 'block'; }
-  function openShopPanel() {
+  function openShopPanel(mode) {
+    shopMode = mode === 'meat' ? 'meat' : 'veg';
     document.exitPointerLock && document.exitPointerLock(); // so the buttons can be clicked on desktop
     toggleBag(false);
-    document.getElementById('shopSay').textContent = '"' + SHOPKEEPER_LINES[Math.floor(Math.random() * SHOPKEEPER_LINES.length)] + '"';
+    const lines = shopMode === 'meat' ? BBQ_LINES : SHOPKEEPER_LINES;
+    document.querySelector('#shopPanel .shopHead span').textContent = shopMode === 'meat' ? '🍖 BBQ Shop' : '🧺 Shopkeeper';
+    document.getElementById('shopSay').textContent = '"' + lines[Math.floor(Math.random() * lines.length)] + '"';
     document.getElementById('shopPanel').style.display = 'block';
     renderShopPanel();
     playThud(260);
@@ -20333,10 +20380,12 @@
   function renderShopPanel() {
     const list = document.getElementById('shopList'), all = document.getElementById('shopSellAll');
     if (!list || !all) return;
-    const entries = Object.entries(inventory).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0]));
+    const entries = Object.entries(inventory).filter(([name, n]) => n > 0 && shopBuys(name)).sort((a, b) => a[0].localeCompare(b[0]));
     list.innerHTML = '';
     if (!entries.length) {
-      list.innerHTML = '<div class="bagEmpty">Your bag\'s empty — grow some vegetables or flowers from seed and bring them back.</div>';
+      list.innerHTML = shopMode === 'meat'
+        ? '<div class="bagEmpty">No meat in your bag — lead a cow, pig, sheep or chicken to a Slaughterhouse first.</div>'
+        : '<div class="bagEmpty">Nothing I buy in your bag — grow some vegetables or flowers from seed and bring them back. (Meat goes to the BBQ Shop.)</div>';
       all.style.display = 'none';
       return;
     }
@@ -20359,7 +20408,7 @@
   document.getElementById('shopSellAll').addEventListener('click', e => {
     e.stopPropagation();
     let got = 0, n = 0;
-    for (const [name, c] of Object.entries(inventory)) if (c > 0) { n += c; got += sellProduce(name, c); }
+    for (const [name, c] of Object.entries(inventory)) if (c > 0 && shopBuys(name)) { n += c; got += sellProduce(name, c); }
     if (got) { showSaveStatus('💰 +' + got + ' for ' + n + ' item' + (n === 1 ? '' : 's') + ' — "Pleasure doing business!"'); playCoin(); }
     renderShopPanel();
   });
@@ -20370,6 +20419,292 @@
     const near = shopkeepers.some(m => m.parent && Math.hypot(m.position.x - player.pos.x, m.position.z - player.pos.z) < 7);
     if (!near) closeShopPanel();
   }, 500);
+
+  // ================= PROPERTY (bought buildings) =================
+  // Houses, shops, farms, churches, landmarks, the Slaughterhouse and the
+  // BBQ Shop are bought from the Property menu rather than generated (only
+  // the castle, windmill and shipwreck still appear on their own). Pick one,
+  // aim at the ground where its near edge should be — it extends away from
+  // you, shown by the outline (green = OK, red = not here) — press build and
+  // confirm. The coins come off, the ground is levelled and it's built on
+  // the spot, with its shopkeeper / resident / animals, exactly like a
+  // generated one. It's saved as the same kind of structure spec a generated
+  // building uses (plus bought:true), so it rebuilds every load and appears
+  // live for anyone else in the world. Your own worlds only, and one building
+  // per 32x32 chunk (the building system keys each one to a chunk).
+  const BUILDING_TYPES = [
+    { t: 'house',     name: 'House',          emoji: '🏠', price: 150, sx: 15, sz: 15 },
+    { t: 'shop',      name: "Grocer's Shop",  emoji: '🧺', price: 120, sx: 15, sz: 15, note: 'buys vegetables and flowers' },
+    { t: 'bbq',       name: 'BBQ Shop',       emoji: '🍖', price: 150, sx: 15, sz: 15, note: 'buys meat' },
+    { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 200, sx: 15, sz: 15, note: 'turns animals into meat' },
+    { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 250, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
+    { t: 'church',    name: 'Church',         emoji: '⛪', price: 400, sx: 19, sz: 25 },
+    { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 40,  sx: 7,  sz: 7, kind: 0 },
+    { t: 'landmark',  name: 'Statue',         emoji: '🗿', price: 60,  sx: 7,  sz: 7, kind: 1 },
+    { t: 'landmark',  name: 'Bell',           emoji: '🔔', price: 50,  sx: 7,  sz: 7, kind: 2 },
+  ];
+  let propertyTypeIdx = 0;
+  function propertyIconCanvas(idx) {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = 'rgba(199,144,29,0.35)'; ctx.fillRect(3, 3, 28, 28);
+    ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(BUILDING_TYPES[idx].emoji, 17, 18);
+    return c;
+  }
+  function showPropertyPopup(slotEl) {
+    if (togglePopupFor(slotEl)) return;
+    const popup = document.createElement('div');
+    popup.style.cssText = popupCss(slotEl);
+    BUILDING_TYPES.forEach((bt, idx) => {
+      const btn = document.createElement('div');
+      btn.className = 'popup-item'; btn.title = bt.name + ' — 💰' + bt.price + (bt.note ? ' · ' + bt.note : '');
+      btn.appendChild(propertyIconCanvas(idx));
+      const label = document.createElement('span'); label.className = 'popup-item-label'; label.textContent = bt.name + ' · 💰' + bt.price; btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        propertyTypeIdx = idx;
+        const slot = slotElByIndex[PROPERTY_SLOT];
+        const old = slot.querySelector('canvas.swatch'); if (old) old.remove();
+        slot.insertBefore(propertyIconCanvas(idx), slot.querySelector('.family-badge'));
+        selectSlot(PROPERTY_SLOT);
+        closeFamilyPopup();
+        showBriefMessage(bt.emoji + ' ' + bt.name + ' — aim at the ground and press 🧱 to build it here (💰' + bt.price + ')');
+      });
+      popup.appendChild(btn);
+    });
+    mountPopup(popup, slotEl);
+  }
+  // Where the chosen building would go right now, and whether it can.
+  function planPurchase(bt) {
+    const r = voxelRaycast(true, true);
+    if (!r || !r.hit || r.isWater || r.isLava) return null;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    let dx = 0, dz = 0; // snap "away from me" to the nearest axis
+    if (Math.abs(fx) > Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
+    const W = bt.sx, D = bt.sz, floor = r.hit.y;
+    let sx0, sz0;
+    if (dx) { sx0 = dx > 0 ? r.hit.x : r.hit.x - W + 1; sz0 = r.hit.z - Math.floor(D / 2); }
+    else { sz0 = dz > 0 ? r.hit.z : r.hit.z - D + 1; sx0 = r.hit.x - Math.floor(W / 2); }
+    const site = { sx0, sz0, sx1: sx0 + W - 1, sz1: sz0 + D - 1, floor };
+    const ck = chunkKeyOf(sx0 + Math.floor(W / 2), sz0 + Math.floor(D / 2));
+    const plan = { site, ck, ok: false, reason: '' };
+    const fail = why => { plan.reason = why; return plan; };
+    if (!structureSpecsActive() || visitMode) return fail('Buildings can only be bought in your own worlds');
+    if (floor < SEA_LEVEL) return fail('Too low — that\u2019s under the waterline');
+    if (player.pos.x > site.sx0 - 1 && player.pos.x < site.sx1 + 2 && player.pos.z > site.sz0 - 1 && player.pos.z < site.sz1 + 2) return fail('Step back — you\u2019re standing where it would go');
+    for (let x = site.sx0; x <= site.sx1; x++) for (let z = site.sz0; z <= site.sz1; z++) {
+      if (!canEditAt(x, z)) return fail('Not allowed here');
+      const g = groundHeightOnly.get(x + ',' + z);
+      if (g === undefined) return fail('Too far out — that ground isn\u2019t loaded');
+      if (g < floor - 6) return fail('Too steep — the ground drops away there');
+      if (g > floor + 14) return fail('Too steep — there\u2019s a hill in the way');
+    }
+    if (structureSpecs.has(ck) || villageRegistry.has(ck) || villageFootprintChunkKeys.has(ck) || lockedStructureChunks.has(ck)) return fail('There\u2019s already a building on this patch — try a bit further away');
+    for (const tck of chunksTouchedByBox(site.sx0 - 2, site.sx1 + 2, site.sz0 - 2, site.sz1 + 2)) {
+      const list = villageHouseFootprints.get(tck);
+      if (list && list.some(e => e.x0 <= site.sx1 + 1 && e.x1 >= site.sx0 - 1 && e.z0 <= site.sz1 + 1 && e.z1 >= site.sz0 - 1)) return fail('Too close to another building');
+    }
+    plan.ok = true;
+    return plan;
+  }
+  // The green/red outline shown while Property is selected.
+  let propertyGhost = null, propertyGhostNext = 0, propertyGhostKey = '';
+  function updatePropertyGhost() {
+    const on = selectedSlot === PROPERTY_SLOT && !ridingVehicle;
+    if (!on) { if (propertyGhost) propertyGhost.visible = false; return; }
+    const now = performance.now();
+    if (now < propertyGhostNext) return;
+    propertyGhostNext = now + 120;
+    const bt = BUILDING_TYPES[propertyTypeIdx];
+    const plan = planPurchase(bt);
+    if (!plan) { if (propertyGhost) propertyGhost.visible = false; return; }
+    const H = 6, gkey = bt.sx + 'x' + bt.sz;
+    if (!propertyGhost || propertyGhostKey !== gkey) {
+      if (propertyGhost) { scene.remove(propertyGhost); propertyGhost.geometry.dispose(); propertyGhost.material.dispose(); }
+      propertyGhost = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bt.sx, H, bt.sz)), new THREE.LineBasicMaterial({ color: 0x46e07a, transparent: true, opacity: 0.9, depthTest: false }));
+      propertyGhost.renderOrder = 998;
+      propertyGhostKey = gkey;
+      scene.add(propertyGhost);
+    }
+    const st = plan.site;
+    propertyGhost.position.set((st.sx0 + st.sx1 + 1) / 2, st.floor + 1 + H / 2, (st.sz0 + st.sz1 + 1) / 2);
+    propertyGhost.material.color.setHex(plan.ok ? 0x46e07a : 0xff4a3a);
+    propertyGhost.visible = true;
+  }
+  // A small yes/no box (used for buying, and at the butcher).
+  let confirmEl = null, confirmYes = null;
+  function askConfirm(text, yesLabel, onYes) {
+    if (!confirmEl) {
+      confirmEl = document.createElement('div');
+      confirmEl.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      confirmEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(320px,90vw);color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div id="confirmText" style="line-height:1.45;margin-bottom:14px;"></div>'
+        + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+        + '<button id="confirmNo" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 14px;cursor:pointer;">Cancel</button>'
+        + '<button id="confirmOk" style="background:#c7901d;border:none;color:#fff;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer;"></button></div></div>';
+      document.body.appendChild(confirmEl);
+      document.getElementById('confirmNo').addEventListener('click', () => { confirmEl.style.display = 'none'; confirmYes = null; });
+      document.getElementById('confirmOk').addEventListener('click', () => { confirmEl.style.display = 'none'; const f = confirmYes; confirmYes = null; if (f) f(); });
+    }
+    document.exitPointerLock && document.exitPointerLock();
+    document.getElementById('confirmText').textContent = text;
+    document.getElementById('confirmOk').textContent = yesLabel;
+    confirmYes = onYes;
+    confirmEl.style.display = 'flex';
+  }
+  function rsForLandmark(kind) { // an RNG start whose 2nd draw (after the palette) picks this landmark kind — see maybeBuildLandmark
+    for (let i = 0; i < 200; i++) {
+      const seed = (Math.random() * 4294967296) >>> 0, r = mulberry32(seed);
+      r(); if (Math.floor(r() * 3) === kind) return seed;
+    }
+    return 1;
+  }
+  function tryBuyBuilding() {
+    const bt = BUILDING_TYPES[propertyTypeIdx];
+    const plan = planPurchase(bt);
+    if (!plan) { showBriefMessage('Aim at the ground where the ' + bt.name + ' should go'); return; }
+    if (!plan.ok) { showSaveStatus('⚠ ' + plan.reason, true); return; }
+    if (coins < bt.price) { showSaveStatus('⚠ A ' + bt.name + ' costs 💰' + bt.price + ' (you have ' + coins + ')', true); return; }
+    askConfirm('Build a ' + bt.name + ' here for 💰' + bt.price + '?' + (bt.note ? ' (' + bt.note + ')' : '') + ' The ground under it gets levelled and anything you\u2019d built on that spot is cleared.', 'Build · 💰' + bt.price, () => {
+      const again = planPurchase(bt); // re-checked — something may have changed while the box was open
+      const use = (again && again.ok && again.ck === plan.ck) ? again : plan;
+      if (structureSpecs.has(use.ck) || villageRegistry.has(use.ck)) { showSaveStatus('⚠ Something\u2019s already been built there', true); return; }
+      if (coins < bt.price) { showSaveStatus('⚠ Not enough coins', true); return; }
+      const { site, ck } = use;
+      // Clear the player's own edits inside the site first — otherwise reapplyEditsAroundStructure would lay
+      // old dug-out holes and placed blocks back over the new building every time it rebuilt.
+      for (const tck of chunksTouchedByBox(site.sx0, site.sx1, site.sz0, site.sz1)) {
+        const m = blockEdits.byChunk.get(tck);
+        if (!m) continue;
+        for (const k of [...m.keys()]) {
+          const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
+          const x = +k.slice(0, c1), z = +k.slice(c2 + 1);
+          if (x >= site.sx0 && x <= site.sx1 && z >= site.sz0 && z <= site.sz1) { blockEdits.delete(k); stepRotEdits.delete(k); }
+        }
+        dirtyChunks.add(tck);
+      }
+      coins -= bt.price; updateCoinsDisplay(); scheduleStatsSave();
+      const rs = bt.t === 'landmark' ? rsForLandmark(bt.kind) : ((Math.random() * 4294967296) >>> 0);
+      const spec = { t: bt.t, ck, site: { sx0: site.sx0, sz0: site.sz0, sx1: site.sx1, sz1: site.sz1, floor: site.floor }, rs, bought: true };
+      claimRegionForSpec(spec);
+      recordStructureSpec(spec); // saved (promptly) and sent live to anyone else here
+      try { replayStructureSpec(spec); } catch (e) { console.warn('[voxel] bought building failed to build', e); }
+      playCoin(); playThud(420);
+      showSaveStatus(bt.emoji + ' ' + bt.name + ' built! (−💰' + bt.price + ')');
+    });
+  }
+
+  // ================= SLAUGHTERHOUSE & BBQ =================
+  // Slaughterhouse: an open-fronted building with a butcher behind the
+  // counter. Lead a cow, pig, sheep or chicken there (the Lead, in
+  // Equipment), aim at the butcher and press ✋: pay his fee and the animal
+  // becomes meat in your bag. A hatched animal's record is removed for good;
+  // a farm pen animal is marked gone (PEN_GONE in nameEdits) so the pen
+  // doesn't grow it back next load. The BBQ Shop's chef buys the meat.
+  const BUTCHER_JOBS = {
+    Cow:     { meat: 'Beef',         n: 3, fee: 10 },
+    Pig:     { meat: 'Pork',         n: 2, fee: 6 },
+    Sheep:   { meat: 'Mutton',       n: 2, fee: 6 },
+    Chicken: { meat: 'Chicken Meat', n: 1, fee: 3 },
+  };
+  const PEN_GONE = '#gone'; // stored as a pen animal's "name" — see spawnPenAnimals
+  function tryButcher(keeper) {
+    const a = leadRec;
+    if (!a || villageAnimals.indexOf(a) < 0) { showBriefMessage('🔪 Bring a cow, pig, sheep or chicken here on the lead 🪢'); return; }
+    const job = BUTCHER_JOBS[a.kindName];
+    if (!job) { showBriefMessage('🔪 "I only take cows, pigs, sheep and chickens."'); return; }
+    if (keeper && a.mesh.position.distanceTo(keeper.position) > 12) { showBriefMessage('🔪 Bring it inside — closer to the counter'); return; }
+    if (!terrainStreamingActive || !canEditAt(Math.floor(a.mesh.position.x), Math.floor(a.mesh.position.z))) { showBriefMessage('🔪 Only in your own worlds'); return; }
+    if (coins < job.fee) { showSaveStatus('⚠ The butcher charges 💰' + job.fee + ' (you have ' + coins + ')', true); return; }
+    const who = creatureDisplayName(a);
+    askConfirm('Turn ' + who + ' into ' + job.n + ' ' + job.meat + ' ' + (PRODUCE_EMOJI[job.meat] || '') + ' for 💰' + job.fee + '?', 'Yes · 💰' + job.fee, () => {
+      if (leadRec !== a || villageAnimals.indexOf(a) < 0) return; // it got away while the box was open
+      if (coins < job.fee) return;
+      coins -= job.fee; updateCoinsDisplay(); scheduleStatsSave();
+      leadRec = null; a.leashed = false; if (leadRope) leadRope.visible = false;
+      if (a.hatched) {
+        let rk = null; for (const [k2, v] of hatchedLive) if (v === a) { rk = k2; break; }
+        if (rk) {
+          const [x, y, z] = rk.split(',').map(Number);
+          if (nameEdits.has(rk)) recordName(x, y, z, null);
+          recordSeed(x, y, z, -1);
+          despawnHatched(rk);
+        } else destroyVillageAnimal(a);
+      } else {
+        if (a.nameKey) { const [x, y, z] = a.nameKey.split(',').map(Number); recordName(x, y, z, PEN_GONE); }
+        destroyVillageAnimal(a);
+      }
+      addToInventory(job.meat, job.n);
+      playCoin();
+      showSaveStatus('🔪 +' + job.n + ' ' + job.meat + ' ' + (PRODUCE_EMOJI[job.meat] || '') + ' — sell it at a BBQ Shop');
+    });
+  }
+  function buildHangingMeatProp() {
+    const g = new THREE.Group();
+    const hook = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.5, 5), new THREE.MeshLambertMaterial({ color: 0x8a8a90 })); hook.position.y = 0.75; g.add(hook);
+    const meat = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.4, 0.14), new THREE.MeshLambertMaterial({ color: 0xa8392e })); meat.position.y = 0.32; g.add(meat);
+    const fat = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.08, 0.15), new THREE.MeshLambertMaterial({ color: 0xf0e0d0 })); fat.position.y = 0.5; g.add(fat);
+    return g;
+  }
+  function buildBbqGrillProp() {
+    const g = new THREE.Group();
+    const black = new THREE.MeshLambertMaterial({ color: 0x1e1e20 });
+    const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.9, 12, 1, false, 0, Math.PI), black); drum.rotation.z = Math.PI / 2; drum.rotation.y = Math.PI / 2; drum.position.y = 0.72; drum.rotation.x = Math.PI; g.add(drum);
+    const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.9, 12, 1, false, 0, Math.PI), black); lid.rotation.z = Math.PI / 2; lid.position.set(0, 0.74, -0.06); lid.rotation.x = -0.5; g.add(lid);
+    const coals = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.05, 0.4), new THREE.MeshBasicMaterial({ color: 0xff6a1a })); coals.position.y = 0.7; g.add(coals);
+    for (const [x, z] of [[-0.35, -0.2], [0.35, -0.2], [-0.35, 0.2], [0.35, 0.2]]) { const l = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.5, 0.04), black); l.position.set(x, 0.25, z); g.add(l); }
+    for (let i = 0; i < 3; i++) { const sm = new THREE.Mesh(new THREE.SphereGeometry(0.1 + i * 0.05, 6, 5), new THREE.MeshLambertMaterial({ color: 0xcfcfcf, transparent: true, opacity: 0.35 - i * 0.08 })); sm.position.set(0.05 * i, 1.0 + i * 0.3, 0); g.add(sm); }
+    return g;
+  }
+  function maybeBuildSlaughterhouse(cx, cz, replay) {
+    if (!replay) return; // bought only — never generated
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 10);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const shell = buildShell(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, 11, 11, 5, floor, palette, doorSide, 'flat');
+    for (let x = shell.x0; x <= shell.x1; x++) for (let z = shell.z0; z <= shell.z1; z++) blocks.set(key(x, floor, z), 2); // bare stone floor, easy to hose down
+    carveDoorGap(shell, doorSide, 2); // a wide open doorway, no door — so an animal on the lead can walk straight in
+    placeShellSign(shell, doorSide, 'Slaughterhouse', reg);
+    placeShellLight(shell, doorSide, reg);
+    const backSide = HOUSE_BACK_SIDE[doorSide], rot = HOUSE_SIDE_ROT[backSide];
+    if (backSide === 'north') addFurnitureTracked(shell.midX, floor, shell.z0 + 2, rot, 5, reg);
+    else if (backSide === 'south') addFurnitureTracked(shell.midX, floor, shell.z1 - 2, rot, 5, reg);
+    else if (backSide === 'west') addFurnitureTracked(shell.x0 + 2, floor, shell.midZ, rot, 5, reg);
+    else addFurnitureTracked(shell.x1 - 2, floor, shell.midZ, rot, 5, reg);
+    for (let i = -2; i <= 2; i += 2) { // meat on hooks along the back wall
+      if (backSide === 'north' || backSide === 'south') placeVillageProp(buildHangingMeatProp, shell.midX + i, floor + 2, backSide === 'north' ? shell.z0 + 1 : shell.z1 - 1, 0, reg);
+      else placeVillageProp(buildHangingMeatProp, backSide === 'west' ? shell.x0 + 1 : shell.x1 - 1, floor + 2, shell.midZ + i, 1, reg);
+    }
+    spawnShopkeeper(shell, doorSide, reg, rng, 'butcher');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+  function maybeBuildBbqShop(cx, cz, replay) {
+    if (!replay) return; // bought only
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 14);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const shell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    placeShellSign(shell, doorSide, 'BBQ', reg);
+    const d = shellDoorInfo(shell, doorSide);
+    const sideX = d.nz !== 0 ? 1 : 0, sideZ = d.nx !== 0 ? 1 : 0; // along the front wall
+    placeVillageProp(buildBbqGrillProp, d.x + d.nx * 2 + sideX * 3, floor, d.z + d.nz * 2 + sideZ * 3, sideX ? 0 : 1, reg); // a grill out front, beside the door
+    spawnShopkeeper(shell, doorSide, reg, rng, 'meat');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
 
   // ================= INCUBATOR & ANIMAL SEEDS =================
   // The Incubator (Action menu) is placed on top of any block. Aim Animal
@@ -25694,6 +26029,7 @@
     if (actionHeld && (ridingVehicle || weaponEquipped())) doAction(); // held ✋ keeps firing; the gun's own cooldown sets the pace
     updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
     updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
+    updatePropertyGhost(); // outline of where the chosen building would go — see PROPERTY
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -26899,6 +27235,22 @@
   {
     const slot = document.createElement('div');
     slot.className = 'slot';
+    slot.title = 'Property — buy a building: pick one, aim at the ground where it should start and press build (🧱)';
+    const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = '';
+    slot.appendChild(keyEl);
+    slot.appendChild(propertyIconCanvas(0));
+    const badge = document.createElement('span'); badge.className='family-badge'; badge.textContent='▾';
+    badge.style.cssText = 'position:absolute;bottom:1px;right:2px;font-size:9px;color:rgba(255,255,255,0.7);pointer-events:none;';
+    slot.style.position = 'relative';
+    slot.appendChild(badge);
+    slot.addEventListener('click', (e) => { e.stopPropagation(); showPropertyPopup(slot); });
+    slotElByIndex[PROPERTY_SLOT] = slot;
+    addSlotLabel(slot, 'Property');
+    hotbar.appendChild(slot);
+  }
+  {
+    const slot = document.createElement('div');
+    slot.className = 'slot';
     slot.title = 'LED Spotlight' + costLabel(LIGHT_COST) + ' — tap a block face to attach it there, tap the same face again to remove';
     const keyEl = document.createElement('span'); keyEl.className='key'; keyEl.textContent = 'L';
     slot.appendChild(keyEl);
@@ -27513,6 +27865,7 @@
     { name: 'Commercial', items: [BAR_SLOT, CELLAR_SLOT] },
     { name: 'Vehicles',   items: [VEHICLE_SLOT] },
     { name: 'Equipment',  items: [WEAPON_SLOT, LEAD_SLOT] },
+    { name: 'Property',   items: [PROPERTY_SLOT] },
   ];
   const MENU_ITEM_ORDER = [];          // every item, category by category — what LB/RB and the mouse wheel step through
   const menuItemCategory = {};         // item slot index -> category index

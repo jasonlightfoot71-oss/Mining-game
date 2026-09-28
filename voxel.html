@@ -2549,6 +2549,7 @@
   // than waterBlocks ever was, and couldn't take on the heavier
   // per-chunk bucketing that fix needed without slowing those paths
   // down.
+  var chunkMeshOn = false; // see CHUNK MESHES — var: BlocksMap below is used long before that section runs
   class BlocksMap {
     constructor() {
       this._data = new Map();
@@ -2562,6 +2563,7 @@
       else if (old !== undefined && GLASS_TYPE_SET.has(old)) this.glassCells.delete(k); // was glass, just got overwritten with something else
       if (type === 4) this.leafCells.set(k, type);
       else if (old === 4) this.leafCells.delete(k); // was plain Leaves, just got overwritten (winterized to a branch variant, mined, replaced, etc.)
+      if (chunkMeshOn && old !== type) cmTrack(k, true); // its terrain section needs re-meshing — see CHUNK MESHES
       return this;
     }
     delete(k) {
@@ -2570,12 +2572,13 @@
       this._data.delete(k);
       if (GLASS_TYPE_SET.has(old)) this.glassCells.delete(k);
       if (old === 4) this.leafCells.delete(k);
+      if (chunkMeshOn) cmTrack(k, false);
       return true;
     }
     has(k) { return this._data.has(k); }
     get(k) { return this._data.get(k); }
     get size() { return this._data.size; }
-    clear() { this._data.clear(); this.glassCells.clear(); this.leafCells.clear(); }
+    clear() { this._data.clear(); this.glassCells.clear(); this.leafCells.clear(); if (chunkMeshOn) cmReset(); }
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
     entries() { return this._data.entries(); }
     keys() { return this._data.keys(); }
@@ -5313,7 +5316,8 @@
   // With 100+ block types (and a second mesh for each step) that's hundreds of wasted draw setups a frame, and every new block type (the fences
   // and gates added 20) was quietly adding more.
   function hideEmptyBlockMeshes() {
-    for (let i = 0; i < meshes.length; i++) { const m = meshes[i]; if (m) m.visible = m.count > 0; }
+    cmApplyShowing();
+    for (let i = 0; i < meshes.length; i++) { const m = meshes[i]; if (m) m.visible = m.count > 0 && !cmActive(i); } // merged types are drawn by CHUNK MESHES while it's on
     for (let i = 0; i < stepUpperMeshes.length; i++) { const m = stepUpperMeshes[i]; if (m) m.visible = m.count > 0; }
   }
   // Second mesh per step type, for the upper quarter piece — null for
@@ -5328,6 +5332,220 @@
     scene.add(m);
     return m;
   });
+  // ================= CHUNK MESHES (Minecraft-style terrain drawing) =================
+  // The per-block-type InstancedMeshes above draw every visible block as a full 6-sided cube, and each one is
+  // a single world-sized mesh, so ALL of it is drawn every frame (and again for shadows) — including
+  // everything behind you. This draws plain cubes the way Minecraft does instead: the world is cut into
+  // 32x16x32 sections, and each section is ONE mesh containing only the block faces that can actually be seen
+  // (a face pressed against another solid block is left out). Sections off-screen aren't drawn at all.
+  //
+  // Only DRAWING changes. Every block is still its own entry in `blocks`, so mining, placing, collision,
+  // saving and multiplayer are untouched: when a block changes, its section (and a neighbour, if it's on the
+  // edge) is simply re-meshed a moment later — see cmTrack, called from BlocksMap.set/delete.
+  //
+  // Scope, deliberately: plain opaque cubes only. Steps, slopes, curves, fences, glass, bars and leaves (which
+  // change look with the seasons) stay on the old instanced path, unchanged. The old path also keeps running
+  // underneath for everything — the merged types are just hidden while this is on — which is what makes the
+  // switch instant both ways. Switch: the "Fast terrain" button on the pause screen, or F4. Saved per device.
+  const CM_SX = 32, CM_SY = 16, CM_BUDGET_MS = 5;
+  const CM_MERGE = BLOCK_TYPES.map((e, i) => !!e.mats && !e.half && !e.slope && !e.curve && !e.fence && !e.transparent
+    && !GLASS_TYPE_SET.has(i) && i !== 4 && !/^Winter Branch/.test(e.name || ''));
+  const CM_OCC = BLOCK_TYPES.map(e => !(e.half || e.slope || e.curve || e.fence || e.transparent)); // same rule neighborsAllSolid uses
+  const cmSections = new Map(); // section id -> { keys: Set, mesh, sx, sy, sz }
+  const cmDirty = new Set();
+  // Which one is on screen. While a lot is still waiting to be meshed (entering a world, switching this on,
+  // a big burst of streaming) the old instanced path shows instead, so there's never a gap — and never both at
+  // once either, since the two drawing the same faces would flicker (z-fighting).
+  const CM_SHOW_MAX_DIRTY = 24;
+  var cmShowing = false;
+  function cmApplyShowing() {
+    const want = chunkMeshOn && cmDirty.size < CM_SHOW_MAX_DIRTY;
+    if (want === cmShowing) return;
+    cmShowing = want;
+    for (const s of cmSections.values()) if (s.mesh) s.mesh.visible = want;
+  }
+  function cmSecId(sx, sy, sz) { return ((sx + 32768) * 65536 + (sz + 32768)) * 256 + (sy + 128); }
+  // ---- texture atlas: every face texture of every merged type on one canvas (they're all 16x16, nearest-filtered) ----
+  const CM_TILE = 16;
+  const cmTiles = new Map(); // texture -> [u0, v0, u1, v1]
+  const cmTypeTiles = []; // type -> { top, side, bottom } uv rects
+  const cmAtlasTex = (() => {
+    const texs = [];
+    BLOCK_TYPES.forEach((e, i) => {
+      if (!CM_MERGE[i]) return;
+      const f = (e.mats.top || e.mats.side || e.mats.bottom) ? [e.mats.top, e.mats.side, e.mats.bottom] : [e.mats, e.mats, e.mats];
+      for (const t of f) if (t && !texs.includes(t)) texs.push(t);
+    });
+    const cols = 16, rows = Math.max(1, Math.ceil(texs.length / cols));
+    let H = 16; while (H < rows * CM_TILE) H *= 2;
+    const W = cols * CM_TILE;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    const eps = 0.02 / CM_TILE; // a hair inside each tile so nearest-sampling never picks up a neighbour's edge
+    texs.forEach((t, n) => {
+      const tx = (n % cols) * CM_TILE, ty = Math.floor(n / cols) * CM_TILE;
+      try { ctx.drawImage(t.image, tx, ty, CM_TILE, CM_TILE); } catch (err) {}
+      // flipY: canvas top row = v 1
+      cmTiles.set(t, [tx / W + eps, 1 - (ty + CM_TILE) / H + eps, (tx + CM_TILE) / W - eps, 1 - ty / H - eps]);
+    });
+    BLOCK_TYPES.forEach((e, i) => {
+      if (!CM_MERGE[i]) return;
+      const multi = !!(e.mats.top || e.mats.side || e.mats.bottom);
+      cmTypeTiles[i] = multi
+        ? { top: cmTiles.get(e.mats.top || e.mats.side), side: cmTiles.get(e.mats.side || e.mats.top), bottom: cmTiles.get(e.mats.bottom || e.mats.side) }
+        : { top: cmTiles.get(e.mats), side: cmTiles.get(e.mats), bottom: cmTiles.get(e.mats) };
+    });
+    const tex = new THREE.CanvasTexture(c);
+    tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
+    return tex;
+  })();
+  const cmMaterial = new THREE.MeshPhongMaterial({ map: cmAtlasTex, shininess: 0 }); // same shading as buildMaterialArray's
+  // Faces: outward direction, the 4 corners (bottom-left, bottom-right, top-right, top-left as seen from outside,
+  // so the texture's top is up on the sides), and which texture it takes.
+  const CM_FACES = [
+    { d: [1, 0, 0],  c: [[1,0,1],[1,0,0],[1,1,0],[1,1,1]], m: 'side' },
+    { d: [-1, 0, 0], c: [[0,0,0],[0,0,1],[0,1,1],[0,1,0]], m: 'side' },
+    { d: [0, 1, 0],  c: [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], m: 'top' },
+    { d: [0, -1, 0], c: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], m: 'bottom' },
+    { d: [0, 0, 1],  c: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], m: 'side' },
+    { d: [0, 0, -1], c: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], m: 'side' },
+  ];
+  // ---- index upkeep (only while switched on) ----
+  function cmMarkDirty(sx, sy, sz) { const id = cmSecId(sx, sy, sz); if (cmSections.has(id)) cmDirty.add(id); }
+  function cmTrack(k, add) {
+    const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+    const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+    const sx = Math.floor(x / CM_SX), sy = Math.floor(y / CM_SY), sz = Math.floor(z / CM_SX);
+    const id = cmSecId(sx, sy, sz);
+    let s = cmSections.get(id);
+    if (add) { if (!s) { s = { keys: new Set(), mesh: null, sx, sy, sz }; cmSections.set(id, s); } s.keys.add(k); }
+    else if (s) s.keys.delete(k);
+    if (s) cmDirty.add(id);
+    const lx = x - sx * CM_SX, ly = y - sy * CM_SY, lz = z - sz * CM_SX;
+    if (lx === 0) cmMarkDirty(sx - 1, sy, sz); else if (lx === CM_SX - 1) cmMarkDirty(sx + 1, sy, sz);
+    if (ly === 0) cmMarkDirty(sx, sy - 1, sz); else if (ly === CM_SY - 1) cmMarkDirty(sx, sy + 1, sz);
+    if (lz === 0) cmMarkDirty(sx, sy, sz - 1); else if (lz === CM_SX - 1) cmMarkDirty(sx, sy, sz + 1);
+  }
+  function cmDisposeSection(s) { if (s.mesh) { scene.remove(s.mesh); s.mesh.geometry.dispose(); s.mesh = null; } }
+  function cmReset() {
+    for (const s of cmSections.values()) cmDisposeSection(s);
+    cmSections.clear(); cmDirty.clear();
+  }
+  // ---- meshing one section ----
+  const CM_G = CM_SX + 2, CM_GY = CM_SY + 2;
+  const cmGrid = new Int16Array(CM_G * CM_G * CM_GY);
+  const cmIdx = (lx, ly, lz) => (lx + 1) + (lz + 1) * CM_G + (ly + 1) * CM_G * CM_G;
+  function cmBuildSection(id) {
+    const s = cmSections.get(id);
+    if (!s) return;
+    if (!s.keys.size) { cmDisposeSection(s); cmSections.delete(id); return; }
+    const ox = s.sx * CM_SX, oy = s.sy * CM_SY, oz = s.sz * CM_SX;
+    cmGrid.fill(0);
+    const list = []; // flat: lx, ly, lz, type for merged cubes
+    for (const k of s.keys) {
+      const t = blocks.get(k);
+      if (t === undefined) continue;
+      const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+      const lx = +k.slice(0, c1) - ox, ly = +k.slice(c1 + 1, c2) - oy, lz = +k.slice(c2 + 1) - oz;
+      cmGrid[cmIdx(lx, ly, lz)] = t + 1;
+      if (CM_MERGE[t]) list.push(lx, ly, lz, t);
+    }
+    if (!list.length) { cmDisposeSection(s); return; }
+    // one-block border from the neighbouring sections, for the faces along the edges
+    const put = (lx, ly, lz) => { const t = blocks.get(key(ox + lx, oy + ly, oz + lz)); if (t !== undefined) cmGrid[cmIdx(lx, ly, lz)] = t + 1; };
+    for (let ly = 0; ly < CM_SY; ly++) for (let lz = 0; lz < CM_SX; lz++) { put(-1, ly, lz); put(CM_SX, ly, lz); }
+    for (let ly = 0; ly < CM_SY; ly++) for (let lx = 0; lx < CM_SX; lx++) { put(lx, ly, -1); put(lx, ly, CM_SX); }
+    for (let lz = 0; lz < CM_SX; lz++) for (let lx = 0; lx < CM_SX; lx++) { put(lx, -1, lz); put(lx, CM_SY, lz); }
+    const occAt = (lx, ly, lz) => { const n = cmGrid[cmIdx(lx, ly, lz)]; return n > 0 && CM_OCC[n - 1]; };
+    // pass 1: count faces
+    let faces = 0;
+    for (let i = 0; i < list.length; i += 4) {
+      const lx = list[i], ly = list[i + 1], lz = list[i + 2];
+      for (let f = 0; f < 6; f++) { const d = CM_FACES[f].d; if (!occAt(lx + d[0], ly + d[1], lz + d[2])) faces++; }
+    }
+    if (!faces) { cmDisposeSection(s); return; }
+    const pos = new Float32Array(faces * 12), nor = new Float32Array(faces * 12), uv = new Float32Array(faces * 8);
+    const nv = faces * 4, idx = nv > 65535 ? new Uint32Array(faces * 6) : new Uint16Array(faces * 6);
+    let fi = 0;
+    for (let i = 0; i < list.length; i += 4) {
+      const lx = list[i], ly = list[i + 1], lz = list[i + 2], tiles = cmTypeTiles[list[i + 3]];
+      for (let f = 0; f < 6; f++) {
+        const F = CM_FACES[f], d = F.d;
+        if (occAt(lx + d[0], ly + d[1], lz + d[2])) continue;
+        const r = tiles[F.m], p = fi * 12, q = fi * 8, v0 = fi * 4;
+        for (let c = 0; c < 4; c++) {
+          const cc = F.c[c];
+          pos[p + c * 3] = lx + cc[0]; pos[p + c * 3 + 1] = ly + cc[1]; pos[p + c * 3 + 2] = lz + cc[2];
+          nor[p + c * 3] = d[0]; nor[p + c * 3 + 1] = d[1]; nor[p + c * 3 + 2] = d[2];
+        }
+        uv[q] = r[0]; uv[q + 1] = r[1]; uv[q + 2] = r[2]; uv[q + 3] = r[1]; uv[q + 4] = r[2]; uv[q + 5] = r[3]; uv[q + 6] = r[0]; uv[q + 7] = r[3];
+        const t6 = fi * 6;
+        idx[t6] = v0; idx[t6 + 1] = v0 + 1; idx[t6 + 2] = v0 + 2; idx[t6 + 3] = v0; idx[t6 + 4] = v0 + 2; idx[t6 + 5] = v0 + 3;
+        fi++;
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.computeBoundingSphere();
+    if (s.mesh) { s.mesh.geometry.dispose(); s.mesh.geometry = geo; }
+    else {
+      s.mesh = new THREE.Mesh(geo, cmMaterial);
+      s.mesh.position.set(ox, oy, oz);
+      s.mesh.castShadow = true; s.mesh.receiveShadow = true;
+      s.mesh.matrixAutoUpdate = false; s.mesh.updateMatrix();
+      s.mesh.userData.noCull = true; // terrain — never touched by RENDER DISTANCE's object culling
+      s.mesh.visible = cmShowing;
+      scene.add(s.mesh);
+    }
+  }
+  // ---- per frame: re-mesh dirty sections, nearest first, within a small time budget ----
+  function cmUpdate() {
+    if (!chunkMeshOn || !cmDirty.size) return;
+    const t0 = performance.now();
+    const px = Math.floor(player.pos.x / CM_SX), py = Math.floor(player.pos.y / CM_SY), pz = Math.floor(player.pos.z / CM_SX);
+    const order = [];
+    for (const id of cmDirty) { const s = cmSections.get(id); if (!s) { cmDirty.delete(id); continue; } order.push([Math.abs(s.sx - px) + Math.abs(s.sz - pz) + Math.abs(s.sy - py) * 0.5, id]); }
+    order.sort((a, b) => a[0] - b[0]);
+    const budget = cmShowing ? CM_BUDGET_MS : CM_BUDGET_MS * 3; // catch up faster while the old path is covering for it
+    for (const [, id] of order) {
+      cmDirty.delete(id);
+      cmBuildSection(id);
+      if (performance.now() - t0 > budget) break;
+    }
+  }
+  function setChunkMesh(on, quiet) {
+    on = !!on;
+    try { localStorage.setItem('voxelChunkMesh', on ? '1' : '0'); } catch (e) {}
+    if (on === chunkMeshOn) return;
+    cmReset();
+    chunkMeshOn = on;
+    if (on) for (const [k] of blocks) cmTrack(k, true); // index what's already loaded; every section starts dirty
+    const btn = document.getElementById('chunkMeshBtn');
+    if (btn) btn.textContent = '⚡ Fast terrain: ' + (on ? 'ON' : 'OFF');
+    if (!quiet) showBriefMessage('⚡ Fast terrain ' + (on ? 'ON' : 'OFF (old drawing)'));
+  }
+  function cmActive(i) { return cmShowing && CM_MERGE[i]; }
+  // Switch UI: a button on the pause/start screen, and F4.
+  (() => {
+    const start = document.getElementById('startBtn');
+    if (start && start.parentNode) {
+      const b = document.createElement('button');
+      b.id = 'chunkMeshBtn';
+      b.style.cssText = 'display:block;margin:10px auto 0;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;';
+      b.addEventListener('click', e => { e.stopPropagation(); setChunkMesh(!chunkMeshOn); });
+      start.parentNode.insertBefore(b, start.nextSibling);
+    }
+    window.addEventListener('keydown', e => { if (e.code === 'F4') { e.preventDefault(); setChunkMesh(!chunkMeshOn); } });
+    let pref = '1';
+    try { pref = localStorage.getItem('voxelChunkMesh') || '1'; } catch (e) {}
+    if (/(^|[#&])oldterrain\b/.test(location.hash)) pref = '0';
+    setChunkMesh(pref !== '0', true);
+    const btn = document.getElementById('chunkMeshBtn');
+    if (btn) btn.textContent = '⚡ Fast terrain: ' + (chunkMeshOn ? 'ON' : 'OFF');
+  })();
   // Growable per-type instance buffers ----------------------------------
   // Each block type's InstancedMesh used to be a fixed-size buffer
   // (MAX_INSTANCES) that silently capped out: once a type's count hit
@@ -27606,6 +27824,7 @@
       + 'draw calls ' + inf.render.calls + '   triangles ' + (inf.render.triangles / 1000).toFixed(0) + 'k\n'
       + 'block instances ' + inst + '   objects ' + scene.children.length + '\n'
       + 'far-culled ' + cullHidden + ' of ' + cullChecked + '   mirrors ' + liveMirrors.size + '\n'
+      + 'fast terrain ' + (chunkMeshOn ? (cmShowing ? 'ON' : 'building') : 'OFF') + '   sections ' + cmSections.size + '   to build ' + cmDirty.size + '\n'
       + 'geometries ' + inf.memory.geometries + '   textures ' + inf.memory.textures;
   }
   renderer.info.autoReset = false; // reset once per frame (below), so mirror renders count in the frame's totals
@@ -28275,6 +28494,7 @@
     if (!contextLost) {
       if (needsRebuild) { rebuildMeshes(); needsRebuild = false; }
       else if (rebuildInProgress) { continueRebuild(); } // drains the rest of a chunked rebuild over subsequent frames — see rebuildMeshes()/continueRebuild()'s own comments
+      cmUpdate(); // re-mesh changed terrain sections — see CHUNK MESHES
       hideEmptyBlockMeshes();
       updateRenderDistance(); // far things off, near things back on — see RENDER DISTANCE & PERFORMANCE
       if (++shadowFrame % SHADOW_EVERY === 0) renderer.shadowMap.needsUpdate = true;

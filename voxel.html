@@ -8205,7 +8205,7 @@
   const MIRROR_RES_SCALE = isTouchDeviceEarly() ? 0.35 : 0.5;
   function isTouchDeviceEarly() { return window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window); } // isTouchDevice itself is declared further down the file
   const liveMirrors = new Set();
-  let mirrorRendering = false, mirrorFrameId = -1, mirrorsThisFrame = 0;
+  let mirrorRendering = false, mirrorFrameId = -1;
   let mirrorAvatar = null, mirrorAvatarKey = '';
   function ensureMirrorAvatar() {
     const k = JSON.stringify(getMyAvatarColors());
@@ -8243,9 +8243,11 @@
   function buildMirrorGlass(w, h) {
     const textureMatrix = new THREE.Matrix4();
     const material = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null }, textureMatrix: { value: textureMatrix }, tint: { value: new THREE.Color(0xdfe6ea) } },
-      vertexShader: 'uniform mat4 textureMatrix; varying vec4 vUv; void main() { vUv = textureMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: 'uniform sampler2D tDiffuse; uniform vec3 tint; varying vec4 vUv; void main() { vec3 base = texture2DProj(tDiffuse, vUv).rgb; gl_FragColor = vec4(base * tint + vec3(0.02), 1.0); }',
+      uniforms: { tDiffuse: { value: null }, textureMatrix: { value: textureMatrix }, tint: { value: new THREE.Color(0xdfe6ea) }, live: { value: 0 } },
+      vertexShader: 'uniform mat4 textureMatrix; varying vec4 vUv; varying vec2 vLocal; void main() { vUv = textureMatrix * vec4(position, 1.0); vLocal = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      // live = 0 (not reflecting this frame — too far, or over the per-frame budget) shows plain silvered glass
+      // rather than the last reflection, which would otherwise hang there as a frozen "photo".
+      fragmentShader: 'uniform sampler2D tDiffuse; uniform vec3 tint; uniform float live; varying vec4 vUv; varying vec2 vLocal; void main() { if (live < 0.5) { float g = 0.55 + 0.12 * vLocal.y + 0.06 * sin((vLocal.x + vLocal.y) * 9.0); gl_FragColor = vec4(vec3(g * 0.9, g * 0.95, g), 1.0); return; } vec3 base = texture2DProj(tDiffuse, vUv).rgb; gl_FragColor = vec4(base * tint + vec3(0.02), 1.0); }',
     });
     const glass = new THREE.Mesh(new THREE.PlaneGeometry(w, h), material);
     glass.userData.mirror = { textureMatrix, target: null };
@@ -8253,20 +8255,42 @@
     liveMirrors.add(glass);
     return glass;
   }
+  // Which mirrors reflect this frame: the NEAREST few that are on screen, in range and facing you — chosen once per
+  // frame, the first time any mirror is drawn. (Previously it was first-come-first-served in draw order, which
+  // changes as you move — so with several mirrors placed, one could keep losing its turn and freeze.)
+  const _mFrustum = new THREE.Frustum(), _mProjView = new THREE.Matrix4();
+  let liveMirrorSet = new Set();
+  function selectLiveMirrors(cam) {
+    _mCamPos.setFromMatrixPosition(cam.matrixWorld);
+    _mProjView.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    _mFrustum.setFromProjectionMatrix(_mProjView);
+    const cands = [];
+    for (const g of liveMirrors) {
+      _mPos.setFromMatrixPosition(g.matrixWorld);
+      const d = _mPos.distanceTo(_mCamPos);
+      if (d > MIRROR_RANGE) continue;
+      _mRot.extractRotation(g.matrixWorld);
+      _mNormal.set(0, 0, 1).applyMatrix4(_mRot);
+      _mView.subVectors(_mPos, _mCamPos);
+      if (_mView.dot(_mNormal) > 0) continue; // looking at its back
+      if (!_mFrustum.intersectsObject(g)) continue;
+      cands.push([d, g]);
+    }
+    cands.sort((a, b) => a[0] - b[0]);
+    liveMirrorSet = new Set(cands.slice(0, MIRROR_MAX_PER_FRAME).map(c => c[1]));
+  }
   function renderMirror(glass, renderer, cam) {
     if (mirrorRendering) return; // a mirror seen in another mirror keeps its last frame — no recursion
     const m = glass.userData.mirror;
     const fid = lastFrameTime; // set once per animate() frame (renderer.info.render.frame would also tick for each mirror's own nested render)
-    if (fid !== mirrorFrameId) { mirrorFrameId = fid; mirrorsThisFrame = 0; }
-    if (mirrorsThisFrame >= MIRROR_MAX_PER_FRAME) return;
+    if (fid !== mirrorFrameId) { mirrorFrameId = fid; selectLiveMirrors(cam); }
+    if (!liveMirrorSet.has(glass)) { glass.material.uniforms.live.value = 0; return; }
+    glass.material.uniforms.live.value = 1;
     _mPos.setFromMatrixPosition(glass.matrixWorld);
     _mCamPos.setFromMatrixPosition(cam.matrixWorld);
-    if (_mPos.distanceTo(_mCamPos) > MIRROR_RANGE) return;
     _mRot.extractRotation(glass.matrixWorld);
     _mNormal.set(0, 0, 1).applyMatrix4(_mRot);
     _mView.subVectors(_mPos, _mCamPos);
-    if (_mView.dot(_mNormal) > 0) return; // looking at its back
-    mirrorsThisFrame++;
     // Render target at a fraction of the screen (the texture is projected in screen space, so it keeps the screen's aspect).
     renderer.getDrawingBufferSize(_mSize);
     const tw = Math.max(64, Math.round(_mSize.x * MIRROR_RES_SCALE)), th = Math.max(64, Math.round(_mSize.y * MIRROR_RES_SCALE));
@@ -8329,36 +8353,37 @@
   function buildWallMirror() {
     const group = new THREE.Group();
     const frameMat = new THREE.MeshPhongMaterial({ color: 0xc9a24a, shininess: 60 });
-    // Hung on the back wall (local +Z, same as the Wall TV) at head height — the front faces local -Z.
+    // Placement turns furniture's local -Z to face the way you're looking (see doPlace's snapYawToStepIndex(yaw)),
+    // i.e. away from you. You face the wall you're hanging a mirror on, so it hangs on the far (-Z) side of its cell
+    // with the glass facing +Z — back towards you. (Was the other way round: you saw the back of it.)
     const back = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.92, 0.04), frameMat);
-    back.position.set(0, 1.55, 0.46);
+    back.position.set(0, 1.55, -0.46);
     group.add(back);
     const glass = buildMirrorGlass(0.6, 0.8);
-    glass.position.set(0, 1.55, 0.435);
-    glass.rotation.y = Math.PI; // plane's +Z normal → facing out of the wall
+    glass.position.set(0, 1.55, -0.435); // PlaneGeometry's normal is already +Z — facing you
     group.add(glass);
     return group;
   }
   function buildFullLengthMirror() {
     const group = new THREE.Group();
     const woodMat = new THREE.MeshPhongMaterial({ color: 0x5e4128, shininess: 12 });
-    // A tall standing (cheval) mirror: frame on two posts with feet, set towards the back of its cell so it can stand against a wall.
-    const z = 0.3;
+    // A tall standing (cheval) mirror: frame on two posts with feet, set towards the far (-Z) side of its cell so it
+    // can stand against the wall you're facing when you place it, glass facing +Z — back towards you (see buildWallMirror).
+    const z = -0.3;
     const W = 0.66, H = 1.72, bottom = 0.14;
     const cy = bottom + H / 2;
     const frameBack = new THREE.Mesh(new THREE.BoxGeometry(W + 0.1, H + 0.1, 0.04), woodMat);
-    frameBack.position.set(0, cy, z + 0.03);
+    frameBack.position.set(0, cy, z - 0.03);
     group.add(frameBack);
     const glass = buildMirrorGlass(W, H);
     glass.position.set(0, cy, z);
-    glass.rotation.y = Math.PI;
     group.add(glass);
     [-1, 1].forEach(s => {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, H + 0.2, 0.05), woodMat);
-      post.position.set(s * (W / 2 + 0.08), (H + 0.2) / 2, z + 0.03);
+      post.position.set(s * (W / 2 + 0.08), (H + 0.2) / 2, z - 0.03);
       group.add(post);
       const foot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.42), woodMat);
-      foot.position.set(s * (W / 2 + 0.08), 0.025, z - 0.1);
+      foot.position.set(s * (W / 2 + 0.08), 0.025, z + 0.1);
       group.add(foot);
     });
     return group;

@@ -697,7 +697,7 @@
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
   <button id="btnBag" title="Harvest bag">🎒<span id="bagCount"></span></button>
-  <div id="bagPanel"><div class="bagHead"><span>🎒 Harvest bag</span><button id="bagClose">✕</button></div><div id="bagList"></div></div>
+  <div id="bagPanel"><div class="bagHead"><span>🎒 Harvest bag</span><button id="bagWardrobe" title="Wardrobe — your knitted clothes" style="margin-left:auto;margin-right:6px;">👕 Wardrobe</button><button id="bagClose">✕</button></div><div id="bagList"></div></div>
   <div id="shopPanel"><div class="shopHead"><span>🧺 Shopkeeper</span><button id="shopClose">✕</button></div><div class="shopSay" id="shopSay"></div><div id="shopList"></div><button class="shopBtn" id="shopSellAll"></button></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
   <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:5; touch-action:none;"></div>
@@ -3781,6 +3781,7 @@
       case 'shipwreck': maybeBuildShipwreck(cx, cz, spec); break;
       case 'slaughter': maybeBuildSlaughterhouse(cx, cz, spec); break;
       case 'bbq': maybeBuildBbqShop(cx, cz, spec); break;
+      case 'tailor': maybeBuildTailor(cx, cz, spec); break;
       default: return;
     }
     reapplyEditsAroundStructure(spec.ck);
@@ -10575,11 +10576,12 @@
     // (Figure's torso spans y 0.72..1.30, 0.22 deep; legs below — see buildCustomerFigure.)
     // kind: 'veg' (the grocer, green apron), 'meat' (the BBQ chef, black apron + cap), 'butcher' (white, stained).
     kind = kind || 'veg';
-    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : 0x2f7d46;
+    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : kind === 'tailor' ? 0x6a4a9a : 0x2f7d46;
     const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: apronHex }));
     apron.position.set(0, 0.84, 0.13);
     mesh.add(apron);
     if (kind === 'butcher') { const st = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.01), new THREE.MeshLambertMaterial({ color: 0x8a1a14 })); st.position.set(0.07, 0.75, 0.15); mesh.add(st); }
+    if (kind === 'tailor') { const tape = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.5, 0.01), new THREE.MeshLambertMaterial({ color: 0xe8c840 })); tape.position.set(-0.1, 1.15, 0.15); mesh.add(tape); } // tape measure round the neck
     if (kind === 'meat') { const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.22, 10), new THREE.MeshLambertMaterial({ color: 0xf4f4f0 })); cap.position.y = 1.86; mesh.add(cap); }
     mesh.userData.shopkeeper = true;
     mesh.userData.shopKind = kind;
@@ -13779,7 +13781,22 @@
   // to look right, not worth it for a low-poly figure like this), using
   // the same headY the hair itself is anchored to so they always line up
   // regardless of the figure's seated/standing height.
-  function buildHatProp(hatType, headY) {
+  // A knitted scarf round the neck with one end hanging down the front. 'striped' gets bands of hex2.
+  function buildScarfProp(headY, hex, style, hex2) {
+    const g = new THREE.Group();
+    let mat;
+    if (style === 'striped') {
+      const c = document.createElement('canvas'); c.width = 16; c.height = 16;
+      const ctx = c.getContext('2d'); ctx.fillStyle = hexToCss(hex); ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = hexToCss(hex2 != null ? hex2 : 0xffffff); for (let y = 0; y < 16; y += 6) ctx.fillRect(0, y, 16, 3);
+      const tex = new THREE.CanvasTexture(c); tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+      mat = new THREE.MeshPhongMaterial({ map: tex, shininess: 0, flatShading: true });
+    } else mat = new THREE.MeshPhongMaterial({ color: hex, shininess: 0, flatShading: true });
+    const ring = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.11, 0.3), mat); ring.position.y = headY - 0.26; g.add(ring);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.34, 0.04), mat); tail.position.set(0.1, headY - 0.46, 0.14); tail.rotation.z = 0.08; g.add(tail);
+    return g;
+  }
+  function buildHatProp(hatType, headY, hex, hex2) {
     if (hatType === 'hardhat') {
       const g = new THREE.Group();
       const dome = new THREE.Mesh(new THREE.SphereGeometry(0.26,10,6,0,Math.PI*2,0,Math.PI/2), new THREE.MeshPhongMaterial({ color: 0xf2c14e, shininess: 35 }));
@@ -13800,11 +13817,18 @@
       g.add(brim);
       return g;
     }
-    if (hatType === 'beanie') {
+    if (hatType === 'beanie' || hatType === 'bobble') { // hex: a Tailor-knitted colour (see WARDROBE); 'bobble' adds a pompom
       const g = new THREE.Group();
-      const top = new THREE.Mesh(new THREE.BoxGeometry(0.44,0.22,0.44), new THREE.MeshPhongMaterial({ color: 0x8a3a3a, shininess: 0 }));
+      const col = hex != null ? hex : 0x8a3a3a;
+      const top = new THREE.Mesh(new THREE.BoxGeometry(0.44,0.22,0.44), new THREE.MeshPhongMaterial({ color: col, shininess: 0 }));
       top.position.y = headY+0.21;
       g.add(top);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.46,0.07,0.46), new THREE.MeshPhongMaterial({ color: col, shininess: 0, emissive: 0x000000 }));
+      band.material.color.multiplyScalar(0.8); band.position.y = headY+0.12; g.add(band); // folded-up rim, a shade darker
+      if (hatType === 'bobble') {
+        const bob = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshPhongMaterial({ color: hex2 != null ? hex2 : 0xf4f4f0, shininess: 0, flatShading: true }));
+        bob.position.y = headY+0.37; g.add(bob);
+      }
       return g;
     }
     return null;
@@ -13832,6 +13856,11 @@
     } else if (pattern === 'check') {
       ctx.fillStyle = 'rgba(0,0,0,0.28)';
       for (let y=0;y<size;y+=4) for (let x=(y/4)%2===0?0:4;x<size;x+=8) ctx.fillRect(x,y,4,4);
+    } else if (pattern === 'knit') { // cable-knit ribs, for Tailor jumpers
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      for (let x=1;x<size;x+=4) ctx.fillRect(x,0,1,size);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      for (let y=0;y<size;y+=3) for (let x=2;x<size;x+=4) ctx.fillRect(x,y,1,1);
     }
     const tex = new THREE.CanvasTexture(c);
     tex.magFilter = THREE.NearestFilter;
@@ -13852,7 +13881,8 @@
     const skinTones = AVATAR_SKIN_TONES, hairTones = AVATAR_HAIR_TONES, shirtTones = AVATAR_SHIRT_TONES, pantsTones = AVATAR_PANTS_TONES;
     const skin = colors ? skinTones[colors.skinIdx % skinTones.length] : skinTones[Math.floor(Math.random()*skinTones.length)];
     const hair = colors ? hairTones[colors.hairIdx % hairTones.length] : hairTones[Math.floor(Math.random()*hairTones.length)];
-    const shirt = colors ? shirtTones[colors.shirtIdx % shirtTones.length] : shirtTones[Math.floor(Math.random()*shirtTones.length)];
+    // A worn Tailor jumper (see WARDROBE) overrides the shirt swatch with its own colour.
+    const shirt = colors && colors.shirtHex != null ? colors.shirtHex : colors ? shirtTones[colors.shirtIdx % shirtTones.length] : shirtTones[Math.floor(Math.random()*shirtTones.length)];
     const pants = colors ? pantsTones[colors.pantsIdx % pantsTones.length] : pantsTones[Math.floor(Math.random()*pantsTones.length)];
     const hatType = colors && colors.hat ? colors.hat : 'none';
     const heldItem = colors && colors.heldItem ? colors.heldItem : 'none';
@@ -13910,7 +13940,8 @@
     const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.02), faceMat);
     mouth.position.set(0, headY-0.09, 0.215);
     group.add(mouth);
-    const hatGroup = hatType !== 'none' ? buildHatProp(hatType, headY) : null;
+    const hatGroup = hatType !== 'none' ? buildHatProp(hatType, headY, colors && colors.hatHex, colors && colors.hatHex2) : null;
+    if (colors && colors.scarfHex != null) group.add(buildScarfProp(headY, colors.scarfHex, colors.scarfStyle, colors.scarfHex2)); // a worn Tailor scarf — see WARDROBE
     if (hatGroup) {
       group.add(hatGroup); // a hat replaces hair entirely — see buildHatProp's own comment on why
     } else if (hairLength !== 'bald') {
@@ -18665,11 +18696,12 @@
     actionHeld = false; // everything from here on is a single press, not a held repeat
     if (tryKickFootball()) return;
     if (tryHitTennisBall()) return;
+    if (tryPickUpDrop()) return; // milk / egg / wool on the ground — see ANIMAL PRODUCE
     const r = voxelRaycast(true, true);
     const keeperHit = shopkeeperInSight(r && r.hit);
     if (keeperHit) {
       const kind = (keeperHit.keeper && keeperHit.keeper.userData.shopKind) || 'veg';
-      if (kind === 'butcher') tryButcher(keeperHit.keeper); else openShopPanel(kind);
+      if (kind === 'butcher') tryButcher(keeperHit.keeper); else openShopPanel(kind); // 'veg' / 'meat' / 'tailor'
       return;
     }
     let blockDist = Infinity;
@@ -20011,19 +20043,20 @@
   // (strawberries) up to an hour for the biggest (pumpkin); flowers 10
   // minutes, saplings 20-25.
   // ECONOMY — the longer something takes, the better it pays, both in total
-  // and per minute (so a long crop is never a worse deal than a short one):
-  //   crop            time  seed → harvest  profit  (x back)
-  //   Strawberries     5m    10 →  15        5     1.5x
-  //   Peas             8m    12 →  20        8     1.7x
-  //   Flowers         10m    10 →  20       10     2x
-  //   Wheat           15m    12 →  27       15     2.25x
-  //   Carrots/Onions  20m    14 →  36       22     2.6x
-  //   Potatoes/Beet.  25m    16 →  44       28     2.75x
-  //   Tomatoes        30m    18 →  56       38     3.1x
-  //   Lettuce         35m    20 →  64       44     3.2x
-  //   Sweetcorn       45m    24 →  84       60     3.5x
-  //   Cabbage         50m    26 →  96       70     3.7x
-  //   Pumpkin         60m    30 → 120       90     4x
+  // and per minute (so a long crop is never a worse deal than a short one).
+  // Halved from the first version (too much money):
+  //   crop            time  seed → harvest  profit  per min
+  //   Strawberries     5m     8 →  10        2     0.40
+  //   Peas             8m     6 →  10        4     0.50
+  //   Flowers         10m     5 →  10        5     0.50
+  //   Wheat           15m     7 →  15        8     0.53
+  //   Carrots/Onions  20m     7 →  18       11     0.55
+  //   Potatoes        25m     6 →  20       14     0.56   (Beetroot 8 → 22)
+  //   Tomatoes        30m     9 →  28       19     0.63
+  //   Lettuce         35m    10 →  33       23     0.66
+  //   Sweetcorn       45m    12 →  42       30     0.67
+  //   Cabbage         50m    13 →  48       35     0.70
+  //   Pumpkin         60m    15 →  60       45     0.75
   // Harvest value = yield x PRODUCE_PRICES (FLOWER_PRICE for flowers); seed
   // price is each type's `cost`. Animals: see ANIMAL_TYPES (meat sells for 3x
   // the animal seed). Saplings are free — they just grow a tree.
@@ -20033,29 +20066,29 @@
     { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 1200 },
     { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 1200 },
     { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 1500 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3, cost: 12 },
-    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3, cost: 14 },
-    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1, cost: 26 },
-    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1, cost: 30 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3, cost: 7 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3, cost: 7 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1, cost: 13 },
+    { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1, cost: 15 },
     // Flowers: species index into FLOWER_TYPES + colour index into
     // FLOWER_COLORS, so a sown flower is exactly the same shape and
     // colour as the wild ones (0 daisy, 1 peony, 2 tulip, 3 cluster, 4 poppy).
-    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1, cost: 10 },
-    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1, cost: 10 },
-    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1, cost: 10 },
-    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1, cost: 10 },
-    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1, cost: 10 },
-    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4, cost: 16 },
-    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4, cost: 18 },
-    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1, cost: 20 },
-    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2, cost: 16 },
-    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2, cost: 24 },
-    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3, cost: 14 },
-    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5, cost: 12 },
-    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5, cost: 10 },
-    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1, cost: 10 },
-    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1, cost: 10 },
-    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1, cost: 10 },
+    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1, cost: 5 },
+    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1, cost: 5 },
+    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1, cost: 5 },
+    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1, cost: 5 },
+    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1, cost: 5 },
+    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4, cost: 6 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4, cost: 9 },
+    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1, cost: 10 },
+    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2, cost: 8 },
+    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2, cost: 12 },
+    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3, cost: 7 },
+    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5, cost: 6 },
+    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5, cost: 8 },
+    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1, cost: 5 },
+    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1, cost: 5 },
+    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1, cost: 5 },
   ];
   let seedTypeIdx = 0;
   const MUD_TYPE = typeIndexByName('Mud');
@@ -20446,6 +20479,7 @@
     Wheat: '🌾', Carrot: '🥕', Cabbage: '🥬', Pumpkin: '🎃', Potato: '🥔', Tomato: '🍅', Lettuce: '🥬',
     Beetroot: '🟣', Sweetcorn: '🌽', Onion: '🧅', Peas: '🟢', Strawberry: '🍓',
     Beef: '🥩', Pork: '🥓', Mutton: '🍖', 'Chicken Meat': '🍗',
+    Milk: '🥛', Egg: '🥚', Wool: '🧶', 'Wool Hat': '🧢', 'Wool Scarf': '🧣', 'Wool Jumper': '🧥',
   };
   let inventory = {};
   let inventorySaveTimer = null;
@@ -20520,10 +20554,11 @@
   // gives per plant (a pumpkin is one slow plant; peas give five quick ones). Anything not listed (all the
   // flowers) goes for FLOWER_PRICE.
   const PRODUCE_PRICES = {
-    Wheat: 9, Carrot: 12, Potato: 11, Onion: 12, Peas: 4, Strawberry: 3, Tomato: 14, Beetroot: 22,
-    Sweetcorn: 42, Lettuce: 64, Cabbage: 96, Pumpkin: 120, // per item — see ECONOMY by SEED_TYPES for the whole table
+    Wheat: 5, Carrot: 6, Potato: 5, Onion: 6, Peas: 2, Strawberry: 2, Tomato: 7, Beetroot: 11,
+    Sweetcorn: 21, Lettuce: 33, Cabbage: 48, Pumpkin: 60, // per item — see ECONOMY by SEED_TYPES for the whole table
+    Milk: 6, Egg: 3, Wool: 4, // animal produce — see ANIMAL PRODUCE (Wool sells at the Tailor only)
   };
-  const FLOWER_PRICE = 20;
+  const FLOWER_PRICE = 10;
   // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
   const MEAT_PRICES = { Beef: 50, Pork: 45, Mutton: 45, 'Chicken Meat': 60 }; // an animal's meat sells for 3x its seed — see ANIMAL_TYPES
   const isMeat = name => MEAT_PRICES[name] !== undefined;
@@ -20542,16 +20577,25 @@
     "Fire's lit! What meat have you brought?", "I'll take the lot — straight on the grill.", "Beef? Pork? Let's see it.",
     "Smells good already. What've you got?",
   ];
-  // 'veg' = the grocer (vegetables and flowers, never meat), 'meat' = the BBQ chef (meat only).
+  const TAILOR_LINES = [
+    "Lovely soft wool — I'll knit it up.", "Bring me wool, I'll make you something warm.", "Every stitch by hand, you know.",
+  ];
+  // 'veg' = the grocer (vegetables, flowers, milk, eggs), 'meat' = the BBQ chef (meat only),
+  // 'tailor' = the Tailor (buys wool, sells what she knits from it — see TAILOR).
   let shopMode = 'veg';
-  function shopBuys(name) { return shopMode === 'meat' ? isMeat(name) : !isMeat(name); }
+  const isClothing = name => TAILOR_CLOTHES.some(c => c.name === name);
+  function shopBuys(name) {
+    if (shopMode === 'meat') return isMeat(name);
+    if (shopMode === 'tailor') return name === 'Wool';
+    return !isMeat(name) && name !== 'Wool' && !isClothing(name);
+  }
   function shopPanelOpen() { const p = document.getElementById('shopPanel'); return !!p && p.style.display === 'block'; }
   function openShopPanel(mode) {
-    shopMode = mode === 'meat' ? 'meat' : 'veg';
+    shopMode = (mode === 'meat' || mode === 'tailor') ? mode : 'veg';
     document.exitPointerLock && document.exitPointerLock(); // so the buttons can be clicked on desktop
     toggleBag(false);
-    const lines = shopMode === 'meat' ? BBQ_LINES : SHOPKEEPER_LINES;
-    document.querySelector('#shopPanel .shopHead span').textContent = shopMode === 'meat' ? '🍖 BBQ Shop' : '🧺 Shopkeeper';
+    const lines = shopMode === 'meat' ? BBQ_LINES : shopMode === 'tailor' ? TAILOR_LINES : SHOPKEEPER_LINES;
+    document.querySelector('#shopPanel .shopHead span').textContent = shopMode === 'meat' ? '🍖 BBQ Shop' : shopMode === 'tailor' ? '🧵 Tailor' : '🧺 Shopkeeper';
     document.getElementById('shopSay').textContent = '"' + lines[Math.floor(Math.random() * lines.length)] + '"';
     document.getElementById('shopPanel').style.display = 'block';
     renderShopPanel();
@@ -20568,6 +20612,7 @@
     renderInventory();
     const earned = n * producePrice(name);
     addCoins(earned);
+    if (name === 'Wool') addTailorWool(n); // she knits it into clothes you can buy back — see TAILOR
     if (chargingVisitor()) { // selling in someone else's shop — they take a cut (see VISITOR CHARGES)
       const cut = Math.floor(earned * VISITOR_SHOP_CUT);
       if (cut > 0) { payWorldOwner(cut, 'shop'); return earned - cut; }
@@ -20582,8 +20627,11 @@
     if (!entries.length) {
       list.innerHTML = shopMode === 'meat'
         ? '<div class="bagEmpty">No meat in your bag — lead a cow, pig, sheep or chicken to a Slaughterhouse first.</div>'
-        : '<div class="bagEmpty">Nothing I buy in your bag — grow some vegetables or flowers from seed and bring them back. (Meat goes to the BBQ Shop.)</div>';
+        : shopMode === 'tailor'
+        ? '<div class="bagEmpty">No wool in your bag — sheep drop some every 10 minutes; press ✋ on it to pick it up.</div>'
+        : '<div class="bagEmpty">Nothing I buy in your bag — vegetables, flowers, milk and eggs. (Meat goes to the BBQ Shop, wool to the Tailor.)</div>';
       all.style.display = 'none';
+      if (shopMode === 'tailor') renderTailorClothes(list);
       return;
     }
     let total = 0;
@@ -20601,6 +20649,7 @@
     }
     all.style.display = 'block';
     all.textContent = 'Sell everything · 💰' + total;
+    if (shopMode === 'tailor') renderTailorClothes(list);
   }
   document.getElementById('shopSellAll').addEventListener('click', e => {
     e.stopPropagation();
@@ -20610,6 +20659,7 @@
     renderShopPanel();
   });
   document.getElementById('shopClose').addEventListener('click', e => { e.stopPropagation(); closeShopPanel(); });
+  document.getElementById('bagWardrobe').addEventListener('click', e => { e.stopPropagation(); toggleBag(false); openWardrobe(); });
   // Walking away closes it.
   setInterval(() => {
     if (!shopPanelOpen()) return;
@@ -20633,6 +20683,7 @@
     { t: 'house',     name: 'House',          emoji: '🏠', price: 1500, sx: 15, sz: 15 },
     { t: 'shop',      name: "Grocer's Shop",  emoji: '🧺', price: 1200, sx: 15, sz: 15, note: 'buys vegetables and flowers' },
     { t: 'bbq',       name: 'BBQ Shop',       emoji: '🍖', price: 1500, sx: 15, sz: 15, note: 'buys meat' },
+    { t: 'tailor',    name: 'Tailor',         emoji: '🧵', price: 1800, sx: 15, sz: 15, note: 'buys wool, sells knitted clothes' },
     { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 2000, sx: 15, sz: 15, note: 'turns animals into meat' },
     { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 2500, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
     { t: 'church',    name: 'Church',         emoji: '⛪', price: 4000, sx: 19, sz: 25 },
@@ -20902,6 +20953,244 @@
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
+  function maybeBuildTailor(cx, cz, replay) {
+    if (!replay) return; // bought only
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    levelSite(sx0, sx1, sz0, sz1, floor, 14);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const shell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
+    placeShellSign(shell, doorSide, 'Tailor', reg);
+    spawnShopkeeper(shell, doorSide, reg, rng, 'tailor');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
+  // ================= TAILOR =================
+  // Sell her wool and she knits it into clothes you can buy back. Her stock
+  // is the wool YOU'VE sold her (kept per player, on this device); each
+  // garment uses some of it. What you buy goes in your bag.
+  const TAILOR_CLOTHES = [
+    { name: 'Wool Hat',    slot: 'hat',    wool: 1, price: 20 },
+    { name: 'Wool Scarf',  slot: 'scarf',  wool: 2, price: 35 },
+    { name: 'Wool Jumper', slot: 'jumper', wool: 3, price: 60 },
+  ];
+
+  // ================= WARDROBE =================
+  // Everything bought from the Tailor lives here (on this device), each one
+  // knitted in a random style and colour. Buying puts it straight on; the
+  // Wardrobe (👕 in the bag) lets you change between them or take things
+  // off, and whatever you take off stays in it. What you're wearing is part
+  // of your avatar colours, so it's saved with them and other players see
+  // it (see buildCustomerFigure: shirtHex / hatHex / scarfHex).
+  const WOOL_COLOURS = [0xc0392b, 0xe67e22, 0xf1c40f, 0x27ae60, 0x16a085, 0x2980b9, 0x8e44ad, 0x2c3e50, 0xecf0f1,
+    0x7f8c8d, 0xd35400, 0xe84393, 0x6c5ce7, 0x00b894, 0xfdcb6e, 0x8d6e63, 0x1e3799, 0x78e08f];
+  const COLOUR_NAMES = { 0xc0392b: 'Red', 0xe67e22: 'Orange', 0xf1c40f: 'Yellow', 0x27ae60: 'Green', 0x16a085: 'Teal', 0x2980b9: 'Blue',
+    0x8e44ad: 'Purple', 0x2c3e50: 'Navy', 0xecf0f1: 'Cream', 0x7f8c8d: 'Grey', 0xd35400: 'Rust', 0xe84393: 'Pink', 0x6c5ce7: 'Violet',
+    0x00b894: 'Mint', 0xfdcb6e: 'Mustard', 0x8d6e63: 'Brown', 0x1e3799: 'Royal Blue', 0x78e08f: 'Lime' };
+  const pickColour = (not) => { let c; do { c = WOOL_COLOURS[Math.floor(Math.random() * WOOL_COLOURS.length)]; } while (c === not); return c; };
+  function makeGarment(slot) {
+    const hex = pickColour(), hex2 = pickColour(hex), id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    if (slot === 'hat') return { id, slot, style: Math.random() < 0.5 ? 'bobble' : 'beanie', hex, hex2 };
+    if (slot === 'scarf') return { id, slot, style: Math.random() < 0.5 ? 'striped' : 'plain', hex, hex2 };
+    return { id, slot: 'jumper', style: ['knit', 'knit', 'plain', 'stripes', 'check', 'dots'][Math.floor(Math.random() * 6)], hex };
+  }
+  function garmentLabel(g) {
+    const col = COLOUR_NAMES[g.hex] || 'Knitted';
+    if (g.slot === 'hat') return col + (g.style === 'bobble' ? ' bobble hat' : ' beanie');
+    if (g.slot === 'scarf') return col + (g.style === 'striped' ? ' striped scarf' : ' scarf');
+    return col + ({ knit: ' cable-knit jumper', plain: ' jumper', stripes: ' striped jumper', check: ' check jumper', dots: ' spotty jumper' }[g.style] || ' jumper');
+  }
+  function wardrobe() { try { const w = JSON.parse(localStorage.getItem('voxelWardrobe') || '[]'); return Array.isArray(w) ? w : []; } catch (e) { return []; } }
+  function saveWardrobe(w) { try { localStorage.setItem('voxelWardrobe', JSON.stringify(w)); } catch (e) {} }
+  function addToWardrobe(g) { const w = wardrobe(); w.push(g); saveWardrobe(w); }
+  // Anything bought before the wardrobe existed (plain "Wool Hat" etc. sitting in the bag) gets knitted into a real garment.
+  function migrateBagClothes() {
+    let changed = false;
+    for (const c of TAILOR_CLOTHES) {
+      const n = inventory[c.name] || 0;
+      for (let i = 0; i < n; i++) { addToWardrobe(makeGarment(c.slot)); changed = true; }
+      if (n) delete inventory[c.name];
+    }
+    if (changed && typeof saveInventory === 'function') saveInventory();
+  }
+  function applyWorn(mutate) {
+    const colors = Object.assign({}, getMyAvatarColors());
+    mutate(colors);
+    setMyAvatarColors(colors);
+    try { refreshLocalAvatarFigure(); } catch (e) {}
+    try { refreshTitleAvatarFigure(); } catch (e) {}
+    // Other players pick it up from the next position broadcast (colors ride along on every one) — see ensureOtherPlayer.
+  }
+  function wearGarment(id) {
+    const g = wardrobe().find(x => x.id === id);
+    if (!g) return;
+    applyWorn(c => {
+      if (g.slot === 'hat') { c.hat = g.style; c.hatHex = g.hex; c.hatHex2 = g.hex2; c.wornHat = g.id; }
+      else if (g.slot === 'scarf') { c.scarfHex = g.hex; c.scarfHex2 = g.hex2; c.scarfStyle = g.style; c.wornScarf = g.id; }
+      else { c.shirtHex = g.hex; c.shirtPattern = g.style; c.wornJumper = g.id; }
+    });
+  }
+  function takeOffSlot(slot) {
+    applyWorn(c => {
+      if (slot === 'hat') { c.hat = 'none'; c.hatHex = null; c.hatHex2 = null; c.wornHat = null; }
+      else if (slot === 'scarf') { c.scarfHex = null; c.scarfHex2 = null; c.scarfStyle = null; c.wornScarf = null; }
+      else { c.shirtHex = null; c.shirtPattern = 'plain'; c.wornJumper = null; }
+    });
+  }
+  let wardrobeEl = null;
+  function openWardrobe() {
+    migrateBagClothes();
+    if (!wardrobeEl) {
+      wardrobeEl = document.createElement('div');
+      wardrobeEl.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      wardrobeEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:14px;width:min(360px,92vw);max-height:80vh;overflow:auto;color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>👕 Wardrobe</b><button id="wardrobeClose" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">✕</button></div>'
+        + '<div id="wardrobeList"></div></div>';
+      document.body.appendChild(wardrobeEl);
+      document.getElementById('wardrobeClose').addEventListener('click', () => { wardrobeEl.style.display = 'none'; });
+    }
+    document.exitPointerLock && document.exitPointerLock();
+    renderWardrobe();
+    wardrobeEl.style.display = 'flex';
+  }
+  function renderWardrobe() {
+    const list = document.getElementById('wardrobeList');
+    const w = wardrobe(), me = getMyAvatarColors();
+    list.innerHTML = '';
+    if (!w.length) { list.innerHTML = '<div style="opacity:0.75;line-height:1.4;">Empty — buy knitted clothes from a Tailor (sell her wool first). They go straight on, and anything you take off is kept here.</div>'; return; }
+    for (const [slot, title, wornKey] of [['hat', '🧢 Hats', 'wornHat'], ['scarf', '🧣 Scarves', 'wornScarf'], ['jumper', '🧥 Jumpers', 'wornJumper']]) {
+      const items = w.filter(g => g.slot === slot);
+      if (!items.length) continue;
+      const h = document.createElement('div'); h.textContent = title; h.style.cssText = 'margin:10px 0 4px;opacity:0.8;font-size:12px;'; list.appendChild(h);
+      for (const g of items) {
+        const worn = me[wornKey] === g.id;
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.08);';
+        const sw = document.createElement('span');
+        sw.style.cssText = `width:22px;height:22px;border-radius:5px;flex:none;background:${hexToCss(g.hex)};` + (g.hex2 != null && (g.style === 'striped' || g.style === 'bobble') ? `box-shadow:inset 0 -7px 0 ${hexToCss(g.hex2)};` : '');
+        const name = document.createElement('span'); name.style.flex = '1'; name.textContent = garmentLabel(g) + (worn ? ' · wearing' : '');
+        const btn = document.createElement('button');
+        btn.style.cssText = 'border:none;border-radius:6px;padding:6px 10px;color:#fff;cursor:pointer;background:' + (worn ? 'rgba(255,255,255,0.15)' : '#2f7d46') + ';';
+        btn.textContent = worn ? 'Take off' : 'Wear';
+        btn.addEventListener('click', () => { if (worn) takeOffSlot(slot); else wearGarment(g.id); renderWardrobe(); });
+        row.appendChild(sw); row.appendChild(name); row.appendChild(btn);
+        list.appendChild(row);
+      }
+    }
+  }
+  function tailorWool() { try { return +(localStorage.getItem('voxelTailorWool') || 0) || 0; } catch (e) { return 0; } }
+  function setTailorWool(n) { try { localStorage.setItem('voxelTailorWool', String(Math.max(0, n))); } catch (e) {} }
+  function addTailorWool(n) { setTailorWool(tailorWool() + n); }
+  function renderTailorClothes(list) {
+    const stock = tailorWool();
+    const head = document.createElement('div');
+    head.className = 'shopSay';
+    head.style.marginTop = '10px';
+    head.textContent = '🧶 Knitted from your wool — ' + stock + ' wool in stock';
+    list.appendChild(head);
+    for (const c of TAILOR_CLOTHES) {
+      const have = wardrobe().filter(g => g.slot === c.slot).length;
+      const row = document.createElement('div'); row.className = 'shopItem';
+      row.innerHTML = `<span class="bagIcon">${PRODUCE_EMOJI[c.name] || '🧵'}</span><span class="bagName">${c.name}${have ? ' <span class="bagQty">(' + have + ' in your wardrobe)</span>' : ''}<br><span class="shopPrice">💰${c.price} · uses ${c.wool} wool · random style &amp; colour</span></span>`;
+      const buy = document.createElement('button'); buy.className = 'shopBtn';
+      const can = stock >= c.wool && coins >= c.price;
+      buy.textContent = stock < c.wool ? 'Needs wool' : coins < c.price ? 'Need 💰' + c.price : 'Buy · 💰' + c.price;
+      buy.disabled = !can; if (!can) buy.style.opacity = '0.5';
+      buy.addEventListener('click', e => {
+        e.stopPropagation();
+        if (tailorWool() < c.wool || coins < c.price) return;
+        coins -= c.price; updateCoinsDisplay(); scheduleStatsSave();
+        setTailorWool(tailorWool() - c.wool);
+        const gmt = makeGarment(c.slot);
+        addToWardrobe(gmt);
+        wearGarment(gmt.id);
+        showSaveStatus(PRODUCE_EMOJI[c.name] + ' ' + garmentLabel(gmt) + ' — you\u2019re wearing it! (−💰' + c.price + ')'); playCoin();
+        renderShopPanel();
+      });
+      row.appendChild(buy);
+      list.appendChild(row);
+    }
+  }
+
+  // ================= ANIMAL PRODUCE =================
+  // Cows leave a bottle of milk, chickens an egg and sheep a tuft of wool
+  // every 10 minutes, on the ground where they're standing — hatched ones and
+  // farm-pen ones alike. Press ✋ on it (or while standing right by it) to
+  // pick it up into your bag. Milk and eggs sell at the Grocer's, wool at the
+  // Tailor. Up to 3 can pile up per animal before it stops leaving more.
+  // Each player's game drops its own (they aren't shared or saved), and the
+  // 10-minute clock runs while you're in the world.
+  const PRODUCE_EVERY_MS = 10 * 60 * 1000, MAX_DROPS_PER_ANIMAL = 3;
+  const ANIMAL_PRODUCE = { Cow: 'Milk', Chicken: 'Egg', Sheep: 'Wool' };
+  const animalDrops = []; // { mesh, item, owner }
+  function buildDropMesh(item) {
+    const g = new THREE.Group();
+    if (item === 'Milk') {
+      const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.26, 10), new THREE.MeshLambertMaterial({ color: 0xf6f6f2 })); glass.position.y = 0.13; g.add(glass);
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.065, 0.07, 10), new THREE.MeshLambertMaterial({ color: 0xf6f6f2 })); neck.position.y = 0.29; g.add(neck);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.025, 10), new THREE.MeshLambertMaterial({ color: 0x2a6ad0 })); cap.position.y = 0.335; g.add(cap);
+    } else if (item === 'Egg') {
+      const egg = new THREE.Mesh(new THREE.SphereGeometry(0.065, 10, 8), new THREE.MeshLambertMaterial({ color: 0xe9d2a8 })); egg.scale.y = 1.3; egg.position.y = 0.085; g.add(egg);
+      const nest = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.03, 5, 10), new THREE.MeshLambertMaterial({ color: 0xb08a4a })); nest.rotation.x = Math.PI / 2; nest.position.y = 0.03; g.add(nest);
+    } else {
+      const m = new THREE.MeshLambertMaterial({ color: 0xf2efe6 });
+      for (const [x, y, z, r] of [[0, 0.1, 0, 0.1], [0.08, 0.07, 0.04, 0.075], [-0.07, 0.07, -0.03, 0.08], [0.01, 0.16, -0.05, 0.07]]) { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 7, 6), m); b.position.set(x, y, z); g.add(b); }
+    }
+    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+    return g;
+  }
+  let produceNext = 0;
+  function updateAnimalProduce() {
+    const now = performance.now();
+    if (now < produceNext) return;
+    produceNext = now + 1000;
+    for (const w of villageAnimals) {
+      const item = ANIMAL_PRODUCE[w.kindName];
+      if (!item || !w.mesh) continue;
+      if (!w.nextDropAt) { w.nextDropAt = now + PRODUCE_EVERY_MS * (0.3 + Math.random() * 0.7); continue; } // staggered, so a herd doesn't all drop at once
+      if (now < w.nextDropAt) continue;
+      w.nextDropAt = now + PRODUCE_EVERY_MS;
+      if (animalDrops.filter(d => d.owner === w).length >= MAX_DROPS_PER_ANIMAL) continue;
+      const mesh = buildDropMesh(item);
+      const p = w.mesh.position, back = w.mesh.rotation.y + Math.PI;
+      mesh.position.set(p.x + Math.sin(back) * 0.45, p.y, p.z + Math.cos(back) * 0.45);
+      mesh.rotation.y = Math.random() * Math.PI * 2;
+      scene.add(mesh);
+      animalDrops.push({ mesh, item, owner: w });
+    }
+  }
+  const _dropRay = new THREE.Raycaster();
+  // Called from doAction: picks up the drop under the crosshair, or failing that one right at your feet.
+  function tryPickUpDrop() {
+    if (!animalDrops.length) return false;
+    _dropRay.setFromCamera(new THREE.Vector2(0, 0), camera);
+    _dropRay.far = 5;
+    const hits = _dropRay.intersectObjects(animalDrops.map(d => d.mesh), true);
+    let drop = null;
+    if (hits.length) { let o = hits[0].object; while (o.parent && o.parent !== scene) o = o.parent; drop = animalDrops.find(d => d.mesh === o); }
+    if (!drop) {
+      let best = 1.6;
+      for (const d of animalDrops) { const dd = Math.hypot(d.mesh.position.x - player.pos.x, d.mesh.position.z - player.pos.z); if (dd < best && Math.abs(d.mesh.position.y - player.pos.y) < 2) { best = dd; drop = d; } }
+    }
+    if (!drop) return false;
+    if (chargingVisitor()) { // the owner's animal — pay them half its value (see VISITOR CHARGES)
+      const fee = Math.ceil(producePrice(drop.item) / 2);
+      if (coins < fee) { showSaveStatus('⚠ Picking this up costs 💰' + fee + ' (paid to the owner) — you have ' + coins, true); return true; }
+      payWorldOwner(fee, 'produce');
+    }
+    animalDrops.splice(animalDrops.indexOf(drop), 1);
+    scene.remove(drop.mesh); disposeObject3D(drop.mesh);
+    addToInventory(drop.item, 1);
+    showBriefMessage((PRODUCE_EMOJI[drop.item] || '') + ' +1 ' + drop.item);
+    playThud(300);
+    return true;
   }
 
   // ================= INCUBATOR & ANIMAL SEEDS =================
@@ -22745,6 +23034,20 @@
       otherPlayers.set(uid, op);
     }
     if (name) op.displayName = name;
+    // Rebuild their figure when what they're wearing changes (the Wardrobe changes colours mid-game now).
+    const ck = colors ? JSON.stringify(colors) : '';
+    if (op.colorsKey === undefined) op.colorsKey = ck;
+    else if (ck && ck !== op.colorsKey) {
+      op.colorsKey = ck;
+      const old = op.group, parent = old.parent || scene;
+      const fresh = buildCustomerFigure(false, colors);
+      fresh.position.copy(old.position); fresh.rotation.copy(old.rotation); fresh.visible = old.visible;
+      old.remove(op.nameSprite); old.remove(op.chatSprite);
+      fresh.add(op.nameSprite); fresh.add(op.chatSprite);
+      parent.remove(old); parent.add(fresh);
+      disposeObject3D(old);
+      op.group = fresh;
+    }
     return op;
   }
   function removeOtherPlayer(uid) {
@@ -26238,6 +26541,7 @@
     updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
     updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
     updatePropertyGhost(); // outline of where the chosen building would go — see PROPERTY
+    updateAnimalProduce(); // milk / eggs / wool every 10 min — see ANIMAL PRODUCE
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -28404,6 +28708,7 @@
         sw.style.cssText = `width:28px;height:28px;border-radius:5px;background:${hexToCss(hex)};cursor:pointer;border:2px solid ${selected ? '#fff' : 'transparent'};box-shadow:${selected ? '0 0 6px rgba(255,255,255,0.6)' : 'none'};`;
         sw.addEventListener('click', () => {
           pendingAvatarColors[prop] = idx;
+          if (prop === 'shirtIdx') { pendingAvatarColors.shirtHex = null; pendingAvatarColors.wornJumper = null; } // back to a plain shirt; the jumper stays in the wardrobe
           refreshAvatarPreviewFigure();
           buildAvatarSwatchRows(); // rebuilt so the selection highlight moves to the new choice
         });
@@ -28430,6 +28735,8 @@
         pill.style.cssText = `padding:6px 10px;border-radius:14px;font-size:12px;cursor:pointer;background:${selected ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.08)'};border:1px solid ${selected ? '#fff' : 'rgba(255,255,255,0.25)'};`;
         pill.addEventListener('click', () => {
           pendingAvatarColors[prop] = k;
+          if (prop === 'shirtPattern') { pendingAvatarColors.shirtHex = null; pendingAvatarColors.wornJumper = null; }
+          if (prop === 'hat') { pendingAvatarColors.hatHex = null; pendingAvatarColors.hatHex2 = null; pendingAvatarColors.wornHat = null; }
           refreshAvatarPreviewFigure();
           buildAvatarSwatchRows();
         });

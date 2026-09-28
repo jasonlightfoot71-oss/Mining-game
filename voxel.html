@@ -20044,19 +20044,22 @@
   // minutes, saplings 20-25.
   // ECONOMY — the longer something takes, the better it pays, both in total
   // and per minute (so a long crop is never a worse deal than a short one).
-  // Halved from the first version (too much money):
+  // Halved from the first version, then cut again (still too much money —
+  // mostly from big fields of the long crops, so those were cut hardest;
+  // pumpkin profit 45 → 18). Short crops can't go below +1 coin, which is
+  // why strawberries/peas sit a touch above the curve.
   //   crop            time  seed → harvest  profit  per min
-  //   Strawberries     5m     8 →  10        2     0.40
-  //   Peas             8m     6 →  10        4     0.50
-  //   Flowers         10m     5 →  10        5     0.50
-  //   Wheat           15m     7 →  15        8     0.53
-  //   Carrots/Onions  20m     7 →  18       11     0.55
-  //   Potatoes        25m     6 →  20       14     0.56   (Beetroot 8 → 22)
-  //   Tomatoes        30m     9 →  28       19     0.63
-  //   Lettuce         35m    10 →  33       23     0.66
-  //   Sweetcorn       45m    12 →  42       30     0.67
-  //   Cabbage         50m    13 →  48       35     0.70
-  //   Pumpkin         60m    15 →  60       45     0.75
+  //   Strawberries     5m     8 →   9        1     0.20
+  //   Peas             8m     6 →   8        2     0.25
+  //   Flowers         10m     5 →   7        2     0.20
+  //   Wheat           15m     7 →  10        3     0.20
+  //   Carrots/Onions  20m     7 →  12        5     0.25
+  //   Potatoes        25m     6 →  12        6     0.24   (Beetroot 8 → 14)
+  //   Tomatoes        30m     8 →  16        8     0.27
+  //   Lettuce         35m    10 →  19        9     0.26
+  //   Sweetcorn       45m    12 →  24       12     0.27
+  //   Cabbage         50m    13 →  27       14     0.28
+  //   Pumpkin         60m    15 →  33       18     0.30
   // Harvest value = yield x PRODUCE_PRICES (FLOWER_PRICE for flowers); seed
   // price is each type's `cost`. Animals: see ANIMAL_TYPES (meat sells for 3x
   // the animal seed). Saplings are free — they just grow a tree.
@@ -20066,7 +20069,7 @@
     { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 1200 },
     { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 1200 },
     { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 1500 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 3, cost: 7 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 2, cost: 7 },
     { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3, cost: 7 },
     { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1, cost: 13 },
     { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1, cost: 15 },
@@ -20079,13 +20082,13 @@
     { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1, cost: 5 },
     { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1, cost: 5 },
     { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4, cost: 6 },
-    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4, cost: 9 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 4, cost: 8 },
     { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1, cost: 10 },
     { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2, cost: 8 },
     { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2, cost: 12 },
     { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3, cost: 7 },
-    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 5, cost: 6 },
-    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 5, cost: 8 },
+    { name: 'Peas',           kind: 'peas',       growSec: 480, produce: 'Peas',       yield: 4, cost: 6 },
+    { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 3, cost: 8 },
     { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1, cost: 5 },
     { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1, cost: 5 },
     { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1, cost: 5 },
@@ -20554,18 +20557,18 @@
   // gives per plant (a pumpkin is one slow plant; peas give five quick ones). Anything not listed (all the
   // flowers) goes for FLOWER_PRICE.
   const PRODUCE_PRICES = {
-    Wheat: 5, Carrot: 6, Potato: 5, Onion: 6, Peas: 2, Strawberry: 2, Tomato: 7, Beetroot: 11,
-    Sweetcorn: 21, Lettuce: 33, Cabbage: 48, Pumpkin: 60, // per item — see ECONOMY by SEED_TYPES for the whole table
+    Wheat: 5, Carrot: 4, Potato: 3, Onion: 4, Peas: 2, Strawberry: 3, Tomato: 4, Beetroot: 7,
+    Sweetcorn: 12, Lettuce: 19, Cabbage: 27, Pumpkin: 33, // per item — see ECONOMY by SEED_TYPES for the whole table
     Milk: 6, Egg: 3, Wool: 4, // animal produce — see ANIMAL PRODUCE (Wool sells at the Tailor only)
   };
-  const FLOWER_PRICE = 10;
+  const FLOWER_PRICE = 7;
   // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
   const MEAT_PRICES = { Beef: 50, Pork: 45, Mutton: 45, 'Chicken Meat': 60 }; // an animal's meat sells for 3x its seed — see ANIMAL_TYPES
   const isMeat = name => MEAT_PRICES[name] !== undefined;
   const producePrice = name => MEAT_PRICES[name] || PRODUCE_PRICES[name] || FLOWER_PRICE;
-  // A packet of seeds costs half of what that one plant's full harvest
-  // sells for (yield x price), rounded up. Saplings produce nothing to
-  // sell, so they stay free.
+  // Seed prices are each type's own `cost` — see the ECONOMY table by
+  // SEED_TYPES for what each crop's harvest sells for against it.
+  // Saplings produce nothing to sell, so they stay free.
   function seedCost(t) { return (t && t.cost) || 0; } // see ECONOMY by SEED_TYPES
   function harvestValue(t) { return t && t.produce ? (t.yield || 1) * producePrice(t.produce) : 0; }
   function fmtGrow(sec) { return sec >= 3600 ? (sec / 3600) + 'h' : Math.round(sec / 60) + 'm'; }

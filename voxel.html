@@ -1455,14 +1455,14 @@
     const wallpapersArr = [];
     for (const w of wallpapers.values()) wallpapersArr.push([w.bx,w.by,w.bz,w.nx,w.ny,w.nz,w.colorIdx]);
     const signsArr = [];
-    for (const [sk, s] of signs) { if (villageOwned.signs.has(sk)) continue; signsArr.push([s.bx,s.by,s.bz,s.nx,s.ny,s.nz,s.sizeIdx,s.text]); }
+    for (const [sk, s] of signs) { if (villageOwned.signs.has(sk)) continue; signsArr.push(s.rot != null ? [s.bx,s.by,s.bz,s.nx,s.ny,s.nz,s.sizeIdx,s.text,s.rot] : [s.bx,s.by,s.bz,s.nx,s.ny,s.nz,s.sizeIdx,s.text]); } // 9th field: a street sign's turn — see STREET SIGNS
     const doorsArr = [];
     for (const [dk, d] of doors) { if (villageOwned.doors.has(dk)) continue; doorsArr.push([d.bx,d.by,d.bz,d.rot,d.doorTypeIdx]); }
     const furnitureArr = [];
     for (const [fk, f] of furniture) { if (villageOwned.furniture.has(fk)) continue; furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]); }
     const vehiclesArr = vehicles.map(v => v === ridingVehicle
-      ? [player.pos.x, player.pos.y, player.pos.z, yaw, v.typeIdx] // currently being driven — its own stored x/y/z is stale until exitVehicle() runs, so use the live player position instead
-      : [v.x, v.y, v.z, v.yaw, v.typeIdx]);
+      ? [player.pos.x, player.pos.y, player.pos.z, yaw, v.typeIdx, v.color] // currently being driven — its own stored x/y/z is stale until exitVehicle() runs, so use the live player position instead
+      : [v.x, v.y, v.z, v.yaw, v.typeIdx, v.color]); // 6th field: its paint (null = original) — older copies ignore it
     return {
       chunked: !infiniteWorldActive, // legacy full-content chunk flag — only set for the old finite system (Mill, pre-existing worlds); infinite worlds use chunkMode instead
       chunkMode: infiniteWorldActive ? 'edits' : undefined, // tells loadWorldData() this world's terrain is procedural + edit-diffs, not a stored snapshot
@@ -1574,10 +1574,10 @@
     (data.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => addFixture(bx,by,bz,nx,ny,nz));
     (data.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => addLadder(bx,by,bz,nx,ny,nz));
     (data.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0));
-    (data.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''));
+    (data.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text,rot]) => addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||'',rot));
     (data.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => addDoor(bx,by,bz,rot||0,typeIdx||0));
     (data.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => addFurniture(bx,by,bz,rot||0,typeIdx||0));
-    (data.vehicles||[]).forEach(([x,y,z,vyaw,typeIdx]) => addVehicle(x,y,z,vyaw||0,typeIdx||0));
+    (data.vehicles||[]).forEach(([x,y,z,vyaw,typeIdx,color]) => addVehicle(x,y,z,vyaw||0,typeIdx||0,color));
   }
   async function loadPubFixtureData() {
     try {
@@ -6918,6 +6918,7 @@
     { name: 'Wide Sign (2×1)',  w: 2, h: 1, neon: false, cost: 32 },
     { name: 'Neon Sign (3×1)',  w: 3, h: 1, neon: true,  cost: 60 },
     { name: 'Village Sign (2×2)', w: 2, h: 2, neon: false, cost: 40 },
+    { name: 'Street Sign', w: 2, h: 1, neon: false, street: true, cost: 50 }, // freestanding, 3 blocks tall, lit — see STREET SIGNS
   ];
   let signTypeIdx = 0;
   const signs = new Map(); // faceKey -> { mesh, bx,by,bz,nx,ny,nz, sizeIdx, text }
@@ -6970,10 +6971,61 @@
     }
     return new THREE.CanvasTexture(canvas);
   }
-  function addSign(bx,by,bz,nx,ny,nz,sizeIdx,text) {
+  // ---- STREET SIGNS ----
+  // A freestanding post 3 blocks tall standing on the top of the block it's placed on, with a double-sided
+  // name plate at the top and a lamp above it. The plate is self-lit (MeshBasicMaterial), so it glows the same
+  // day or night; it doesn't throw light on its surroundings (dozens of real lights would cost too much).
+  // It turns in 45° steps: its `rot` (0-7) is saved as an extra 9th field on the sign's save row, which older
+  // copies of the game simply ignore. Placed facing you; with the Sign slot selected, ✋ on one turns it.
+  function buildStreetSignTexture(text) {
+    const W = 512, H = 128;
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#1d6b40'; ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 7; ctx.strokeRect(10, 10, W - 20, H - 20);
+    ctx.font = 'bold ' + Math.floor(H * 0.46) + 'px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffffff';
+    wrapCanvasText(ctx, text || 'Street', W / 2, H / 2 + 2, W * 0.88, H * 0.48);
+    return new THREE.CanvasTexture(c);
+  }
+  function buildStreetSign(text) {
+    const g = new THREE.Group();
+    const postMat = new THREE.MeshPhongMaterial({ color: 0x2c3a30, shininess: 40 });
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.33, 8), postMat);
+    post.position.y = 2.33 / 2; g.add(post);
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.08, 8), postMat);
+    foot.position.y = 0.04; g.add(foot);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.5, 0.05), postMat);
+    frame.position.y = 2.56; g.add(frame);
+    const tex = buildStreetSignTexture(text);
+    const plateMat = new THREE.MeshBasicMaterial({ map: tex }); // self-lit
+    [0, Math.PI].forEach(a => { // a plate on each side, so it reads from both directions
+      const pl = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.425), plateMat);
+      pl.rotation.y = a; pl.position.set(0, 2.56, a ? -0.027 : 0.027); g.add(pl);
+    });
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 6), postMat);
+    cap.position.y = 2.9; g.add(cap);
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff1c0 }));
+    lamp.position.y = 2.98; g.add(lamp); // tops out right at 3 blocks
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff1c0, transparent: true, opacity: 0.25, depthWrite: false }));
+    halo.position.y = 2.98; g.add(halo);
+    g.userData.streetSign = true;
+    return g;
+  }
+  function addSign(bx,by,bz,nx,ny,nz,sizeIdx,text,rot) {
     const fk = faceKeyFor(bx,by,bz,nx,ny,nz);
     if (signs.has(fk)) return fk;
-    const type = SIGN_TYPES[sizeIdx];
+    const type = SIGN_TYPES[sizeIdx] || SIGN_TYPES[0];
+    if (type.street) {
+      const g = buildStreetSign(text);
+      rot = ((rot | 0) % 8 + 8) % 8;
+      g.position.set(bx + 0.5, by + 1, bz + 0.5);
+      g.rotation.y = rot * Math.PI / 4;
+      g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+      scene.add(g);
+      signs.set(fk, { mesh: g, bx, by, bz, nx, ny, nz, sizeIdx, text: text || '', rot });
+      return fk;
+    }
     const px = bx+0.5+nx*0.505, py = by+0.5+ny*0.505, pz = bz+0.5+nz*0.505;
     const axis = new THREE.Vector3(nx,ny,nz).normalize();
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), axis);
@@ -7021,11 +7073,33 @@
       if (s.bx===bx && s.by===by && s.bz===bz) removeSign(fk);
     }
   }
-  let pendingSign = null; // { bx,by,bz,nx,ny,nz,sizeIdx } while the text modal is open
-  function openSignTextModal(bx,by,bz,nx,ny,nz,sizeIdx) {
-    pendingSign = { bx,by,bz,nx,ny,nz,sizeIdx };
+  // ✋ on a street sign (Sign slot selected) turns it 45°.
+  const _streetRay = new THREE.Raycaster();
+  function tryTurnStreetSign() {
+    const list = [];
+    for (const [fk, sg] of signs) if (sg.rot != null && sg.mesh.position.distanceToSquared(camera.position) < 64) list.push(sg.mesh);
+    if (!list.length) return false;
+    _streetRay.setFromCamera({ x: 0, y: 0 }, camera);
+    _streetRay.far = 7;
+    const hits = _streetRay.intersectObjects(list, true);
+    if (!hits.length) return false;
+    let o = hits[0].object; while (o && !o.userData.streetSign) o = o.parent;
+    for (const [fk, sg] of signs) {
+      if (sg.mesh !== o) continue;
+      if (!canEditAt(sg.bx, sg.bz)) { showBriefMessage('🪧 Not your sign to turn'); return true; }
+      sg.rot = (sg.rot + 1) % 8;
+      o.rotation.y = sg.rot * Math.PI / 4;
+      // saved with everything else by the 20-second autosave (the 9th field of its save row)
+      playThud(300);
+      return true;
+    }
+    return false;
+  }
+  let pendingSign = null; // { bx,by,bz,nx,ny,nz,sizeIdx,rot } while the text modal is open
+  function openSignTextModal(bx,by,bz,nx,ny,nz,sizeIdx,rot) {
+    pendingSign = { bx,by,bz,nx,ny,nz,sizeIdx,rot };
     document.exitPointerLock && document.exitPointerLock(); // needed for the text field to reliably take focus/typing in some browsers
-    document.getElementById('signTextModalTitle').textContent = SIGN_TYPES[sizeIdx].name + ' — enter the text';
+    document.getElementById('signTextModalTitle').textContent = SIGN_TYPES[sizeIdx].street ? 'Street Sign — enter the street name' : SIGN_TYPES[sizeIdx].name + ' — enter the text';
     const input = document.getElementById('signTextInput');
     input.value = '';
     document.getElementById('signTextModal').style.display = 'flex';
@@ -11446,6 +11520,7 @@
     basket.position.set(0, 0.2, 0);
     group.add(basket);
     const envelope = new THREE.Mesh(new THREE.SphereGeometry(0.75, 12, 10), new THREE.MeshPhongMaterial({ color: envColors[Math.floor(Math.random()*envColors.length)], shininess: 15 }));
+    envelope.material.userData.paint = true; // the part a chosen colour repaints — see applyVehicleColour
     envelope.scale.set(1, 1.25, 1);
     envelope.position.set(0, 2.05, 0);
     group.add(envelope);
@@ -11567,6 +11642,56 @@
     guard.position.set(0, WR * 2 + 0.03, RZ - 0.02); guard.rotation.x = 0.15; group.add(guard);
     return outer;
   }
+  // Motorbike — a big sport-touring bike: fairing and tall screen, fuel tank, two-up seat, side cases. An original
+  // design (not a model of any real bike). Nose at +Z; the fastest thing on the ground.
+  function buildMotorbike() {
+    const group = new THREE.Group();
+    const paint = new THREE.MeshPhongMaterial({ color: 0xa0232b, shininess: 90, specular: 0x555555 });
+    const dark = new THREE.MeshPhongMaterial({ color: 0x1b1c1f, shininess: 25 });
+    const grey = new THREE.MeshPhongMaterial({ color: 0x4a4e55, shininess: 50 });
+    const metal = new THREE.MeshPhongMaterial({ color: 0xb8bec4, shininess: 90 });
+    const tyreMat = new THREE.MeshPhongMaterial({ color: 0x141414, shininess: 8 });
+    const screenMat = new THREE.MeshPhongMaterial({ color: 0x9fb8c8, shininess: 100, transparent: true, opacity: 0.45 });
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff6d8 });
+    const tailMat = new THREE.MeshBasicMaterial({ color: 0xff2a2a });
+    const box = (w, h, d, mat, x, y, z, rx) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); m.position.set(x, y, z); if (rx) m.rotation.x = rx; group.add(m); return m; };
+    const WR = 0.33, RZ = -0.78, FZ = 0.8;
+    [RZ, FZ].forEach(z => {
+      const tyre = new THREE.Mesh(new THREE.TorusGeometry(WR - 0.07, 0.07, 8, 20), tyreMat);
+      tyre.rotation.y = Math.PI / 2; tyre.position.set(0, WR, z); group.add(tyre);
+      const rim = new THREE.Mesh(new THREE.CylinderGeometry(WR - 0.1, WR - 0.1, 0.06, 16), grey);
+      rim.rotation.z = Math.PI / 2; rim.position.set(0, WR, z); group.add(rim);
+    });
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.015, 14), metal); // front brake disc
+    disc.rotation.z = Math.PI / 2; disc.position.set(0.06, WR, FZ); group.add(disc);
+    [-0.09, 0.09].forEach(x => sideTube(group, x, WR, FZ, 0.98, 0.5, 0.035, metal)); // forks
+    [-0.1, 0.1].forEach(x => sideTube(group, x, 0.42, -0.1, WR, RZ, 0.04, grey));   // swingarm
+    box(0.12, 0.05, 0.42, paint, 0, WR * 2 + 0.04, FZ - 0.02, -0.1);                 // front mudguard
+    box(0.38, 0.32, 0.5, grey, 0, 0.47, 0.02);                                        // engine
+    box(0.4, 0.1, 0.4, dark, 0, 0.28, 0.02);                                          // sump
+    const ex = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.6, 10), metal); // exhaust, right side
+    ex.rotation.x = Math.PI / 2 - 0.12; ex.position.set(0.24, 0.42, -0.5); group.add(ex);
+    box(0.44, 0.3, 0.7, paint, 0, 0.72, 0.1);                                         // main body / side panels
+    box(0.4, 0.2, 0.42, paint, 0, 0.95, 0.24);                                        // fuel tank
+    box(0.52, 0.5, 0.34, paint, 0, 0.9, 0.56, -0.35);                                 // front fairing
+    box(0.2, 0.06, 0.03, lampMat, -0.11, 0.84, 0.74, -0.35);                          // twin headlights
+    box(0.2, 0.06, 0.03, lampMat, 0.11, 0.84, 0.74, -0.35);
+    box(0.4, 0.44, 0.02, screenMat, 0, 1.25, 0.62, -0.55);                            // tall touring screen
+    box(0.3, 0.08, 0.36, dark, 0, 0.88, -0.14);                                       // rider seat
+    box(0.28, 0.1, 0.3, dark, 0, 0.93, -0.46);                                        // pillion seat, a step higher
+    box(0.36, 0.18, 0.46, paint, 0, 0.76, -0.55);                                     // tail
+    box(0.2, 0.05, 0.03, tailMat, 0, 0.8, -0.79);                                     // tail light
+    [-1, 1].forEach(s => {
+      box(0.18, 0.34, 0.5, grey, s * 0.33, 0.62, -0.58);                              // side cases
+      box(0.19, 0.04, 0.51, dark, s * 0.33, 0.77, -0.58);
+      box(0.04, 0.04, 0.12, metal, s * 0.27, 1.02, 0.46);                             // bar ends
+      box(0.1, 0.05, 0.05, dark, s * 0.3, 1.02, 0.46);                                // grips
+      sideTube(group, s * 0.2, 1.02, 0.46, 1.16, 0.5, 0.012, dark);                   // mirror stalks
+      box(0.12, 0.07, 0.02, dark, s * 0.2, 1.18, 0.5);                                // mirrors
+    });
+    box(0.44, 0.035, 0.035, metal, 0, 1.02, 0.46);                                    // handlebar
+    return group;
+  }
   // Tank — slow, heavy, fires explosive shells (see fireTankShell). Nose at +Z.
   // userData.barrelPivot is raised/lowered to follow your aim while riding;
   // userData.muzzle marks where a shell leaves the barrel.
@@ -11574,6 +11699,7 @@
     const group = new THREE.Group();
     const armour = new THREE.MeshPhongMaterial({ color: 0x556b2f, shininess: 15 });
     const armourDark = new THREE.MeshPhongMaterial({ color: 0x3f5022, shininess: 10 });
+    armourDark.userData.paintShade = 0.74; // a chosen colour repaints this a shade darker — see applyVehicleColour
     const trackMat = new THREE.MeshPhongMaterial({ color: 0x262626, shininess: 5 });
     const wheelMat = new THREE.MeshPhongMaterial({ color: 0x3a3a3a, shininess: 10 });
     const metal = new THREE.MeshPhongMaterial({ color: 0x4a4f44, shininess: 30 });
@@ -11625,18 +11751,20 @@
     // Appended at the END: saved worlds store vehicles by their number here.
     { name: 'E-Bike',           build: buildEBike,         swatch: 0x2e8b57, cost: 200, flies: false, boat: false, speedMult: 1.9, riderY: 0.40, riderSeated: true,  ramps: true, gunOffset: [0, 1.25, 0.55] },
     { name: 'Tank',             build: buildTank,          swatch: 0x556b2f, cost: 800, flies: false, boat: false, speedMult: 1.25, riderY: 0.55, riderSeated: true, tank: true, gunOffset: [0, 1.55, 0.3] },
+    { name: 'Motorbike',        build: buildMotorbike,     swatch: 0xa0232b, cost: 450, flies: false, boat: false, speedMult: 2.3, riderY: 0.42, riderSeated: true,  ramps: true, gunOffset: [0, 1.3, 0.75] }, // sport tourer — fastest on the ground
   ];
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
   const vehicles = []; // { id, group, x, y, z, yaw, typeIdx } — live array, see the section comment above for why not a Map
-  function addVehicle(x, y, z, yaw, typeIdx) {
+  function addVehicle(x, y, z, yaw, typeIdx, color) {
     const type = VEHICLE_TYPES[typeIdx] || VEHICLE_TYPES[0];
     const group = type.build();
+    if (typeof color === 'number') applyVehicleColour(group, type, color); else color = null; // see VEHICLE & EQUIPMENT SHOPS
     group.position.set(x, y, z);
     group.rotation.y = yaw;
     group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(group);
-    const v = { id: vehicleSeq++, group, x, y, z, yaw, typeIdx };
+    const v = { id: vehicleSeq++, group, x, y, z, yaw, typeIdx, color };
     vehicles.push(v);
     return v;
   }
@@ -11751,6 +11879,7 @@
     else if (type.name === 'Hot Air Balloon') { waveform = 'sine'; baseFreq = 140; detune = 3; filterFreq = 1000; } // quiet, gentle burner hiss rather than an engine at all
     else if (type.name === 'Flying Car') { waveform = 'sawtooth'; baseFreq = 140; detune = 6; filterFreq = 800; }
     else if (type.tank) { waveform = 'sawtooth'; baseFreq = 62; detune = 9; filterFreq = 420; } // Tank — heavy diesel rumble (sawtooth keeps enough upper harmonics to still be heard on a phone)
+    else if (type.name === 'Motorbike') { waveform = 'sawtooth'; baseFreq = 105; detune = 7; filterFreq = 950; } // twin-cylinder burble
     else if (type.name === 'E-Bike') { waveform = 'triangle'; baseFreq = 230; detune = 5; filterFreq = 1200; } // lighter, higher hub-motor whine than the scooter // brighter, more "engine" than the scooter
     const gain = audioCtx.createGain();
     gain.gain.value = 0.001;
@@ -18967,6 +19096,7 @@
       else openShopPanel(kind); // 'veg' / 'meat' / 'tailor'
       return;
     }
+    if (selectedSlot === SIGN_SLOT && tryTurnStreetSign()) return; // see STREET SIGNS
     let blockDist = Infinity;
     if (r) { const camPos = camera.getWorldPosition(new THREE.Vector3()); blockDist = camPos.distanceTo(new THREE.Vector3(r.hit.x + 0.5, r.hit.y + 0.5, r.hit.z + 0.5)); }
     const ft = raycastFurniture(6);
@@ -19144,6 +19274,12 @@
       else { nx=0; ny=0; nz = nz<0?-1:1; }
       const fk = faceKeyFor(r.hit.x, r.hit.y, r.hit.z, nx, ny, nz);
       if (signs.has(fk)) { removeSign(fk); playThud(200); return; }
+      if (SIGN_TYPES[signTypeIdx].street) {
+        if (ny !== 1) { showSaveStatus('⚠ Street signs stand on the ground — aim at the top of a block', true); return; }
+        const rot = ((Math.round(yaw / (Math.PI / 4)) % 8) + 8) % 8; // plate faces you
+        openSignTextModal(r.hit.x, r.hit.y, r.hit.z, nx, ny, nz, signTypeIdx, rot);
+        return;
+      }
       openSignTextModal(r.hit.x, r.hit.y, r.hit.z, nx, ny, nz, signTypeIdx);
       return;
     }
@@ -19211,16 +19347,12 @@
     if (selectedSlot === VEHICLE_SLOT) {
       const nearby = nearestVehicleToPlayer(2.2);
       if (nearby) {
-        const nt = VEHICLE_TYPES[nearby.typeIdx];
         removeVehicleInstance(nearby); playThud(200);
-        if (nt && !chargingVisitor()) { addToGarage(nt, 1); showBriefMessage('🅿️ ' + nt.name + ' is back in your garage (×' + garageCount(nt) + ') — place it again free, or sell it at a Vehicle Shop'); } // not in someone else's world — it isn't yours
         return;
       }
       const type = VEHICLE_TYPES[vehicleTypeIdx];
       if (!vehicleUnlocked(type)) { showSaveStatus('🚗 Buy a vehicle at a Vehicle Shop first', true); return; }
-      if (garageCount(type) > 0) addToGarage(type, -1); // out of the garage, free
-      else if (!trySpendCoins(type.cost, type.name)) return;
-      addVehicle(r.hit.x + 0.5, r.hit.y + 1, r.hit.z + 0.5, yaw, vehicleTypeIdx);
+      addVehicle(r.hit.x + 0.5, r.hit.y + 1, r.hit.z + 0.5, yaw, vehicleTypeIdx, vehicleColourFor(type)); // owned = free, in your colour — see VEHICLE & EQUIPMENT SHOPS
       playThud(400);
       return;
     }
@@ -21267,15 +21399,16 @@
   // on the wall — its price pops up under the crosshair — and press ✋ to buy.
   //
   // Ownership (per player, kept on this device like the Wardrobe):
-  //  • Vehicles: buying one in the shop UNLOCKS that type and puts one in your
-  //    garage. The Vehicles menu only lists unlocked types; placing one uses a
-  //    garage vehicle if you have one (free), otherwise buys a new one at full
-  //    price, as before. Picking a placed vehicle back up (Vehicles slot, next
-  //    to it) returns it to your garage instead of just deleting it.
+  //  • Vehicles: buying one in the shop (you pick its colour first) means you
+  //    OWN that type: from then on the Vehicles menu places as many as you like,
+  //    free, in your colour. ✋ on one you own in the shop changes its colour
+  //    (free) — new ones come out in the new colour. Each placed vehicle saves
+  //    its own colour, so others see it too.
   //  • Weapons: buying one unlocks it for good (weapons have no ammo). The
   //    Weapons menu / Q only offer what you own, and an unowned one won't fire.
-  //  • Selling back: talk to either shopkeeper (✋ on him) — garage vehicles and
-  //    owned weapons sell for 2/3 of their price (SELL_BACK_RATE).
+  //  • Selling back: talk to either shopkeeper (✋ on him) — anything you own
+  //    sells for 2/3 of its price (SELL_BACK_RATE) and leaves your menu; any
+  //    vehicles of that type already placed stay where they are.
   const SELL_BACK_RATE = 2 / 3;
   var shopOwned = null; // var, not let — weaponEquipped()/menus can be asked before this line has run
   function loadShopOwned() {
@@ -21283,20 +21416,77 @@
     try { shopOwned = JSON.parse(localStorage.getItem('voxelShopOwned') || 'null'); } catch (e) { shopOwned = null; }
     if (!shopOwned || typeof shopOwned !== 'object') shopOwned = {};
     if (!Array.isArray(shopOwned.vehicles)) shopOwned.vehicles = [];   // unlocked vehicle type names
-    if (!shopOwned.garage || typeof shopOwned.garage !== 'object') shopOwned.garage = {}; // name -> count
+    if (!shopOwned.colors || typeof shopOwned.colors !== 'object') shopOwned.colors = {}; // vehicle name -> chosen colour (hex number)
+    delete shopOwned.garage; // the old garage-count model — owning a type now means free placing
     if (!Array.isArray(shopOwned.weapons)) shopOwned.weapons = [];     // owned weapon names
     return shopOwned;
   }
   function saveShopOwned() { try { localStorage.setItem('voxelShopOwned', JSON.stringify(loadShopOwned())); } catch (e) {} }
   function vehicleUnlocked(t) { return !!t && loadShopOwned().vehicles.includes(t.name); }
-  function garageCount(t) { return (t && loadShopOwned().garage[t.name]) || 0; }
-  function addToGarage(t, n) {
+  function ownVehicle(t, color) {
     const o = loadShopOwned();
     if (!o.vehicles.includes(t.name)) o.vehicles.push(t.name);
-    o.garage[t.name] = Math.max(0, (o.garage[t.name] || 0) + n);
-    if (!o.garage[t.name]) delete o.garage[t.name];
+    if (color == null) delete o.colors[t.name]; else o.colors[t.name] = color;
     saveShopOwned();
     fixVehicleSelection();
+    if (typeof updateVehicleSlotIcon === 'function') updateVehicleSlotIcon();
+  }
+  function sellVehicle(t) {
+    const o = loadShopOwned();
+    o.vehicles = o.vehicles.filter(n => n !== t.name);
+    delete o.colors[t.name];
+    saveShopOwned();
+    fixVehicleSelection();
+  }
+  // The colour you chose for a type you own (null = its original paint).
+  function vehicleColourFor(t) { const c = t && loadShopOwned().colors[t.name]; return typeof c === 'number' ? c : null; }
+  // ---- Vehicle paint ----
+  // Every vehicle model's main paint is the material in its type's `swatch` colour (plus the balloon's envelope and
+  // the tank's darker armour, tagged with userData.paint / paintShade in their builders). Recolouring just sets those.
+  const VEHICLE_COLOURS = [
+    { name: 'Red', hex: 0xc62828 }, { name: 'Orange', hex: 0xe8762a }, { name: 'Yellow', hex: 0xe8c020 },
+    { name: 'Green', hex: 0x2e8b57 }, { name: 'Teal', hex: 0x1f9a9a }, { name: 'Blue', hex: 0x1e5bc6 },
+    { name: 'Purple', hex: 0x6a3aa8 }, { name: 'Pink', hex: 0xe86aa8 }, { name: 'White', hex: 0xf0f0f0 },
+    { name: 'Silver', hex: 0xa8aeb4 }, { name: 'Black', hex: 0x222428 },
+  ];
+  function applyVehicleColour(group, t, hex) {
+    if (hex == null || !group || !t) return;
+    const base = new THREE.Color(hex);
+    group.traverse(o => {
+      if (!o.isMesh || !o.material || Array.isArray(o.material) || !o.material.color) return;
+      const m = o.material;
+      if (m.userData.paintShade) m.color.copy(base).multiplyScalar(m.userData.paintShade);
+      else if (m.userData.paint || m.color.getHex() === t.swatch) m.color.copy(base);
+    });
+  }
+  // The colour picker shown when buying (or re-painting one you own).
+  let paintEl = null;
+  function openVehiclePaintPicker(t, title, onPick) {
+    if (!paintEl) {
+      paintEl = document.createElement('div');
+      paintEl.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      paintEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(340px,92vw);color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div id="paintTitle" style="font-weight:600;font-size:15px;margin-bottom:12px;line-height:1.4;"></div>'
+        + '<div id="paintSwatches" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;"></div>'
+        + '<div style="text-align:right;"><button id="paintCancel" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 14px;cursor:pointer;">Cancel</button></div></div>';
+      document.body.appendChild(paintEl);
+      paintEl.querySelector('#paintCancel').addEventListener('click', () => { paintEl.style.display = 'none'; });
+    }
+    document.exitPointerLock && document.exitPointerLock();
+    paintEl.querySelector('#paintTitle').textContent = title;
+    const box = paintEl.querySelector('#paintSwatches');
+    box.innerHTML = '';
+    const opts = [{ name: 'Original', hex: null }].concat(VEHICLE_COLOURS);
+    for (const c of opts) {
+      const b = document.createElement('button');
+      const hexStr = '#' + (c.hex == null ? t.swatch : c.hex).toString(16).padStart(6, '0');
+      b.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.18);border-radius:8px;padding:8px 2px;color:#fff;font:12px system-ui,sans-serif;cursor:pointer;';
+      b.innerHTML = '<span style="width:28px;height:28px;border-radius:50%;border:2px solid rgba(255,255,255,0.6);background:' + hexStr + ';"></span>';
+      const lab = document.createElement('span'); lab.textContent = c.name; b.appendChild(lab);
+      b.addEventListener('click', () => { paintEl.style.display = 'none'; onPick(c.hex); });
+      box.appendChild(b);
+    }
+    paintEl.style.display = 'flex';
   }
   function weaponOwned(t) { return !!t && loadShopOwned().weapons.includes(t.name); }
   function anyVehicleUnlocked() { return VEHICLE_TYPES.some(vehicleUnlocked); }
@@ -21515,9 +21705,8 @@
   function shopItemText(item) {
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
-      if (!vehicleUnlocked(t)) return '🚗 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy';
-      const g = garageCount(t);
-      return '🚗 ' + t.name + ' — owned' + (g ? ' (🅿️×' + g + ' in your garage)' : '') + '  ·  ✋ buy another for 💰' + t.cost;
+      if (!vehicleUnlocked(t)) return '🚗 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy (you pick the colour)';
+      return '🚗 ' + t.name + ' — owned ✓ (free from your Vehicles menu)  ·  ✋ to change its colour';
     }
     const t = WEAPON_TYPES[item.idx];
     if (weaponOwned(t)) return t.emoji + ' ' + t.name + ' — owned ✓  ·  sell back at the counter for 💰' + sellBackPrice(t.price);
@@ -21544,11 +21733,20 @@
     if (!item) return false;
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
-      if (!trySpendCoins(t.cost, t.name)) return true;
-      const first = !vehicleUnlocked(t);
-      addToGarage(t, 1);
-      playCoin();
-      showSaveStatus('🚗 ' + t.name + ' bought! It\u2019s in your garage (🅿️×' + garageCount(t) + ') — pick it from the Vehicles menu and place it anywhere' + (first ? '. More can be bought straight from the menu now.' : '.'));
+      if (vehicleUnlocked(t)) { // already yours — re-paint it, free
+        openVehiclePaintPicker(t, '🎨 ' + t.name + ' — pick a new colour (free). New ones you place come out in it.', hex => {
+          ownVehicle(t, hex);
+          showSaveStatus('🎨 ' + t.name + ' will now come out ' + ((VEHICLE_COLOURS.find(c => c.hex === hex) || { name: 'in its original paint' }).name).toLowerCase());
+        });
+        return true;
+      }
+      if (coins < t.cost) { trySpendCoins(t.cost, t.name); return true; } // the usual "not enough coins" warning, before picking a colour
+      openVehiclePaintPicker(t, '🚗 ' + t.name + ' — 💰' + t.cost + '. Pick a colour to buy it:', hex => {
+        if (!trySpendCoins(t.cost, t.name)) return;
+        ownVehicle(t, hex);
+        playCoin();
+        showSaveStatus('🚗 ' + t.name + ' is yours! Place as many as you like from the Vehicles menu — free from now on.');
+      });
     } else {
       const t = WEAPON_TYPES[item.idx];
       if (weaponOwned(t)) { showBriefMessage(t.emoji + ' You already own the ' + t.name + ' — sell it back at the counter if you like'); return true; }
@@ -21595,16 +21793,16 @@
     const vehiclesMode = tradeKind === 'vehicles';
     tradeEl.querySelector('#tradeTitle').textContent = vehiclesMode ? '🚗 Vehicle Shop' : '⚔️ Equipment Shop';
     tradeEl.querySelector('#tradeLine').textContent = vehiclesMode
-      ? 'Browse the showroom and press ✋ on a vehicle to buy it. I\u2019ll buy back anything in your garage for 2/3 of the price — to put a placed vehicle back in your garage, stand next to it with the Vehicles slot and tap.'
+      ? 'Browse the showroom and press ✋ on a vehicle to buy it. I\u2019ll buy back any vehicle you own for 2/3 of the price — it comes out of your menu (ones you\u2019ve already placed stay put).'
       : 'Press ✋ on anything on the walls to buy it. I\u2019ll buy back anything you own for 2/3 of the price.';
     const list = tradeEl.querySelector('#tradeList');
     list.innerHTML = '';
     const rows = [];
-    if (vehiclesMode) VEHICLE_TYPES.forEach(t => { const n = garageCount(t); if (n) rows.push({ label: '🚗 ' + t.name + ' ×' + n, price: sellBackPrice(t.cost), sell: () => { addToGarage(t, -1); } }); });
+    if (vehiclesMode) VEHICLE_TYPES.forEach(t => { if (vehicleUnlocked(t)) rows.push({ label: '🚗 ' + t.name, price: sellBackPrice(t.cost), sell: () => { sellVehicle(t); } }); });
     else WEAPON_TYPES.forEach(t => { if (weaponOwned(t)) rows.push({ label: t.emoji + ' ' + t.name, price: sellBackPrice(t.price), sell: () => { const o = loadShopOwned(); o.weapons = o.weapons.filter(n => n !== t.name); saveShopOwned(); fixWeaponSelection(); } }); });
     if (!rows.length) {
       const e = document.createElement('div'); e.style.cssText = 'opacity:0.7;padding:8px 0;';
-      e.textContent = vehiclesMode ? 'Nothing in your garage to sell.' : 'You don\u2019t own anything to sell yet.';
+      e.textContent = vehiclesMode ? 'You don\u2019t own any vehicles to sell.' : 'You don\u2019t own anything to sell yet.';
       list.appendChild(e);
     }
     for (const r of rows) {
@@ -23798,6 +23996,7 @@
         op.targetYaw = payload.yaw;
         op.lastUpdate = performance.now();
         op.vehicleType = typeof payload.vehicleType === 'number' ? payload.vehicleType : -1;
+        op.vehicleColor = typeof payload.vc === 'number' ? payload.vc : null; // their vehicle's paint — see applyVehicleColour
         op.weapon = typeof payload.w === 'number' ? payload.w : -1; // which weapon (if any) this player is holding — see updateAvatarWeapon
         op.pitchTarget = typeof payload.pit === 'number' ? payload.pit : 0;
       });
@@ -24280,7 +24479,7 @@
       const now = performance.now();
       if (now - mpLastBroadcast > 150) {
         mpLastBroadcast = now;
-        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1, w: weaponEquipped() ? weaponTypeIdx : -1, pit: pitch } }); } catch(e) {}
+        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1, vc: ridingVehicle ? ridingVehicle.color : null, w: weaponEquipped() ? weaponTypeIdx : -1, pit: pitch } }); } catch(e) {}
       }
     }
     const now2 = performance.now();
@@ -24321,11 +24520,12 @@
       // actually showing.
       try {
         if (op.vehicleType >= 0) {
-          if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType) {
+          if (!op.vehicleGroup || op.vehicleTypeBuilt !== op.vehicleType || op.vehicleColorBuilt !== op.vehicleColor) {
             if (op.vehicleGroup) { scene.remove(op.vehicleGroup); disposeObject3D(op.vehicleGroup); }
             op.vehicleGroup = VEHICLE_TYPES[op.vehicleType] ? VEHICLE_TYPES[op.vehicleType].build() : null;
-            if (op.vehicleGroup) scene.add(op.vehicleGroup);
+            if (op.vehicleGroup) { applyVehicleColour(op.vehicleGroup, VEHICLE_TYPES[op.vehicleType], op.vehicleColor); scene.add(op.vehicleGroup); }
             op.vehicleTypeBuilt = op.vehicleType;
+            op.vehicleColorBuilt = op.vehicleColor;
           }
           if (op.vehicleGroup) {
             op.vehicleGroup.visible = true;
@@ -24468,7 +24668,7 @@
       (remote.lights||[]).forEach(([bx,by,bz,nx,ny,nz]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!fixtures.has(fk) && !deletedKeysThisSession.fixtures.has(fk)) addFixture(bx,by,bz,nx,ny,nz); });
       (remote.ladders||[]).forEach(([bx,by,bz,nx,ny,nz]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!ladders.has(fk) && !deletedKeysThisSession.ladders.has(fk)) addLadder(bx,by,bz,nx,ny,nz); });
       (remote.wallpapers||[]).forEach(([bx,by,bz,nx,ny,nz,colorIdx]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!wallpapers.has(fk) && !deletedKeysThisSession.wallpapers.has(fk)) addWallpaper(bx,by,bz,nx,ny,nz,colorIdx||0); });
-      (remote.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!signs.has(fk) && !deletedKeysThisSession.signs.has(fk)) addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||''); });
+      (remote.signs||[]).forEach(([bx,by,bz,nx,ny,nz,sizeIdx,text,rot]) => { const fk=faceKeyFor(bx,by,bz,nx,ny,nz); if (!signs.has(fk) && !deletedKeysThisSession.signs.has(fk)) addSign(bx,by,bz,nx,ny,nz,sizeIdx||0,text||'',rot); });
       (remote.doors||[]).forEach(([bx,by,bz,rot,typeIdx]) => { const k=key(bx,by,bz); if (!doors.has(k) && !deletedKeysThisSession.doors.has(k)) addDoor(bx,by,bz,rot||0,typeIdx||0); });
       (remote.furniture||[]).forEach(([bx,by,bz,rot,typeIdx]) => { const k=key(bx,by,bz); if (!furniture.has(k) && !deletedKeysThisSession.furniture.has(k)) addFurniture(bx,by,bz,rot||0,typeIdx||0); });
     } catch (e) {
@@ -28688,7 +28888,13 @@
     const type = SIGN_TYPES[sizeIdx];
     const c = document.createElement('canvas'); c.width=34; c.height=Math.round(34*type.h/type.w) || 34; c.className='swatch';
     const ctx = c.getContext('2d');
-    if (type.neon) {
+    if (type.street) {
+      c.height = 34;
+      ctx.fillStyle = '#2c3a30'; ctx.fillRect(16, 12, 3, 22);
+      ctx.fillStyle = '#1d6b40'; ctx.fillRect(3, 5, 28, 9);
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1; ctx.strokeRect(4.5, 6.5, 25, 6);
+      ctx.fillStyle = '#fff1c0'; ctx.beginPath(); ctx.arc(17.5, 3, 2.2, 0, Math.PI * 2); ctx.fill();
+    } else if (type.neon) {
       ctx.fillStyle = '#0a0a0f'; ctx.fillRect(0,0,c.width,c.height);
       ctx.strokeStyle = '#5eeaff'; ctx.lineWidth = 1; ctx.strokeRect(2,2,c.width-4,c.height-4);
       ctx.fillStyle = '#8ff5ff'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -28888,7 +29094,8 @@
     const type = VEHICLE_TYPES[typeIdx];
     const c = document.createElement('canvas'); c.width=34; c.height=34; c.className='swatch';
     const ctx = c.getContext('2d');
-    const hex = '#' + type.swatch.toString(16).padStart(6,'0');
+    const own = vehicleColourFor(type); // your chosen paint, if you own it in a colour
+    const hex = '#' + (own != null ? own : type.swatch).toString(16).padStart(6,'0');
     ctx.fillStyle = hex;
     if (type.name === 'Electric Scooter') {
       ctx.fillRect(15,10,3,15); ctx.fillRect(10,8,13,3);
@@ -28914,6 +29121,14 @@
       ctx.beginPath(); ctx.moveTo(9,24); ctx.lineTo(16,24); ctx.lineTo(13,13); ctx.lineTo(23,13); ctx.lineTo(25,24); ctx.moveTo(16,24); ctx.lineTo(23,13); ctx.moveTo(23,13); ctx.lineTo(22,8); ctx.stroke();
       ctx.fillStyle = '#1a1a1a'; ctx.fillRect(10,11,6,2); ctx.fillRect(19,7,6,2);
       ctx.fillStyle = '#ffe066'; ctx.fillRect(15,18,4,3); // battery charge light
+    } else if (type.name === 'Motorbike') {
+      ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(8,25,5.5,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(26,25,5.5,0,Math.PI*2); ctx.stroke();
+      ctx.fillStyle = hex; ctx.beginPath(); ctx.moveTo(6,18); ctx.lineTo(13,14); ctx.lineTo(22,13); ctx.lineTo(28,17); ctx.lineTo(24,22); ctx.lineTo(10,22); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#9fb8c8'; ctx.fillRect(24,8,3,6); // screen
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(12,12,7,2); // seat
+      ctx.fillStyle = '#4a4e55'; ctx.fillRect(4,16,5,5); // side case
     } else if (type.name === 'Tank') {
       ctx.fillStyle = '#262626'; ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(3,22,28,8,4); else ctx.rect(3,22,28,8); ctx.fill();
       ctx.fillStyle = hex; ctx.fillRect(5,17,24,6);
@@ -28941,8 +29156,7 @@
     popup.style.cssText = popupCss(slotEl);
     VEHICLE_TYPES.forEach((t, idx) => {
       if (!vehicleUnlocked(t)) return; // only types bought at a Vehicle Shop — see VEHICLE & EQUIPMENT SHOPS
-      const g = garageCount(t);
-      const priceText = g ? ' · 🅿️×' + g : costLabel(t.cost); // a garage one is placed free, otherwise a new one is bought
+      const priceText = ' · free'; // owned — placing is free
       const btn = document.createElement('div');
       btn.className = 'popup-item';
       btn.title = t.name + priceText;
@@ -29281,11 +29495,12 @@
   });
   document.getElementById('signTextPlaceBtn').addEventListener('click', () => {
     if (!pendingSign) return;
-    const { bx, by, bz, nx, ny, nz, sizeIdx } = pendingSign;
+    const { bx, by, bz, nx, ny, nz, sizeIdx, rot } = pendingSign;
     const type = SIGN_TYPES[sizeIdx];
     if (!trySpendCoins(type.cost, type.name)) { closeSignTextModal(); return; }
     const text = document.getElementById('signTextInput').value.trim();
-    addSign(bx, by, bz, nx, ny, nz, sizeIdx, text);
+    addSign(bx, by, bz, nx, ny, nz, sizeIdx, text, type.street ? rot : undefined);
+    if (type.street) showBriefMessage('🪧 With the Sign slot selected, press ✋ on a street sign to turn it');
     playThud(300);
     closeSignTextModal();
   });

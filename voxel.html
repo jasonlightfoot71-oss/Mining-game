@@ -21125,11 +21125,21 @@
   // farm-pen ones alike. Press ✋ on it (or while standing right by it) to
   // pick it up into your bag. Milk and eggs sell at the Grocer's, wool at the
   // Tailor. Up to 3 can pile up per animal before it stops leaving more.
-  // Each player's game drops its own (they aren't shared or saved), and the
-  // 10-minute clock runs while you're in the world.
+  // Each player's game drops its own (they aren't shared between players).
+  //
+  // The clock runs on real (wall) time and is SAVED — per world, per animal,
+  // in this device's localStorage, like the harvest bag — so produce keeps
+  // building up while the game is closed, the tab is in the background, or
+  // you're off somewhere else and the animal's chunk has unloaded. Each
+  // animal just has a saved "anchor" time: how many drops are waiting is
+  // min(3, whole 10-minute steps since the anchor). The drop meshes on the
+  // ground are only a picture of that number — rebuilt whenever the animal
+  // (re)spawns — and picking one up moves the anchor on by 10 minutes.
+  // (Previously the clock was performance.now() on the in-memory record, so
+  // a reload, a despawn/respawn or a backgrounded tab all restarted it.)
   const PRODUCE_EVERY_MS = 10 * 60 * 1000, MAX_DROPS_PER_ANIMAL = 3;
   const ANIMAL_PRODUCE = { Cow: 'Milk', Chicken: 'Egg', Sheep: 'Wool' };
-  const animalDrops = []; // { mesh, item, owner }
+  const animalDrops = []; // { mesh, item, ownerId } — ownerId is the animal's stable cid (pen id / hatched record key)
   function buildDropMesh(item) {
     const g = new THREE.Group();
     if (item === 'Milk') {
@@ -21147,24 +21157,73 @@
     return g;
   }
   let produceNext = 0;
+  // Saved anchors: { [animal cid]: epoch ms }, one localStorage entry per world.
+  let produceAnchors = null, produceAnchorsWorld = null, produceAnchorsDirty = false;
+  const produceStorageKey = () => 'voxelProduce:' + (currentWorldId || 'none');
+  function loadProduceAnchors() {
+    if (produceAnchors && produceAnchorsWorld === currentWorldId) return;
+    produceAnchorsWorld = currentWorldId; produceAnchorsDirty = false;
+    try { produceAnchors = JSON.parse(localStorage.getItem(produceStorageKey()) || '{}') || {}; } catch (e) { produceAnchors = {}; }
+  }
+  function saveProduceAnchors() {
+    if (!produceAnchorsDirty) return;
+    produceAnchorsDirty = false;
+    try { localStorage.setItem(produceStorageKey(), JSON.stringify(produceAnchors)); } catch (e) {}
+  }
+  // The anchor, clamped so it never counts more than the 3-drop cap (sitting at the cap doesn't bank extra).
+  function produceAnchor(w, now) {
+    let t = produceAnchors[w.cid];
+    if (typeof t !== 'number') {
+      // First time this animal is seen: a hatched one counts from its hatch time (so one hatched before this
+      // change has a full pile waiting); a farm-pen one gets a staggered 3–10 min first drop so a herd doesn't
+      // all drop at once.
+      const hatchMs = w.hatched ? seedTime(w.cid) * 1000 : 0;
+      t = (hatchMs > 0 && hatchMs <= now) ? hatchMs : now - PRODUCE_EVERY_MS * Math.random() * 0.7;
+      produceAnchors[w.cid] = t; produceAnchorsDirty = true;
+    }
+    const floor = now - MAX_DROPS_PER_ANIMAL * PRODUCE_EVERY_MS;
+    if (t < floor) { t = floor; produceAnchors[w.cid] = t; produceAnchorsDirty = true; }
+    return t;
+  }
+  function placeDrop(w, item, n) {
+    const mesh = buildDropMesh(item);
+    const p = w.mesh.position, a = w.mesh.rotation.y + Math.PI + (n ? (n % 2 ? 1 : -1) * 0.9 * Math.ceil(n / 2) : 0); // first one behind it, extras fanned round
+    mesh.position.set(p.x + Math.sin(a) * 0.45, p.y, p.z + Math.cos(a) * 0.45);
+    mesh.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(mesh);
+    animalDrops.push({ mesh, item, ownerId: w.cid });
+  }
+  function removeDrop(d) {
+    const i = animalDrops.indexOf(d); if (i >= 0) animalDrops.splice(i, 1);
+    scene.remove(d.mesh); disposeObject3D(d.mesh);
+  }
+  // A hatched animal's record key changes when it's led to a new home (see releaseLead) — carry its clock over,
+  // otherwise it'd start afresh from its hatch time and hand out a full pile every time it was moved.
+  function moveProduceClock(oldId, newId) {
+    loadProduceAnchors();
+    if (typeof produceAnchors[oldId] === 'number') { produceAnchors[newId] = produceAnchors[oldId]; delete produceAnchors[oldId]; produceAnchorsDirty = true; saveProduceAnchors(); }
+    for (const d of animalDrops) if (d.ownerId === oldId) d.ownerId = newId;
+  }
   function updateAnimalProduce() {
-    const now = performance.now();
-    if (now < produceNext) return;
-    produceNext = now + 1000;
+    const pnow = performance.now();
+    if (pnow < produceNext) return;
+    produceNext = pnow + 1000;
+    if (!currentWorldId) return;
+    loadProduceAnchors();
+    const now = Date.now();
+    const live = new Map();
     for (const w of villageAnimals) {
       const item = ANIMAL_PRODUCE[w.kindName];
-      if (!item || !w.mesh) continue;
-      if (!w.nextDropAt) { w.nextDropAt = now + PRODUCE_EVERY_MS * (0.3 + Math.random() * 0.7); continue; } // staggered, so a herd doesn't all drop at once
-      if (now < w.nextDropAt) continue;
-      w.nextDropAt = now + PRODUCE_EVERY_MS;
-      if (animalDrops.filter(d => d.owner === w).length >= MAX_DROPS_PER_ANIMAL) continue;
-      const mesh = buildDropMesh(item);
-      const p = w.mesh.position, back = w.mesh.rotation.y + Math.PI;
-      mesh.position.set(p.x + Math.sin(back) * 0.45, p.y, p.z + Math.cos(back) * 0.45);
-      mesh.rotation.y = Math.random() * Math.PI * 2;
-      scene.add(mesh);
-      animalDrops.push({ mesh, item, owner: w });
+      if (!item || !w.mesh || w.cid == null) continue;
+      live.set(w.cid, w);
+      const due = Math.min(MAX_DROPS_PER_ANIMAL, Math.floor((now - produceAnchor(w, now)) / PRODUCE_EVERY_MS));
+      let have = 0; for (const d of animalDrops) if (d.ownerId === w.cid) have++;
+      for (let n = have; n < due; n++) placeDrop(w, item, n);
     }
+    // Drops whose animal isn't loaded (chunk unloaded, world left, butchered, died) are cleared away — the
+    // saved anchor still holds the count, so they're put back when the animal next spawns.
+    for (let i = animalDrops.length - 1; i >= 0; i--) if (!live.has(animalDrops[i].ownerId)) removeDrop(animalDrops[i]);
+    saveProduceAnchors();
   }
   const _dropRay = new THREE.Raycaster();
   // Called from doAction: picks up the drop under the crosshair, or failing that one right at your feet.
@@ -21185,8 +21244,11 @@
       if (coins < fee) { showSaveStatus('⚠ Picking this up costs 💰' + fee + ' (paid to the owner) — you have ' + coins, true); return true; }
       payWorldOwner(fee, 'produce');
     }
-    animalDrops.splice(animalDrops.indexOf(drop), 1);
-    scene.remove(drop.mesh); disposeObject3D(drop.mesh);
+    removeDrop(drop);
+    loadProduceAnchors(); // one collected — its animal's clock moves on 10 minutes (see ANIMAL PRODUCE)
+    const nowMs = Date.now(), t = produceAnchors[drop.ownerId];
+    produceAnchors[drop.ownerId] = Math.max(typeof t === 'number' ? t : nowMs, nowMs - MAX_DROPS_PER_ANIMAL * PRODUCE_EVERY_MS) + PRODUCE_EVERY_MS;
+    produceAnchorsDirty = true; saveProduceAnchors();
     addToInventory(drop.item, 1);
     showBriefMessage((PRODUCE_EMOJI[drop.item] || '') + ' +1 ' + drop.item);
     playThud(300);
@@ -21353,6 +21415,7 @@
           recordSeed(ox, oy, oz, -1);
           hatchedLive.delete(rk);
           hatchedLive.set(nk, a);
+          moveProduceClock(rk, nk); // its milk/egg/wool clock (and any drops waiting) move home with it too — see ANIMAL PRODUCE
           a.cid = nk; a.nameKey = nk;
         }
       }

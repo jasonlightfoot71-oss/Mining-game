@@ -27527,6 +27527,92 @@
   }
   window.addEventListener('gamepaddisconnected', () => { if (!getActivePad()) { padReleaseInputs(); padConnected = false; padHintShown = false; showBriefMessage('Controller disconnected'); } });
 
+  // ================= RENDER DISTANCE & PERFORMANCE =================
+  // Minecraft-style: things too far away to matter aren't drawn at all, and switch back on as you come near.
+  // Every CULL_EVERY_MS the scene's loose objects (furniture, props, NPCs, animals, vehicles, signs, crops,
+  // shop displays, drops...) are checked against your distance. Anything past the fog (where it's invisible
+  // anyway) — or, for very small things, past SMALL_CULL_DIST — is moved onto a layer the camera and the
+  // sun's shadow camera don't draw. Its .visible flag is never touched, so game logic that hides/shows things
+  // (residents going indoors, etc.) keeps working; lights are left alone (changing the light count makes three
+  // recompile every shader, which is a worse hitch). The block terrain, water, glass and other world-sized
+  // meshes are never culled here — they're one big mesh each.
+  // Shadows: the sun's shadow map is redrawn every SHADOW_EVERY frames instead of every frame (it's a second
+  // render of everything, terrain included); moving shadows update at half rate, which is hard to notice.
+  // F3 (or #perf on the end of the URL) shows a performance readout.
+  const CULL_LAYER = 3, CULL_EVERY_MS = 250, SMALL_CULL_DIST = 48, SMALL_RADIUS = 0.6, SHADOW_EVERY = 2;
+  const _cullBox = new THREE.Box3(), _cullSphere = new THREE.Sphere();
+  let cullNext = 0, cullHidden = 0, cullChecked = 0, shadowFrame = 0;
+  function cullInfo(o) {
+    if (o.userData._cull !== undefined) return o.userData._cull;
+    let info = false;
+    // Skipped: lights/camera, instanced block meshes, particle Points (rain, stars — they follow you), and anything
+    // sitting at the world origin — those are world-space merged meshes (water, glass, lava...) whose geometry is
+    // rebuilt as the world changes, so a cached bounding box for them could go stale.
+    const atOrigin = o.position.x === 0 && o.position.y === 0 && o.position.z === 0;
+    if (!(o === camera || o.isLight || o.isCamera || o.isInstancedMesh || o.isPoints || atOrigin || o.userData.noCull)) {
+      _cullBox.setFromObject(o);
+      if (!_cullBox.isEmpty()) {
+        _cullBox.getBoundingSphere(_cullSphere);
+        if (_cullSphere.radius <= 12) info = { ox: _cullSphere.center.x - o.position.x, oz: _cullSphere.center.z - o.position.z, r: _cullSphere.radius };
+      }
+    }
+    o.userData._cull = info;
+    return info;
+  }
+  function setCulled(o, on) {
+    o.userData._culled = on;
+    o.traverse(c => { if (!c.isLight) c.layers.set(on ? CULL_LAYER : 0); });
+  }
+  function updateRenderDistance() {
+    const now = performance.now();
+    if (now < cullNext) return;
+    cullNext = now + CULL_EVERY_MS;
+    const far = (scene.fog ? scene.fog.far : 70) + 4;
+    const px = camera.position.x, pz = camera.position.z;
+    let hidden = 0, checked = 0;
+    for (const o of scene.children) {
+      const info = cullInfo(o);
+      if (!info) continue;
+      checked++;
+      const dx = o.position.x + info.ox - px, dz = o.position.z + info.oz - pz;
+      const lim = (info.r < SMALL_RADIUS ? Math.min(SMALL_CULL_DIST, far) : far) + info.r;
+      const cull = dx * dx + dz * dz > lim * lim;
+      if (cull !== !!o.userData._culled) setCulled(o, cull);
+      if (cull) hidden++;
+    }
+    cullHidden = hidden; cullChecked = checked;
+  }
+  // Performance readout (F3).
+  let perfEl = null, perfOn = /(^|[#&])perf\b/.test(location.hash), perfFrames = 0, perfLast = performance.now(), perfFps = 0, perfMs = 0;
+  function togglePerfOverlay() { perfOn = !perfOn; if (perfEl) perfEl.style.display = perfOn ? 'block' : 'none'; }
+  function updatePerfOverlay(frameStart) {
+    if (!perfOn) return;
+    perfFrames++;
+    perfMs += (performance.now() - frameStart);
+    const now = performance.now();
+    if (now - perfLast < 500) return;
+    perfFps = perfFrames * 1000 / (now - perfLast);
+    const avgMs = perfMs / perfFrames;
+    perfFrames = 0; perfMs = 0; perfLast = now;
+    if (!perfEl) {
+      perfEl = document.createElement('div');
+      perfEl.style.cssText = 'position:fixed;left:6px;top:6px;z-index:60;pointer-events:none;background:rgba(0,0,0,0.6);color:#9fe;font:11px/1.35 monospace;padding:5px 7px;border-radius:5px;white-space:pre;';
+      document.body.appendChild(perfEl);
+    }
+    perfEl.style.display = 'block';
+    const inf = renderer.info;
+    let inst = 0; for (const o of scene.children) if (o.isInstancedMesh && o.visible) inst += o.count;
+    perfEl.textContent = 'FPS ' + perfFps.toFixed(0) + '   JS ' + avgMs.toFixed(1) + 'ms/frame\n'
+      + 'draw calls ' + inf.render.calls + '   triangles ' + (inf.render.triangles / 1000).toFixed(0) + 'k\n'
+      + 'block instances ' + inst + '   objects ' + scene.children.length + '\n'
+      + 'far-culled ' + cullHidden + ' of ' + cullChecked + '   mirrors ' + liveMirrors.size + '\n'
+      + 'geometries ' + inf.memory.geometries + '   textures ' + inf.memory.textures;
+  }
+  renderer.info.autoReset = false; // reset once per frame (below), so mirror renders count in the frame's totals
+  renderer.shadowMap.autoUpdate = false; // redrawn every SHADOW_EVERY frames instead — see above
+  renderer.shadowMap.needsUpdate = true;
+  window.addEventListener('keydown', e => { if (e.code === 'F3') { e.preventDefault(); togglePerfOverlay(); } });
+
   // ================= GAME LOOP =================
   const clock = new THREE.Clock();
   const GRAVITY = -18;
@@ -27538,6 +27624,7 @@
   function animate() {
     requestAnimationFrame(animate);
     lastFrameTime = performance.now();
+    renderer.info.reset();
     const dt = Math.min(clock.getDelta(), 0.05);
     waterTime += dt;
     waterMat.uniforms.uTime.value = waterTime;
@@ -28189,8 +28276,11 @@
       if (needsRebuild) { rebuildMeshes(); needsRebuild = false; }
       else if (rebuildInProgress) { continueRebuild(); } // drains the rest of a chunked rebuild over subsequent frames — see rebuildMeshes()/continueRebuild()'s own comments
       hideEmptyBlockMeshes();
+      updateRenderDistance(); // far things off, near things back on — see RENDER DISTANCE & PERFORMANCE
+      if (++shadowFrame % SHADOW_EVERY === 0) renderer.shadowMap.needsUpdate = true;
       renderer.render(scene, camera);
     }
+    updatePerfOverlay(lastFrameTime);
   }
 
   let rotateStuckTimer = null;

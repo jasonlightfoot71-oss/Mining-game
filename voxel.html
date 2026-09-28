@@ -6978,8 +6978,16 @@
   // It turns in 45° steps: its `rot` (0-7) is saved as an extra 9th field on the sign's save row, which older
   // copies of the game simply ignore. Placed facing you; with the Sign slot selected, ✋ on one turns it.
   // arrow: 0 none, -1 pointing left, 1 pointing right (as seen from the side it's drawn on).
+  // Greedy word-wrap at the current ctx.font; returns the lines.
+  function wrapLines(ctx, text, maxW) {
+    const words = (text || '').split(/\s+/).filter(Boolean), lines = [];
+    let line = '';
+    for (const w of words) { const t = line ? line + ' ' + w : w; if (line && ctx.measureText(t).width > maxW) { lines.push(line); line = w; } else line = t; }
+    if (line) lines.push(line);
+    return lines.length ? lines : [''];
+  }
   function buildStreetSignTexture(text, arrow) {
-    const W = 512, H = 128;
+    const W = 640, H = 160; // plate is 2.4 x 0.6 — twice the area of the first version's 1.7 x 0.425
     const c = document.createElement('canvas'); c.width = W; c.height = H;
     const ctx = c.getContext('2d');
     ctx.fillStyle = '#1d6b40'; ctx.fillRect(0, 0, W, H);
@@ -6987,7 +6995,7 @@
     let textCx = W / 2, textW = W * 0.88;
     if (arrow) {
       // a chunky arrow at the end it points to, text squeezed into the rest
-      const ax = arrow < 0 ? 30 : W - 30, dir = arrow < 0 ? -1 : 1, cy = H / 2;
+      const ax = arrow < 0 ? 34 : W - 34, dir = arrow < 0 ? -1 : 1, cy = H / 2;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.moveTo(ax, cy);                          // tip
@@ -6998,22 +7006,33 @@
       ctx.lineTo(ax - dir * 42, cy + 14);
       ctx.lineTo(ax - dir * 42, cy + 34);
       ctx.closePath(); ctx.fill();
-      textW = W * 0.88 - 110;
-      textCx = W / 2 - dir * 55;
+      textW = W * 0.88 - 105;
+      textCx = W / 2 - dir * 52;
     }
-    ctx.font = 'bold ' + Math.floor(H * 0.46) + 'px sans-serif';
+    // Biggest text that fits: one big line if it can, otherwise wraps onto 2 (or 3) smaller lines.
+    const str = text || 'Street';
+    let px = Math.floor(H * 0.5), lines;
+    for (; px >= 14; px -= 2) {
+      ctx.font = 'bold ' + px + 'px sans-serif';
+      lines = wrapLines(ctx, str, textW);
+      const widest = Math.max(...lines.map(l => ctx.measureText(l).width));
+      if (widest <= textW && lines.length * px * 1.08 <= H * 0.8) break;
+    }
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#ffffff';
-    wrapCanvasText(ctx, text || 'Street', textCx, H / 2 + 2, textW, H * 0.48);
-    return new THREE.CanvasTexture(c);
+    const lh = px * 1.08, y0 = H / 2 + 2 - (lines.length - 1) * lh / 2;
+    lines.forEach((l, i) => ctx.fillText(l, textCx, y0 + i * lh));
+    const tex = new THREE.CanvasTexture(c);
+    tex.anisotropy = 4;
+    return tex;
   }
   function buildStreetSign(text, arrow) {
     const g = new THREE.Group();
     const postMat = new THREE.MeshPhongMaterial({ color: 0x2c3a30, shininess: 40 });
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.33, 8), postMat);
-    post.position.y = 2.33 / 2; g.add(post);
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.26, 8), postMat);
+    post.position.y = 2.26 / 2; g.add(post);
     const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.08, 8), postMat);
     foot.position.y = 0.04; g.add(foot);
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.5, 0.05), postMat);
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.68, 0.05), postMat);
     frame.position.y = 2.56; g.add(frame);
     // A plate on each side, so it reads from both directions. An arrow has to point the same way in the WORLD from
     // both sides, which means the back plate draws it the other way round (what's "right" from the front is "left"
@@ -7021,11 +7040,11 @@
     arrow = arrow | 0;
     [0, Math.PI].forEach(a => {
       const plateMat = new THREE.MeshBasicMaterial({ map: buildStreetSignTexture(text, a ? -arrow : arrow) }); // self-lit
-      const pl = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.425), plateMat);
+      const pl = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 0.6), plateMat);
       pl.rotation.y = a; pl.position.set(0, 2.56, a ? -0.027 : 0.027); g.add(pl);
     });
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.2, 6), postMat);
-    cap.position.y = 2.9; g.add(cap);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.1, 6), postMat);
+    cap.position.y = 2.93; g.add(cap);
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff1c0 }));
     lamp.position.y = 2.98; g.add(lamp); // tops out right at 3 blocks
     const halo = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff1c0, transparent: true, opacity: 0.25, depthWrite: false }));

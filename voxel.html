@@ -8179,6 +8179,190 @@
     }
     return group;
   }
+  // ================= MIRRORS =================
+  // Wall Mirror (Bathroom Furniture) and Full-Length Mirror (Bedroom
+  // Furniture). The glass is a real reflection: a hand-rolled port of
+  // three's own examples/js/objects/Reflector.js (r128), which isn't in the
+  // core build this file loads. Just before the glass is drawn, it renders
+  // the scene a second time from a camera mirrored through its plane into
+  // its own texture, and the glass shader projects that texture back on.
+  //
+  // You can see yourself: a copy of your own avatar (buildCustomerFigure
+  // with getMyAvatarColors, so the Wardrobe's hats/scarves/jumpers show) is
+  // made visible ONLY during a mirror's own render pass and hidden again
+  // before the normal frame is drawn, so first-person view is unaffected.
+  // The first-person held item (a child of the camera) is hidden during
+  // that pass so it doesn't float in the reflection.
+  //
+  // Cost control, since each live mirror is a whole extra scene render:
+  // a mirror only refreshes when it's actually on screen (onBeforeRender
+  // only fires for meshes that pass frustum culling), within
+  // MIRROR_RANGE blocks of you, and at most MIRROR_MAX_PER_FRAME per
+  // frame; its texture is a fraction of the screen's resolution.
+  // A mirror seen inside another mirror shows its last frame rather than
+  // recursing.
+  const MIRROR_RANGE = 16, MIRROR_MAX_PER_FRAME = 2;
+  const MIRROR_RES_SCALE = isTouchDeviceEarly() ? 0.35 : 0.5;
+  function isTouchDeviceEarly() { return window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window); } // isTouchDevice itself is declared further down the file
+  const liveMirrors = new Set();
+  let mirrorRendering = false, mirrorFrameId = -1, mirrorsThisFrame = 0;
+  let mirrorAvatar = null, mirrorAvatarKey = '';
+  function ensureMirrorAvatar() {
+    const k = JSON.stringify(getMyAvatarColors());
+    if (mirrorAvatar && k === mirrorAvatarKey) return mirrorAvatar;
+    if (mirrorAvatar) { scene.remove(mirrorAvatar); disposeObject3D(mirrorAvatar); }
+    mirrorAvatar = buildCustomerFigure(false, getMyAvatarColors());
+    mirrorAvatar.visible = false;
+    mirrorAvatarKey = k;
+    scene.add(mirrorAvatar);
+    return mirrorAvatar;
+  }
+  // Poses the self-figure where you're standing. Returns false when it
+  // shouldn't be shown (riding something, or a pulled-back minigame camera
+  // that already shows its own avatar).
+  function poseMirrorAvatar() {
+    if (ridingVehicle) return false;
+    const eyeY = player.pos.y + player.height * 0.92;
+    const dx = camera.position.x - player.pos.x, dy = camera.position.y - eyeY, dz = camera.position.z - player.pos.z;
+    if (dx * dx + dy * dy + dz * dz > 0.5) return false; // not first-person right now
+    const a = ensureMirrorAvatar();
+    a.position.set(player.pos.x, player.pos.y, player.pos.z);
+    a.rotation.y = yaw + Math.PI; // camera forward is (-sin yaw, -cos yaw); the figure faces its local +Z
+    const moving = (player.vel.x * player.vel.x + player.vel.z * player.vel.z) > 0.01;
+    const swing = moving ? Math.sin(performance.now() * 0.02) * 0.5 : 0;
+    a.traverse(o => {
+      if (o.name === 'leg') o.rotation.x = swing * (o.position.x < 0 ? 1 : -1);
+      if (o.name === 'arm') o.rotation.x = -swing * (o.position.x < 0 ? 1 : -1);
+    });
+    return true;
+  }
+  const _mPlane = new THREE.Plane(), _mNormal = new THREE.Vector3(), _mPos = new THREE.Vector3(), _mCamPos = new THREE.Vector3();
+  const _mRot = new THREE.Matrix4(), _mLook = new THREE.Vector3(), _mClip = new THREE.Vector4(), _mView = new THREE.Vector3();
+  const _mTarget = new THREE.Vector3(), _mQ = new THREE.Vector4(), _mSize = new THREE.Vector2();
+  const _mirrorCam = new THREE.PerspectiveCamera();
+  function buildMirrorGlass(w, h) {
+    const textureMatrix = new THREE.Matrix4();
+    const material = new THREE.ShaderMaterial({
+      uniforms: { tDiffuse: { value: null }, textureMatrix: { value: textureMatrix }, tint: { value: new THREE.Color(0xdfe6ea) } },
+      vertexShader: 'uniform mat4 textureMatrix; varying vec4 vUv; void main() { vUv = textureMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform sampler2D tDiffuse; uniform vec3 tint; varying vec4 vUv; void main() { vec3 base = texture2DProj(tDiffuse, vUv).rgb; gl_FragColor = vec4(base * tint + vec3(0.02), 1.0); }',
+    });
+    const glass = new THREE.Mesh(new THREE.PlaneGeometry(w, h), material);
+    glass.userData.mirror = { textureMatrix, target: null };
+    glass.onBeforeRender = function (renderer, scn, cam) { renderMirror(glass, renderer, cam); };
+    liveMirrors.add(glass);
+    return glass;
+  }
+  function renderMirror(glass, renderer, cam) {
+    if (mirrorRendering) return; // a mirror seen in another mirror keeps its last frame — no recursion
+    const m = glass.userData.mirror;
+    const fid = lastFrameTime; // set once per animate() frame (renderer.info.render.frame would also tick for each mirror's own nested render)
+    if (fid !== mirrorFrameId) { mirrorFrameId = fid; mirrorsThisFrame = 0; }
+    if (mirrorsThisFrame >= MIRROR_MAX_PER_FRAME) return;
+    _mPos.setFromMatrixPosition(glass.matrixWorld);
+    _mCamPos.setFromMatrixPosition(cam.matrixWorld);
+    if (_mPos.distanceTo(_mCamPos) > MIRROR_RANGE) return;
+    _mRot.extractRotation(glass.matrixWorld);
+    _mNormal.set(0, 0, 1).applyMatrix4(_mRot);
+    _mView.subVectors(_mPos, _mCamPos);
+    if (_mView.dot(_mNormal) > 0) return; // looking at its back
+    mirrorsThisFrame++;
+    // Render target at a fraction of the screen (the texture is projected in screen space, so it keeps the screen's aspect).
+    renderer.getDrawingBufferSize(_mSize);
+    const tw = Math.max(64, Math.round(_mSize.x * MIRROR_RES_SCALE)), th = Math.max(64, Math.round(_mSize.y * MIRROR_RES_SCALE));
+    if (!m.target) { m.target = new THREE.WebGLRenderTarget(tw, th, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }); glass.material.uniforms.tDiffuse.value = m.target.texture; }
+    else if (m.target.width !== tw || m.target.height !== th) m.target.setSize(tw, th);
+    // Mirrored camera (straight from Reflector.js).
+    _mView.reflect(_mNormal).negate().add(_mPos);
+    _mRot.extractRotation(cam.matrixWorld);
+    _mLook.set(0, 0, -1).applyMatrix4(_mRot).add(_mCamPos);
+    _mTarget.subVectors(_mPos, _mLook).reflect(_mNormal).negate().add(_mPos);
+    _mirrorCam.position.copy(_mView);
+    _mirrorCam.up.set(0, 1, 0).applyMatrix4(_mRot).reflect(_mNormal);
+    _mirrorCam.lookAt(_mTarget);
+    _mirrorCam.far = cam.far;
+    _mirrorCam.updateMatrixWorld();
+    _mirrorCam.projectionMatrix.copy(cam.projectionMatrix);
+    m.textureMatrix.set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+    m.textureMatrix.multiply(_mirrorCam.projectionMatrix).multiply(_mirrorCam.matrixWorldInverse).multiply(glass.matrixWorld);
+    // Oblique near plane = the mirror's own plane, so nothing behind the glass shows up in it.
+    _mPlane.setFromNormalAndCoplanarPoint(_mNormal, _mPos).applyMatrix4(_mirrorCam.matrixWorldInverse);
+    _mClip.set(_mPlane.normal.x, _mPlane.normal.y, _mPlane.normal.z, _mPlane.constant);
+    const pm = _mirrorCam.projectionMatrix.elements;
+    _mQ.x = (Math.sign(_mClip.x) + pm[8]) / pm[0];
+    _mQ.y = (Math.sign(_mClip.y) + pm[9]) / pm[5];
+    _mQ.z = -1.0;
+    _mQ.w = (1.0 + pm[10]) / pm[14];
+    _mClip.multiplyScalar(2.0 / _mClip.dot(_mQ));
+    pm[2] = _mClip.x; pm[6] = _mClip.y; pm[10] = _mClip.z + 1.0 - 0.003; pm[14] = _mClip.w;
+    // Draw it: this glass hidden, your own figure shown, the first-person held item hidden.
+    mirrorRendering = true;
+    glass.visible = false;
+    const showSelf = poseMirrorAvatar();
+    if (showSelf) mirrorAvatar.visible = true;
+    const camKids = camera.children.map(c => c.visible);
+    camera.children.forEach(c => { c.visible = false; });
+    const prevTarget = renderer.getRenderTarget(), prevShadowAuto = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false; // reuse this frame's shadow maps
+    try {
+      renderer.setRenderTarget(m.target);
+      renderer.state.buffers.depth.setMask(true);
+      if (renderer.autoClear === false) renderer.clear();
+      renderer.render(scene, _mirrorCam);
+    } catch (e) { console.warn('mirror render error (recovered):', e); }
+    renderer.shadowMap.autoUpdate = prevShadowAuto;
+    renderer.setRenderTarget(prevTarget);
+    camera.children.forEach((c, i) => { c.visible = camKids[i]; });
+    if (mirrorAvatar) mirrorAvatar.visible = false;
+    glass.visible = true;
+    mirrorRendering = false;
+  }
+  // Mirrors whose furniture was removed (picked up, chunk unloaded, world left) free their render targets.
+  function pruneMirrors() {
+    for (const g of liveMirrors) {
+      let o = g; while (o.parent) o = o.parent;
+      if (o === scene) continue;
+      if (g.userData.mirror.target) g.userData.mirror.target.dispose();
+      liveMirrors.delete(g);
+    }
+  }
+  function buildWallMirror() {
+    const group = new THREE.Group();
+    const frameMat = new THREE.MeshPhongMaterial({ color: 0xc9a24a, shininess: 60 });
+    // Hung on the back wall (local +Z, same as the Wall TV) at head height — the front faces local -Z.
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.92, 0.04), frameMat);
+    back.position.set(0, 1.55, 0.46);
+    group.add(back);
+    const glass = buildMirrorGlass(0.6, 0.8);
+    glass.position.set(0, 1.55, 0.435);
+    glass.rotation.y = Math.PI; // plane's +Z normal → facing out of the wall
+    group.add(glass);
+    return group;
+  }
+  function buildFullLengthMirror() {
+    const group = new THREE.Group();
+    const woodMat = new THREE.MeshPhongMaterial({ color: 0x5e4128, shininess: 12 });
+    // A tall standing (cheval) mirror: frame on two posts with feet, set towards the back of its cell so it can stand against a wall.
+    const z = 0.3;
+    const W = 0.66, H = 1.72, bottom = 0.14;
+    const cy = bottom + H / 2;
+    const frameBack = new THREE.Mesh(new THREE.BoxGeometry(W + 0.1, H + 0.1, 0.04), woodMat);
+    frameBack.position.set(0, cy, z + 0.03);
+    group.add(frameBack);
+    const glass = buildMirrorGlass(W, H);
+    glass.position.set(0, cy, z);
+    glass.rotation.y = Math.PI;
+    group.add(glass);
+    [-1, 1].forEach(s => {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, H + 0.2, 0.05), woodMat);
+      post.position.set(s * (W / 2 + 0.08), (H + 0.2) / 2, z + 0.03);
+      group.add(post);
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.05, 0.42), woodMat);
+      foot.position.set(s * (W / 2 + 0.08), 0.025, z - 0.1);
+      group.add(foot);
+    });
+    return group;
+  }
   const FURNITURE_TYPES = [
     { name: '2-Seater Couch', build: buildCouch,     swatch: 0x35577a, cost: 80, category: 'room' },
     { name: 'TV',             build: buildTV,        swatch: 0x1a1a1a, cost: 120, category: 'room' },
@@ -8214,6 +8398,9 @@
     { name: 'Chest of Drawers',       build: buildChestOfDrawers, swatch: 0x6b4a2a, cost: 60, category: 'bedroom' },
     { name: 'Toy Box',                build: buildToyBox,         swatch: 0xe8703a, cost: 48, category: 'bedroom' },
     { name: 'Open Log Fire',          build: buildLogFire,        swatch: 0xff7a1a, cost: 30, category: 'fire' },
+    // New types only ever go on the end — saved furniture stores its index here.
+    { name: 'Wall Mirror',            build: buildWallMirror,       swatch: 0xc9a24a, cost: 60, category: 'bathroom' }, // see MIRRORS
+    { name: 'Full-Length Mirror',     build: buildFullLengthMirror, swatch: 0x5e4128, cost: 120, category: 'bedroom' },  // see MIRRORS — see what you're wearing
   ];
   let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 19, cellarTypeIdx = 24, bedroomTypeIdx = 28; // default selection per category — indices into FURNITURE_TYPES above
   // A 1x1 item centers on the clicked cell (offset 0.5, as before). Beds
@@ -26608,6 +26795,7 @@
     updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
     updatePropertyGhost(); // outline of where the chosen building would go — see PROPERTY
     updateAnimalProduce(); // milk / eggs / wool every 10 min — see ANIMAL PRODUCE
+    pruneMirrors(); // frees removed mirrors' render targets — see MIRRORS
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -28163,6 +28351,12 @@
     } else if (type.name === 'Gas Bottle') {
       ctx.fillRect(11,8,12,22); ctx.beginPath(); ctx.arc(17,8,6,Math.PI,0); ctx.fill();
       ctx.fillStyle='#b0b8bd'; ctx.fillRect(14,2,6,5);
+    } else if (type.name === 'Wall Mirror') {
+      ctx.fillRect(8,5,18,24); ctx.fillStyle='#bcd3de'; ctx.fillRect(10,7,14,20);
+      ctx.fillStyle='#ffffff'; ctx.fillRect(12,9,3,8); // glint
+    } else if (type.name === 'Full-Length Mirror') {
+      ctx.fillRect(10,1,14,29); ctx.fillRect(8,30,18,3); ctx.fillStyle='#bcd3de'; ctx.fillRect(12,3,10,25);
+      ctx.fillStyle='#ffffff'; ctx.fillRect(14,5,2,10); // glint
     } else { // Ice Machine
       ctx.fillRect(5,10,24,18); ctx.fillStyle='#d0d0d0'; ctx.fillRect(4,8,26,4);
       ctx.fillStyle='#2a2a2a'; ctx.fillRect(9,22,14,3);

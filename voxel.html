@@ -20767,22 +20767,22 @@
   // ECONOMY — the longer something takes, the better it pays, both in total
   // and per minute (so a long crop is never a worse deal than a short one).
   // Halved from the first version, cut again, then (after grow times went
-  // 4x — see CROP_GROW_MULT) evened out so profit per hour climbs gently
-  // from 3.0 (quickest) to 4.0 (pumpkin): the long crops still pay best,
-  // but not by much. Short crops can't go below +1 coin a harvest, which is
-  // what fixes the bottom of the curve. Times shown are the real ones.
+  // 4x — see CROP_GROW_MULT) set so that profit per hour rises with every
+  // step up in grow time: a longer crop always earns slightly more than
+  // repeating a shorter one in the same time (e.g. sweetcorn +11 in ~3h
+  // beats 3 wheat harvests' +9). Profits are whole coins, so the grow
+  // times are tuned to the minute (listed growSec is a quarter of these).
   //   crop            time    seed → harvest  profit  per hour
-  //   Strawberries     20m      8 →   9        1      3.0
-  //   Peas             40m      6 →   8        2      3.0   (was 32m — +2 in 32m out-earned wheat/carrots)
-  //   Flowers          40m      5 →   7        2      3.0
-  //   Wheat            1h       7 →  10        3      3.0
-  //   Carrots/Onions   1h 20m   8 →  12        4      3.0
-  //   Potatoes         1h 40m   6 →  12        6      3.6   (Beetroot 8 → 14)
-  //   Tomatoes         2h       8 →  15        7      3.5
-  //   Lettuce          2h 20m  10 →  18        8      3.4
-  //   Sweetcorn        3h      13 →  24       11      3.7
-  //   Cabbage          3h 20m  13 →  26       13      3.9
-  //   Pumpkin          4h      15 →  31       16      4.0
+  //   Strawberries     20m      8 →   9        1      3.00
+  //   Peas / Flowers   39m      6 →   8 / 5 → 7   2   3.08
+  //   Wheat            57m      7 →  10        3      3.16
+  //   Carrots/Onions   1h 14m   8 →  12        4      3.24
+  //   Potatoes         1h 46m   6 →  12        6      3.40   (Beetroot 8 → 14)
+  //   Tomatoes         2h 1m    8 →  15        7      3.47
+  //   Lettuce          2h 16m  10 →  18        8      3.53
+  //   Sweetcorn        2h 57m  13 →  24       11      3.73
+  //   Cabbage          3h 24m  13 →  26       13      3.82
+  //   Pumpkin          4h      15 →  31       16      4.00
   // Harvest value = yield x PRODUCE_PRICES (FLOWER_PRICE for flowers); seed
   // price is each type's `cost`. Animals: see ANIMAL_TYPES (meat sells for 3x
   // the animal seed). Saplings are free — they just grow a tree.
@@ -20792,29 +20792,29 @@
     { name: 'Oak Sapling',    kind: 'tree',    log: 'Wood',        leaf: 0x3f8a2e, growSec: 1200 },
     { name: 'Birch Sapling',  kind: 'tree',    log: 'Birch Wood',  leaf: 0x6aa84f, growSec: 1200 },
     { name: 'Spruce Sapling', kind: 'tree',    log: 'Spruce Wood', leaf: 0x2e5e34, growSec: 1500 },
-    { name: 'Wheat',          kind: 'wheat',   growSec: 900,  produce: 'Wheat',    yield: 2, cost: 7 },
-    { name: 'Carrots',        kind: 'carrot',  growSec: 1200,  produce: 'Carrot',   yield: 3, cost: 8 },
-    { name: 'Cabbage',        kind: 'cabbage', growSec: 3000, produce: 'Cabbage',  yield: 1, cost: 13 },
+    { name: 'Wheat',          kind: 'wheat',   growSec: 855,  produce: 'Wheat',    yield: 2, cost: 7 },
+    { name: 'Carrots',        kind: 'carrot',  growSec: 1110,  produce: 'Carrot',   yield: 3, cost: 8 },
+    { name: 'Cabbage',        kind: 'cabbage', growSec: 3060, produce: 'Cabbage',  yield: 1, cost: 13 },
     { name: 'Pumpkin',        kind: 'pumpkin', growSec: 3600, produce: 'Pumpkin',  yield: 1, cost: 15 },
     // Flowers: species index into FLOWER_TYPES + colour index into
     // FLOWER_COLORS, so a sown flower is exactly the same shape and
     // colour as the wild ones (0 daisy, 1 peony, 2 tulip, 3 cluster, 4 poppy).
-    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 600, produce: 'Red Poppies',    yield: 1, cost: 5 },
-    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 600, produce: 'Yellow Daisies', yield: 1, cost: 5 },
-    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 600, produce: 'Purple Peonies', yield: 1, cost: 5 },
-    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 600, produce: 'Blue Clusters',  yield: 1, cost: 5 },
-    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 600, produce: 'White Daisies',  yield: 1, cost: 5 },
-    { name: 'Potatoes',       kind: 'potato',     growSec: 1500, produce: 'Potato',     yield: 4, cost: 6 },
-    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1800, produce: 'Tomato',     yield: 3, cost: 8 },
-    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2100,  produce: 'Lettuce',    yield: 1, cost: 10 },
-    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1500,  produce: 'Beetroot',   yield: 2, cost: 8 },
-    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2700, produce: 'Sweetcorn',  yield: 2, cost: 13 },
-    { name: 'Onions',         kind: 'onion',      growSec: 1200, produce: 'Onion',      yield: 3, cost: 8 },
-    { name: 'Peas',           kind: 'peas',       growSec: 600, produce: 'Peas',       yield: 4, cost: 6 },
+    { name: 'Red Poppies',    kind: 'flower', species: 4, colorIdx: 0, growSec: 585, produce: 'Red Poppies',    yield: 1, cost: 5 },
+    { name: 'Yellow Daisies', kind: 'flower', species: 0, colorIdx: 1, growSec: 585, produce: 'Yellow Daisies', yield: 1, cost: 5 },
+    { name: 'Purple Peonies', kind: 'flower', species: 1, colorIdx: 2, growSec: 585, produce: 'Purple Peonies', yield: 1, cost: 5 },
+    { name: 'Blue Clusters',  kind: 'flower', species: 3, colorIdx: 3, growSec: 585, produce: 'Blue Clusters',  yield: 1, cost: 5 },
+    { name: 'White Daisies',  kind: 'flower', species: 0, colorIdx: 6, growSec: 585, produce: 'White Daisies',  yield: 1, cost: 5 },
+    { name: 'Potatoes',       kind: 'potato',     growSec: 1590, produce: 'Potato',     yield: 4, cost: 6 },
+    { name: 'Tomatoes',       kind: 'tomato',     growSec: 1815, produce: 'Tomato',     yield: 3, cost: 8 },
+    { name: 'Lettuce',        kind: 'lettuce',    growSec: 2040,  produce: 'Lettuce',    yield: 1, cost: 10 },
+    { name: 'Beetroot',       kind: 'beetroot',   growSec: 1590,  produce: 'Beetroot',   yield: 2, cost: 8 },
+    { name: 'Sweetcorn',      kind: 'sweetcorn',  growSec: 2655, produce: 'Sweetcorn',  yield: 2, cost: 13 },
+    { name: 'Onions',         kind: 'onion',      growSec: 1110, produce: 'Onion',      yield: 3, cost: 8 },
+    { name: 'Peas',           kind: 'peas',       growSec: 585, produce: 'Peas',       yield: 4, cost: 6 },
     { name: 'Strawberries',   kind: 'strawberry', growSec: 300, produce: 'Strawberry', yield: 3, cost: 8 },
-    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 600, produce: 'Pink Peonies',   yield: 1, cost: 5 },
-    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 600, produce: 'Red Tulips',     yield: 1, cost: 5 },
-    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 600, produce: 'Orange Tulips',  yield: 1, cost: 5 },
+    { name: 'Pink Peonies',   kind: 'flower', species: 1, colorIdx: 5, growSec: 585, produce: 'Pink Peonies',   yield: 1, cost: 5 },
+    { name: 'Red Tulips',     kind: 'flower', species: 2, colorIdx: 0, growSec: 585, produce: 'Red Tulips',     yield: 1, cost: 5 },
+    { name: 'Orange Tulips',  kind: 'flower', species: 2, colorIdx: 4, growSec: 585, produce: 'Orange Tulips',  yield: 1, cost: 5 },
   ];
   // Crops and flowers take CROP_GROW_MULT times the growSec listed above (trees/saplings unchanged) — one knob
   // for "slower farming" without rewriting every row. Prices are untouched, so profit per hour divides by it too

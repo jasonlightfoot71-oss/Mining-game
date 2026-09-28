@@ -3782,6 +3782,8 @@
       case 'slaughter': maybeBuildSlaughterhouse(cx, cz, spec); break;
       case 'bbq': maybeBuildBbqShop(cx, cz, spec); break;
       case 'tailor': maybeBuildTailor(cx, cz, spec); break;
+      case 'vehicleshop': maybeBuildVehicleShop(cx, cz, spec); break;
+      case 'equipshop': maybeBuildEquipmentShop(cx, cz, spec); break;
       default: return;
     }
     reapplyEditsAroundStructure(spec.ck);
@@ -7779,6 +7781,47 @@
     }
     return group;
   }
+  // Shop Counter — a proper 3-block-wide shop counter (the shops used the pub's Bar Counter, bottles and all,
+  // which looked odd). Centred on its cell, so it spans that cell and one either side. Front (customer side)
+  // is local -Z like every other piece; the shopkeeper stands behind it (+Z). Used by every shop building —
+  // see buildVillageShop, the Slaughterhouse and the Vehicle/Equipment shops.
+  function buildShopCounter() {
+    const group = new THREE.Group();
+    const bodyMat = new THREE.MeshPhongMaterial({ color: 0x7a5634, shininess: 12 });
+    const panelMat = new THREE.MeshPhongMaterial({ color: 0x8e6a44, shininess: 18 });
+    const topMat = new THREE.MeshPhongMaterial({ color: 0xe9e4da, shininess: 70 });   // pale laminate top
+    const kickMat = new THREE.MeshPhongMaterial({ color: 0x2a2320, shininess: 5 });
+    const tillMat = new THREE.MeshPhongMaterial({ color: 0x2b2f35, shininess: 40 });
+    const screenMat = new THREE.MeshBasicMaterial({ color: 0x5fd0a0 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.88, 0.62), bodyMat);
+    body.position.set(0, 0.48, 0.02);
+    group.add(body);
+    const kick = new THREE.Mesh(new THREE.BoxGeometry(2.86, 0.08, 0.58), kickMat);
+    kick.position.set(0, 0.04, 0.04);
+    group.add(kick);
+    for (let i = -1; i <= 1; i++) { // three raised front panels, one per block
+      const p = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.58, 0.03), panelMat);
+      p.position.set(i * 0.95, 0.5, -0.305);
+      group.add(p);
+    }
+    const top = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.06, 0.74), topMat);
+    top.position.set(0, 0.95, 0.0);
+    group.add(top);
+    // till on the shopkeeper's side, screen tilted toward the customer
+    const till = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.32), tillMat);
+    till.position.set(0.85, 1.05, 0.08);
+    group.add(till);
+    const scr = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.03), tillMat);
+    scr.position.set(0.85, 1.25, 0.12);
+    group.add(scr);
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 0.15), screenMat);
+    glow.position.set(0.85, 1.25, 0.1); glow.rotation.y = Math.PI; // the screen's customer-facing (-Z) side
+    group.add(glow);
+    // a little stack of paper bags at the other end
+    const bagMat = new THREE.MeshLambertMaterial({ color: 0xc9a46a });
+    for (let i = 0; i < 3; i++) { const b = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.03, 0.22), bagMat); b.position.set(-0.9, 1.0 + i * 0.03, 0.1); group.add(b); }
+    return group;
+  }
   // ---- Bathroom set ----
   function buildToilet() {
     const group = new THREE.Group();
@@ -8426,7 +8469,9 @@
     // New types only ever go on the end — saved furniture stores its index here.
     { name: 'Wall Mirror',            build: buildWallMirror,       swatch: 0xc9a24a, cost: 60, category: 'bathroom' }, // see MIRRORS
     { name: 'Full-Length Mirror',     build: buildFullLengthMirror, swatch: 0x5e4128, cost: 120, category: 'bedroom' },  // see MIRRORS — see what you're wearing
+    { name: 'Shop Counter',           build: buildShopCounter,      swatch: 0x7a5634, cost: 120, isWorkSpot: true, category: 'shop' }, // 3 wide — every shop building's counter (category 'shop' isn't a menu, so it's not placeable by hand). isWorkSpot like the Bar Counter it replaced, so working a shop counter still pays
   ];
+  const SHOP_COUNTER_IDX = FURNITURE_TYPES.findIndex(t => t.name === 'Shop Counter');
   let roomTypeIdx = 0, bathroomTypeIdx = 6, barTypeIdx = 5, kitchenTypeIdx = 19, cellarTypeIdx = 24, bedroomTypeIdx = 28; // default selection per category — indices into FURNITURE_TYPES above
   // A 1x1 item centers on the clicked cell (offset 0.5, as before). Beds
   // are genuinely close to 2 blocks in both directions (a double bed is
@@ -9302,10 +9347,10 @@
     // back toward the door.
     const backSide = HOUSE_BACK_SIDE[doorSide];
     const rot = HOUSE_SIDE_ROT[backSide];
-    if (backSide === 'north') addFurnitureTracked(midX, gy, z0 + 2, rot, 5, reg);
-    else if (backSide === 'south') addFurnitureTracked(midX, gy, z1 - 2, rot, 5, reg);
-    else if (backSide === 'west') addFurnitureTracked(x0 + 2, gy, midZ, rot, 5, reg);
-    else addFurnitureTracked(x1 - 2, gy, midZ, rot, 5, reg);
+    if (backSide === 'north') addFurnitureTracked(midX, gy, z0 + 2, rot, SHOP_COUNTER_IDX, reg);
+    else if (backSide === 'south') addFurnitureTracked(midX, gy, z1 - 2, rot, SHOP_COUNTER_IDX, reg);
+    else if (backSide === 'west') addFurnitureTracked(x0 + 2, gy, midZ, rot, SHOP_COUNTER_IDX, reg);
+    else addFurnitureTracked(x1 - 2, gy, midZ, rot, SHOP_COUNTER_IDX, reg);
 
     return shell;
   }
@@ -10788,7 +10833,7 @@
     // (Figure's torso spans y 0.72..1.30, 0.22 deep; legs below — see buildCustomerFigure.)
     // kind: 'veg' (the grocer, green apron), 'meat' (the BBQ chef, black apron + cap), 'butcher' (white, stained).
     kind = kind || 'veg';
-    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : kind === 'tailor' ? 0x6a4a9a : 0x2f7d46;
+    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : kind === 'tailor' ? 0x6a4a9a : kind === 'vehicles' ? 0x1f3a6a : kind === 'equipment' ? 0x4a5a2a : 0x2f7d46;
     const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: apronHex }));
     apron.position.set(0, 0.84, 0.13);
     mesh.add(apron);
@@ -12308,13 +12353,13 @@
   // LIVES — 10, in every world except The Mill (single player too).
   // They regenerate slowly once nobody has hurt you for a while.
   const WEAPON_TYPES = [
-    { name: 'Sword',     kind: 'sword',    emoji: '⚔️', cooldown: 420,  range: 3.6, damage: 2 },
-    { name: 'Gun',       kind: 'gun',      emoji: '🔫', cooldown: 200,  range: 70,  damage: 1 },
-    { name: 'Laser Gun', kind: 'laser',    emoji: '⚡', cooldown: 650,  range: 25,  damage: 2 },
-    { name: 'Bazooka',   kind: 'bazooka',  emoji: '🚀', cooldown: 1800, range: 120, damage: 6, radius: 7, speed: 55 },
-    { name: 'Dynamite',  kind: 'dynamite', emoji: '🧨', cooldown: 1300, damage: 5, radius: 6, fuse: 2.4 },
-    { name: 'TNT',       kind: 'tnt',      emoji: '💣', cooldown: 600,  damage: 9, radius: 10, fuse: 5 },    // placed, not thrown — see placeExplosive
-    { name: 'Landmine',  kind: 'mine',     emoji: '⚠️', cooldown: 600,  damage: 7, radius: 5, armDelay: 1.5 },
+    { name: 'Sword',     kind: 'sword',    emoji: '⚔️', price: 120, cooldown: 420,  range: 3.6, damage: 2 },
+    { name: 'Gun',       kind: 'gun',      emoji: '🔫', price: 300, cooldown: 200,  range: 70,  damage: 1 },
+    { name: 'Laser Gun', kind: 'laser',    emoji: '⚡', price: 450, cooldown: 650,  range: 25,  damage: 2 },
+    { name: 'Bazooka',   kind: 'bazooka',  emoji: '🚀', price: 900, cooldown: 1800, range: 120, damage: 6, radius: 7, speed: 55 },
+    { name: 'Dynamite',  kind: 'dynamite', emoji: '🧨', price: 250, cooldown: 1300, damage: 5, radius: 6, fuse: 2.4 },
+    { name: 'TNT',       kind: 'tnt',      emoji: '💣', price: 400, cooldown: 600,  damage: 9, radius: 10, fuse: 5 },    // placed, not thrown — see placeExplosive
+    { name: 'Landmine',  kind: 'mine',     emoji: '⚠️', price: 300, cooldown: 600,  damage: 7, radius: 5, armDelay: 1.5 },
   ];
   let weaponTypeIdx = 1;
   const LIVES_MAX = 10;
@@ -12340,7 +12385,7 @@
     return !!infiniteWorldActive && currentWorldId !== PUB_WORLD_ID;
   }
   function weaponEquipped() {
-    return selectedSlot === WEAPON_SLOT && !ridingVehicle && !currentWorkHeldKind;
+    return selectedSlot === WEAPON_SLOT && !ridingVehicle && !currentWorkHeldKind && weaponOwned(WEAPON_TYPES[weaponTypeIdx]); // bought at an Equipment Shop
   }
   function sendWeaponMsg(event, payload) {
     if (typeof mpChannel !== 'undefined' && mpChannel && currentWorldId === mpConnectedWorldId) {
@@ -13555,7 +13600,10 @@
   // real key press / click — ensureAudio must not run outside a user gesture.
   function warmWeaponAudio() { ensureAudio(); ensureVehicleGunshotBuffer(); }
   function cycleWeapon() {
-    weaponTypeIdx = (weaponTypeIdx + 1) % WEAPON_TYPES.length;
+    for (let n = 0; n < WEAPON_TYPES.length; n++) { // next one you own
+      weaponTypeIdx = (weaponTypeIdx + 1) % WEAPON_TYPES.length;
+      if (weaponOwned(WEAPON_TYPES[weaponTypeIdx])) break;
+    }
     if (typeof updateWeaponSlotIcon === 'function') updateWeaponSlotIcon();
   }
 
@@ -17685,7 +17733,7 @@
     if (e.code === 'KeyL') selectSlot(LIGHT_SLOT);
     if (e.code === 'KeyK') selectSlot(LADDER_SLOT);
     if (e.code === 'KeyU') selectSlot(DRAIN_SLOT);
-    if (e.code === 'KeyQ') { warmWeaponAudio(); if (selectedSlot === WEAPON_SLOT) cycleWeapon(); selectSlot(WEAPON_SLOT); } // Q selects weapons; pressing it again cycles to the next one
+    if (e.code === 'KeyQ') { if (!anyWeaponOwned()) { showBriefMessage('⚔️ No weapons yet — buy some at an Equipment Shop'); } else { warmWeaponAudio(); fixWeaponSelection(); if (selectedSlot === WEAPON_SLOT) cycleWeapon(); selectSlot(WEAPON_SLOT); } } // Q selects weapons; pressing it again cycles to the next one
     if (e.code === 'KeyF') selectSlot(FIRE_SLOT);
     if (e.code === 'KeyF') toggleFly();
     if (e.code === 'KeyH' && document.pointerLockElement === renderer.domElement) doFill();
@@ -18899,6 +18947,7 @@
   }
   function doAction() {
     if (ridingVehicle) { fireVehicleGun(); return; }
+    if (tryBuyShopItem()) { actionHeld = false; return; } // aiming at a vehicle / weapon on display — see VEHICLE & EQUIPMENT SHOPS
     if (weaponEquipped()) { fireWeapon(); return; }
     if (bsGame && bsGame.started && !bsGame.won) {
       const mySide = bsMySide();
@@ -18913,7 +18962,9 @@
     const keeperHit = shopkeeperInSight(r && r.hit);
     if (keeperHit) {
       const kind = (keeperHit.keeper && keeperHit.keeper.userData.shopKind) || 'veg';
-      if (kind === 'butcher') tryButcher(keeperHit.keeper); else openShopPanel(kind); // 'veg' / 'meat' / 'tailor'
+      if (kind === 'butcher') tryButcher(keeperHit.keeper);
+      else if (kind === 'vehicles' || kind === 'equipment') openTradeInPanel(kind); // sell back — see VEHICLE & EQUIPMENT SHOPS
+      else openShopPanel(kind); // 'veg' / 'meat' / 'tailor'
       return;
     }
     let blockDist = Infinity;
@@ -18997,6 +19048,7 @@
     // all on the action button — see ACTION.
     if (ridingVehicle) return;
     if (weaponEquipped()) { showBriefMessage('Press ✋ to fire'); return; }
+    if (selectedSlot === WEAPON_SLOT) { showBriefMessage('⚔️ Buy weapons at an Equipment Shop'); return; } // selected but nothing owned — never fall through to block placing
     if (selectedSlot === PROPERTY_SLOT) { placingHeld = false; tryBuyBuilding(); return; } // see PROPERTY
     if (selectedSlot === LEAD_SLOT || selectedSlot === SEED_SLOT || selectedSlot === ANIMAL_SLOT || selectedSlot === MOD_SLOT) {
       showBriefMessage(selectedSlot === LEAD_SLOT ? '🪢 Press ✋ near an animal to use the lead' : selectedSlot === SEED_SLOT ? '🌱 Press ✋ on Mud to sow seeds' : selectedSlot === MOD_SLOT ? '🧬 Aim at a People Incubator and press ✋' : '🥚 Aim at an Incubator and press ✋');
@@ -19158,9 +19210,16 @@
 
     if (selectedSlot === VEHICLE_SLOT) {
       const nearby = nearestVehicleToPlayer(2.2);
-      if (nearby) { removeVehicleInstance(nearby); playThud(200); return; }
+      if (nearby) {
+        const nt = VEHICLE_TYPES[nearby.typeIdx];
+        removeVehicleInstance(nearby); playThud(200);
+        if (nt && !chargingVisitor()) { addToGarage(nt, 1); showBriefMessage('🅿️ ' + nt.name + ' is back in your garage (×' + garageCount(nt) + ') — place it again free, or sell it at a Vehicle Shop'); } // not in someone else's world — it isn't yours
+        return;
+      }
       const type = VEHICLE_TYPES[vehicleTypeIdx];
-      if (!trySpendCoins(type.cost, type.name)) return;
+      if (!vehicleUnlocked(type)) { showSaveStatus('🚗 Buy a vehicle at a Vehicle Shop first', true); return; }
+      if (garageCount(type) > 0) addToGarage(type, -1); // out of the garage, free
+      else if (!trySpendCoins(type.cost, type.name)) return;
       addVehicle(r.hit.x + 0.5, r.hit.y + 1, r.hit.z + 0.5, yaw, vehicleTypeIdx);
       playThud(400);
       return;
@@ -20913,6 +20972,8 @@
     { t: 'bbq',       name: 'BBQ Shop',       emoji: '🍖', price: 1500, sx: 15, sz: 15, note: 'buys meat' },
     { t: 'tailor',    name: 'Tailor',         emoji: '🧵', price: 1800, sx: 15, sz: 15, note: 'buys wool, sells knitted clothes' },
     { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 2000, sx: 15, sz: 15, note: 'turns animals into meat' },
+    { t: 'vehicleshop', name: 'Vehicle Shop', emoji: '🚗', price: 3000, sx: 25, sz: 25, note: 'glass showroom — buy vehicles, sell them back' },
+    { t: 'equipshop', name: 'Equipment Shop', emoji: '⚔️', price: 2200, sx: 19, sz: 19, note: 'weapons on the walls — buy them, sell them back' },
     { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 2500, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
     { t: 'church',    name: 'Church',         emoji: '⛪', price: 4000, sx: 19, sz: 25 },
     { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
@@ -21149,10 +21210,10 @@
     placeShellSign(shell, doorSide, 'Slaughter House', reg); // two words, so it wraps onto two lines across the 2-wide sign
     placeShellLight(shell, doorSide, reg);
     const backSide = HOUSE_BACK_SIDE[doorSide], rot = HOUSE_SIDE_ROT[backSide];
-    if (backSide === 'north') addFurnitureTracked(shell.midX, floor, shell.z0 + 2, rot, 5, reg);
-    else if (backSide === 'south') addFurnitureTracked(shell.midX, floor, shell.z1 - 2, rot, 5, reg);
-    else if (backSide === 'west') addFurnitureTracked(shell.x0 + 2, floor, shell.midZ, rot, 5, reg);
-    else addFurnitureTracked(shell.x1 - 2, floor, shell.midZ, rot, 5, reg);
+    if (backSide === 'north') addFurnitureTracked(shell.midX, floor, shell.z0 + 2, rot, SHOP_COUNTER_IDX, reg);
+    else if (backSide === 'south') addFurnitureTracked(shell.midX, floor, shell.z1 - 2, rot, SHOP_COUNTER_IDX, reg);
+    else if (backSide === 'west') addFurnitureTracked(shell.x0 + 2, floor, shell.midZ, rot, SHOP_COUNTER_IDX, reg);
+    else addFurnitureTracked(shell.x1 - 2, floor, shell.midZ, rot, SHOP_COUNTER_IDX, reg);
     for (let i = -2; i <= 2; i += 2) { // meat on hooks along the back wall
       if (backSide === 'north' || backSide === 'south') placeVillageProp(buildHangingMeatProp, shell.midX + i, floor + 2, backSide === 'north' ? shell.z0 + 1 : shell.z1 - 1, 0, reg);
       else placeVillageProp(buildHangingMeatProp, backSide === 'west' ? shell.x0 + 1 : shell.x1 - 1, floor + 2, shell.midZ + i, 1, reg);
@@ -21199,6 +21260,363 @@
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
+  // ================= VEHICLE & EQUIPMENT SHOPS =================
+  // Two bought buildings (Property menu). Walk in, aim at a vehicle / a weapon
+  // on the wall — its price pops up under the crosshair — and press ✋ to buy.
+  //
+  // Ownership (per player, kept on this device like the Wardrobe):
+  //  • Vehicles: buying one in the shop UNLOCKS that type and puts one in your
+  //    garage. The Vehicles menu only lists unlocked types; placing one uses a
+  //    garage vehicle if you have one (free), otherwise buys a new one at full
+  //    price, as before. Picking a placed vehicle back up (Vehicles slot, next
+  //    to it) returns it to your garage instead of just deleting it.
+  //  • Weapons: buying one unlocks it for good (weapons have no ammo). The
+  //    Weapons menu / Q only offer what you own, and an unowned one won't fire.
+  //  • Selling back: talk to either shopkeeper (✋ on him) — garage vehicles and
+  //    owned weapons sell for 2/3 of their price (SELL_BACK_RATE).
+  const SELL_BACK_RATE = 2 / 3;
+  var shopOwned = null; // var, not let — weaponEquipped()/menus can be asked before this line has run
+  function loadShopOwned() {
+    if (shopOwned) return shopOwned;
+    try { shopOwned = JSON.parse(localStorage.getItem('voxelShopOwned') || 'null'); } catch (e) { shopOwned = null; }
+    if (!shopOwned || typeof shopOwned !== 'object') shopOwned = {};
+    if (!Array.isArray(shopOwned.vehicles)) shopOwned.vehicles = [];   // unlocked vehicle type names
+    if (!shopOwned.garage || typeof shopOwned.garage !== 'object') shopOwned.garage = {}; // name -> count
+    if (!Array.isArray(shopOwned.weapons)) shopOwned.weapons = [];     // owned weapon names
+    return shopOwned;
+  }
+  function saveShopOwned() { try { localStorage.setItem('voxelShopOwned', JSON.stringify(loadShopOwned())); } catch (e) {} }
+  function vehicleUnlocked(t) { return !!t && loadShopOwned().vehicles.includes(t.name); }
+  function garageCount(t) { return (t && loadShopOwned().garage[t.name]) || 0; }
+  function addToGarage(t, n) {
+    const o = loadShopOwned();
+    if (!o.vehicles.includes(t.name)) o.vehicles.push(t.name);
+    o.garage[t.name] = Math.max(0, (o.garage[t.name] || 0) + n);
+    if (!o.garage[t.name]) delete o.garage[t.name];
+    saveShopOwned();
+    fixVehicleSelection();
+  }
+  function weaponOwned(t) { return !!t && loadShopOwned().weapons.includes(t.name); }
+  function anyVehicleUnlocked() { return VEHICLE_TYPES.some(vehicleUnlocked); }
+  function anyWeaponOwned() { return WEAPON_TYPES.some(weaponOwned); }
+  function sellBackPrice(price) { return Math.floor(price * SELL_BACK_RATE); }
+  // Keep the hotbar's current vehicle / weapon pointing at something you actually have.
+  function fixVehicleSelection() {
+    if (vehicleUnlocked(VEHICLE_TYPES[vehicleTypeIdx])) return;
+    const i = VEHICLE_TYPES.findIndex(vehicleUnlocked);
+    if (i >= 0) { vehicleTypeIdx = i; if (typeof updateVehicleSlotIcon === 'function') updateVehicleSlotIcon(); }
+  }
+  function fixWeaponSelection() {
+    if (weaponOwned(WEAPON_TYPES[weaponTypeIdx])) return;
+    const i = WEAPON_TYPES.findIndex(weaponOwned);
+    if (i >= 0) { weaponTypeIdx = i; if (typeof updateWeaponSlotIcon === 'function') updateWeaponSlotIcon(); }
+  }
+
+  // ---- Building helpers: a local frame for a shell whatever side its door is on ----
+  // u runs along the front (door) wall, v goes from the front wall (v=0) to the back wall (v=D-1).
+  function shopFrame(x0, z0, W, D, doorSide) {
+    const ex = (doorSide === 'south' || doorSide === 'north') ? W : D, ez = ex === W ? D : W;
+    const x1 = x0 + ex - 1, z1 = z0 + ez - 1;
+    let cell, pos, s, d;
+    if (doorSide === 'south')      { cell = (u, v) => [x0 + u, z1 - v]; pos = (u, v) => [x0 + u, z1 + 1 - v]; s = [1, 0];  d = [0, -1]; }
+    else if (doorSide === 'north') { cell = (u, v) => [x1 - u, z0 + v]; pos = (u, v) => [x1 + 1 - u, z0 + v]; s = [-1, 0]; d = [0, 1]; }
+    else if (doorSide === 'east')  { cell = (u, v) => [x1 - v, z1 - u]; pos = (u, v) => [x1 + 1 - v, z1 + 1 - u]; s = [0, -1]; d = [-1, 0]; }
+    else                           { cell = (u, v) => [x0 + v, z0 + u]; pos = (u, v) => [x0 + v, z0 + u]; s = [0, 1];  d = [1, 0]; }
+    const mid = Math.floor(W / 2);
+    const [mx, mz] = cell(mid, Math.floor(D / 2));
+    // shell: the same shape every shell helper (door, sign, light, shopkeeper) expects. midX/midZ line up with
+    // the door (middle of the front wall) and the counter/shopkeeper (middle of the back).
+    const shell = { x0, x1, z0, z1, h: 0, gy: 0, midX: mx, midZ: mz };
+    return { W, D, cell, pos, s, d, shell, mid };
+  }
+  const BLOCK_ID = name => BLOCK_TYPES.findIndex(t => t.name === name);
+  // Glass-walled box: trim at the corners, along the top, a kerb along the bottom and a mullion every
+  // `mull` columns; everything else glass. `solidRows(u, v, y)` can ask for a solid block instead (the
+  // Equipment shop's display band). Flat roof with a glass skylight strip down the middle.
+  function buildGlassShell(f, gy, h, floorId, trimId, roofId, solidRows) {
+    const glass = BLOCK_ID('Glass');
+    const { W, D } = f;
+    for (let u = 0; u < W; u++) for (let v = 0; v < D; v++) {
+      const [x, z] = f.cell(u, v);
+      blocks.set(key(x, gy, z), floorId); trackVillageHeight(x, z, gy); markVillageGround(x, z, gy);
+      const edge = u === 0 || v === 0 || u === W - 1 || v === D - 1;
+      if (edge) {
+        const corner = (u === 0 || u === W - 1) && (v === 0 || v === D - 1);
+        const mullion = (v === 0 || v === D - 1) ? (u % 4 === 0) : (v % 4 === 0);
+        for (let y = gy + 1; y <= gy + h; y++) {
+          let t = glass;
+          if (corner || mullion || y === gy + h || y === gy + 1) t = trimId;
+          const sr = solidRows && solidRows(u, v, y);
+          if (sr != null && !corner) t = sr;
+          blocks.set(key(x, y, z), t); trackVillageHeight(x, z, y);
+        }
+      }
+      // roof overhangs by one all round; a skylight strip down the middle
+      const sky = u >= f.mid - 1 && u <= f.mid + 1 && v >= 2 && v <= D - 3;
+      blocks.set(key(x, gy + h + 1, z), sky ? glass : roofId); trackVillageHeight(x, z, gy + h + 1);
+    }
+    for (let u = -1; u <= W; u++) for (let v = -1; v <= D; v++) {
+      if (u >= 0 && u < W && v >= 0 && v < D) continue;
+      const [x, z] = f.cell(u, v);
+      blocks.set(key(x, gy + h + 1, z), roofId); trackVillageHeight(x, z, gy + h + 1);
+    }
+    f.shell.gy = gy; f.shell.h = h;
+  }
+  // The display pieces you can aim at and buy — see shopItemInSight.
+  const shopDisplays = [];
+  function addShopDisplay(obj, item, reg) {
+    obj.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    obj.userData.shopItem = item; // { kind: 'vehicle' | 'weapon', idx }
+    scene.add(obj);
+    reg.props = reg.props || [];
+    reg.props.push(obj);
+    shopDisplays.push(obj);
+  }
+  function shopCounterAndKeeper(f, reg, rng, doorSide, kind) {
+    const backSide = HOUSE_BACK_SIDE[doorSide];
+    const [cx, cz] = f.cell(f.mid, f.D - 3); // 3 wide, centred, one block of floor behind it for the shopkeeper
+    addFurnitureTracked(cx, f.shell.gy, cz, HOUSE_SIDE_ROT[backSide], SHOP_COUNTER_IDX, reg);
+    spawnShopkeeper(f.shell, doorSide, reg, rng, kind);
+  }
+  function shopSiteOrigin(replay, ex, ez) {
+    const { sx0, sz0, sx1, sz1 } = replay.site;
+    return [sx0 + Math.floor((sx1 - sx0 + 1 - ex) / 2), sz0 + Math.floor((sz1 - sz0 + 1 - ez) / 2)];
+  }
+
+  // ---- Vehicle Shop: an all-glass showroom ----
+  // 21 wide x 17 deep: 12 display bays (4 columns x 3 rows, an aisle up the middle to the counter) for the 7
+  // vehicles there are now, so new ones have room. Bays fill front-first; each vehicle faces the aisle.
+  const VEHICLE_SHOP_W = 21, VEHICLE_SHOP_D = 17;
+  const VEHICLE_BAYS = [];
+  for (const v of [3, 7, 11]) for (const u of [3, 17, 7, 13]) VEHICLE_BAYS.push([u, v]);
+  function maybeBuildVehicleShop(cx, cz, replay) {
+    if (!replay) return; // bought only
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    const H = 6;
+    levelSite(sx0, sx1, sz0, sz1, floor, H + 6);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const W = VEHICLE_SHOP_W, D = VEHICLE_SHOP_D;
+    const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
+    const [x0, z0] = shopSiteOrigin(replay, ew, ed);
+    const f = shopFrame(x0, z0, W, D, doorSide);
+    buildGlassShell(f, floor, H, BLOCK_ID('Polished Stone'), BLOCK_ID('Black Concrete'), BLOCK_ID('White Concrete'));
+    // dark display pads under every bay (the empty ones are waiting for new models)
+    const pad = BLOCK_ID('Black Concrete');
+    for (const [bu, bv] of VEHICLE_BAYS) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
+      const [x, z] = f.cell(bu + a, bv + b); blocks.set(key(x, floor, z), pad);
+    }
+    placeShellDoor(f.shell, doorSide, reg, 4); // French Doors
+    placeShellSign(f.shell, doorSide, 'Vehicles', reg);
+    placeShellLight(f.shell, doorSide, reg);
+    VEHICLE_TYPES.forEach((t, i) => {
+      const bay = VEHICLE_BAYS[i];
+      if (!bay) return;
+      const g = t.build();
+      const [px, pz] = f.pos(bay[0] + 0.5, bay[1] + 0.5);
+      g.position.set(px, floor + 1, pz);
+      const dir = bay[0] < f.mid ? 1 : -1; // face the aisle: nose (+Z after nosePlusZ) along ±s
+      g.rotation.y = Math.atan2(f.s[0] * dir, f.s[1] * dir);
+      addShopDisplay(g, { kind: 'vehicle', idx: i }, reg);
+    });
+    shopCounterAndKeeper(f, reg, rng, doorSide, 'vehicles');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
+  // ---- Equipment Shop: glass again, with a solid display band along both side walls for the weapons ----
+  // 13 wide x 15 deep: 5 spots a side = 10 (7 weapons now).
+  const EQUIP_SHOP_W = 13, EQUIP_SHOP_D = 15;
+  const EQUIP_SPOTS = [];
+  for (const v of [2, 4, 6, 8, 10]) for (const side of [0, 1]) EQUIP_SPOTS.push([side, v]);
+  function maybeBuildEquipmentShop(cx, cz, replay) {
+    if (!replay) return; // bought only
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    const H = 5;
+    levelSite(sx0, sx1, sz0, sz1, floor, H + 6);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const W = EQUIP_SHOP_W, D = EQUIP_SHOP_D;
+    const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
+    const [x0, z0] = shopSiteOrigin(replay, ew, ed);
+    const f = shopFrame(x0, z0, W, D, doorSide);
+    const band = BLOCK_ID('Dark Planks');
+    // side walls: a 2-high solid band at y+2..y+3 to hang the weapons on; the back wall solid up to the same height behind the counter
+    const solid = (u, v, y) => {
+      const side = (u === 0 || u === W - 1) && v > 0 && v < D - 1;
+      if (side && (y === floor + 2 || y === floor + 3)) return band;
+      if (v === D - 1 && y <= floor + 3) return band;
+      return null;
+    };
+    buildGlassShell(f, floor, H, BLOCK_ID('Dark Planks'), BLOCK_ID('Black Concrete'), BLOCK_ID('Black Concrete'), solid);
+    placeShellDoor(f.shell, doorSide, reg, 2); // Glass Door
+    placeShellSign(f.shell, doorSide, 'Equipment', reg);
+    placeShellLight(f.shell, doorSide, reg);
+    WEAPON_TYPES.forEach((t, i) => {
+      const spot = EQUIP_SPOTS[i];
+      if (!spot) return;
+      const [side, v] = spot;
+      const inward = side === 0 ? 1 : -1;
+      const uf = side === 0 ? 1.1 : W - 1.1; // just off the wall's inner face
+      const holder = new THREE.Group();
+      const m = buildWeaponModel(t.kind);
+      m.scale.setScalar(1.35);
+      // lie it along the wall (its -Z pointing toward the back), side-on to you, centred on the spot
+      m.rotation.y = Math.atan2(-f.d[0], -f.d[1]);
+      if (t.kind !== 'dynamite') { m.position.set(-f.d[0] * 0.7, 0, -f.d[1] * 0.7); } // models run ~1.1 long from the handle; x1.35
+      holder.add(m);
+      // a little backing board with brass pegs
+      const board = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.5, 1.5), new THREE.MeshLambertMaterial({ color: 0x3a2a1c }));
+      board.rotation.y = Math.atan2(f.d[0], f.d[1]); // long side along the wall (d), thin side (x) into it
+      board.position.set(-f.s[0] * inward * 0.06, 0, -f.s[1] * inward * 0.06);
+      holder.add(board);
+      const [px, pz] = f.pos(uf, v + 0.5);
+      holder.position.set(px, floor + 3.0, pz);
+      addShopDisplay(holder, { kind: 'weapon', idx: i }, reg);
+    });
+    shopCounterAndKeeper(f, reg, rng, doorSide, 'equipment');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
+  // ---- Aiming at a display: price under the crosshair, ✋ to buy ----
+  const _shopItemRay = new THREE.Raycaster();
+  function shopItemInSight() {
+    for (let i = shopDisplays.length - 1; i >= 0; i--) if (!shopDisplays[i].parent) shopDisplays.splice(i, 1); // shop unloaded
+    if (!shopDisplays.length || ridingVehicle) return null;
+    let near = false;
+    for (const o of shopDisplays) { if (o.position.distanceToSquared(camera.position) < 100) { near = true; break; } }
+    if (!near) return null;
+    _shopItemRay.setFromCamera({ x: 0, y: 0 }, camera);
+    _shopItemRay.far = 7;
+    const hits = _shopItemRay.intersectObjects(shopDisplays, true);
+    if (!hits.length) return null;
+    let o = hits[0].object; while (o && !o.userData.shopItem) o = o.parent;
+    if (!o) return null;
+    const r = voxelRaycast(true, true); // a wall or window between you and it wins
+    if (r && r.hit) {
+      const bd = camera.position.distanceTo(new THREE.Vector3(r.hit.x + 0.5, r.hit.y + 0.5, r.hit.z + 0.5));
+      if (bd + 0.3 < hits[0].distance) return null;
+    }
+    return o.userData.shopItem;
+  }
+  function shopItemText(item) {
+    if (item.kind === 'vehicle') {
+      const t = VEHICLE_TYPES[item.idx];
+      if (!vehicleUnlocked(t)) return '🚗 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy';
+      const g = garageCount(t);
+      return '🚗 ' + t.name + ' — owned' + (g ? ' (🅿️×' + g + ' in your garage)' : '') + '  ·  ✋ buy another for 💰' + t.cost;
+    }
+    const t = WEAPON_TYPES[item.idx];
+    if (weaponOwned(t)) return t.emoji + ' ' + t.name + ' — owned ✓  ·  sell back at the counter for 💰' + sellBackPrice(t.price);
+    return t.emoji + ' ' + t.name + ' — 💰' + t.price + '  ·  ✋ to buy';
+  }
+  let shopTipEl = null, shopTipNext = 0;
+  function updateShopItemTip() {
+    const now = performance.now();
+    if (now < shopTipNext) return;
+    shopTipNext = now + 120;
+    const item = shopItemInSight();
+    if (!shopTipEl) {
+      if (!item) return;
+      shopTipEl = document.createElement('div');
+      shopTipEl.style.cssText = 'position:fixed;left:50%;top:57%;transform:translateX(-50%);z-index:30;pointer-events:none;background:rgba(0,0,0,0.7);color:#fff;font:600 14px system-ui,sans-serif;padding:7px 12px;border-radius:8px;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis;';
+      document.body.appendChild(shopTipEl);
+    }
+    if (!item) { shopTipEl.style.display = 'none'; }
+    else { shopTipEl.textContent = shopItemText(item); shopTipEl.style.display = 'block'; }
+    if (tradeEl && tradeEl.style.display !== 'none' && !keeperNearby(7)) closeTradeInPanel();
+  }
+  function tryBuyShopItem() {
+    const item = shopItemInSight();
+    if (!item) return false;
+    if (item.kind === 'vehicle') {
+      const t = VEHICLE_TYPES[item.idx];
+      if (!trySpendCoins(t.cost, t.name)) return true;
+      const first = !vehicleUnlocked(t);
+      addToGarage(t, 1);
+      playCoin();
+      showSaveStatus('🚗 ' + t.name + ' bought! It\u2019s in your garage (🅿️×' + garageCount(t) + ') — pick it from the Vehicles menu and place it anywhere' + (first ? '. More can be bought straight from the menu now.' : '.'));
+    } else {
+      const t = WEAPON_TYPES[item.idx];
+      if (weaponOwned(t)) { showBriefMessage(t.emoji + ' You already own the ' + t.name + ' — sell it back at the counter if you like'); return true; }
+      if (!trySpendCoins(t.price, t.name)) return true;
+      loadShopOwned().weapons.push(t.name); saveShopOwned();
+      fixWeaponSelection();
+      playCoin();
+      showSaveStatus(t.emoji + ' ' + t.name + ' bought! It\u2019s in your Weapons menu (Q).');
+    }
+    shopTipNext = 0;
+    return true;
+  }
+  function keeperNearby(r) {
+    for (const m of shopkeepers) {
+      if (!m.parent) continue;
+      const k = m.userData.shopKind;
+      if (k !== 'vehicles' && k !== 'equipment') continue;
+      if (m.position.distanceTo(player.pos) < r) return true;
+    }
+    return false;
+  }
+
+  // ---- Selling back: the shopkeeper's panel ----
+  let tradeEl = null, tradeKind = 'vehicles';
+  function closeTradeInPanel() { if (tradeEl) tradeEl.style.display = 'none'; }
+  function openTradeInPanel(kind) {
+    tradeKind = kind;
+    if (!tradeEl) {
+      tradeEl = document.createElement('div');
+      tradeEl.style.cssText = 'position:fixed;inset:0;z-index:45;background:rgba(0,0,0,0.55);display:none;align-items:center;justify-content:center;';
+      tradeEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(360px,92vw);max-height:80vh;overflow:auto;color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div style="display:flex;align-items:center;margin-bottom:10px;"><b id="tradeTitle" style="flex:1;font-size:16px;"></b>'
+        + '<button id="tradeClose" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:6px 12px;cursor:pointer;">Close</button></div>'
+        + '<div id="tradeLine" style="opacity:0.8;margin-bottom:10px;line-height:1.4;"></div><div id="tradeList"></div></div>';
+      document.body.appendChild(tradeEl);
+      tradeEl.querySelector('#tradeClose').addEventListener('click', closeTradeInPanel);
+      tradeEl.addEventListener('click', e => { if (e.target === tradeEl) closeTradeInPanel(); });
+    }
+    document.exitPointerLock && document.exitPointerLock();
+    renderTradeInPanel();
+    tradeEl.style.display = 'flex';
+  }
+  function renderTradeInPanel() {
+    const vehiclesMode = tradeKind === 'vehicles';
+    tradeEl.querySelector('#tradeTitle').textContent = vehiclesMode ? '🚗 Vehicle Shop' : '⚔️ Equipment Shop';
+    tradeEl.querySelector('#tradeLine').textContent = vehiclesMode
+      ? 'Browse the showroom and press ✋ on a vehicle to buy it. I\u2019ll buy back anything in your garage for 2/3 of the price — to put a placed vehicle back in your garage, stand next to it with the Vehicles slot and tap.'
+      : 'Press ✋ on anything on the walls to buy it. I\u2019ll buy back anything you own for 2/3 of the price.';
+    const list = tradeEl.querySelector('#tradeList');
+    list.innerHTML = '';
+    const rows = [];
+    if (vehiclesMode) VEHICLE_TYPES.forEach(t => { const n = garageCount(t); if (n) rows.push({ label: '🚗 ' + t.name + ' ×' + n, price: sellBackPrice(t.cost), sell: () => { addToGarage(t, -1); } }); });
+    else WEAPON_TYPES.forEach(t => { if (weaponOwned(t)) rows.push({ label: t.emoji + ' ' + t.name, price: sellBackPrice(t.price), sell: () => { const o = loadShopOwned(); o.weapons = o.weapons.filter(n => n !== t.name); saveShopOwned(); fixWeaponSelection(); } }); });
+    if (!rows.length) {
+      const e = document.createElement('div'); e.style.cssText = 'opacity:0.7;padding:8px 0;';
+      e.textContent = vehiclesMode ? 'Nothing in your garage to sell.' : 'You don\u2019t own anything to sell yet.';
+      list.appendChild(e);
+    }
+    for (const r of rows) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid rgba(255,255,255,0.08);';
+      const name = document.createElement('span'); name.style.flex = '1'; name.textContent = r.label;
+      const btn = document.createElement('button');
+      btn.style.cssText = 'background:#c7901d;border:none;color:#fff;border-radius:6px;padding:6px 10px;font-weight:600;cursor:pointer;';
+      btn.textContent = 'Sell 💰' + r.price;
+      btn.addEventListener('click', () => { r.sell(); addCoins(r.price); playCoin(); renderTradeInPanel(); });
+      row.appendChild(name); row.appendChild(btn); list.appendChild(row);
+    }
   }
 
   // ================= TAILOR =================
@@ -26834,6 +27252,7 @@
     updatePropertyGhost(); // outline of where the chosen building would go — see PROPERTY
     updateAnimalProduce(); // milk / eggs / wool every 10 min — see ANIMAL PRODUCE
     pruneMirrors(); // frees removed mirrors' render targets — see MIRRORS
+    updateShopItemTip(); // price under the crosshair in a Vehicle / Equipment shop
     animateIncubators(); // eggs rocking under the heat lamp
     updateLavaBurn(); // lava slowly burning through wood/leaves — see LAVA BURNS FLAMMABLE BLOCKS
     updateWindSound(dt, windIntensity);
@@ -28516,16 +28935,21 @@
   }
   function showVehiclePopup(slotEl) {
     if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
+    if (!anyVehicleUnlocked()) { showBriefMessage('🚗 No vehicles yet — buy one at a Vehicle Shop (build one from Property)'); return; }
+    fixVehicleSelection();
     const popup = document.createElement('div');
     popup.style.cssText = popupCss(slotEl);
     VEHICLE_TYPES.forEach((t, idx) => {
+      if (!vehicleUnlocked(t)) return; // only types bought at a Vehicle Shop — see VEHICLE & EQUIPMENT SHOPS
+      const g = garageCount(t);
+      const priceText = g ? ' · 🅿️×' + g : costLabel(t.cost); // a garage one is placed free, otherwise a new one is bought
       const btn = document.createElement('div');
       btn.className = 'popup-item';
-      btn.title = t.name + costLabel(t.cost);
+      btn.title = t.name + priceText;
       btn.appendChild(vehicleIconCanvas(idx));
       const label = document.createElement('span');
       label.className = 'popup-item-label';
-      label.textContent = t.name + costLabel(t.cost);
+      label.textContent = t.name + priceText;
       btn.appendChild(label);
       btn.addEventListener('click', e => {
         e.stopPropagation();
@@ -28608,9 +29032,12 @@
   }
   function showWeaponPopup(slotEl) {
     if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
+    if (!anyWeaponOwned()) { showBriefMessage('⚔️ No weapons yet — buy some at an Equipment Shop (build one from Property)'); return; }
+    fixWeaponSelection();
     const popup = document.createElement('div');
     popup.style.cssText = popupCss(slotEl);
     WEAPON_TYPES.forEach((t, idx) => {
+      if (!weaponOwned(t)) return; // only what you've bought — see VEHICLE & EQUIPMENT SHOPS
       const btn = document.createElement('div');
       btn.className = 'popup-item';
       btn.title = t.name;

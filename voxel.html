@@ -21062,6 +21062,7 @@
     const k = key(x, y, z);
     if (v === -1) seedEdits.delete(k); else seedEdits.set(k, v);
     dirtyChunks.add(chunkKeyOf(x, z));
+    if (currentSeason === 0) scheduleOverlayRebuild(0); // winter: snow clears off / settles back on the bed — see rebuildSnowOverlay
     // Live to everyone else in this world — same reason as recordBlockEdit's
     // blockEdit broadcast. Without it, other players' plants, incubators and
     // hatched animals only showed up after a full reload, and worse, your own
@@ -23560,6 +23561,7 @@
       if (x >= -85 && x <= -56 && z >= 34 && z <= 78) return false;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) return false;
+      if (seedAt(aboveKey)) return false; // something planted on it (a crop, flowers, a sapling) — keep its bed clear
       if (!isExposedToSky(x,y,z)) return false; // skip anything under a roof
       dummy.position.set(x+0.5, y+1.03, z+0.5);
       dummy.updateMatrix();
@@ -24395,6 +24397,7 @@
         if (v === -1) seedEdits.delete(k); else seedEdits.set(k, v);
         dirtyChunks.add(chunkKeyOf(x, z));
         seedNextPass = 0;
+        if (currentSeason === 0) scheduleOverlayRebuild(0); // someone else planted/harvested — same snow refresh
       });
       channel.on('broadcast', { event: 'structure' }, ({ payload }) => {
         if (!payload || !payload.ck || !payload.t) return;

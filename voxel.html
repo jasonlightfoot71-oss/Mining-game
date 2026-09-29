@@ -2532,6 +2532,84 @@
   scene.add(sun);
   scene.add(sun.target);
 
+  // ================= LIGHT POOL =================
+  // Every torch, campfire, treasure-chest glow and wreck fire used to be its own real THREE.PointLight, switched
+  // on whenever the player was within 40 blocks. Two costs came with that: (1) every lit surface on screen was
+  // shaded once per active light, so a village full of wall lanterns meant 20-30 lights per pixel; and (2) Three
+  // bakes the NUMBER of lights into its shaders, so every time a light crossed that 40-block line the shaders for
+  // every block/prop material were recompiled — a visible hitch each time, constantly while moving through a village.
+  // Now those are "virtual" lights (plain Object3Ds carrying colour/intensity/range), and a fixed pool of real
+  // PointLights is handed to the nearest ones within LIGHT_POOL_RADIUS blocks. The pool never changes size (unused
+  // slots just sit at intensity 0), so the shaders never recompile, and nothing further than 10 blocks is lit.
+  const LIGHT_POOL_SIZE = 8;
+  const LIGHT_POOL_RADIUS = 10;
+  const LIGHT_POOL_FADE = 2; // fades out over the last 2 blocks instead of popping off
+  const virtualLights = new Set();
+  function makePooledLight(color, intensity, distance, decay) {
+    const o = new THREE.Object3D();
+    o.isPooledLight = true;
+    o.color = new THREE.Color(color);
+    o.intensity = intensity;
+    o.distance = distance || 0;
+    o.decay = decay == null ? 1 : decay;
+    o.addEventListener('added', () => virtualLights.add(o));
+    virtualLights.add(o);
+    return o;
+  }
+  const lightPool = [];
+  for (let i = 0; i < LIGHT_POOL_SIZE; i++) {
+    const l = new THREE.PointLight(0xffffff, 0, 1, 1);
+    l.castShadow = false;
+    scene.add(l);
+    lightPool.push({ light: l, src: null });
+  }
+  const _poolPos = new THREE.Vector3();
+  let lastLightPoolAssign = 0;
+  // 1 = in the scene and visible, 0 = in the scene but hidden, -1 = not in the scene at all
+  function pooledLightState(o) {
+    let vis = true;
+    for (let p = o; p; p = p.parent) { if (!p.visible) vis = false; if (p === scene) return vis ? 1 : 0; }
+    return -1;
+  }
+  function pooledLightFade(src) {
+    src.getWorldPosition(_poolPos);
+    const d = _poolPos.distanceTo(player.pos);
+    return Math.max(0, Math.min(1, (LIGHT_POOL_RADIUS - d) / LIGHT_POOL_FADE));
+  }
+  function updateLightPool() {
+    const now = performance.now();
+    if (now - lastLightPoolAssign > 250) {
+      lastLightPoolAssign = now;
+      const cands = [];
+      for (const v of virtualLights) {
+        const st = pooledLightState(v);
+        if (st < 0) {
+          // removed from the world — forget it after a while (kept briefly in case it's re-added straight away)
+          if (!v._detachedAt) v._detachedAt = now; else if (now - v._detachedAt > 30000) virtualLights.delete(v);
+          continue;
+        }
+        v._detachedAt = 0;
+        if (!st || v.intensity <= 0) continue;
+        v.getWorldPosition(_poolPos);
+        const d2 = _poolPos.distanceToSquared(player.pos);
+        if (d2 < LIGHT_POOL_RADIUS * LIGHT_POOL_RADIUS) cands.push([d2, v]);
+      }
+      cands.sort((a, b) => a[0] - b[0]);
+      for (let i = 0; i < LIGHT_POOL_SIZE; i++) lightPool[i].src = cands[i] ? cands[i][1] : null;
+    }
+    // every frame: follow the assigned source (fires flicker, chests can move with their group)
+    for (const slot of lightPool) {
+      const src = slot.src, l = slot.light;
+      if (!src || pooledLightState(src) !== 1) { l.intensity = 0; continue; }
+      const fade = pooledLightFade(src);
+      l.position.copy(_poolPos);
+      l.color.copy(src.color);
+      l.intensity = src.intensity * fade;
+      l.distance = src.distance;
+      l.decay = src.decay;
+    }
+  }
+
   // ================= WORLD DATA =================
   // A Map-compatible wrapper (same interface as a plain Map, so every
   // existing call site — hundreds of them, everything from mining to
@@ -6909,7 +6987,7 @@
     // computation costs a small fraction of what a shadow-casting one
     // does, which is exactly what's needed for lighting up a building
     // interior without the outdoor sun reaching in.
-    const light = new THREE.PointLight(0xff9a3c, 1.875, 10, 0.35); // halved again per feedback — was 3.75
+    const light = makePooledLight(0xff9a3c, 1.875, 10, 0.35); // lit via the LIGHT POOL — only when within 10 blocks // halved again per feedback — was 3.75
     light.castShadow = false;
     light.position.set(px, py, pz);
     scene.add(light);
@@ -6973,16 +7051,18 @@
   // whole world. Throttled rather than checked every frame, since a
   // distance check per light is cheap but still needless work 60 times a
   // second for something that only needs to change occasionally.
+  // The actual LIGHT from a torch now only comes on within 10 blocks (see LIGHT POOL); this radius is just for
+  // drawing the stick/flame models (far-off street signs etc. are handled by updateRenderDistance's culling).
   const LIGHT_ACTIVE_RADIUS = 40;
   let lastLightVisibilityCheck = 0;
   function updateLightVisibility() {
+    updateLightPool();
     const now = performance.now();
     if (now - lastLightVisibilityCheck < 400) return;
     lastLightVisibilityCheck = now;
     fixtures.forEach(f => {
       const dx = player.pos.x - (f.bx+0.5), dz = player.pos.z - (f.bz+0.5);
       const within = (dx*dx + dz*dz) < LIGHT_ACTIVE_RADIUS*LIGHT_ACTIVE_RADIUS;
-      f.light.visible = within;
       f.stick.visible = within;
       f.flame.visible = within;
     });
@@ -7267,6 +7347,7 @@
     lamp.position.y = 2.98; g.add(lamp); // tops out right at 3 blocks
     const halo = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff1c0, transparent: true, opacity: 0.25, depthWrite: false }));
     halo.position.y = 2.98; g.add(halo);
+    post.castShadow = true; frame.castShadow = true; // only the big parts — the plates/lamp/halo/foot/cap add shadow-pass draws for nothing visible
     g.userData.streetSign = true;
     return g;
   }
@@ -7280,7 +7361,6 @@
       rot = ((rot | 0) % 8 + 8) % 8;
       g.position.set(bx + 0.5, by + 1, bz + 0.5);
       g.rotation.y = rot * Math.PI / 4;
-      g.traverse(o => { if (o.isMesh) o.castShadow = true; });
       scene.add(g);
       signs.set(fk, { mesh: g, bx, by, bz, nx, ny, nz, sizeIdx, text: text || '', rot, arrow });
       return fk;
@@ -7352,7 +7432,6 @@
     const g = buildStreetSign(sg.text, sg.arrow);
     g.position.copy(old.position);
     g.rotation.y = sg.rot * Math.PI / 4;
-    g.traverse(o => { if (o.isMesh) o.castShadow = true; });
     scene.remove(old); disposeObject3D(old);
     scene.add(g);
     sg.mesh = g;
@@ -7654,7 +7733,7 @@
     // A soft glow — treasure is usually tucked somewhere dim (a
     // dungeon corner, a sunk hold), and a plain wooden chest is easy to
     // walk straight past in the dark otherwise.
-    const light = new THREE.PointLight(0xffdd88, 0.9, 4, 1.2);
+    const light = makePooledLight(0xffdd88, 0.9, 4, 1.2); // see LIGHT POOL
     light.castShadow = false;
     light.position.y = 0.4;
     g.add(light);
@@ -8037,7 +8116,7 @@
     const flameInner = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.32, 8), new THREE.MeshBasicMaterial({ color: 0xffe066 }));
     flameInner.position.y = 0.3;
     g.add(flameInner);
-    const light = new THREE.PointLight(0xff9a3c, 2.2, 9, 0.4);
+    const light = makePooledLight(0xff9a3c, 2.2, 9, 0.4); // see LIGHT POOL
     light.castShadow = false; // same reasoning as every other light in this game — shadow-casting point lights are the single biggest lag source once there's more than a couple of them lit at once
     light.position.y = 0.4;
     g.add(light);
@@ -12349,7 +12428,7 @@
     const smokeMat = new THREE.PointsMaterial({ color: 0x3a3a3a, size: 0.5, transparent: true, opacity: 0.5 });
     const smokePoints = new THREE.Points(smokeGeo, smokeMat);
     scene.add(smokePoints);
-    const light = new THREE.PointLight(0xff5522, 1.1, 4);
+    const light = makePooledLight(0xff5522, 1.1, 4, 1); // see LIGHT POOL
     light.position.set(worldPos.x, worldPos.y + 0.4, worldPos.z);
     scene.add(light);
     const startTime = performance.now();

@@ -14618,6 +14618,18 @@
       leg.name = 'leg';
       group.add(leg);
       legs.push(leg);
+      if (colors && colors.socksHex != null) { // worn Tailor socks — a band round the bottom of each leg, see WARDROBE
+        const striped = colors.socksStyle === 'striped' && colors.socksHex2 != null;
+        const sockMat = new THREE.MeshLambertMaterial({ color: colors.socksHex });
+        const sock = new THREE.Mesh(new THREE.BoxGeometry(0.205, 0.16, 0.205), sockMat);
+        sock.position.y = -legHeight / 2 + 0.08; sock.name = 'sock';
+        leg.add(sock);
+        if (striped) {
+          const band = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.04, 0.21), new THREE.MeshLambertMaterial({ color: colors.socksHex2 }));
+          band.position.y = -legHeight / 2 + 0.12; band.name = 'sock';
+          leg.add(band);
+        }
+      }
     });
     const torsoY = legHeight + 0.29;
     const torso = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.58, 0.22), shirtMat);
@@ -14631,6 +14643,16 @@
       arm.name = 'arm';
       group.add(arm);
       arms.push(arm);
+      if (colors && colors.glovesHex != null) { // worn Tailor gloves — the hand end of each arm, see WARDROBE
+        const glove = new THREE.Mesh(new THREE.BoxGeometry(0.185, 0.14, 0.205), new THREE.MeshLambertMaterial({ color: colors.glovesHex }));
+        glove.position.y = -0.29 + 0.07; glove.name = 'glove';
+        arm.add(glove);
+        if (colors.glovesStyle === 'cuffed' && colors.glovesHex2 != null) {
+          const cuff = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.04, 0.21), new THREE.MeshLambertMaterial({ color: colors.glovesHex2 }));
+          cuff.position.y = -0.29 + 0.15; cuff.name = 'glove';
+          arm.add(cuff);
+        }
+      }
       if (x > 0) rightArm = arm;
     });
     const headY = legHeight + 0.79;
@@ -21218,7 +21240,7 @@
     Wheat: '🌾', Carrot: '🥕', Cabbage: '🥬', Pumpkin: '🎃', Potato: '🥔', Tomato: '🍅', Lettuce: '🥬',
     Beetroot: '🟣', Sweetcorn: '🌽', Onion: '🧅', Peas: '🟢', Strawberry: '🍓',
     Beef: '🥩', Pork: '🥓', Mutton: '🍖', 'Chicken Meat': '🍗',
-    Milk: '🥛', Egg: '🥚', Wool: '🧶', 'Wool Hat': '🧢', 'Wool Scarf': '🧣', 'Wool Jumper': '🧥',
+    Milk: '🥛', Egg: '🥚', Wool: '🧶', 'Wool Hat': '🧢', 'Wool Scarf': '🧣', 'Wool Jumper': '🧥', 'Wool Socks': '🧦', 'Wool Gloves': '🧤',
   };
   let inventory = {};
   let inventorySaveTimer = null;
@@ -22149,7 +22171,12 @@
     { name: 'Wool Hat',    slot: 'hat',    wool: 1, price: 20 },
     { name: 'Wool Scarf',  slot: 'scarf',  wool: 2, price: 35 },
     { name: 'Wool Jumper', slot: 'jumper', wool: 3, price: 60 },
+    { name: 'Wool Socks',  slot: 'socks',  wool: 1, price: 15 },
+    { name: 'Wool Gloves', slot: 'gloves', wool: 1, price: 25 },
   ];
+  // Up to MAX_PER_GARMENT of each kind in your wardrobe; the Tailor buys any of them back for CLOTHES_SELL_RATE of what they cost.
+  const MAX_PER_GARMENT = 10, CLOTHES_SELL_RATE = 0.5;
+  const WORN_KEY = { hat: 'wornHat', scarf: 'wornScarf', jumper: 'wornJumper', socks: 'wornSocks', gloves: 'wornGloves' };
 
   // ================= WARDROBE =================
   // Everything bought from the Tailor lives here (on this device), each one
@@ -22168,12 +22195,16 @@
     const hex = pickColour(), hex2 = pickColour(hex), id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
     if (slot === 'hat') return { id, slot, style: Math.random() < 0.5 ? 'bobble' : 'beanie', hex, hex2 };
     if (slot === 'scarf') return { id, slot, style: Math.random() < 0.5 ? 'striped' : 'plain', hex, hex2 };
+    if (slot === 'socks') return { id, slot, style: Math.random() < 0.5 ? 'striped' : 'plain', hex, hex2 };
+    if (slot === 'gloves') return { id, slot, style: Math.random() < 0.5 ? 'cuffed' : 'plain', hex, hex2 };
     return { id, slot: 'jumper', style: ['knit', 'knit', 'plain', 'stripes', 'check', 'dots'][Math.floor(Math.random() * 6)], hex };
   }
   function garmentLabel(g) {
     const col = COLOUR_NAMES[g.hex] || 'Knitted';
     if (g.slot === 'hat') return col + (g.style === 'bobble' ? ' bobble hat' : ' beanie');
     if (g.slot === 'scarf') return col + (g.style === 'striped' ? ' striped scarf' : ' scarf');
+    if (g.slot === 'socks') return col + (g.style === 'striped' ? ' striped socks' : ' socks');
+    if (g.slot === 'gloves') return col + (g.style === 'cuffed' ? ' cuffed gloves' : ' gloves');
     return col + ({ knit: ' cable-knit jumper', plain: ' jumper', stripes: ' striped jumper', check: ' check jumper', dots: ' spotty jumper' }[g.style] || ' jumper');
   }
   function wardrobe() { try { const w = JSON.parse(localStorage.getItem('voxelWardrobe') || '[]'); return Array.isArray(w) ? w : []; } catch (e) { return []; } }
@@ -22203,6 +22234,8 @@
     applyWorn(c => {
       if (g.slot === 'hat') { c.hat = g.style; c.hatHex = g.hex; c.hatHex2 = g.hex2; c.wornHat = g.id; }
       else if (g.slot === 'scarf') { c.scarfHex = g.hex; c.scarfHex2 = g.hex2; c.scarfStyle = g.style; c.wornScarf = g.id; }
+      else if (g.slot === 'socks') { c.socksHex = g.hex; c.socksHex2 = g.hex2; c.socksStyle = g.style; c.wornSocks = g.id; }
+      else if (g.slot === 'gloves') { c.glovesHex = g.hex; c.glovesHex2 = g.hex2; c.glovesStyle = g.style; c.wornGloves = g.id; }
       else { c.shirtHex = g.hex; c.shirtPattern = g.style; c.wornJumper = g.id; }
     });
   }
@@ -22210,6 +22243,8 @@
     applyWorn(c => {
       if (slot === 'hat') { c.hat = 'none'; c.hatHex = null; c.hatHex2 = null; c.wornHat = null; }
       else if (slot === 'scarf') { c.scarfHex = null; c.scarfHex2 = null; c.scarfStyle = null; c.wornScarf = null; }
+      else if (slot === 'socks') { c.socksHex = null; c.socksHex2 = null; c.socksStyle = null; c.wornSocks = null; }
+      else if (slot === 'gloves') { c.glovesHex = null; c.glovesHex2 = null; c.glovesStyle = null; c.wornGloves = null; }
       else { c.shirtHex = null; c.shirtPattern = 'plain'; c.wornJumper = null; }
     });
   }
@@ -22234,7 +22269,7 @@
     const w = wardrobe(), me = getMyAvatarColors();
     list.innerHTML = '';
     if (!w.length) { list.innerHTML = '<div style="opacity:0.75;line-height:1.4;">Empty — buy knitted clothes from a Tailor (sell her wool first). They go straight on, and anything you take off is kept here.</div>'; return; }
-    for (const [slot, title, wornKey] of [['hat', '🧢 Hats', 'wornHat'], ['scarf', '🧣 Scarves', 'wornScarf'], ['jumper', '🧥 Jumpers', 'wornJumper']]) {
+    for (const [slot, title, wornKey] of [['hat', '🧢 Hats', 'wornHat'], ['scarf', '🧣 Scarves', 'wornScarf'], ['jumper', '🧥 Jumpers', 'wornJumper'], ['gloves', '🧤 Gloves', 'wornGloves'], ['socks', '🧦 Socks', 'wornSocks']]) {
       const items = w.filter(g => g.slot === slot);
       if (!items.length) continue;
       const h = document.createElement('div'); h.textContent = title; h.style.cssText = 'margin:10px 0 4px;opacity:0.8;font-size:12px;'; list.appendChild(h);
@@ -22242,7 +22277,7 @@
         const worn = me[wornKey] === g.id;
         const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.08);';
         const sw = document.createElement('span');
-        sw.style.cssText = `width:22px;height:22px;border-radius:5px;flex:none;background:${hexToCss(g.hex)};` + (g.hex2 != null && (g.style === 'striped' || g.style === 'bobble') ? `box-shadow:inset 0 -7px 0 ${hexToCss(g.hex2)};` : '');
+        sw.style.cssText = `width:22px;height:22px;border-radius:5px;flex:none;background:${hexToCss(g.hex)};` + (g.hex2 != null && (g.style === 'striped' || g.style === 'bobble' || g.style === 'cuffed') ? `box-shadow:inset 0 -7px 0 ${hexToCss(g.hex2)};` : '');
         const name = document.createElement('span'); name.style.flex = '1'; name.textContent = garmentLabel(g) + (worn ? ' · wearing' : '');
         const btn = document.createElement('button');
         btn.style.cssText = 'border:none;border-radius:6px;padding:6px 10px;color:#fff;cursor:pointer;background:' + (worn ? 'rgba(255,255,255,0.15)' : '#2f7d46') + ';';
@@ -22265,14 +22300,16 @@
     list.appendChild(head);
     for (const c of TAILOR_CLOTHES) {
       const have = wardrobe().filter(g => g.slot === c.slot).length;
+      const full = have >= MAX_PER_GARMENT;
       const row = document.createElement('div'); row.className = 'shopItem';
-      row.innerHTML = `<span class="bagIcon">${PRODUCE_EMOJI[c.name] || '🧵'}</span><span class="bagName">${c.name}${have ? ' <span class="bagQty">(' + have + ' in your wardrobe)</span>' : ''}<br><span class="shopPrice">💰${c.price} · uses ${c.wool} wool · random style &amp; colour</span></span>`;
+      row.innerHTML = `<span class="bagIcon">${PRODUCE_EMOJI[c.name] || '🧵'}</span><span class="bagName">${c.name}${have ? ' <span class="bagQty">(' + have + '/' + MAX_PER_GARMENT + ' in your wardrobe)</span>' : ''}<br><span class="shopPrice">💰${c.price} · uses ${c.wool} wool · random style &amp; colour</span></span>`;
       const buy = document.createElement('button'); buy.className = 'shopBtn';
-      const can = stock >= c.wool && coins >= c.price;
-      buy.textContent = stock < c.wool ? 'Needs wool' : coins < c.price ? 'Need 💰' + c.price : 'Buy · 💰' + c.price;
+      const can = !full && stock >= c.wool && coins >= c.price;
+      buy.textContent = full ? 'Wardrobe full' : stock < c.wool ? 'Needs wool' : coins < c.price ? 'Need 💰' + c.price : 'Buy · 💰' + c.price;
       buy.disabled = !can; if (!can) buy.style.opacity = '0.5';
       buy.addEventListener('click', e => {
         e.stopPropagation();
+        if (wardrobe().filter(g => g.slot === c.slot).length >= MAX_PER_GARMENT) { showBriefMessage('👕 You\u2019ve got ' + MAX_PER_GARMENT + ' already — sell some back to make room'); return; }
         if (tailorWool() < c.wool || coins < c.price) return;
         coins -= c.price; updateCoinsDisplay(); scheduleStatsSave();
         setTailorWool(tailorWool() - c.wool);
@@ -22283,6 +22320,36 @@
         renderShopPanel();
       });
       row.appendChild(buy);
+      list.appendChild(row);
+    }
+    // Selling back: anything in your wardrobe, at a loss (CLOTHES_SELL_RATE of its price). Selling what you're wearing takes it off first.
+    const w = wardrobe();
+    if (!w.length) return;
+    const sh = document.createElement('div');
+    sh.className = 'shopSay'; sh.style.marginTop = '12px';
+    sh.textContent = '👕 I\u2019ll buy your clothes back for ' + Math.round(CLOTHES_SELL_RATE * 100) + '% of what they cost';
+    list.appendChild(sh);
+    const me = getMyAvatarColors();
+    for (const g of w) {
+      const c = TAILOR_CLOTHES.find(t => t.slot === g.slot);
+      if (!c) continue;
+      const price = Math.floor(c.price * CLOTHES_SELL_RATE);
+      const worn = me[WORN_KEY[g.slot]] === g.id;
+      const row = document.createElement('div'); row.className = 'shopItem';
+      row.innerHTML = `<span class="bagIcon" style="display:inline-block;width:20px;height:20px;border-radius:5px;background:${hexToCss(g.hex)};"></span><span class="bagName">${garmentLabel(g)}${worn ? ' <span class="bagQty">(wearing)</span>' : ''}</span>`;
+      const btn = document.createElement('button'); btn.className = 'shopBtn';
+      btn.textContent = 'Sell · 💰' + price;
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const cur = wardrobe();
+        if (!cur.some(x => x.id === g.id)) return;
+        if (getMyAvatarColors()[WORN_KEY[g.slot]] === g.id) takeOffSlot(g.slot);
+        saveWardrobe(cur.filter(x => x.id !== g.id));
+        addCoins(price); playCoin();
+        showSaveStatus('👕 Sold your ' + garmentLabel(g).toLowerCase() + ' for 💰' + price);
+        renderShopPanel();
+      });
+      row.appendChild(btn);
       list.appendChild(row);
     }
   }

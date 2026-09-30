@@ -19313,6 +19313,7 @@
     const r = voxelRaycast(selectedSlot === LAVA_SLOT ? 'lava' : (selectedSlot !== WATER_SLOT || 'flowing'));
     // Aiming at the shopkeeper: he's traded with via ✋, never mined through.
     if (shopkeeperInSight(r && r.hit)) { mineHeld = false; showBriefMessage('🧺 Press ✋ to trade with the shopkeeper'); return; }
+    { const gt = gameTriggerInSight(); if (gt) { mineHeld = false; showBriefMessage(gt.label + ' — press ✋ to start'); return; } } // game start blocks — see tryGameTriggerBlock
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
     // over a block if it's actually the closer of the two along the
@@ -19489,9 +19490,44 @@
   //   gate → lead → harvest a ripe crop (whatever you're holding) → put an
   //   animal in an incubator / a Mod in a People Incubator → sow seeds in Mud.
   let actionHeld = false;
+  // ---- Game start blocks (The Mill) ----
+  // Every minigame's start/trigger block used to need jumping onto. Now you
+  // just aim the crosshair at it and press ✋. Checked FIRST in actionPress —
+  // ahead of the tennis/golf charge and a held weapon — since aiming straight
+  // at one of these blocks is always a deliberate choice.
+  let lastGameTriggerPress = 0;
+  function gameTriggerInSight() {
+    if (currentWorldId !== PUB_WORLD_ID || ridingVehicle) return null;
+    const r = voxelRaycast(true, true);
+    if (!r || !r.hit || r.isWater || r.isLava) return null;
+    const h = r.hit, at = p => p && p.x === h.x && p.y === h.y && p.z === h.z;
+    if (at(SL_GENERATOR_POS)) return { label: '🐍🪜 New board', run: () => generateSnakesAndLadders() };
+    if (at(SL_DICE_POS)) return { label: '🎲 Roll', run: () => tryJoinOrRollSlDice() };
+    if (at(BS_TRIGGER_A)) return { label: '🚢 Battleship', run: () => bsStartOrContinue('A') };
+    if (at(BS_TRIGGER_B)) return { label: '🚢 Battleship', run: () => bsStartOrContinue('B') };
+    if (at(TENNIS_TRIGGER_NEAR)) return { label: '🎾 Tennis', run: () => tennisStartOrContinue('near') };
+    if (at(TENNIS_TRIGGER_FAR)) return { label: '🎾 Tennis', run: () => tennisStartOrContinue('far') };
+    if (at(FOOTBALL_TRIGGER_P1)) return { label: '⚽ Football', run: () => footballStartOrContinue('p1') };
+    if (at(FOOTBALL_TRIGGER_P2)) return { label: '⚽ Football', run: () => footballStartOrContinue('p2') };
+    const hole = GOLF_HOLES.find(g => at(g.tee));
+    if (hole) return { label: '⛳ Golf', run: () => spawnGolfBallAtHole(hole.index) };
+    return null;
+  }
+  function tryGameTriggerBlock() {
+    const t = gameTriggerInSight();
+    if (!t) return false;
+    actionHeld = false;
+    const now = performance.now();
+    if (now - lastGameTriggerPress < 500) return true; // swallow a double-fire (e.g. key + pad on the same press), don't roll twice
+    lastGameTriggerPress = now;
+    playButtonPress();
+    t.run();
+    return true;
+  }
   function actionPress() {
     ensureAudio();
     actionHeld = true;
+    if (tryGameTriggerBlock()) return;
     if (!ridingVehicle && !weaponEquipped()) {
       if (tennisChargeEligible()) { tennisStartCharge(); return; }
       if (golfChargeEligible()) { golfStartCharge(); return; }
@@ -24737,7 +24773,7 @@
         slSnakesMap = payload.snakes || {};
         Object.entries(slLaddersMap).forEach(([a,b]) => buildLadderConnector(+a, +b));
         Object.entries(slSnakesMap).forEach(([a,b]) => buildSnakeConnector(+a, +b));
-        showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — jump on the dice block to play!');
+        showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — aim at the dice block and press ✋ to play!');
       });
       channel.on('broadcast', { event: 'slJoin' }, ({ payload }) => {
         if (!payload || slPlayers.find(p => p.uid === payload.uid)) return;
@@ -27111,7 +27147,7 @@
       buildSnakeConnector(a, b);
     }
     broadcastSlGenerated();
-    showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 6 ladders, 6 snakes. Jump on the dice block to play!');
+    showChatLogLine('🐍🪜 Snakes & Ladders', 'The board is set — 6 ladders, 6 snakes. Aim at the dice block and press ✋ to play!');
   }
   function broadcastSlGenerated() {
     if (mpChannel && currentWorldId === mpConnectedWorldId) {
@@ -27234,7 +27270,7 @@
   // actually their turn.
   function tryJoinOrRollSlDice() {
     if (currentWorldId !== PUB_WORLD_ID) return;
-    if (slGameWon) { showChatLogLine('🐍🪜', 'That game finished — jump on the generator block to start a new one.'); return; }
+    if (slGameWon) { showChatLogLine('🐍🪜', 'That game finished — aim at the generator block and press ✋ to start a new one.'); return; }
     let p = slPlayers.find(pl => pl.uid === playerUid);
     if (!p) {
       p = slJoinLocal(playerUid, getMyDisplayName(), slPlayers.length);
@@ -28631,13 +28667,10 @@
     updateAmbientBirds(dt); // a small flock that orbits wherever the player currently is — see its own comments
     updateTVChannels(dt); // periodically swaps each placed TV's picture — see its own comments
     checkGolfDistanceReset(); // debounced internally — see its own comment
-    updateSlTriggers(); // debounced internally — see its own comment
+    // Game start blocks are aim-and-press ✋ now, not jump-on — see tryGameTriggerBlock (ACTION).
+    // updateSl/Bs/Tennis/Football/GolfTriggers are no longer called.
     updateSlTokenColors();
-    updateBsTriggers(); // debounced internally — see its own comment
     updateShipFires();
-    updateTennisTriggers();
-    updateFootballTriggers();
-    updateGolfTriggers();
     updateDoors(dt);
     updateBellSwings();
     updateWindmillSails(dt);

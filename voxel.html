@@ -340,12 +340,19 @@
     background: #d9302a; color: #fff; font-size: 11px; font-weight: 700; display: none; align-items: center; justify-content: center;
   }
   #bagPanel {
-    position: fixed; left: 12px; bottom: 90px; width: 250px; max-height: 55vh; overflow-y: auto; display: none;
+    position: fixed; left: 12px; bottom: 90px; width: 270px; max-height: 60vh; overflow-y: auto; display: none;
     background: rgba(20,24,30,0.94); border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; z-index: 40;
     color: #fff; font: 14px system-ui, sans-serif; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
   }
   #bagPanel .bagHead { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.12); position: sticky; top: 0; background: rgba(20,24,30,0.98); }
   #bagClose { background: none; border: none; color: #fff; font-size: 16px; cursor: pointer; }
+  /* Three things live in the bag now — harvest (crops, animal produce, meat), wood, and clothes — one tab each. */
+  #bagTabs { display: flex; gap: 4px; padding: 8px 8px 2px; position: sticky; top: 41px; background: rgba(20,24,30,0.98); z-index: 1; }
+  #bagTabs button { flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); color: #fff; border-radius: 8px; padding: 6px 2px; font: 600 12px system-ui, sans-serif; cursor: pointer; white-space: nowrap; }
+  #bagTabs button.on { background: rgba(199,144,29,0.4); border-color: #e0b060; }
+  #bagTabs .tabN { display: inline-block; margin-left: 3px; font-size: 10px; color: #ffd666; }
+  .bagSub { padding: 8px 6px 2px; font-size: 12px; opacity: 0.75; }
+  .bagWide { display: block; width: 100%; margin-top: 8px; background: #c7901d; color: #fff; border: none; border-radius: 8px; padding: 9px; font: 600 13px system-ui, sans-serif; cursor: pointer; }
   #bagList { padding: 6px 8px 10px; }
   .bagItem { display: flex; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; }
   .bagItem:nth-child(odd) { background: rgba(255,255,255,0.05); }
@@ -705,7 +712,7 @@
 <div id="touchUI">
   <div class="joystick joystick-move" id="joyMove"><div class="joyKnob" id="joyMoveKnob"></div></div>
   <button id="btnBag" title="Harvest bag">🎒<span id="bagCount"></span></button>
-  <div id="bagPanel"><div class="bagHead"><span>🎒 Harvest bag</span><button id="bagWardrobe" title="Wardrobe — your knitted clothes" style="margin-left:auto;margin-right:6px;">👕 Wardrobe</button><button id="bagClose">✕</button></div><div id="bagList"></div></div>
+  <div id="bagPanel"><div class="bagHead"><span>🎒 Bag</span><button id="bagClose">✕</button></div><div id="bagTabs"><button data-tab="harvest" class="on">🌾 Harvest</button><button data-tab="wood">🪵 Wood</button><button data-tab="clothes">👕 Clothes</button></div><div id="bagList"></div></div>
   <div id="shopPanel"><div class="shopHead"><span>🧺 Shopkeeper</span><button id="shopClose">✕</button></div><div class="shopSay" id="shopSay"></div><div id="shopList"></div><button class="shopBtn" id="shopSellAll"></button></div>
   <div class="lever" id="flyLever"><div class="lever-track"></div><div class="lever-handle" id="flyLeverHandle"></div></div>
   <div id="lookZone" class="touch-only" style="position:fixed; top:0; right:0; bottom:0; left:50%; z-index:5; touch-action:none;"></div>
@@ -3873,6 +3880,7 @@
       case 'tailor': maybeBuildTailor(cx, cz, spec); break;
       case 'vehicleshop': maybeBuildVehicleShop(cx, cz, spec); break;
       case 'equipshop': maybeBuildEquipmentShop(cx, cz, spec); break;
+      case 'carpenter': maybeBuildCarpenter(cx, cz, spec); break;
       default: return;
     }
     reapplyEditsAroundStructure(spec.ck);
@@ -11313,12 +11321,17 @@
     // (Figure's torso spans y 0.72..1.30, 0.22 deep; legs below — see buildCustomerFigure.)
     // kind: 'veg' (the grocer, green apron), 'meat' (the BBQ chef, black apron + cap), 'butcher' (white, stained).
     kind = kind || 'veg';
-    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : kind === 'tailor' ? 0x6a4a9a : kind === 'vehicles' ? 0x1f3a6a : kind === 'equipment' ? 0x4a5a2a : 0x2f7d46;
+    const apronHex = kind === 'meat' ? 0x2a2a2a : kind === 'butcher' ? 0xeeeeea : kind === 'tailor' ? 0x6a4a9a : kind === 'vehicles' ? 0x1f3a6a : kind === 'equipment' ? 0x4a5a2a : kind === 'carpenter' ? 0x7a4a22 : 0x2f7d46;
     const apron = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.72, 0.03), new THREE.MeshLambertMaterial({ color: apronHex }));
     apron.position.set(0, 0.84, 0.13);
     mesh.add(apron);
     if (kind === 'butcher') { const st = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.01), new THREE.MeshLambertMaterial({ color: 0x8a1a14 })); st.position.set(0.07, 0.75, 0.15); mesh.add(st); }
     if (kind === 'tailor') { const tape = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.5, 0.01), new THREE.MeshLambertMaterial({ color: 0xe8c840 })); tape.position.set(-0.1, 1.15, 0.15); mesh.add(tape); } // tape measure round the neck
+    if (kind === 'carpenter') { // a tool belt and a pencil behind the ear
+      const belt = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.27), new THREE.MeshLambertMaterial({ color: 0x3a2412 })); belt.position.set(0, 0.76, 0); mesh.add(belt);
+      const hammer = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.22, 0.04), new THREE.MeshLambertMaterial({ color: 0x9a7040 })); hammer.position.set(0.2, 0.66, 0.08); mesh.add(hammer);
+      const pencil = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.025, 0.025), new THREE.MeshLambertMaterial({ color: 0xf0c020 })); pencil.position.set(0.17, 1.6, 0.02); mesh.add(pencil);
+    }
     if (kind === 'meat') { const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.22, 10), new THREE.MeshLambertMaterial({ color: 0xf4f4f0 })); cap.position.y = 1.86; mesh.add(cap); }
     mesh.userData.shopkeeper = true;
     mesh.userData.shopKind = kind;
@@ -19344,7 +19357,7 @@
       if (furnitureTarget.kind === 'fixture') removeFixture(furnitureTarget.fk);
       else if (furnitureTarget.kind === 'door') removeDoor(furnitureTarget.fk);
       else if (furnitureTarget.kind === 'sign') removeSign(furnitureTarget.fk);
-      else removeFurniture(furnitureTarget.fk);
+      else { refundFurnitureOnPickup(furnitureTarget.fk); removeFurniture(furnitureTarget.fk); }
       furnitureOutline.visible = false;
       playThud(180);
       mineHeld = false;
@@ -19781,10 +19794,10 @@
       else { nx=0; ny=0; nz = nz<0?-1:1; }
       if (ny !== 1) { showSaveStatus('⚠ Place furniture on a top-facing surface', true); return; }
       const fk = key(r.hit.x, r.hit.y, r.hit.z);
-      if (furniture.has(fk)) { removeFurniture(fk); playThud(200); return; }
+      if (furniture.has(fk)) { refundFurnitureOnPickup(fk); removeFurniture(fk); playThud(200); return; }
       const typeIdx = selectedSlot === ROOM_SLOT ? roomTypeIdx : selectedSlot === BATHROOM_SLOT ? bathroomTypeIdx : selectedSlot === BAR_SLOT ? barTypeIdx : selectedSlot === KITCHEN_SLOT ? kitchenTypeIdx : selectedSlot === CELLAR_SLOT ? cellarTypeIdx : bedroomTypeIdx;
       const furnType = FURNITURE_TYPES[typeIdx];
-      if (!trySpendCoins(furnType.cost, furnType.name)) return;
+      if (!useFurnitureStock(furnType)) return; // bought in advance at a Carpenter — see CARPENTER
       const rot = snapYawToStepIndex(yaw); // faces the same direction the player is currently facing
       addFurniture(r.hit.x, r.hit.y, r.hit.z, rot, typeIdx);
       playThud(400);
@@ -19799,10 +19812,10 @@
       else { nx=0; ny=0; nz = nz<0?-1:1; }
       if (ny !== 1) { showSaveStatus('⚠ Place the fire on a top-facing surface', true); return; }
       const fk = key(r.hit.x, r.hit.y, r.hit.z);
-      if (furniture.has(fk)) { removeFurniture(fk); playThud(200); return; }
+      if (furniture.has(fk)) { refundFurnitureOnPickup(fk); removeFurniture(fk); playThud(200); return; }
       const typeIdx = FURNITURE_TYPES.findIndex(f => f.category === 'fire');
       const furnType = FURNITURE_TYPES[typeIdx];
-      if (!trySpendCoins(furnType.cost, furnType.name)) return;
+      if (!useFurnitureStock(furnType)) return; // see CARPENTER
       addFurniture(r.hit.x, r.hit.y, r.hit.z, 0, typeIdx); // no facing direction — it looks the same from every side
       playThud(400);
       return;
@@ -21364,6 +21377,7 @@
     Beetroot: '🟣', Sweetcorn: '🌽', Onion: '🧅', Peas: '🟢', Strawberry: '🍓',
     Beef: '🥩', Pork: '🥓', Mutton: '🍖', 'Chicken Meat': '🍗',
     Milk: '🥛', Egg: '🥚', Wool: '🧶', 'Wool Hat': '🧢', 'Wool Scarf': '🧣', 'Wool Jumper': '🧥', 'Wool Socks': '🧦', 'Wool Gloves': '🧤',
+    Wood: '🪵', // from mining tree trunks — sold to the Carpenter (see CARPENTER)
   };
   let inventory = {};
   let inventorySaveTimer = null;
@@ -21400,22 +21414,52 @@
     saveInventory();
     renderInventory();
   }
+  var bagTab = 'harvest'; // var: renderInventory can run before this line
   function renderInventory() {
     const list = document.getElementById('bagList');
     const count = document.getElementById('bagCount');
     const entries = Object.entries(inventory).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0]));
     const total = entries.reduce((t, [, n]) => t + n, 0);
     if (count) { count.textContent = total > 99 ? '99+' : String(total); count.style.display = total ? 'flex' : 'none'; }
+    if (typeof refreshFurnitureStockBadges === 'function') refreshFurnitureStockBadges(); // stock is per player — right once we know who that is
     if (!list) return;
+    const harvest = entries.filter(([name]) => name !== 'Wood');
+    const wood = inventory.Wood || 0;
+    let clothesN = 0; try { clothesN = wardrobe().length; } catch (e) {}
+    // tab labels carry their counts
+    const tabN = { harvest: harvest.reduce((t, [, n]) => t + n, 0), wood, clothes: clothesN };
+    document.querySelectorAll('#bagTabs button').forEach(b => {
+      const t = b.dataset.tab;
+      b.classList.toggle('on', t === bagTab);
+      const base = t === 'harvest' ? '🌾 Harvest' : t === 'wood' ? '🪵 Wood' : '👕 Clothes';
+      b.innerHTML = base + (tabN[t] ? '<span class="tabN">' + (tabN[t] > 99 ? '99+' : tabN[t]) + '</span>' : '');
+    });
     list.innerHTML = '';
-    if (!entries.length) { list.innerHTML = '<div class="bagEmpty">Nothing yet — grow vegetables or flowers from seed and press ✋ on them once they are fully grown, or take an animal to a Slaughterhouse for meat.</div>'; return; }
-    for (const [name, n] of entries) {
-      const row = document.createElement('div'); row.className = 'bagItem';
-      const icon = PRODUCE_EMOJI[name] || '💐';
-      row.innerHTML = `<span class="bagIcon">${icon}</span><span class="bagName">${name}</span><span class="bagQty">×${n}</span>`;
-      list.appendChild(row);
+    const row = (icon, name, n) => { const r = document.createElement('div'); r.className = 'bagItem'; r.innerHTML = `<span class="bagIcon">${icon}</span><span class="bagName">${name}</span><span class="bagQty">×${n}</span>`; list.appendChild(r); };
+    if (bagTab === 'harvest') {
+      if (!harvest.length) { list.innerHTML = '<div class="bagEmpty">Nothing yet — grow vegetables or flowers from seed and press ✋ on them once they are fully grown, or take an animal to a Slaughterhouse for meat.</div>'; return; }
+      for (const [name, n] of harvest) row(PRODUCE_EMOJI[name] || '💐', name, n);
+    } else if (bagTab === 'wood') {
+      if (wood) row('🪵', 'Wood', wood);
+      const note = document.createElement('div'); note.className = 'bagEmpty';
+      note.textContent = wood ? 'Sell it to a Carpenter for 💰' + PRODUCE_PRICES.Wood + ' each (💰' + wood * PRODUCE_PRICES.Wood + ' for the lot).' : 'No wood yet — mine tree trunks, 1 🪵 per block, and sell it to a Carpenter.';
+      list.appendChild(note);
+      // the furniture you've bought and not placed yet
+      const owned = typeof furnStock === 'function' ? Object.entries(furnStock()).filter(([, n]) => n > 0).sort((a, b) => a[0].localeCompare(b[0])) : [];
+      const sub = document.createElement('div'); sub.className = 'bagSub'; sub.textContent = '🪑 Furniture to place';
+      list.appendChild(sub);
+      if (!owned.length) { const e = document.createElement('div'); e.className = 'bagEmpty'; e.textContent = 'None — buy pieces at a Carpenter. Each one you place uses one up.'; list.appendChild(e); }
+      for (const [name, n] of owned) row('🪑', name, n);
+    } else {
+      const e = document.createElement('div'); e.className = 'bagEmpty';
+      e.textContent = clothesN ? clothesN + ' knitted item' + (clothesN === 1 ? '' : 's') + ' from the Tailor — change what you\u2019re wearing in the Wardrobe.' : 'No clothes yet — sell wool to a Tailor, then buy what she knits.';
+      list.appendChild(e);
+      const b = document.createElement('button'); b.className = 'bagWide'; b.textContent = '👕 Open Wardrobe';
+      b.addEventListener('click', ev => { ev.stopPropagation(); toggleBag(false); openWardrobe(); });
+      list.appendChild(b);
     }
   }
+  document.querySelectorAll('#bagTabs button').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); bagTab = b.dataset.tab; renderInventory(); }));
   function toggleBag(force) {
     const panel = document.getElementById('bagPanel');
     if (!panel) return;
@@ -21440,7 +21484,7 @@
   const PRODUCE_PRICES = {
     Wheat: 5, Carrot: 4, Potato: 3, Onion: 4, Peas: 2, Strawberry: 3, Tomato: 5, Beetroot: 7,
     Sweetcorn: 12, Lettuce: 18, Cabbage: 26, Pumpkin: 31, // per item — see ECONOMY by SEED_TYPES for the whole table
-    Milk: 6, Egg: 3, Wool: 4, // animal produce — see ANIMAL PRODUCE (Wool sells at the Tailor only)
+    Milk: 6, Egg: 3, Wool: 4, Wood: 4, // Wood: 1 per tree-trunk block mined, sells at the Carpenter only. Animal produce — see ANIMAL PRODUCE (Wool sells at the Tailor only)
   };
   const FLOWER_PRICE = 7;
   // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
@@ -21461,6 +21505,10 @@
     "Fire's lit! What meat have you brought?", "I'll take the lot — straight on the grill.", "Beef? Pork? Let's see it.",
     "Smells good already. What've you got?",
   ];
+  const CARPENTER_LINES = [
+    "Fresh timber? I'll take all you've got.", "Measure twice, cut once.", "Everything here's made by hand from wood like yours.",
+    "Need something for the house? Take your pick.",
+  ];
   const TAILOR_LINES = [
     "Lovely soft wool — I'll knit it up.", "Bring me wool, I'll make you something warm.", "Every stitch by hand, you know.",
   ];
@@ -21471,15 +21519,16 @@
   function shopBuys(name) {
     if (shopMode === 'meat') return isMeat(name);
     if (shopMode === 'tailor') return name === 'Wool';
-    return !isMeat(name) && name !== 'Wool' && !isClothing(name);
+    if (shopMode === 'carpenter') return name === 'Wood';
+    return !isMeat(name) && name !== 'Wool' && name !== 'Wood' && !isClothing(name);
   }
   function shopPanelOpen() { const p = document.getElementById('shopPanel'); return !!p && p.style.display === 'block'; }
   function openShopPanel(mode) {
-    shopMode = (mode === 'meat' || mode === 'tailor') ? mode : 'veg';
+    shopMode = (mode === 'meat' || mode === 'tailor' || mode === 'carpenter') ? mode : 'veg';
     document.exitPointerLock && document.exitPointerLock(); // so the buttons can be clicked on desktop
     toggleBag(false);
-    const lines = shopMode === 'meat' ? BBQ_LINES : shopMode === 'tailor' ? TAILOR_LINES : SHOPKEEPER_LINES;
-    document.querySelector('#shopPanel .shopHead span').textContent = shopMode === 'meat' ? '🍖 BBQ Shop' : shopMode === 'tailor' ? '🧵 Tailor' : '🧺 Shopkeeper';
+    const lines = shopMode === 'meat' ? BBQ_LINES : shopMode === 'tailor' ? TAILOR_LINES : shopMode === 'carpenter' ? CARPENTER_LINES : SHOPKEEPER_LINES;
+    document.querySelector('#shopPanel .shopHead span').textContent = shopMode === 'meat' ? '🍖 BBQ Shop' : shopMode === 'tailor' ? '🧵 Tailor' : shopMode === 'carpenter' ? '🪚 Carpenter' : '🧺 Shopkeeper';
     document.getElementById('shopSay').textContent = '"' + lines[Math.floor(Math.random() * lines.length)] + '"';
     document.getElementById('shopPanel').style.display = 'block';
     renderShopPanel();
@@ -21513,9 +21562,12 @@
         ? '<div class="bagEmpty">No meat in your bag — lead a cow, pig, sheep or chicken to a Slaughterhouse first.</div>'
         : shopMode === 'tailor'
         ? '<div class="bagEmpty">No wool in your bag — sheep drop some every 10 minutes; press ✋ on it to pick it up.</div>'
+        : shopMode === 'carpenter'
+        ? '<div class="bagEmpty">No wood to sell — mine tree trunks for 1 🪵 Wood per block. I pay 💰' + PRODUCE_PRICES.Wood + ' each.</div>'
         : '<div class="bagEmpty">Nothing I buy in your bag — vegetables, flowers, milk and eggs. (Meat goes to the BBQ Shop, wool to the Tailor.)</div>';
       all.style.display = 'none';
       if (shopMode === 'tailor') renderTailorClothes(list);
+      if (shopMode === 'carpenter') renderCarpenterStock(list);
       return;
     }
     let total = 0;
@@ -21534,6 +21586,7 @@
     all.style.display = 'block';
     all.textContent = 'Sell everything · 💰' + total;
     if (shopMode === 'tailor') renderTailorClothes(list);
+    if (shopMode === 'carpenter') renderCarpenterStock(list);
   }
   document.getElementById('shopSellAll').addEventListener('click', e => {
     e.stopPropagation();
@@ -21543,7 +21596,6 @@
     renderShopPanel();
   });
   document.getElementById('shopClose').addEventListener('click', e => { e.stopPropagation(); closeShopPanel(); });
-  document.getElementById('bagWardrobe').addEventListener('click', e => { e.stopPropagation(); toggleBag(false); openWardrobe(); });
   // Walking away closes it.
   setInterval(() => {
     if (!shopPanelOpen()) return;
@@ -21571,6 +21623,7 @@
     { t: 'slaughter', name: 'Slaughterhouse', emoji: '🔪', price: 2000, sx: 15, sz: 15, note: 'turns animals into meat' },
     { t: 'vehicleshop', name: 'Vehicle Shop', emoji: '🚗', price: 3000, sx: 25, sz: 25, note: 'glass showroom — buy vehicles, sell them back' },
     { t: 'equipshop', name: 'Equipment Shop', emoji: '⚔️', price: 2200, sx: 19, sz: 19, note: 'weapons on the walls — buy them, sell them back' },
+    { t: 'carpenter', name: 'Carpenter',      emoji: '🪚', price: 2000, sx: 19, sz: 19, note: 'buys wood, sells furniture' },
     { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 2500, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
     { t: 'church',    name: 'Church',         emoji: '⛪', price: 4000, sx: 19, sz: 25 },
     { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
@@ -22168,6 +22221,10 @@
     return o.userData.shopItem;
   }
   function shopItemText(item) {
+    if (item.kind === 'furniture') {
+      const t = FURNITURE_TYPES[item.idx];
+      return '🪑 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy one (you have ×' + furnStockOf(t.name) + ')';
+    }
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
       if (!vehicleUnlocked(t)) return '🚗 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy (you pick the colour)';
@@ -22200,6 +22257,7 @@
   function tryBuyShopItem() {
     const item = shopItemInSight();
     if (!item) return false;
+    if (item.kind === 'furniture') { buyFurniture(FURNITURE_TYPES[item.idx], 1); shopTipNext = 0; return true; }
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
       if (vehicleUnlocked(t)) { // already yours — re-paint it, free
@@ -22285,6 +22343,238 @@
       row.appendChild(name); row.appendChild(btn); list.appendChild(row);
     }
   }
+
+  // ================= CARPENTER =================
+  // A bought building (Property menu). Two jobs:
+  //  • buys Wood — 1 per tree-trunk block you mine (see the mining loop) — for PRODUCE_PRICES.Wood each;
+  //  • sells furniture. Unlike vehicles and weapons, furniture is CONSUMABLE: you buy a number of each piece,
+  //    the furniture menus show how many you have (×N), and every one you place uses one up. None left =
+  //    back to the Carpenter. Picking up a piece you placed in your own world (tap it again / mine it) puts it
+  //    back in stock; village furniture and anything in The Mill never does.
+  // Stock is per player, kept on this device (like the Wardrobe and the Tailor's wool).
+  const CARPENTER_CATS = [['room', '🛋️ Living'], ['bedroom', '🛏️ Bedroom'], ['kitchen', '🍳 Kitchen'], ['bathroom', '🛁 Bathroom'], ['bar', '🍺 Bar'], ['cellar', '🛢️ Cellar'], ['fire', '🔥 Fire']];
+  // One entry per furniture NAME (the Fridge is listed under both Bar and Kitchen — it's one item, one stock count).
+  function carpenterCatalog(cat) {
+    const seen = new Set(), out = [];
+    FURNITURE_TYPES.forEach((t, idx) => {
+      if (t.category !== cat || seen.has(t.name)) return;
+      if (t.name === 'Fridge' && cat === 'bar') return; // listed once, under Kitchen
+      seen.add(t.name); out.push({ t, idx });
+    });
+    return out;
+  }
+  function furnStockKey() { return 'voxelFurnitureStock:' + (playerUid || 'guest'); }
+  var furnStockCache = null, furnStockCacheKey = null; // var: the bag can ask for this before this line has run
+  function furnStock() {
+    const k = furnStockKey();
+    if (furnStockCache && furnStockCacheKey === k) return furnStockCache;
+    try { furnStockCache = JSON.parse(localStorage.getItem(k) || '{}') || {}; } catch (e) { furnStockCache = {}; }
+    if (typeof furnStockCache !== 'object' || Array.isArray(furnStockCache)) furnStockCache = {};
+    furnStockCacheKey = k;
+    return furnStockCache;
+  }
+  function furnStockOf(name) { return Math.max(0, furnStock()[name] | 0); }
+  function setFurnStock(name, n) {
+    const st = furnStock();
+    if (n > 0) st[name] = n; else delete st[name];
+    try { localStorage.setItem(furnStockKey(), JSON.stringify(st)); } catch (e) {}
+    refreshFurnitureStockBadges();
+  }
+  // Called by doPlace just before a piece goes down. False (with a message) if you've none left.
+  function useFurnitureStock(t) {
+    const n = furnStockOf(t.name);
+    if (n <= 0) { showSaveStatus('🪚 No ' + t.name + ' left — buy more at a Carpenter', true); return false; }
+    setFurnStock(t.name, n - 1);
+    showSaveStatus('🪑 ' + t.name + ' placed — ' + (n - 1) + ' left');
+    return true;
+  }
+  // Picking one up again: back into stock, but only your own pieces in your own world.
+  function refundFurnitureOnPickup(fk) {
+    if (visitMode || currentWorldId === PUB_WORLD_ID) return;
+    const f = furniture.get(fk);
+    if (!f) return;
+    const t = FURNITURE_TYPES[f.typeIdx];
+    if (!t || !CARPENTER_CATS.some(([c]) => c === t.category)) return; // e.g. a shop counter
+    if (collectVillageOwnedKeys().furniture.has(fk)) return; // part of a building — not yours to pocket
+    setFurnStock(t.name, furnStockOf(t.name) + 1);
+    showSaveStatus('🪑 ' + t.name + ' picked up — ' + furnStockOf(t.name) + ' in stock');
+  }
+  function buyFurniture(t, n) {
+    const cost = t.cost * n;
+    if (!trySpendCoins(cost, n + ' × ' + t.name)) return false;
+    setFurnStock(t.name, furnStockOf(t.name) + n);
+    playCoin();
+    showSaveStatus('🪚 Bought ' + n + ' × ' + t.name + ' — you have ' + furnStockOf(t.name) + '. It\u2019s in your furniture menu.');
+    return true;
+  }
+  // The ×N in the corner of each furniture hotbar slot, for whichever piece that slot has selected.
+  function refreshFurnitureStockBadges() {
+    let els, pairs;
+    try { // the hotbar / selection variables may not exist yet this early in startup
+      els = slotElByIndex;
+      pairs = [[ROOM_SLOT, roomTypeIdx], [BATHROOM_SLOT, bathroomTypeIdx], [BAR_SLOT, barTypeIdx], [KITCHEN_SLOT, kitchenTypeIdx], [CELLAR_SLOT, cellarTypeIdx], [BEDROOM_SLOT, bedroomTypeIdx],
+      [FIRE_SLOT, FURNITURE_TYPES.findIndex(f => f.category === 'fire')]];
+    } catch (e) { return; }
+    for (const [slotConst, idx] of pairs) {
+      const el = els[slotConst], t = FURNITURE_TYPES[idx];
+      if (!el || !t) continue;
+      let b = el.querySelector('.stock-badge');
+      if (!b) {
+        b = document.createElement('span'); b.className = 'price-badge stock-badge';
+        b.style.cssText = 'position:absolute;top:1px;right:2px;font-size:9px;font-weight:700;line-height:1;text-shadow:0 1px 2px rgba(0,0,0,0.95);pointer-events:none;';
+        el.appendChild(b);
+      }
+      const n = furnStockOf(t.name);
+      b.textContent = '×' + n;
+      b.style.color = n > 0 ? '#9effa0' : '#ff8080';
+      el.title = t.name + ' — ' + (n > 0 ? n + ' to place' : 'none left, buy more at a Carpenter');
+    }
+  }
+  // The buy list under the "sell your wood" rows in the Carpenter's panel (see renderShopPanel).
+  let carpenterCat = 'room';
+  function renderCarpenterStock(list) {
+    const head = document.createElement('div');
+    head.style.cssText = 'margin:12px 4px 6px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.15);font-weight:700;';
+    head.textContent = '🪑 Furniture — each one you place uses one up';
+    list.appendChild(head);
+    const tabs = document.createElement('div');
+    tabs.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin:0 2px 8px;';
+    for (const [c, label] of CARPENTER_CATS) {
+      const b = document.createElement('button');
+      const on = c === carpenterCat;
+      b.style.cssText = 'border-radius:14px;padding:4px 9px;font:600 12px system-ui,sans-serif;cursor:pointer;border:1px solid ' + (on ? '#e0b060' : 'rgba(255,255,255,0.25)') + ';background:' + (on ? 'rgba(199,144,29,0.45)' : 'rgba(255,255,255,0.06)') + ';color:#fff;';
+      b.textContent = label;
+      b.addEventListener('click', e => { e.stopPropagation(); carpenterCat = c; renderShopPanel(); });
+      tabs.appendChild(b);
+    }
+    list.appendChild(tabs);
+    for (const { t, idx } of carpenterCatalog(carpenterCat)) {
+      const have = furnStockOf(t.name);
+      const row = document.createElement('div'); row.className = 'shopItem';
+      const ic = furnitureIconCanvas(idx); ic.style.cssText = 'width:26px;height:26px;flex-shrink:0;';
+      row.appendChild(ic);
+      const nm = document.createElement('span'); nm.className = 'bagName';
+      nm.innerHTML = t.name + ' <span class="bagQty" style="color:' + (have ? '#9effa0' : 'rgba(255,255,255,0.45)') + '">×' + have + '</span><br><span class="shopPrice">💰' + t.cost + ' each</span>';
+      row.appendChild(nm);
+      for (const n of [1, 5, 10]) {
+        const b = document.createElement('button'); b.className = 'shopBtn';
+        b.style.cssText = 'padding:6px 7px;background:#7a4a22;';
+        b.textContent = '+' + n;
+        b.title = 'Buy ' + n + ' for 💰' + (t.cost * n);
+        if (coins < t.cost * n) b.style.opacity = '0.45';
+        b.addEventListener('click', e => { e.stopPropagation(); buyFurniture(t, n); renderShopPanel(); });
+        row.appendChild(b);
+      }
+      list.appendChild(row);
+    }
+  }
+
+  // ---- The building: a timber-framed workshop, nothing like the other shops ----
+  // Dark oak posts every 3 blocks on a cobblestone plinth, birch plank infill with small paned windows, a
+  // steep stepped gable roof running front-to-back (so the gable end with the sign faces you), a wide open
+  // barn doorway, log piles down one side and a workbench out front. Inside: the counter and the carpenter
+  // at the back, and sample pieces along both walls — aim at one for its price and press ✋ to buy one.
+  const CARPENTER_W = 13, CARPENTER_D = 11, CARPENTER_H = 5;
+  function buildLogPileProp() {
+    const g = new THREE.Group();
+    const bark = new THREE.MeshLambertMaterial({ color: 0x5a3a1e }), end = new THREE.MeshLambertMaterial({ color: 0xcfa66a });
+    for (const [n, row] of [[3, 0], [2, 1], [1, 2]]) for (let i = 0; i < n; i++) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.95, 8), [bark, end, end]);
+      log.rotation.z = Math.PI / 2;
+      log.position.set(0, 0.16 + row * 0.27, (i - (n - 1) / 2) * 0.32);
+      g.add(log);
+    }
+    return g;
+  }
+  function buildWorkbenchProp() {
+    const g = new THREE.Group();
+    const wood = new THREE.MeshLambertMaterial({ color: 0x8a6034 }), dark = new THREE.MeshLambertMaterial({ color: 0x4a3018 });
+    const top = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.08, 0.55), wood); top.position.y = 0.78; g.add(top);
+    for (const [x, z] of [[-0.4, -0.22], [0.4, -0.22], [-0.4, 0.22], [0.4, 0.22]]) { const l = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.74, 0.07), dark); l.position.set(x, 0.37, z); g.add(l); }
+    const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.04, 0.45), dark); shelf.position.y = 0.2; g.add(shelf);
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.04, 0.16), new THREE.MeshLambertMaterial({ color: 0xd8b27a })); plank.position.set(-0.05, 0.84, -0.08); plank.rotation.y = 0.15; g.add(plank);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.01), new THREE.MeshLambertMaterial({ color: 0xb8bec4 })); blade.position.set(0.2, 0.86, 0.14); blade.rotation.x = -Math.PI / 2; g.add(blade);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.12), new THREE.MeshLambertMaterial({ color: 0xa0301e })); handle.position.set(0.44, 0.85, 0.14); g.add(handle);
+    const vice = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.1), new THREE.MeshLambertMaterial({ color: 0x3a4a5a })); vice.position.set(-0.42, 0.86, 0.22); g.add(vice);
+    return g;
+  }
+  // rot index that makes a piece of furniture face world direction (dx, dz) — rot 0 faces -Z (see addFurniture)
+  function faceRotFor(dx, dz) { return dz < 0 ? 0 : dx < 0 ? 1 : dz > 0 ? 2 : 3; }
+  function maybeBuildCarpenter(cx, cz, replay) {
+    if (!replay) return; // bought only
+    const ck = cx + '_' + cz;
+    if (villageFootprintChunkKeys.has(ck)) return;
+    const rng = mulberry32(replay.rs);
+    const { sx0, sz0, sx1, sz1, floor } = replay.site;
+    const W = CARPENTER_W, D = CARPENTER_D, H = CARPENTER_H;
+    levelSite(sx0, sx1, sz0, sz1, floor, H + 12);
+    const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
+    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
+    const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
+    const [x0, z0] = shopSiteOrigin(replay, ew, ed);
+    const f = shopFrame(x0, z0, W, D, doorSide);
+    const POST = BLOCK_ID('Dark Oak Wood'), INFILL = BLOCK_ID('Birch Planks'), PLINTH = BLOCK_ID('Cobblestone'),
+      FLOOR = BLOCK_ID('Spruce Planks'), ROOF = BLOCK_ID('Dark Planks'), GLASS = BLOCK_ID('Glass'), RIDGE = BLOCK_ID('Spruce Wood');
+    const put = (u, v, y, t) => { const [x, z] = f.cell(u, v); blocks.set(key(x, y, z), t); trackVillageHeight(x, z, y); };
+    const mid = f.mid; // 6 — the doorway's centre column
+    // floor
+    for (let u = 0; u < W; u++) for (let v = 0; v < D; v++) { const [x, z] = f.cell(u, v); blocks.set(key(x, floor, z), FLOOR); trackVillageHeight(x, z, floor); markVillageGround(x, z, floor); }
+    // walls
+    for (let u = 0; u < W; u++) for (let v = 0; v < D; v++) {
+      const onFB = v === 0 || v === D - 1, onSide = u === 0 || u === W - 1;
+      if (!onFB && !onSide) continue;
+      const along = onFB ? u : v, len = onFB ? W : D;
+      const isPost = along % 3 === 0 || along === len - 1;
+      for (let y = floor + 1; y <= floor + H; y++) {
+        let t = y === floor + 1 ? PLINTH : (y === floor + H || isPost) ? POST : INFILL;
+        const winRow = y === floor + 2 || y === floor + 3;
+        if (winRow && !isPost && !(onFB && onSide)) {
+          if (onSide || v === D - 1) t = GLASS;                          // side and back walls: a window in every bay
+          else if (u <= 2 || u >= W - 3) t = GLASS;                       // front: only the outer bays, clear of the doorway
+        }
+        if (v === 0 && y <= floor + 2 && u >= mid - 1 && u <= mid + 1) continue; // the open barn doorway, 3 wide x 2 high
+        put(u, v, y, t);
+      }
+    }
+    // stepped gable roof, ridge running front-to-back, one block of overhang all round
+    const roofBase = floor + H + 1;
+    for (let k = 0; ; k++) {
+      const uL = k - 1, uR = W - k;
+      if (uL > uR) break;
+      const y = roofBase + k, top = uL === uR || uL + 1 >= uR;
+      for (let v = -1; v <= D; v++) {
+        if (k === 0) { for (let u = uL; u <= uR; u++) put(u, v, y, ROOF); continue; } // the ceiling
+        const us = uL === uR ? [uL] : [uL, uL + 1, uR - 1, uR]; // the very top is a single ridge beam
+        for (const u of new Set(us)) put(u, v, y, top ? RIDGE : ROOF);
+      }
+      if (k >= 1) for (const v of [0, D - 1]) for (let u = uL + 2; u <= uR - 2; u++) put(u, v, y, (v === 0 && k === 2 && u === mid) ? GLASS : INFILL); // gable ends, a little window in the front one
+    }
+    f.shell.gy = floor; f.shell.h = H;
+    placeShellSign(f.shell, doorSide, 'Carpenter', reg);
+    placeShellLight(f.shell, doorSide, reg);
+    // outside: log piles down the left-hand side, a workbench by the door
+    for (const v of [2, 5, 8]) { const [x, z] = f.cell(-2, v); placeVillageProp(buildLogPileProp, x, floor, z, Math.abs(f.d[0]) ? 0 : 1, reg); }
+    { const [x, z] = f.cell(2, -2); placeVillageProp(buildWorkbenchProp, x, floor, z, faceRotFor(-f.d[0], -f.d[1]), reg); }
+    { const [x, z] = f.cell(W - 2, D - 2); placeVillageProp(buildWorkbenchProp, x, floor, z, faceRotFor(f.s[0], f.s[1]), reg); }
+    // sample pieces along both side walls, facing the aisle — aim + ✋ buys one (see shopItemInSight)
+    const samples = ['2-Seater Couch', 'Armchair', 'Coffee Table', 'Cabinet', 'Wardrobe', 'Chest of Drawers', 'Table', 'Chair'];
+    samples.forEach((name, i) => {
+      const idx = FURNITURE_TYPES.findIndex(t => t.name === name);
+      if (idx < 0) return;
+      const left = i % 2 === 0, u = left ? 1 : W - 2, v = 2 + Math.floor(i / 2) * 2;
+      const [x, z] = f.cell(u, v);
+      const g = FURNITURE_TYPES[idx].build();
+      g.position.set(x + 0.5, floor + 1, z + 0.5);
+      g.rotation.y = faceRotFor(left ? f.s[0] : -f.s[0], left ? f.s[1] : -f.s[1]) * Math.PI / 2;
+      addShopDisplay(g, { kind: 'furniture', idx }, reg);
+    });
+    shopCounterAndKeeper(f, reg, rng, doorSide, 'carpenter');
+    registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
+    villageRegistry.set(ck, reg);
+    resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
+  }
+
 
   // ================= TAILOR =================
   // Sell her wool and she knits it into clothes you can buy back. Her stock
@@ -28596,6 +28886,7 @@
             removeDoorsForBlock(bx, by, bz);
             removeFurnitureForBlock(bx, by, bz);
             handleLocalBlockChange(bx, by, bz, removedType); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+            if (LOG_TYPE_SET.has(removedType)) { addToInventory('Wood', 1); showBriefMessage('🪵 +1 Wood (' + inventory.Wood + ')'); } // sells to a Carpenter — see CARPENTER
             if (LOG_TYPE_SET.has(removedType)) onLogRemoved(bx, by, bz); // leaves left with no trunk in reach start dropping — see LEAF DECAY
             continueMineShaft(bx, by, bz); // if this just broke through the bottom of the column, extends the shaft one block further down
             playThud(150);
@@ -29651,16 +29942,20 @@
       if (t.category !== category) return;
       const btn = document.createElement('div');
       btn.className = 'popup-item';
-      btn.title = t.name + costLabel(t.cost);
+      const have = furnStockOf(t.name);
+      btn.title = t.name + (have ? ' — ' + have + ' to place' : ' — none left, buy at a Carpenter (💰' + t.cost + ' each)');
       btn.appendChild(furnitureIconCanvas(idx));
       const label = document.createElement('span');
       label.className = 'popup-item-label';
-      label.textContent = t.name + costLabel(t.cost);
+      label.textContent = t.name + ' · ×' + have; // how many you've got — each one placed uses one (see CARPENTER)
+      label.style.color = have ? '' : 'rgba(255,255,255,0.5)';
       btn.appendChild(label);
+      if (!have) btn.style.opacity = '0.6';
       btn.addEventListener('click', e => {
         e.stopPropagation();
         setIdx(idx);
         updateFurnitureSlotIcon(slotConst, idx);
+        refreshFurnitureStockBadges();
         selectSlot(slotConst);
         closeFamilyPopup();
       });
@@ -29690,6 +29985,7 @@
   makeFurnitureSlot(KITCHEN_SLOT,  'kitchen',  'Kitchen Furniture',  kitchenTypeIdx,  () => kitchenTypeIdx,  v => kitchenTypeIdx = v);
   makeFurnitureSlot(CELLAR_SLOT,   'cellar',   'Cellar Furniture',   cellarTypeIdx,   () => cellarTypeIdx,   v => cellarTypeIdx = v);
   makeFurnitureSlot(BEDROOM_SLOT,  'bedroom',  'Bedroom Furniture',  bedroomTypeIdx,  () => bedroomTypeIdx,  v => bedroomTypeIdx = v);
+  setTimeout(refreshFurnitureStockBadges, 0); // after the Fire slot below exists too; re-run whenever stock changes
 
   // Vehicles — its own small popup rather than reusing showFurniturePopup/
   // makeFurnitureSlot, since vehicles aren't FURNITURE_TYPES entries at
@@ -30444,6 +30740,7 @@
     '🧺 Sell your harvest to a shopkeeper: aim at him and press ✋. Flowers sell too.',
     '🥚 Cows, chickens and sheep leave milk, eggs and wool every 10 minutes (up to 3 pile up). Press ✋ to pick them up.',
     '🥛 Milk and eggs sell at the grocer\u2019s. Wool sells to the Tailor, who knits it into clothes you can buy — check your 👕 Wardrobe.',
+    '🪵 Mining a tree trunk gives 1 Wood per block. Sell it to a Carpenter (Property menu) — that\u2019s also where you buy furniture. Each piece you place uses one up; the ×N on the furniture menus shows what you\u2019ve got left.',
     '🐣 Put an Incubator down and aim Animal Seeds at it to hatch a chicken, sheep, pig or cow. They keep laying produce for you.',
     '🍖 Lead an animal to the Slaughterhouse and pay the butcher. The BBQ Shop pays about 3 times what the animal seed cost for the meat.',
     '💎 Treasure chests hide in shipwrecks, castle dungeons and windmills — worth 100 to 1,000 coins. Press ✋ on one to collect it.',

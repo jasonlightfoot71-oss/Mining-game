@@ -11636,7 +11636,7 @@
     lastSettlementPos = { x: houseCx, z: houseCz };
     levelSite(sx0, sx1, sz0, sz1, floor, 12); // 12 clears the house's own 7 tall + roof with margin, nowhere near the old system's 50-block clearance
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['north','south','east','west'][Math.floor(rng() * 4)]; // no road to face any more — any side is equally valid
+    const doorSide = pickDoorSide(['north','south','east','west'], rng, replay); // generated: random; bought: faces where you stood — see pickDoorSide
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const houseShell = buildVillageHouse({ x0: sx0 + HOUSE_SEARCH_PAD, z0: sz0 + HOUSE_SEARCH_PAD }, floor, rng, palette, doorSide, reg);
     placeShellSign(houseShell, doorSide, 'House', reg); // every building says what it is over its door
@@ -11668,7 +11668,7 @@
     const { sx0, sz0, sx1, sz1, floor } = site;
     levelSite(sx0, sx1, sz0, sz1, floor, 12);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south','north','east','west'][Math.floor(rng()*4)];
+    const doorSide = pickDoorSide(['south','north','east','west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shopShell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
     placeShellSign(shopShell, doorSide, "Grocer's", reg);
@@ -21662,6 +21662,17 @@
     mountPopup(popup, slotEl);
   }
   // Where the chosen building would go right now, and whether it can.
+  // Which side a building's door goes on. The rng is ALWAYS drawn (so every other random choice after it —
+  // shopkeeper looks, props… — stays exactly as it was for buildings saved before this existed), but a bought
+  // building's spec carries `door`: the side nearest where you stood when you pressed build, so the front
+  // faces you. Generated buildings (and older saved ones, with no `door`) keep their random side.
+  function pickDoorSide(list, rng, spec) {
+    const rolled = list[Math.floor(rng() * 4)];
+    const d = spec && spec.door; // no const lookups here — generated houses can build before this part of the script has run
+    return (d === 'south' || d === 'north' || d === 'east' || d === 'west') ? d : rolled;
+  }
+  // Buildings whose builders can put the door on any side. Church and farm have fixed layouts; landmarks have no door.
+  const DOOR_FACING_TYPES = new Set(['house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter']);
   function planPurchase(bt) {
     const r = voxelRaycast(true, true);
     if (!r || !r.hit || r.isWater || r.isLava) return null;
@@ -21674,7 +21685,9 @@
     else { sz0 = dz > 0 ? r.hit.z : r.hit.z - D + 1; sx0 = r.hit.x - Math.floor(W / 2); }
     const site = { sx0, sz0, sx1: sx0 + W - 1, sz1: sz0 + D - 1, floor };
     const ck = chunkKeyOf(sx0 + Math.floor(W / 2), sz0 + Math.floor(D / 2));
-    const plan = { site, ck, ok: false, reason: '' };
+    // facing +x means the near edge (and so the door, facing back at you) is the west side, and so on
+    const door = DOOR_FACING_TYPES.has(bt.t) ? (dx ? (dx > 0 ? 'west' : 'east') : (dz > 0 ? 'north' : 'south')) : null;
+    const plan = { site, ck, door, ok: false, reason: '' };
     const fail = why => { plan.reason = why; return plan; };
     if (!structureSpecsActive() || visitMode) return fail('Buildings can only be bought in your own worlds');
     if (floor < SEA_LEVEL) return fail('Too low — that\u2019s under the waterline');
@@ -21695,16 +21708,16 @@
     return plan;
   }
   // The green/red outline shown while Property is selected.
-  let propertyGhost = null, propertyGhostNext = 0, propertyGhostKey = '';
+  let propertyGhost = null, propertyGhostNext = 0, propertyGhostKey = '', propertyDoorGhost = null;
   function updatePropertyGhost() {
     const on = selectedSlot === PROPERTY_SLOT && !ridingVehicle;
-    if (!on) { if (propertyGhost) propertyGhost.visible = false; return; }
+    if (!on) { if (propertyGhost) propertyGhost.visible = false; if (propertyDoorGhost) propertyDoorGhost.visible = false; return; }
     const now = performance.now();
     if (now < propertyGhostNext) return;
     propertyGhostNext = now + 120;
     const bt = BUILDING_TYPES[propertyTypeIdx];
     const plan = planPurchase(bt);
-    if (!plan) { if (propertyGhost) propertyGhost.visible = false; return; }
+    if (!plan) { if (propertyGhost) propertyGhost.visible = false; if (propertyDoorGhost) propertyDoorGhost.visible = false; return; }
     const H = 6, gkey = bt.sx + 'x' + bt.sz;
     if (!propertyGhost || propertyGhostKey !== gkey) {
       if (propertyGhost) { scene.remove(propertyGhost); propertyGhost.geometry.dispose(); propertyGhost.material.dispose(); }
@@ -21717,6 +21730,20 @@
     propertyGhost.position.set((st.sx0 + st.sx1 + 1) / 2, st.floor + 1 + H / 2, (st.sz0 + st.sz1 + 1) / 2);
     propertyGhost.material.color.setHex(plan.ok ? 0x46e07a : 0xff4a3a);
     propertyGhost.visible = true;
+    // a door-shaped outline on the edge nearest you, showing where the front door will be
+    if (!propertyDoorGhost) {
+      propertyDoorGhost = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.2, 2, 0.2)), new THREE.LineBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95, depthTest: false }));
+      propertyDoorGhost.renderOrder = 999;
+      scene.add(propertyDoorGhost);
+    }
+    if (plan.door) {
+      const cxm = (st.sx0 + st.sx1 + 1) / 2, czm = (st.sz0 + st.sz1 + 1) / 2;
+      const px = plan.door === 'west' ? st.sx0 : plan.door === 'east' ? st.sx1 + 1 : cxm;
+      const pz = plan.door === 'north' ? st.sz0 : plan.door === 'south' ? st.sz1 + 1 : czm;
+      propertyDoorGhost.position.set(px, st.floor + 2, pz);
+      propertyDoorGhost.rotation.y = (plan.door === 'east' || plan.door === 'west') ? Math.PI / 2 : 0;
+      propertyDoorGhost.visible = true;
+    } else propertyDoorGhost.visible = false;
   }
   // A small yes/no box (used for buying, and at the butcher).
   let confirmEl = null, confirmYes = null;
@@ -21773,6 +21800,7 @@
       coins -= bt.price; updateCoinsDisplay(); scheduleStatsSave();
       const rs = bt.t === 'landmark' ? rsForLandmark(bt.kind) : ((Math.random() * 4294967296) >>> 0);
       const spec = { t: bt.t, ck, site: { sx0: site.sx0, sz0: site.sz0, sx1: site.sx1, sz1: site.sz1, floor: site.floor }, rs, bought: true };
+      if (use.door) spec.door = use.door; // the door faces where you're standing now — see pickDoorSide
       claimRegionForSpec(spec);
       recordStructureSpec(spec); // saved (promptly) and sent live to anyone else here
       try { replayStructureSpec(spec); } catch (e) { console.error('[voxel] bought building failed to build', e); }
@@ -21852,7 +21880,7 @@
     const { sx0, sz0, sx1, sz1, floor } = replay.site;
     levelSite(sx0, sx1, sz0, sz1, floor, 10);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shell = buildShell(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, 11, 11, 5, floor, palette, doorSide, 'flat');
     for (let x = shell.x0; x <= shell.x1; x++) for (let z = shell.z0; z <= shell.z1; z++) blocks.set(key(x, floor, z), 2); // bare stone floor, easy to hose down
@@ -21881,7 +21909,7 @@
     const { sx0, sz0, sx1, sz1, floor } = replay.site;
     levelSite(sx0, sx1, sz0, sz1, floor, 14);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
     placeShellSign(shell, doorSide, 'BBQ', reg);
@@ -21902,7 +21930,7 @@
     const { sx0, sz0, sx1, sz1, floor } = replay.site;
     levelSite(sx0, sx1, sz0, sz1, floor, 14);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const shell = buildVillageShop(sx0 + HOUSE_SEARCH_PAD, sz0 + HOUSE_SEARCH_PAD, floor, palette, doorSide, reg);
     placeShellSign(shell, doorSide, 'Tailor', reg);
@@ -22108,7 +22136,7 @@
     const H = 6;
     levelSite(sx0, sx1, sz0, sz1, floor, H + 6);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const W = VEHICLE_SHOP_W, D = VEHICLE_SHOP_D;
     const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
@@ -22153,7 +22181,7 @@
     const H = 5;
     levelSite(sx0, sx1, sz0, sz1, floor, H + 6);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const W = EQUIP_SHOP_W, D = EQUIP_SHOP_D;
     const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
@@ -22509,7 +22537,7 @@
     const W = CARPENTER_W, D = CARPENTER_D, H = CARPENTER_H;
     levelSite(sx0, sx1, sz0, sz1, floor, H + 12);
     const palette = VILLAGE_PALETTES[Math.floor(rng() * VILLAGE_PALETTES.length)];
-    const doorSide = ['south', 'north', 'east', 'west'][Math.floor(rng() * 4)];
+    const doorSide = pickDoorSide(['south', 'north', 'east', 'west'], rng, replay);
     const reg = { furnitureKeys: [], doorKeys: [], signKeys: [], fixtureKeys: [], bellKeys: [], npcs: [], ladderKeys: [], props: [], treasureKeys: [] };
     const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
     const [x0, z0] = shopSiteOrigin(replay, ew, ed);

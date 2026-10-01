@@ -14156,10 +14156,10 @@
   }
 
   // ================= GRASS SPREAD =================
-  // A Dirt, Coarse Dirt, Clay or Mud block that touches grass turns into
-  // grass after a little while — except Mud the PLAYER placed, which
-  // always stays Mud (it's for planting seeds in; a vegetable patch
-  // shouldn't grass over). Natural Mud still greens over as before. "Touches" means the four blocks beside it at the SAME
+  // A Dirt, Coarse Dirt or Clay block that touches grass turns into
+  // grass after a little while. Mud NEVER does — placed or generated
+  // (farm fields), it's for planting seeds in, and a vegetable patch
+  // shouldn't grass over. "Touches" means the four blocks beside it at the SAME
   // height (north/south/east/west) — not above, below or diagonal. The
   // more of them that are grass, the sooner:
   //     4 grass neighbours -> 1s     3 -> 2s     2 -> 3s     1 -> 4s
@@ -14194,7 +14194,7 @@
   // block turns, the rest of the floor follows by the ordinary rule.
   const GRASS_BLOCK = 0;
   const GRASS_MUD = typeIndexByName('Mud');
-  const GRASS_SPREADS_ONTO = new Set([typeIndexByName('Dirt'), typeIndexByName('Coarse Dirt'), typeIndexByName('Clay'), GRASS_MUD]); // Podzol is deliberately left alone; player-placed Mud is excluded in grassEligibleCount
+  const GRASS_SPREADS_ONTO = new Set([typeIndexByName('Dirt'), typeIndexByName('Coarse Dirt'), typeIndexByName('Clay')]); // Podzol is deliberately left alone. Mud is NEVER on this list: the only Mud in the world is either player-placed or a farm's crop field, and both exist to plant seeds in
   const GRASS_STEP_MS = 1000;                  // delay = (5 - grass neighbours) * this
   const GRASS_TICK_MS = 100;
   const GRASS_MAX_PER_TICK = 40;               // caps a burst (e.g. coming back to a hidden tab) so it can't hitch a frame
@@ -14214,7 +14214,7 @@
   function grassEligibleCount(x, y, z, rim) {
     const k = key(x, y, z), t = blocks.get(k);
     if (!GRASS_SPREADS_ONTO.has(t)) return 0;
-    if (t === GRASS_MUD && blockEdits.get(k) === GRASS_MUD) return 0; // player-placed Mud (local, remote or saved — all land in blockEdits) never turns to grass
+    if (t === GRASS_MUD) return 0; // belt and braces — Mud is never grassed over (see GRASS_SPREADS_ONTO)
     if (blocks.has(key(x, y + 1, z)) || waterBlocks.has(key(x, y + 1, z))) return 0; // covered, or underwater
     return grassGrassNeighbours(x, y, z, rim);
   }

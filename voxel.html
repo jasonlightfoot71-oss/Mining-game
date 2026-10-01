@@ -6311,7 +6311,7 @@
     // safe to call on every edit.
     const s = getSeasonState().season;
     scheduleOverlayRebuild(s);
-    grassNoteAround(x, y, z); // dirt/mud beside or beneath whatever just changed may now qualify (or stop qualifying) to turn to grass — see GRASS SPREAD
+    grassNoteAround(x, y, z, true); // dirt/mud beside or beneath whatever just changed may now qualify (or stop qualifying) to turn to grass — see GRASS SPREAD
   }
 
 
@@ -14175,12 +14175,23 @@
   // the grass beside it, cancels the change. Each new grass block wakes
   // its own neighbours, which is what makes it spread outward.
   //
-  // Persistence: a natural terrain block that turns to grass isn't
-  // recorded (it would put a save entry on every bit of dirt in the world;
-  // it simply spreads again next time the terrain generates). A block the
-  // PLAYER placed IS recorded — as the same edit, now grass — so their
-  // garden stays as it grew. Nothing happens in The Mill, in protected game
+  // Persistence: a conversion that started from something a PLAYER did
+  // (placing grass beside dirt, mining a block off dirt, filling, etc.)
+  // is saved — and so is everything that spreads on from it — so the
+  // lawn they started is still there after a reload. Each pending entry
+  // carries a `player` flag for this; it's inherited as grass spreads
+  // outward. Grass that only spreads over natural terrain from world
+  // generation is NOT saved (it would put a save entry on every bit of
+  // dirt in the world, and it simply spreads again next time the
+  // terrain generates). Nothing happens in The Mill, in protected game
   // structures, or on generated buildings (a farm's soil should stay soil).
+  //
+  // Rim rule: dirt uncovered by mining the block on top of it (e.g. a
+  // hole dug through the grass layer) sits one level BELOW the grass
+  // around it, so the same-height rule alone would never green it. A
+  // block noted that way carries `rim`, which also counts grass one
+  // level up beside it (the edge of the hole). Once that first floor
+  // block turns, the rest of the floor follows by the ordinary rule.
   const GRASS_BLOCK = 0;
   const GRASS_MUD = typeIndexByName('Mud');
   const GRASS_SPREADS_ONTO = new Set([typeIndexByName('Dirt'), typeIndexByName('Coarse Dirt'), typeIndexByName('Clay'), GRASS_MUD]); // Podzol is deliberately left alone; player-placed Mud is excluded in grassEligibleCount
@@ -14188,21 +14199,24 @@
   const GRASS_TICK_MS = 100;
   const GRASS_MAX_PER_TICK = 40;               // caps a burst (e.g. coming back to a hidden tab) so it can't hitch a frame
   const GRASS_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  const grassPending = new Map();              // "x,y,z" -> { x, y, z, due, n }
+  const grassPending = new Map();              // "x,y,z" -> { x, y, z, due, n, player, rim }
   let grassLastTick = 0;
 
-  function grassGrassNeighbours(x, y, z) {
+  function grassGrassNeighbours(x, y, z, rim) {
     let n = 0;
-    for (const d of GRASS_DIRS) if (blocks.get(key(x + d[0], y, z + d[1])) === GRASS_BLOCK) n++;
+    for (const d of GRASS_DIRS) {
+      if (blocks.get(key(x + d[0], y, z + d[1])) === GRASS_BLOCK) n++;
+      else if (rim && blocks.get(key(x + d[0], y + 1, z + d[1])) === GRASS_BLOCK) n++; // grass at the lip of a hole, one level up
+    }
     return n;
   }
   // 0 = not eligible right now, otherwise how many grass neighbours it has.
-  function grassEligibleCount(x, y, z) {
+  function grassEligibleCount(x, y, z, rim) {
     const k = key(x, y, z), t = blocks.get(k);
     if (!GRASS_SPREADS_ONTO.has(t)) return 0;
     if (t === GRASS_MUD && blockEdits.get(k) === GRASS_MUD) return 0; // player-placed Mud (local, remote or saved — all land in blockEdits) never turns to grass
     if (blocks.has(key(x, y + 1, z)) || waterBlocks.has(key(x, y + 1, z))) return 0; // covered, or underwater
-    return grassGrassNeighbours(x, y, z);
+    return grassGrassNeighbours(x, y, z, rim);
   }
   function grassBlockedHere(x, y, z) {
     if (currentWorldId === PUB_WORLD_ID) return true;
@@ -14213,29 +14227,34 @@
     if (list) for (const e of list) if (x >= e.x0 && x <= e.x1 && z >= e.z0 && z <= e.z1) return true; // generated building/farm — leave it as designed
     return false;
   }
-  // Looks at one cell and (re)schedules or cancels it.
-  function grassNote(x, y, z) {
+  // Looks at one cell and (re)schedules or cancels it. `player` marks a
+  // conversion that should be saved; `rim` enables the hole-floor rule.
+  // Both only ever get switched ON for an entry that's already pending.
+  function grassNote(x, y, z, player, rim) {
     const k = key(x, y, z);
-    const n = grassEligibleCount(x, y, z);
-    if (n === 0 || grassBlockedHere(x, y, z)) { if (grassPending.size) grassPending.delete(k); return; }
-    const due = performance.now() + (5 - n) * GRASS_STEP_MS;
     const cur = grassPending.get(k);
-    if (!cur) grassPending.set(k, { x, y, z, due, n });
-    else if (n > cur.n) { cur.due = Math.min(cur.due, due); cur.n = n; } // more grass has arrived: it can only get sooner, never later
+    const useRim = !!rim || !!(cur && cur.rim);
+    const n = grassEligibleCount(x, y, z, useRim);
+    if (n === 0 || grassBlockedHere(x, y, z)) { if (cur) grassPending.delete(k); return; }
+    const due = performance.now() + (5 - n) * GRASS_STEP_MS;
+    if (!cur) { grassPending.set(k, { x, y, z, due, n, player: !!player, rim: useRim }); return; }
+    if (player) cur.player = true;
+    cur.rim = useRim;
+    if (n > cur.n) { cur.due = Math.min(cur.due, due); cur.n = n; } // more grass has arrived: it can only get sooner, never later
     else if (n < cur.n) { cur.due = due; cur.n = n; }                    // some was lost: the countdown starts over at the slower rate
   }
   // Something at (x,y,z) just changed: re-check it, the block that may
-  // have just been uncovered beneath it, and the four beside it (whose
-  // neighbour count just changed).
-  function grassNoteAround(x, y, z) {
-    grassNote(x, y, z);
-    grassNote(x, y - 1, z);
-    for (const d of GRASS_DIRS) grassNote(x + d[0], y, z + d[1]);
+  // have just been uncovered beneath it (with the rim rule), and the four
+  // beside it (whose neighbour count just changed).
+  function grassNoteAround(x, y, z, player) {
+    grassNote(x, y, z, player);
+    grassNote(x, y - 1, z, player, true);
+    for (const d of GRASS_DIRS) grassNote(x + d[0], y, z + d[1], player);
   }
-  function convertToGrass(x, y, z) {
+  function convertToGrass(x, y, z, player) {
     const k = key(x, y, z);
     blocks.set(k, GRASS_BLOCK);
-    if (!visitMode && blockEdits.get(k) !== undefined) recordBlockEdit(x, y, z, GRASS_BLOCK, 0); // player-placed: keep it (see the header); natural terrain: not saved
+    if (!visitMode && (player || blockEdits.get(k) !== undefined)) recordBlockEdit(x, y, z, GRASS_BLOCK, 0); // player-caused or player-placed: keep it (see the header); pure worldgen spread: not saved
     updateFullInstanceAt(x, y, z); // solid -> solid, so only this one block's texture needs swapping
   }
   function updateGrassGrowth() {
@@ -14247,22 +14266,24 @@
     for (const [k, e] of grassPending) {
       if (now < e.due) continue;
       grassPending.delete(k);
-      const n = grassEligibleCount(e.x, e.y, e.z);
+      const n = grassEligibleCount(e.x, e.y, e.z, e.rim);
       if (n === 0) continue;                                       // covered over / grass removed since it was scheduled
-      if (n < e.n) { grassNote(e.x, e.y, e.z); continue; }         // fewer neighbours than when scheduled — not yet
-      convertToGrass(e.x, e.y, e.z);
+      if (n < e.n) { grassNote(e.x, e.y, e.z, e.player, e.rim); continue; } // fewer neighbours than when scheduled — not yet
+      convertToGrass(e.x, e.y, e.z, e.player);
       converted.push(e);
       if (converted.length >= GRASS_MAX_PER_TICK) break;           // the rest are still pending and simply come due next tick
     }
     if (!converted.length) return;
-    for (const e of converted) for (const d of GRASS_DIRS) grassNote(e.x + d[0], e.y, e.z + d[1]); // spread outward
+    for (const e of converted) for (const d of GRASS_DIRS) grassNote(e.x + d[0], e.y, e.z + d[1], e.player); // spread outward, carrying on saving if a player started it
     const season = getSeasonState().season;
     scheduleOverlayRebuild(season); // flowers/snow follow grass — see handleLocalBlockChange
   }
   // Called once for each chunk as it finishes generating: finds the natural
   // dirt that already borders grass (which starts it growing straight
-  // away), plus any dirt/coarse dirt/clay the player placed in this chunk
-  // (placed Mud is skipped by grassEligibleCount).
+  // away), plus anything the player did in this chunk: placed
+  // dirt/coarse dirt/clay (placed Mud is skipped by grassEligibleCount),
+  // dirt beside placed grass, and dirt left under a block they mined —
+  // all of those are player-caused, so they save when they convert.
   function grassScanChunk(ck) {
     if (currentWorldId === PUB_WORLD_ID) return;
     const parts = ck.split('_'), x0 = +parts[0] * CHUNK_SIZE, z0 = +parts[1] * CHUNK_SIZE;
@@ -14285,9 +14306,11 @@
     }
     const ce = blockEdits.byChunk.get(ck);
     if (ce) for (const [k, t] of ce) {
-      if (!GRASS_SPREADS_ONTO.has(t)) continue;
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
-      grassNote(+k.slice(0, c1), +k.slice(c1 + 1, c2), +k.slice(c2 + 1));
+      const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+      if (GRASS_SPREADS_ONTO.has(t)) grassNote(x, y, z, true);
+      else if (t === GRASS_BLOCK) for (const d of GRASS_DIRS) grassNote(x + d[0], y, z + d[1], true);
+      else if (t === -1) grassNote(x, y - 1, z, true, true);
     }
   }
 
@@ -20191,7 +20214,7 @@
     refresh.forEach(rk => {
       const parts = rk.split(',');
       updateFullInstanceAt(Number(parts[0]), Number(parts[1]), Number(parts[2]));
-      grassNote(Number(parts[0]), Number(parts[1]), Number(parts[2])); // fill bypasses handleLocalBlockChange, so tell the grass system directly
+      grassNote(Number(parts[0]), Number(parts[1]), Number(parts[2]), true); // fill bypasses handleLocalBlockChange, so tell the grass system directly
     });
     rebuildWaterGeometry();
     rebuildGlassGeometry();

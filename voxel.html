@@ -29069,7 +29069,108 @@
       if (reloadBtn) reloadBtn.style.display = 'none';
     }
   }
+  // ================= HOST FULL SCREEN (TASKMILL iframe) =================
+  // Inside TASKMILL the game is an iframe in the Games page. iOS has no Fullscreen API, and once an iPhone is
+  // tilted to landscape it's wide enough for TASKMILL's desktop layout — the left nav and the top title come back
+  // and the game gets squeezed into what's left. TASKMILL is the same site as this file (that's how we read
+  // window.parent.currentUser), so during play on a touch device the game takes over the host page itself: its
+  // own iframe is pinned over the whole screen, above everything, re-measured on every resize/rotation.
+  // Anything up the iframe's parent chain that would trap a fixed element (a transform, filter, contain…) or
+  // hold it under the nav (a stacking context with a low z-index) is neutralised while this is on, and every
+  // inline style touched is put back exactly as it was when it's switched off or the game unloads.
+  // ✕ at the top of the screen hands the layout back to TASKMILL (to use its menu); ⛶ takes over again.
+  const hostFrame = (() => { try { return window.frameElement || null; } catch (e) { return null; } })(); // null standalone / cross-origin
+  let hostTakeover = null;      // saved inline styles while active
+  let hostTakeoverWanted = false; // player's choice — ✕ turns it off until ⛶
+  function hostWin() { try { return hostFrame ? hostFrame.ownerDocument.defaultView : null; } catch (e) { return null; } }
+  function saveInlineStyle(el, list) { list.push([el, el.getAttribute('style')]); }
+  function applyHostTakeover() {
+    const pw = hostWin();
+    if (!pw || !hostFrame.isConnected) return;
+    const pdoc = hostFrame.ownerDocument;
+    if (!hostTakeover) {
+      const saved = [];
+      saveInlineStyle(hostFrame, saved);
+      saveInlineStyle(pdoc.documentElement, saved);
+      if (pdoc.body) saveInlineStyle(pdoc.body, saved);
+      for (let a = hostFrame.parentElement; a && a !== pdoc.body && a !== pdoc.documentElement; a = a.parentElement) {
+        const cs = pw.getComputedStyle(a);
+        const traps = cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
+          || (cs.contain && cs.contain !== 'none') || /transform|filter|perspective/.test(cs.willChange || '')
+          || (cs.backdropFilter && cs.backdropFilter !== 'none') || (cs.webkitBackdropFilter && cs.webkitBackdropFilter !== 'none');
+        const stacks = (cs.position !== 'static' && cs.zIndex !== 'auto') || parseFloat(cs.opacity) < 1 || cs.isolation === 'isolate';
+        if (!traps && !stacks) continue;
+        saveInlineStyle(a, saved);
+        if (traps) {
+          for (const prop of ['transform', 'filter', 'perspective', 'contain', 'will-change', 'backdrop-filter', '-webkit-backdrop-filter']) a.style.setProperty(prop, prop === 'contain' ? 'none' : prop === 'will-change' ? 'auto' : 'none', 'important');
+        }
+        if (stacks) { a.style.setProperty('z-index', '2147483646', 'important'); a.style.setProperty('opacity', '1', 'important'); }
+      }
+      hostTakeover = { saved, pw };
+      // if TASKMILL removes the game's iframe without it unloading cleanly, still give its page back
+      try { hostTakeover.watch = pw.setInterval(() => { if (!hostFrame.isConnected) removeHostTakeover(); }, 1000); } catch (e) {}
+      if (pw.visualViewport) pw.visualViewport.addEventListener('resize', syncHostTakeover);
+      pw.addEventListener('resize', syncHostTakeover);
+    }
+    const vv = pw.visualViewport;
+    const w = Math.round(vv ? vv.width : pw.innerWidth), h = Math.round(vv ? vv.height : pw.innerHeight);
+    const top = vv ? Math.round(vv.offsetTop) : 0, left = vv ? Math.round(vv.offsetLeft) : 0;
+    const st = hostFrame.style;
+    const set = (k, v) => st.setProperty(k, v, 'important');
+    set('position', 'fixed'); set('top', top + 'px'); set('left', left + 'px'); set('right', 'auto'); set('bottom', 'auto');
+    set('width', w + 'px'); set('height', h + 'px'); set('max-width', 'none'); set('max-height', 'none'); set('min-width', '0'); set('min-height', '0');
+    set('margin', '0'); set('border', '0'); set('padding', '0'); set('transform', 'none'); set('z-index', '2147483647');
+    set('display', 'block'); set('visibility', 'visible'); set('opacity', '1'); set('border-radius', '0');
+    pdoc.documentElement.style.setProperty('overflow', 'hidden', 'important');
+    if (pdoc.body) pdoc.body.style.setProperty('overflow', 'hidden', 'important');
+    updateHostFullBtn();
+  }
+  function removeHostTakeover() {
+    if (!hostTakeover) { updateHostFullBtn(); return; }
+    const { saved, pw } = hostTakeover;
+    try { if (hostTakeover.watch) pw.clearInterval(hostTakeover.watch); } catch (e) {}
+    try {
+      if (pw.visualViewport) pw.visualViewport.removeEventListener('resize', syncHostTakeover);
+      pw.removeEventListener('resize', syncHostTakeover);
+    } catch (e) {}
+    for (let i = saved.length - 1; i >= 0; i--) {
+      const [el, css] = saved[i];
+      try { if (css == null) el.removeAttribute('style'); else el.setAttribute('style', css); } catch (e) {}
+    }
+    hostTakeover = null;
+    updateHostFullBtn();
+  }
+  function syncHostTakeover() {
+    if (hostTakeover && !hostFrame.isConnected) { removeHostTakeover(); return; }
+    const playing = document.documentElement.classList.contains('gameplay-active');
+    if (hostFrame && isTouchDevice && playing && hostTakeoverWanted) applyHostTakeover();
+    else if (hostTakeover) removeHostTakeover();
+  }
+  let hostFullBtn = null;
+  function updateHostFullBtn() {
+    if (!hostFrame || !isTouchDevice) return;
+    const playing = document.documentElement.classList.contains('gameplay-active');
+    if (!hostFullBtn) {
+      if (!playing) return;
+      hostFullBtn = document.createElement('button');
+      hostFullBtn.style.cssText = 'position:fixed;top:4px;left:50%;transform:translateX(-50%);z-index:30;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.35);color:#fff;border-radius:12px;padding:2px 10px;font:600 12px system-ui,sans-serif;line-height:18px;cursor:pointer;opacity:0.75;';
+      hostFullBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        hostTakeoverWanted = !hostTakeover;
+        syncHostTakeover();
+        setTimeout(handleViewResize, 60);
+      });
+      hostFullBtn.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+      document.body.appendChild(hostFullBtn);
+    }
+    hostFullBtn.style.display = playing ? 'block' : 'none';
+    hostFullBtn.textContent = hostTakeover ? '✕' : '⛶ Full screen';
+    hostFullBtn.title = hostTakeover ? 'Show TASKMILL\u2019s menu' : 'Play full screen';
+  }
+  window.addEventListener('pagehide', removeHostTakeover); // leaving / reloading the game always hands the page back
+
   function handleViewResize() {
+    if (hostFrame) syncHostTakeover(); // resize the pinned iframe first, so what's measured below is the real full screen
     const size = getViewSize();
     camera.aspect = size.w/size.h;
     camera.updateProjectionMatrix();
@@ -30759,6 +30860,8 @@
       // actually gets iPhone players into landscape.
       document.documentElement.classList.add('gameplay-active');
       gameplayActiveSince = performance.now();
+      hostTakeoverWanted = true; // cover TASKMILL's nav/title — see HOST FULL SCREEN
+      syncHostTakeover();
       tryLockLandscape().finally(handleViewResize);
 
     } else {

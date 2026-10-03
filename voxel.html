@@ -1095,6 +1095,60 @@
       isStandalone = true;
     } catch(e) {}
   }
+  // ================= SUPABASE LOGIN ATTACH =================
+  // Mining World's tables only accept signed-in players. Inside TASKMILL the
+  // player's TASKMILL (Firebase) login is borrowed from the parent page.
+  // Standalone, this device quietly gets its own anonymous Supabase sign-in
+  // (no email/password — nothing changes for the player), tagged with this
+  // device's standalone uid so the database can tell which worlds are its
+  // own. Only REST calls (/rest/v1/) are touched — Supabase's own auth and
+  // realtime requests pass straight through.
+  let _voxelAnonReady = null;
+  function voxelAnonToken() {
+    if (!sbClient || !playerUid || playerUid.indexOf('standalone-') !== 0) return Promise.resolve(null);
+    if (!_voxelAnonReady) {
+      _voxelAnonReady = (async () => {
+        let { data: { session } } = await sbClient.auth.getSession();
+        if (!session) {
+          const r = await sbClient.auth.signInAnonymously({ options: { data: { voxel_uid: playerUid } } });
+          if (r.error) throw r.error;
+        } else if ((session.user.user_metadata || {}).voxel_uid !== playerUid) {
+          // Same device, but its standalone uid changed — re-tag the sign-in
+          const u = await sbClient.auth.updateUser({ data: { voxel_uid: playerUid } });
+          if (u.error) throw u.error;
+          const rr = await sbClient.auth.refreshSession();
+          if (rr.error) throw rr.error;
+        }
+        return true;
+      })().catch(e => { console.error('[voxel] anonymous sign-in failed', e); _voxelAnonReady = null; return false; });
+    }
+    return _voxelAnonReady.then(async ok => {
+      if (!ok) return null;
+      const { data: { session } } = await sbClient.auth.getSession(); // supabase-js keeps this refreshed
+      return session ? session.access_token : null;
+    });
+  }
+  async function voxelToken() {
+    if (!isStandalone) {
+      try {
+        if (window.parent && window.parent !== window && window.parent.__tmGetToken) return await window.parent.__tmGetToken();
+      } catch(e) {}
+      return null;
+    }
+    return voxelAnonToken();
+  }
+  const _voxelOrigFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+    if (url.indexOf(SB_URL + '/rest/v1/') !== 0) return _voxelOrigFetch(input, init);
+    let token = null;
+    try { token = await voxelToken(); } catch(e) {}
+    if (!token) return _voxelOrigFetch(input, init);
+    const h = new Headers((init && init.headers) || undefined);
+    h.set('Authorization', 'Bearer ' + token);
+    return _voxelOrigFetch(input, Object.assign({}, init, { headers: h }));
+  };
+
   // Retries reading window.parent.currentUser a few times over the next
   // couple of seconds if it wasn't there on the very first check — a
   // slower connection (much more likely on mobile than on a laptop) can

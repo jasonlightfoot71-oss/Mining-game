@@ -12289,6 +12289,7 @@
   const VEH_RAMP_MIN_VY = 3.5;   // and a floor, so even a gentle roll off the end pops up
   const VEH_SLOPE_MAX_MOVE = 0.35; // most a vehicle is lifted per frame while climbing a slope (on foot it's 0.12, which a vehicle at speed outruns)
   const vehAir = { active: false, vy: 0, hx: 0, hz: 0, airT: 0, lastLiftT: 0, climbVy: 0, climbHx: 0, climbHz: 0 };
+  let lastGroundedAt = 0; // performance.now() the walking player was last on the ground — see stepEligible
   let tryMoveSlopeLifted = false; // set by tryMove each call: did it just lift the player up a slope this frame
   function resetVehAir() { vehAir.active = false; vehAir.vy = 0; vehAir.airT = 0; vehAir.lastLiftT = 0; vehAir.climbVy = 0; }
   function vehicleRampsActive() { return !!(ridingVehicle && VEHICLE_TYPES[ridingVehicle.typeIdx] && VEHICLE_TYPES[ridingVehicle.typeIdx].ramps); }
@@ -20082,6 +20083,23 @@
       wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
       if (replacingLava) lava.remove(x, y, z); else lava.wake(x, y, z); // same for lava
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
+      // Grass buried under grass turns to dirt: building grass on top of grass
+      // turns the one underneath to dirt, and placing grass underneath an
+      // existing grass block places it as dirt.
+      const GRASS_T = 0, DIRT_T = 1;
+      if (selectedSlot === GRASS_T) {
+        const bk = key(x, y - 1, z);
+        if (blocks.get(bk) === GRASS_T) {
+          blocks.set(bk, DIRT_T);
+          recordBlockEdit(x, y - 1, z, DIRT_T, 0);
+          handleLocalBlockChange(x, y - 1, z);
+        }
+        if (blocks.get(key(x, y + 1, z)) === GRASS_T) {
+          blocks.set(k, DIRT_T);
+          recordBlockEdit(x, y, z, DIRT_T, 0);
+          handleLocalBlockChange(x, y, z);
+        }
+      }
       playThud(300);
     }
   }
@@ -20691,38 +20709,32 @@
       if (blockedHere && (nearSlope(x, z, rideSlopes) || nearSlope(newPos.x, newPos.z, rideSlopes)) && smoothLift()) {
         // climbed the slope (or stepped from it onto the ledge at its top) by the smallest amount needed
       } else if (blockedHere) {
-        const raisedY = y + STEP_HEIGHT;
-        // A step/slab's lower half is ALWAYS exactly 0.5 tall regardless
-        // of rotation, so stepping up onto one is always geometrically
-        // safe — approaching from anywhere except its one raised "riser"
-        // side. The previous version ALSO required clearUpThere to pass
-        // (a check against the step's upper quadrant, which only exists
-        // on one side) before allowing the step at all — meaning it only
-        // ever worked from the exact side directly opposite the riser,
-        // and refused everywhere else, matching "still can't walk up".
-        // Now a confirmed step always attempts the rise; if you're
-        // actually walking straight into the solid riser face itself,
-        // the normal horizontal collision check just below (now
-        // evaluated at this raised height) correctly stops that
-        // specific case on its own, without needing to gate the attempt
-        // itself in advance.
-        // Small epsilon on the current-height lookup — y is never
-        // hard-snapped to a clean integer when grounded (see this
-        // block's own comments above), so on rare occasions it can rest
-        // a hair below the exact cell boundary; floor()'ing that as-is
-        // would find the WRONG cell (the one below the actual step) and
-        // miss the shortcut below entirely, falling through to the
-        // slower clearUpThere/groundToLandOn check instead.
-        const targetKey = key(Math.floor(newPos.x), Math.floor(y + 0.01), Math.floor(newPos.z));
-        const targetType = blocks.get(targetKey);
-        const targetIsStep = targetType !== undefined && BLOCK_TYPES[targetType] && BLOCK_TYPES[targetType].half && (stepRotations.get(targetKey) || 0) < 4; // an upside-down or sideways step isn't a stair to walk up
-        if (targetIsStep) {
-          y = raisedY;
-        } else {
-          const clearUpThere = !test(newPos.x, raisedY, newPos.z);
-          const groundToLandOn = isSolid(newPos.x, raisedY-0.1, newPos.z);
-          if (window._stepDebug) console.log('[step-up]', { y, raisedY, clearUpThere, groundToLandOn, willStep: clearUpThere && groundToLandOn });
-          if (clearUpThere && groundToLandOn) y = raisedY;
+        // Lift by the SMALLEST amount (up to STEP_HEIGHT) that frees a blocked
+        // direction of travel. The old version only stepped up if the player's
+        // CENTRE was already over the step (targetKey / groundToLandOn were both
+        // looked up at newPos's centre) — but it's the leading edge of the body,
+        // 0.3 ahead of the centre, that bumps into the step first, so the centre
+        // was still over the ground in front of it: the first step at the bottom
+        // never triggered (had to jump), and partway up a staircase it only
+        // worked when y happened to sit on the right side of a cell boundary
+        // (stuck on nothing until a fresh run-up). Every test point only moves
+        // UP as the lift grows, so "blocked lower, clear higher" can only mean the
+        // obstacle is low at the feet — a step, a slab, the step's raised quarter.
+        // A full block (1.0) or a fence (1.5) can never be cleared within 0.55.
+        // The minimal lift also leaves the feet resting right on the new surface
+        // (not 0.05 above it, falling for a frame or two and losing "grounded"),
+        // so the next step up a staircase fires straight away too.
+        const bx = test(newPos.x, y, z), bz = test(x, y, newPos.z);
+        for (let lift = 0.04; lift <= STEP_HEIGHT + 1e-9; lift += 0.04) {
+          const ly = y + lift;
+          if (test(x, ly, z)) break; // no headroom to rise here at all
+          const freesX = bx && !test(newPos.x, ly, z);
+          const freesZ = bz && !test(x, ly, newPos.z);
+          if (freesX || freesZ) {
+            if (window._stepDebug) console.log('[step-up]', { y, lift });
+            y = ly;
+            break;
+          }
         }
       }
     } else if (flying && rideSlopes) {
@@ -22219,7 +22231,17 @@
     const ew = (doorSide === 'south' || doorSide === 'north') ? W : D, ed = ew === W ? D : W;
     const [x0, z0] = shopSiteOrigin(replay, ew, ed);
     const f = shopFrame(x0, z0, W, D, doorSide);
-    buildGlassShell(f, floor, H, BLOCK_ID('Polished Stone'), BLOCK_ID('Black Concrete'), BLOCK_ID('White Concrete'));
+    // The French doors fill u = mid and mid+1, so the regular mullion every 4 leaves a solid post right of the
+    // door (mid+2) but a glass pane left of it with the post one further out (mid-2). Swap the left side round
+    // so both sides of the door are framed by a post, then glass.
+    const vsTrim = BLOCK_ID('Black Concrete'), vsGlass = BLOCK_ID('Glass');
+    const vsFront = (u, v, y) => {
+      if (v !== 0) return null;
+      if (u === f.mid - 1) return vsTrim;
+      if (u === f.mid - 2 && y > floor + 1 && y < floor + H) return vsGlass;
+      return null;
+    };
+    buildGlassShell(f, floor, H, BLOCK_ID('Polished Stone'), vsTrim, BLOCK_ID('White Concrete'), vsFront);
     // dark display pads under every bay (the empty ones are waiting for new models)
     const pad = BLOCK_ID('Black Concrete');
     for (const [bu, bv] of VEHICLE_BAYS) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) {
@@ -28759,7 +28781,14 @@
         // below it. Space's own strong upward boost (6.5, see the
         // submerged branch above) is what gets you up and over a bank
         // at the water's edge instead.
-        tryMove(newPos, wasGrounded, vehicleRampsActive());
+        // A short grace window: a frame or two of not-quite-touching the ground
+        // (landing from a step, the edge of a stair) shouldn't cancel the
+        // auto-step-up when you walk into the next one. Never while rising (a jump).
+        const nowT = performance.now();
+        if (wasGrounded) lastGroundedAt = nowT;
+        const stepEligible = wasGrounded || (!flying && player.vel.y <= 0 && nowT - lastGroundedAt < 150);
+        tryMove(newPos, stepEligible, vehicleRampsActive());
+        if (player.onGround) lastGroundedAt = nowT;
         if (player.pos.y < -10) { player.pos.set(0.5, WORLD_HEIGHT+5, 0.5); player.vel.set(0,0,0); }
 
         // Depth-aware movement sound: genuinely swimming (2+ blocks of

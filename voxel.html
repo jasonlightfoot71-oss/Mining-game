@@ -1034,8 +1034,17 @@
     for (const [k, level] of lavaEdits) lava.applyEdit(k, level);
   }
 
+  // The TASKMILL page this game borrows its login from: the page it's embedded in (iframe), or — now that
+  // TASKMILL opens the game in its own window/tab so it gets the device to itself — the TASKMILL page that
+  // opened it. Same site either way, so its currentUser / __tmGetToken / Groq settings are readable directly.
+  // null when there's neither (a plain standalone visit), or it's on another site, or it's been closed.
+  function tmHost() {
+    try { if (window.parent && window.parent !== window) { void window.parent.document; return window.parent; } } catch(e) {}
+    try { if (window.opener && !window.opener.closed) { void window.opener.document; return window.opener; } } catch(e) {}
+    return null;
+  }
   let playerUid = null;
-  try { playerUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
+  try { const h = tmHost(); playerUid = h && h.currentUser ? h.currentUser.uid : null; } catch(e) {}
   let isStandalone = false;
   // Persisted to sessionStorage, not just an in-memory variable — every
   // "exit to menu" flow does a full location.reload(), which wipes all
@@ -1128,12 +1137,15 @@
       return session ? session.access_token : null;
     });
   }
+  let voxelLastHostToken = null;
   async function voxelToken() {
     if (!isStandalone) {
       try {
-        if (window.parent && window.parent !== window && window.parent.__tmGetToken) return await window.parent.__tmGetToken();
+        const h = tmHost();
+        if (h && h.__tmGetToken) { const t = await h.__tmGetToken(); if (t) voxelLastHostToken = t; return t; }
       } catch(e) {}
-      return null;
+      return voxelLastHostToken; // TASKMILL's tab was closed mid-game: keep using the last token it gave us (valid ~1h) rather than dropping to no auth
+
     }
     return voxelAnonToken();
   }
@@ -1166,7 +1178,7 @@
     const retryIdentity = () => {
       attempts++;
       let realUid = null;
-      try { realUid = window.parent && window.parent.currentUser ? window.parent.currentUser.uid : null; } catch(e) {}
+      try { const h = tmHost(); realUid = h && h.currentUser ? h.currentUser.uid : null; } catch(e) {}
       if (realUid) {
         playerUid = realUid;
         isStandalone = false;
@@ -1192,7 +1204,7 @@
     if (!el) return;
     const shortUid = playerUid ? (playerUid.length > 14 ? playerUid.slice(0,8)+'…'+playerUid.slice(-4) : playerUid) : '(none)';
     let parentState;
-    try { parentState = (window.parent && window.parent.currentUser) ? 'has currentUser' : (window.parent === window ? 'no parent frame (top-level page)' : 'parent reachable, no currentUser yet'); }
+    try { const h = tmHost(); parentState = (h && h.currentUser) ? ((h === window.parent ? 'TASKMILL frame' : 'TASKMILL window') + ' has currentUser') : (!h && window.parent === window ? 'no TASKMILL page (opened directly)' : 'parent reachable, no currentUser yet'); }
     catch(e) { parentState = 'blocked (cross-origin)'; }
     let storageState;
     try { localStorage.setItem('__voxelStorageTest', '1'); localStorage.removeItem('__voxelStorageTest'); storageState = 'available'; }
@@ -2459,6 +2471,53 @@
   const PROPERTY_SLOT = FIRE_SLOT + 9;         // "Property" — buy and place buildings, see PROPERTY
   const LIGHT_COST = 20, WALLPAPER_COST = 8; // coin costs for the two priced fixtures that aren't themselves a "family" with per-item pricing (door/furniture prices live on their own type entries)
 
+  // Winter: any block top face that's the highest in its column (see SNOW TOPS) is drawn snow-white. One
+  // texture read per pixel instead of a separate layer of snow slabs. Leaves the pitch, tennis court and
+  // crazy golf clear, as the old snow layer did.
+  const snowTopUniforms = { uSnowOn: { value: 0 }, uSnowTop: { value: null } };
+  function snowTopTexture() {
+    if (!snowTopUniforms.uSnowTop.value) {
+      const t = new THREE.DataTexture(snowTopArr(), SNOW_TOP_N, SNOW_TOP_N, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter; t.generateMipmaps = false; t.flipY = false;
+      t.needsUpdate = true;
+      snowTopUniforms.uSnowTop.value = t;
+    }
+    return snowTopUniforms.uSnowTop.value;
+  }
+  function snowTopShader(shader) {
+    snowTopTexture();
+    shader.uniforms.uSnowOn = snowTopUniforms.uSnowOn;
+    shader.uniforms.uSnowTop = snowTopUniforms.uSnowTop;
+    shader.uniforms.uSnowSea = { value: SEA_LEVEL };
+    shader.vertexShader = 'varying vec3 vSnWorld;\nvarying float vSnUp;\n' + shader.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+      vec4 snW = vec4(transformed, 1.0);
+      vec3 snN = objectNormal;
+      #ifdef USE_INSTANCING
+        snW = instanceMatrix * snW;
+        snN = mat3(instanceMatrix) * snN;
+      #endif
+      snW = modelMatrix * snW;
+      vSnWorld = snW.xyz;
+      vSnUp = normalize(mat3(modelMatrix) * snN).y;`);
+    shader.fragmentShader = 'uniform float uSnowOn;\nuniform float uSnowSea;\nuniform sampler2D uSnowTop;\nvarying vec3 vSnWorld;\nvarying float vSnUp;\n' + shader.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
+      if (uSnowOn > 0.5 && vSnUp > 0.9) {
+        vec2 snCol = floor(vSnWorld.xz);
+        bool snOff = (snCol.x >= -3.0 && snCol.x <= 31.0 && snCol.y >= 35.0 && snCol.y <= 77.0)
+                  || (snCol.x >= -56.0 && snCol.x <= -32.0 && snCol.y >= 35.0 && snCol.y <= 77.0)
+                  || (snCol.x >= -85.0 && snCol.x <= -56.0 && snCol.y >= 34.0 && snCol.y <= 78.0);
+        if (!snOff) {
+          vec4 snH = texture2D(uSnowTop, (mod(snCol, 512.0) + 0.5) / 512.0);
+          vec2 snTile = mod(floor(snCol / 512.0), 256.0);
+ float snV = floor(snH.r * 255.0 + 0.5) + floor(snH.g * 255.0 + 0.5) * 256.0;
+          // >= 32768: the column's top is water; below sea level: natural sea/lake over it — no snow on its bed
+          if (snV > 0.5 && snV < 32768.0 && snV - 257.0 >= uSnowSea && abs(floor(snH.b * 255.0 + 0.5) - snTile.x) < 0.5 && abs(floor(snH.a * 255.0 + 0.5) - snTile.y) < 0.5
+              && abs(vSnWorld.y - (snV - 257.0 + 1.0)) < 0.06) {
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.93, 0.95, 0.98), 0.9);
+          }
+        }
+      }`);
+  }
+  function addSnowTops(m) { if (m && !m.transparent) m.onBeforeCompile = snowTopShader; return m; }
   function buildMaterialArray(entry) {
     // Phong instead of Lambert — Lambert computes lighting per-VERTEX,
     // which is fine for a light with a smooth, gentle gradient (the sun),
@@ -2478,11 +2537,12 @@
       const top = new THREE.MeshPhongMaterial({ map: entry.mats.top, ...opts });
       const side = new THREE.MeshPhongMaterial({ map: entry.mats.side, ...opts });
       const bottom = new THREE.MeshPhongMaterial({ map: entry.mats.bottom, ...opts });
+      addSnowTops(top); // winter snow — see SNOW TOPS
       // BoxGeometry face order: +x,-x,+y(top),-y(bottom),+z,-z
       return [side, side, top, bottom, side, side];
     } else {
       const m = new THREE.MeshPhongMaterial({ map: entry.mats, ...opts });
-      return m;
+      return addSnowTops(m); // winter snow — see SNOW TOPS
     }
   }
 
@@ -2697,6 +2757,56 @@
   // per-chunk bucketing that fix needed without slowing those paths
   // down.
   var chunkMeshOn = false; // see CHUNK MESHES — var: BlocksMap below is used long before that section runs
+  // ---- SNOW TOPS: the height of the highest block in every column ----
+  // Winter snow used to be a separate layer: a thin white slab instanced on top of every sky-exposed block,
+  // found by scanning the whole loaded world and checking up to 48 blocks above each one — millions of
+  // lookups per rescan, and hundreds of thousands of extra slabs to draw. Now the blocks' own top faces turn
+  // white in winter instead (see snowTopShader), and the only thing that needs knowing is which top face is
+  // the highest in its column — i.e. open to the sky. That's kept here, updated as each block is set or
+  // removed, in a 512x512 texture the shader reads directly (wrapping round: column x,z lives at
+  // x mod 512, z mod 512, tagged with which 512-block tile it's from so a far-off column can't be mistaken
+  // for a near one). RGBA = highest y + 257 (16 bits, 0 = nothing), tile x, tile z.
+  var SNOW_TOP_N = 512, snowTopData = null, snowTopDirty = false, snowTopNextUpload = 0;
+  function snowTopArr() { if (!snowTopData) snowTopData = new Uint8Array(SNOW_TOP_N * SNOW_TOP_N * 4); return snowTopData; }
+  // bit 15 of the height marks a column whose top is WATER (placed or flowing) — its bed gets no snow.
+  function snowTopRaw(x, z) {
+    const d = snowTopArr(), i = (((z & 511) << 9) | (x & 511)) << 2;
+    if (d[i + 2] !== ((x >> 9) & 255) || d[i + 3] !== ((z >> 9) & 255)) return 0;
+    return d[i] | (d[i + 1] << 8);
+  }
+  function snowTopGet(x, z) { const v = snowTopRaw(x, z) & 0x7fff; return v ? v - 257 : null; }
+  function snowTopPut(x, z, y, water) {
+    const d = snowTopArr(), i = (((z & 511) << 9) | (x & 511)) << 2;
+    const v = y == null ? 0 : ((y + 257) | (water ? 0x8000 : 0));
+    d[i] = v & 255; d[i + 1] = (v >> 8) & 255; d[i + 2] = (x >> 9) & 255; d[i + 3] = (z >> 9) & 255;
+    snowTopDirty = true;
+  }
+  function snowTopXYZ(k) {
+    const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1);
+    return [+k.slice(0, c1), +k.slice(c1 + 1, c2), +k.slice(c2 + 1)];
+  }
+  function snowTopRescan(x, y, z, data) { // the column's top just went: find the next block down
+    const pre = x + ',', post = ',' + z;
+    for (let yy = y - 1; yy >= y - 96; yy--) if (data.has(pre + yy + post)) { snowTopPut(x, z, yy, false); return; }
+    snowTopPut(x, z, null);
+  }
+  function snowTopOnSet(k) {
+    const [x, y, z] = snowTopXYZ(k);
+    const v = snowTopRaw(x, z), t = (v & 0x7fff) ? (v & 0x7fff) - 257 : null;
+    if (t === null || y > t || (y === t && (v & 0x8000))) snowTopPut(x, z, y, false);
+  }
+  function snowTopOnDelete(k, data) {
+    const [x, y, z] = snowTopXYZ(k);
+    const v = snowTopRaw(x, z);
+    if ((v & 0x8000) || (v & 0x7fff) - 257 !== y) return; // wasn't the top one — the column's top hasn't changed
+    snowTopRescan(x, y, z, data);
+  }
+  function snowTopOnWater(k, wet) {
+    const [x, y, z] = snowTopXYZ(k);
+    const v = snowTopRaw(x, z), t = (v & 0x7fff) ? (v & 0x7fff) - 257 : null;
+    if (wet) { if (t === null || y > t) snowTopPut(x, z, y, true); }
+    else if ((v & 0x8000) && t === y && typeof blocks !== 'undefined') snowTopRescan(x, y, z, blocks._data);
+  }
   class BlocksMap {
     constructor() {
       this._data = new Map();
@@ -2711,6 +2821,7 @@
       if (type === 4) this.leafCells.set(k, type);
       else if (old === 4) this.leafCells.delete(k); // was plain Leaves, just got overwritten (winterized to a branch variant, mined, replaced, etc.)
       if (chunkMeshOn && old !== type) cmTrack(k, true); // its terrain section needs re-meshing — see CHUNK MESHES
+      if (old === undefined) snowTopOnSet(k); // see SNOW TOPS
       return this;
     }
     delete(k) {
@@ -2720,12 +2831,13 @@
       if (GLASS_TYPE_SET.has(old)) this.glassCells.delete(k);
       if (old === 4) this.leafCells.delete(k);
       if (chunkMeshOn) cmTrack(k, false);
+      snowTopOnDelete(k, this._data); // see SNOW TOPS
       return true;
     }
     has(k) { return this._data.has(k); }
     get(k) { return this._data.get(k); }
     get size() { return this._data.size; }
-    clear() { this._data.clear(); this.glassCells.clear(); this.leafCells.clear(); if (chunkMeshOn) cmReset(); }
+    clear() { this._data.clear(); this.glassCells.clear(); this.leafCells.clear(); if (chunkMeshOn) cmReset(); if (snowTopData) { snowTopData.fill(0); snowTopDirty = true; } }
     [Symbol.iterator]() { return this._data[Symbol.iterator](); }
     entries() { return this._data.entries(); }
     keys() { return this._data.keys(); }
@@ -2804,6 +2916,7 @@
         set.add(k);
       }
       this._markCellDirty(k); // also covers a level-only change (height fraction) on an existing key — geometry can still differ
+      snowTopOnWater(k, level > 0); // see SNOW TOPS
       pureOceanChunks.delete(ck); // an explicit entry means this chunk no longer qualifies for the flat-plane fast path — see generateChunkTerrain's own classification
       return this;
     }
@@ -2843,6 +2956,7 @@
       }
       if (!hadExplicit) return false;
       this._data.delete(k);
+      snowTopOnWater(k, false); // see SNOW TOPS
       const ck = this._chunkKeyForK(k);
       const set = this.chunkCells.get(ck);
       if (set) { set.delete(k); if (set.size === 0) this.chunkCells.delete(ck); }
@@ -3230,7 +3344,7 @@
     // Snow/flower overlay re-check, same as before — water arriving
     // somewhere new can leave snow sitting on top of it otherwise.
     const flowSeason = getSeasonState().season;
-    scheduleOverlayRebuild(flowSeason);
+    scheduleOverlayRebuild(flowSeason, 'background'); // flowing water asks constantly — at most every 20s
   }
   // Throttled rather than debounced: scheduleWaterRebuild restarts its
   // one-second timer on every call, so a spill that keeps changing every
@@ -5098,7 +5212,7 @@
     // definition), so calling it on every streaming update is cheap —
     // it only actually rescans the world at most a couple of times a
     // second regardless of how often this fires.
-    if (changed) { const s = getSeasonState().season; scheduleOverlayRebuild(s); }
+    if (changed) { const s = getSeasonState().season; scheduleOverlayRebuild(s, 'background'); } // chunks streaming in — at most every 20s
   }
   // Synchronously generates a wider ring of chunks around wherever the
   // player currently is, all at once, rather than letting the normal
@@ -5547,7 +5661,7 @@
     tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
     return tex;
   })();
-  const cmMaterial = new THREE.MeshPhongMaterial({ map: cmAtlasTex, shininess: 0 }); // same shading as buildMaterialArray's
+  const cmMaterial = addSnowTops(new THREE.MeshPhongMaterial({ map: cmAtlasTex, shininess: 0 })); // same shading as buildMaterialArray's (winter snow tops too — see SNOW TOPS)
   // Faces: outward direction, the 4 corners (bottom-left, bottom-right, top-right, top-left as seen from outside,
   // so the texture's top is up on the sides), and which texture it takes.
   const CM_FACES = [
@@ -6362,9 +6476,10 @@
     // this, mining a grass block left its flower floating in place, and
     // newly-placed grass never grew any at all, since the overlay only
     // used to refresh on much rarer full-rebuild events. Debounced, so
-    // safe to call on every edit.
+    // safe to call on every edit. `true`: it's your own edit, so it's done
+    // within half a second rather than the usual few.
     const s = getSeasonState().season;
-    scheduleOverlayRebuild(s);
+    scheduleOverlayRebuild(s, true);
     grassNoteAround(x, y, z, true); // dirt/mud beside or beneath whatever just changed may now qualify (or stop qualifying) to turn to grass — see GRASS SPREAD
   }
 
@@ -12226,6 +12341,7 @@
     { name: 'Tank',             build: buildTank,          swatch: 0x556b2f, cost: 800, flies: false, boat: false, speedMult: 1.25, riderY: 0.55, riderSeated: true, tank: true, gunOffset: [0, 1.55, 0.3] },
     { name: 'Motorbike',        build: buildMotorbike,     swatch: 0xa0232b, cost: 450, flies: false, boat: false, speedMult: 2.3, riderY: 0.42, riderSeated: true,  ramps: true, gunOffset: [0, 1.3, 0.75] }, // sport tourer — fastest on the ground
   ];
+  var vehiclePickTractor = false; // the Vehicles menu's Tractor entry is the one selected — see TRACTORS
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
   let vehicleSeq = 0;
   const vehicles = []; // { id, group, x, y, z, yaw, typeIdx } — live array, see the section comment above for why not a Map
@@ -17887,8 +18003,9 @@
   // itself, but doesn't remember across page reloads or other players.
   let GROQ_KEY = null, GROQ_MODEL_NAME = 'llama-3.3-70b-versatile';
   try {
-    GROQ_KEY = window.parent && window.parent.GROQ_API_KEY;
-    GROQ_MODEL_NAME = (window.parent && window.parent.GROQ_MODEL) || GROQ_MODEL_NAME;
+    const h = tmHost();
+    GROQ_KEY = h && h.GROQ_API_KEY;
+    GROQ_MODEL_NAME = (h && h.GROQ_MODEL) || GROQ_MODEL_NAME;
   } catch(e) {}
   const QUIZ_CATEGORIES = ['geography','history','sport','food and drink','music','film','TV','science','nature','language and words','famous people','history'];
   let usedQuizQuestions = [];
@@ -19632,6 +19749,7 @@
   function doAction() {
     if (ridingVehicle) { fireVehicleGun(); return; }
     if (tryBuyShopItem()) { actionHeld = false; return; } // aiming at a vehicle / weapon on display — see VEHICLE & EQUIPMENT SHOPS
+    if (tryTractorAction()) { actionHeld = false; return; } // ✋ on your tractor: pick what it sows — see TRACTORS
     if (weaponEquipped()) { fireWeapon(); return; }
     if (bsGame && bsGame.started && !bsGame.won) {
       const mySide = bsMySide();
@@ -19900,6 +20018,7 @@
     }
 
     if (selectedSlot === VEHICLE_SLOT) {
+      if (vehiclePickTractor) { placeTractor(r); return; } // see TRACTORS
       const nearby = nearestVehicleToPlayer(2.2);
       if (nearby) {
         removeVehicleInstance(nearby); playThud(200);
@@ -20083,22 +20202,19 @@
       wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
       if (replacingLava) lava.remove(x, y, z); else lava.wake(x, y, z); // same for lava
       handleLocalBlockChange(x, y, z); // updates just this block + its neighbours' mesh instances, instead of rebuilding the whole world
-      // Grass buried under grass turns to dirt: building grass on top of grass
-      // turns the one underneath to dirt, and placing grass underneath an
-      // existing grass block places it as dirt.
+      // Grass can't live under a block: placing ANY block on top of grass turns the grass underneath to dirt,
+      // and placing grass underneath an existing block places it as dirt.
       const GRASS_T = 0, DIRT_T = 1;
-      if (selectedSlot === GRASS_T) {
-        const bk = key(x, y - 1, z);
-        if (blocks.get(bk) === GRASS_T) {
-          blocks.set(bk, DIRT_T);
-          recordBlockEdit(x, y - 1, z, DIRT_T, 0);
-          handleLocalBlockChange(x, y - 1, z);
-        }
-        if (blocks.get(key(x, y + 1, z)) === GRASS_T) {
-          blocks.set(k, DIRT_T);
-          recordBlockEdit(x, y, z, DIRT_T, 0);
-          handleLocalBlockChange(x, y, z);
-        }
+      const bk = key(x, y - 1, z);
+      if (blocks.get(bk) === GRASS_T) {
+        blocks.set(bk, DIRT_T);
+        recordBlockEdit(x, y - 1, z, DIRT_T, 0);
+        handleLocalBlockChange(x, y - 1, z);
+      }
+      if (blocks.get(k) === GRASS_T && blocks.has(key(x, y + 1, z))) {
+        blocks.set(k, DIRT_T);
+        recordBlockEdit(x, y, z, DIRT_T, 0);
+        handleLocalBlockChange(x, y, z);
       }
       playThud(300);
     }
@@ -20643,6 +20759,10 @@
         [x-r,y+0.05,z-r],[x+r,y+0.05,z-r],[x-r,y+0.05,z+r],[x+r,y+0.05,z+r],
         [x-r,y+player.height,z-r],[x+r,y+player.height,z-r],[x-r,y+player.height,z+r],[x+r,y+player.height,z+r],
         [x-r,y+player.height*0.5,z-r],[x+r,y+player.height*0.5,z+r],
+        // Foot-level points along the middle of each side and the centre too, not only the four corners: the
+        // corners are 0.6 apart, and a step's raised quarter is only 0.5 wide, so it could slip BETWEEN them —
+        // the body ended up overlapping the riser with no point inside it, wedged there ("stuck on nothing").
+        [x,y+0.05,z],[x-r,y+0.05,z],[x+r,y+0.05,z],[x,y+0.05,z-r],[x,y+0.05,z+r],
       ];
       return pts.some(p => isSolid(p[0],p[1],p[2]));
     };
@@ -21075,7 +21195,7 @@
   const seedMatCache = new Map();
   function seedMat(hex) {
     let m = seedMatCache.get(hex);
-    if (!m) { m = new THREE.MeshLambertMaterial({ color: hex, side: THREE.DoubleSide }); seedMatCache.set(hex, m); }
+    if (!m) { m = new THREE.MeshLambertMaterial({ color: hex, side: THREE.DoubleSide }); m.userData.seedMat = true; seedMatCache.set(hex, m); }
     return m;
   }
   function lerpHex(a, b, t) {
@@ -21303,6 +21423,49 @@
     }
     return g;
   }
+  // A fully grown plant is built from a dozen or more little meshes (a ripe pumpkin: 4 leaves, 8 ribs and a
+  // stalk = 13), each its own draw call with its own geometry and its own per-frame matrix update. A field of
+  // 200 ripe pumpkins was ~2,600 separate objects to draw every frame — that's what made the game crawl next to
+  // it, and why it only got bad once they'd grown. So once a plant is built, every part that uses the plain
+  // coloured crop materials (seedMat) is baked into ONE geometry, with each part's colour stored per vertex:
+  // one draw call per plant, whatever it is and however big it's grown. Anything else (e.g. a flower's unlit
+  // bud material) is left as its own mesh, exactly as before.
+  const seedMergedMat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const _seedN = new THREE.Matrix3(), _seedV = new THREE.Vector3();
+  function mergeSeedGroup(g) {
+    g.updateMatrixWorld(true); // g is still at the origin here, so world = relative to the plant
+    const parts = [];
+    g.traverse(o => { if (o.isMesh && o.visible && o.material && o.material.userData && o.material.userData.seedMat && o.geometry && o.geometry.attributes.position) parts.push(o); });
+    if (parts.length < 2) return g;
+    const pos = [], nor = [], col = [];
+    for (const m of parts) {
+      const geo = m.geometry, pa = geo.attributes.position, na = geo.attributes.normal, idx = geo.index;
+      _seedN.getNormalMatrix(m.matrixWorld);
+      const c = m.material.color;
+      const n = idx ? idx.count : pa.count;
+      for (let i = 0; i < n; i++) {
+        const vi = idx ? idx.getX(i) : i;
+        _seedV.fromBufferAttribute(pa, vi).applyMatrix4(m.matrixWorld); pos.push(_seedV.x, _seedV.y, _seedV.z);
+        if (na) { _seedV.fromBufferAttribute(na, vi).applyMatrix3(_seedN).normalize(); nor.push(_seedV.x, _seedV.y, _seedV.z); } else nor.push(0, 1, 0);
+        col.push(c.r, c.g, c.b);
+      }
+    }
+    const merged = new THREE.BufferGeometry();
+    merged.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    merged.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    merged.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    merged.computeBoundingSphere();
+    for (const m of parts) { if (!m.geometry.userData.shared) m.geometry.dispose(); m.parent.remove(m); }
+    const out = new THREE.Group();
+    const mesh = new THREE.Mesh(merged, seedMergedMat);
+    mesh.matrixAutoUpdate = false;
+    out.add(mesh);
+    // whatever wasn't merged keeps its exact placement
+    const rest = [];
+    g.traverse(o => { if (o.isMesh) rest.push(o); });
+    for (const o of rest) { o.updateMatrixWorld(true); o.matrix.copy(o.matrixWorld); o.matrix.decompose(o.position, o.quaternion, o.scale); out.add(o); }
+    return out;
+  }
   function disposeSeedGroup(g) { g.traverse(o => { if (o.isMesh && !o.geometry.userData.shared) o.geometry.dispose(); }); scene.remove(g); } // materials are cached/shared
   function recordSeed(x, y, z, v) {
     if (!terrainStreamingActive) return false;
@@ -21376,10 +21539,12 @@
     const now = performance.now();
     if (now < seedNextPass) return;
     seedNextPass = now + 1000;
+    const tractorSeen = new Set();
     for (const [k] of seedEdits) {
       const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
       const code = seedCode(k);
+      if (isTractorCode(code)) { tractorSeen.add(k); continue; } // see TRACTORS
       if (code >= INCUBATOR_EMPTY) { updateIncubatorRecord(k, x, y, z, code); continue; }
       if (!groundHeightOnly.has(x + ',' + z)) { const fx = seedFx.get(k); if (fx) { disposeSeedGroup(fx.group); seedFx.delete(k); } continue; } // not loaded — hide, keep growing
       const s = seedAt(k);
@@ -21396,12 +21561,14 @@
       const fx = seedFx.get(k);
       if (fx && fx.stage === stage) continue;
       if (fx) disposeSeedGroup(fx.group);
-      const g = buildSeedModel(s.type, stage, x, z);
+      const g = mergeSeedGroup(buildSeedModel(s.type, stage, x, z));
       g.position.set(x + 0.5, y, z + 0.5);
+      g.matrixAutoUpdate = false; g.updateMatrix(); // a plant never moves — skip recomputing its matrix every frame
       scene.add(g);
       seedFx.set(k, { group: g, stage });
     }
     for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) { disposeSeedGroup(seedFx.get(k).group); seedFx.delete(k); } // world changed / removed elsewhere
+    syncTractors(tractorSeen);
     for (const k of [...incubatorFx.keys()]) if (!seedEdits.has(k)) removeIncubatorFx(k);
     for (const k of [...hatchedLive.keys()]) if (!seedEdits.has(k)) despawnHatched(k);
   }
@@ -22260,6 +22427,17 @@
       g.rotation.y = Math.atan2(f.s[0] * dir, f.s[1] * dir);
       addShopDisplay(g, { kind: 'vehicle', idx: i }, reg);
     });
+    { // the Tractor, in the next free bay — see TRACTORS
+      const bay = VEHICLE_BAYS[VEHICLE_TYPES.length];
+      if (bay) {
+        const g = buildTractorModel(false);
+        const [px, pz] = f.pos(bay[0] + 0.5, bay[1] + 0.5);
+        g.position.set(px, floor + 1, pz);
+        const dir = bay[0] < f.mid ? 1 : -1;
+        g.rotation.y = Math.atan2(f.s[0] * dir, f.s[1] * dir);
+        addShopDisplay(g, { kind: 'tractor' }, reg);
+      }
+    }
     shopCounterAndKeeper(f, reg, rng, doorSide, 'vehicles');
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
     villageRegistry.set(ck, reg);
@@ -22292,6 +22470,10 @@
       const side = (u === 0 || u === W - 1) && v > 0 && v < D - 1;
       if (side && (y === floor + 2 || y === floor + 3)) return band;
       if (v === D - 1 && y <= floor + 3) return band;
+      // Front wall: the single door is at u = mid with glass either side and the posts one further out —
+      // swapped so a post frames the door on both sides, then glass (same as the Vehicle Shop).
+      if (v === 0 && (u === f.mid - 1 || u === f.mid + 1)) return BLOCK_ID('Black Concrete');
+      if (v === 0 && (u === f.mid - 2 || u === f.mid + 2) && y > floor + 1 && y < floor + H) return BLOCK_ID('Glass');
       return null;
     };
     buildGlassShell(f, floor, H, BLOCK_ID('Dark Planks'), BLOCK_ID('Black Concrete'), BLOCK_ID('Black Concrete'), solid);
@@ -22352,6 +22534,7 @@
       const t = FURNITURE_TYPES[item.idx];
       return '🪑 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy one (you have ×' + furnStockOf(t.name) + ')';
     }
+    if (item.kind === 'tractor') return '🚜 Tractor — 💰' + TRACTOR_PRICE + '  ·  ✋ to buy one (you have ×' + tractorStock() + ' to place)  ·  works a mud field on its own';
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
       if (!vehicleUnlocked(t)) return '🚗 ' + t.name + ' — 💰' + t.cost + '  ·  ✋ to buy (you pick the colour)';
@@ -22385,6 +22568,14 @@
     const item = shopItemInSight();
     if (!item) return false;
     if (item.kind === 'furniture') { buyFurniture(FURNITURE_TYPES[item.idx], 1); shopTipNext = 0; return true; }
+    if (item.kind === 'tractor') {
+      if (!trySpendCoins(TRACTOR_PRICE, 'a Tractor')) return true;
+      setTractorStock(tractorStock() + 1);
+      playCoin();
+      showSaveStatus('🚜 Tractor bought! Place it on a mud field from your Vehicles menu — each one you place uses one up.');
+      shopTipNext = 0;
+      return true;
+    }
     if (item.kind === 'vehicle') {
       const t = VEHICLE_TYPES[item.idx];
       if (vehicleUnlocked(t)) { // already yours — re-paint it, free
@@ -23357,6 +23548,346 @@
     setTextLabel(fx.label, (info.people ? t.emoji : ANIMAL_EMOJI[a]) + ' ' + t.name + ' · ' + fmtCountdown(t.hatchSec - elapsed));
     if (p >= 1) hatchAnimal(x, y, z, a, info.people);
   }
+  // ================= TRACTORS =================
+  // Bought at a Vehicle Shop (💰TRACTOR_PRICE each — every one you place uses one up, so another means buying
+  // again) and placed from the Vehicles menu, but ONLY onto a mud field (a connected patch of Mud with nothing
+  // built on it). Unlike the other vehicles it isn't ridden or picked back up — it stays where it is, a farmer
+  // at the wheel, and works the field on its own: driving block by block in a zig-zag up and down the rows
+  // (never off the mud), harvesting whatever's fully grown into its owner's 🎒 harvest bag and sowing seed
+  // again if they can afford it. ✋ on it picks what it sows next: "same as harvested" (the default — replants
+  // whatever it just pulled up, leaves empty mud alone) or a particular crop (sown everywhere it goes, empty
+  // mud included).
+  //
+  // Saved as a seed record (same save rows, same live sharing as crops/incubators/animals — see recordSeed):
+  // key = its cell with y + TRACTOR_Y_OFF (so it never collides with the crop in that same cell), code =
+  // TRACTOR_BASE + the chosen seed (TRACTOR_SAME = "same as harvested"), and the time part holds which way
+  // along the rows it's heading (0 / 1). Its owner goes in nameEdits under the same key ('t:' + uid). Only the
+  // owner's game drives it (it spends their coins and fills their bag), so it parks while they're away;
+  // everyone else just sees it move as its record moves.
+  const TRACTOR_PRICE = 2000, TRACTOR_BASE = 600, TRACTOR_END = 700, TRACTOR_SAME = 99, TRACTOR_Y_OFF = 9000000;
+  const TRACTOR_STEP_MS = 1100, TRACTOR_FIELD_MAX = 4000, TRACTOR_SPEED = 1.6;
+  function tractorStock() { return loadShopOwned().tractors | 0; }
+  function setTractorStock(n) { loadShopOwned().tractors = Math.max(0, n | 0); saveShopOwned(); }
+  const tractorOwnerTag = () => 't:' + String(playerUid || '').slice(0, 20); // remote name edits are cut to 24 chars
+  const isTractorCode = code => code >= TRACTOR_BASE && code < TRACTOR_END;
+  function tractorKeyXYZ(k) { const p = k.split(',').map(Number); return [p[0], p[1] - TRACTOR_Y_OFF, p[2]]; } // [x, crop-level y, z]
+  const tractorFx = new Map(); // record key -> { group, wheels, cx, cz, cy, yaw, nextStep, field, fieldAt, goal }
+  function buildTractorModel(withFarmer, seed) {
+    const g = new THREE.Group();
+    const red = phong(0xc62828), dark = phong(0x2a2a2a), tyre = phong(0x1c1c1c), hub = phong(0xe8c020), grey = phong(0x8a8a8a), seatM = phong(0x3a3a3a);
+    const box = (w, h, d, m, x, y, z) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, z); g.add(o); return o; };
+    box(0.66, 0.32, 1.6, red, 0, 0.55, 0.05);          // chassis
+    box(0.58, 0.44, 0.78, red, 0, 0.92, 0.42);         // bonnet
+    box(0.5, 0.34, 0.03, dark, 0, 0.9, 0.82);          // grille
+    for (const sx of [-1, 1]) {
+      box(0.06, 0.06, 0.02, hub, sx * 0.18, 1.0, 0.84); // headlights
+      box(0.3, 0.07, 0.72, red, sx * 0.55, 1.03, -0.45); // rear mudguards
+    }
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.5, 8), dark); pipe.position.set(0.17, 1.35, 0.6); g.add(pipe);
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.05, 8), grey); cap.position.set(0.17, 1.62, 0.6); g.add(cap);
+    box(0.42, 0.08, 0.36, seatM, 0, 0.95, -0.45);      // seat
+    box(0.42, 0.34, 0.06, seatM, 0, 1.16, -0.64);      // seat back
+    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.42, 6), dark); col.position.set(0, 1.08, -0.08); col.rotation.x = -0.6; g.add(col);
+    const sw = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.022, 6, 14), dark); sw.position.set(0, 1.25, -0.2); sw.rotation.x = -Math.PI / 2 + 0.6; g.add(sw);
+    // wheels: each in its own pivot so it can spin round its axle (local X)
+    const wheels = [];
+    const wheel = (r, w, x, y, z) => {
+      const piv = new THREE.Group(); piv.position.set(x, y, z);
+      const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 16), tyre); t.rotation.z = Math.PI / 2; piv.add(t);
+      const h = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.45, r * 0.45, w + 0.02, 10), hub); h.rotation.z = Math.PI / 2; piv.add(h);
+      for (let i = 0; i < 6; i++) { // tread lugs, so you can see it turning
+        const a = (i / 6) * Math.PI * 2;
+        const l = new THREE.Mesh(new THREE.BoxGeometry(w + 0.02, 0.06, 0.1), tyre); l.position.set(0, Math.cos(a) * r, Math.sin(a) * r); l.rotation.x = -a; piv.add(l);
+      }
+      g.add(piv); wheels.push({ piv, r });
+    };
+    for (const sx of [-1, 1]) { wheel(0.5, 0.28, sx * 0.55, 0.5, -0.45); wheel(0.3, 0.18, sx * 0.42, 0.3, 0.6); }
+    g.userData.wheels = wheels;
+    if (withFarmer) {
+      let rs = Math.abs(Math.sin((seed || 1) * 12.9898) * 43758.5453) % 1;
+      const rnd = () => { rs = (rs * 9301 + 0.49297) % 1; return rs; };
+      const farmer = buildCustomerFigure(true, {
+        skinIdx: Math.floor(rnd() * AVATAR_SKIN_TONES.length), hairIdx: Math.floor(rnd() * AVATAR_HAIR_TONES.length),
+        shirtIdx: Math.floor(rnd() * AVATAR_SHIRT_TONES.length), pantsIdx: Math.floor(rnd() * AVATAR_PANTS_TONES.length),
+        hat: 'cap', hatHex: 0x2f6a3a,
+      });
+      farmer.position.set(0, 0.99 - 0.46, -0.42); // seated figure: hips at 0.46, so they sit on the seat top
+      g.add(farmer);
+      g.userData.farmer = farmer;
+    }
+    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    return g;
+  }
+  function disposeTractorFx(fx) {
+    scene.remove(fx.group);
+    fx.group.traverse(o => { if (o.isMesh) { o.geometry.dispose(); if (o.material && o.material.dispose && !o.material.map) o.material.dispose(); } });
+  }
+  // The connected mud field at mud level my from (sx,sz): every Mud block 4-way connected to it with nothing
+  // built on top, plus the zig-zag order the tractor drives it in — row by row, alternate rows reversed.
+  function tractorField(sx, my, sz) {
+    const ok = (x, z) => blocks.get(key(x, my, z)) === MUD_TYPE && !blocks.has(key(x, my + 1, z));
+    if (!ok(sx, sz)) return null;
+    const set = new Set([sx + ',' + sz]), queue = [[sx, sz]];
+    while (queue.length && set.size < TRACTOR_FIELD_MAX) {
+      const [x, z] = queue.pop();
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = x + dx, nz = z + dz, ck = nx + ',' + nz;
+        if (set.has(ck) || !ok(nx, nz)) continue;
+        set.add(ck); queue.push([nx, nz]);
+      }
+    }
+    const rows = new Map();
+    for (const ck of set) { const [x, z] = ck.split(',').map(Number); if (!rows.has(z)) rows.set(z, []); rows.get(z).push(x); }
+    const zs = [...rows.keys()].sort((a, b) => a - b), order = [], index = new Map();
+    zs.forEach((z, ri) => {
+      const xs = rows.get(z).sort((a, b) => a - b);
+      if (ri % 2) xs.reverse();
+      for (const x of xs) { index.set(x + ',' + z, order.length); order.push([x, z]); }
+    });
+    return { set, order, index, my };
+  }
+  // First step of the shortest route across the field from (ax,az) to (bx,bz) — used when the next cell in
+  // the zig-zag isn't right next door (an odd-shaped field), so it still only ever drives over mud.
+  function tractorPathStep(F, ax, az, bx, bz) {
+    const start = ax + ',' + az, goal = bx + ',' + bz;
+    const prev = new Map([[start, null]]), q = [[ax, az]];
+    for (let qi = 0; qi < q.length; qi++) {
+      const [x, z] = q[qi];
+      if (x + ',' + z === goal) break;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ck = (x + dx) + ',' + (z + dz);
+        if (prev.has(ck) || !F.set.has(ck)) continue;
+        prev.set(ck, x + ',' + z); q.push([x + dx, z + dz]);
+      }
+    }
+    if (!prev.has(goal)) return null;
+    let c = goal;
+    while (prev.get(c) !== start) { c = prev.get(c); if (c == null) return null; }
+    return c.split(',').map(Number);
+  }
+  // Harvest / sow the cell the tractor is standing on. Returns nothing; tells the player now and then.
+  let tractorTally = new Map(), tractorTallyAt = 0, tractorBrokeAt = 0;
+  function tractorWorkCell(x, cy, z, sel) {
+    const ck = key(x, cy, z);
+    const sd = seedAt(ck);
+    let sow;
+    if (sd && sd.type) {
+      if (sd.type.kind === 'tree' || seedProgress(sd) < 1) return; // still growing
+      removeSeed(ck, x, cy, z);
+      const n = sd.type.yield || 1, item = sd.type.produce || sd.type.name;
+      addToInventory(item, n);
+      tractorTally.set(item, (tractorTally.get(item) || 0) + n);
+      if (!tractorTallyAt) tractorTallyAt = performance.now() + 4000;
+      sow = sel === TRACTOR_SAME ? sd.typeIdx : sel;
+    } else {
+      if (sel === TRACTOR_SAME || seedEdits.has(ck) || blocks.has(ck) || waterBlocks.has(ck) || lava.has(ck)) return;
+      sow = sel;
+    }
+    const st = SEED_TYPES[sow];
+    if (!st || st.kind === 'tree') return;
+    const cost = seedCost(st);
+    if (coins < cost) {
+      if (performance.now() > tractorBrokeAt) { tractorBrokeAt = performance.now() + 30000; showSaveStatus('🚜 Your tractor can\u2019t afford ' + st.name + ' seeds (💰' + cost + ') — it\u2019ll carry on harvesting', true); }
+      return;
+    }
+    if (!plantSeed(x, cy, z, sow)) return;
+    if (cost) { coins -= cost; updateCoinsDisplay(); scheduleStatsSave(); }
+    seedNextPass = 0; // show the new sprout straight away
+  }
+  function tractorStep(k, fx, now) {
+    fx.nextStep = now + TRACTOR_STEP_MS;
+    const v = seedEdits.get(k);
+    if (v === undefined) return;
+    const code = Math.floor(v / SEED_VALUE_MUL), dir = (v - code * SEED_VALUE_MUL) ? 1 : 0, sel = code - TRACTOR_BASE;
+    const my = fx.cy - 1, here = fx.cx + ',' + fx.cz;
+    if (!fx.field || now - fx.fieldAt > 15000 || !fx.field.set.has(here)) { fx.field = tractorField(fx.cx, my, fx.cz); fx.fieldAt = now; fx.goal = null; }
+    const F = fx.field;
+    if (!F) { fx.nextStep = now + 4000; return; } // its mud's gone from under it — wait
+    tractorWorkCell(fx.cx, fx.cy, fx.cz, sel);
+    if (F.order.length < 2) return;
+    let newDir = dir;
+    if (!fx.goal || fx.goal === here || !F.set.has(fx.goal)) {
+      const i = F.index.get(here);
+      let d = dir ? -1 : 1, ni = i + d;
+      if (ni < 0 || ni >= F.order.length) { d = -d; ni = i + d; } // end of the field: turn round and work back
+      newDir = d < 0 ? 1 : 0;
+      fx.goal = F.order[ni][0] + ',' + F.order[ni][1];
+    }
+    const [gx, gz] = fx.goal.split(',').map(Number);
+    let step = Math.abs(gx - fx.cx) + Math.abs(gz - fx.cz) === 1 ? [gx, gz] : tractorPathStep(F, fx.cx, fx.cz, gx, gz);
+    if (!step) { fx.goal = null; return; }
+    const [tx, tz] = step, ty = fx.cy + TRACTOR_Y_OFF, nk = key(tx, ty, tz);
+    if (seedEdits.has(nk)) return; // another tractor's in the way — wait for it
+    // Old record out, then the new one in — everyone else matches the two up as the same tractor moving.
+    recordName(fx.cx, ty, fx.cz, null);
+    recordSeed(fx.cx, ty, fx.cz, -1);
+    if (!recordSeed(tx, ty, tz, code * SEED_VALUE_MUL + newDir)) return;
+    recordName(tx, ty, tz, tractorOwnerTag());
+    tractorFx.delete(k);
+    fx.cx = tx; fx.cz = tz;
+    tractorFx.set(nk, fx);
+  }
+  function makeTractorFx(k) {
+    const [x, cy, z] = tractorKeyXYZ(k);
+    const g = buildTractorModel(true, x * 31 + z * 17 + 7);
+    g.position.set(x + 0.5, cy, z + 0.5);
+    scene.add(g);
+    const fx = { group: g, cx: x, cz: z, cy, yaw: 0, nextStep: performance.now() + 2000, field: null, fieldAt: 0, goal: null };
+    g.userData.tractorFx = fx;
+    return fx;
+  }
+  // Called from updateSeeds' once-a-second pass with every tractor record it saw. A record that's gone with a
+  // new one turned up next to it is the same tractor having moved (another player's, driven by their game).
+  function syncTractors(seen) {
+    const fresh = [...seen].filter(k => !tractorFx.has(k));
+    for (const [k, fx] of [...tractorFx]) {
+      if (seen.has(k)) continue;
+      tractorFx.delete(k);
+      let best = -1, bd = 9;
+      fresh.forEach((nk, i) => { if (!nk) return; const [nx, , nz] = tractorKeyXYZ(nk); const d = (nx - fx.cx) ** 2 + (nz - fx.cz) ** 2; if (d <= bd) { bd = d; best = i; } });
+      if (best >= 0) {
+        const nk = fresh[best]; fresh[best] = null;
+        const [nx, ncy, nz] = tractorKeyXYZ(nk);
+        fx.cx = nx; fx.cy = ncy; fx.cz = nz; fx.goal = null;
+        tractorFx.set(nk, fx);
+      } else disposeTractorFx(fx);
+    }
+    for (const nk of fresh) if (nk) tractorFx.set(nk, makeTractorFx(nk));
+  }
+  function updateTractors(dt) {
+    if (!tractorFx.size && !tractorTallyAt) return;
+    const now = performance.now(), mine = tractorOwnerTag();
+    for (const [k, fx] of [...tractorFx]) {
+      const g = fx.group;
+      g.visible = groundHeightOnly.has(fx.cx + ',' + fx.cz);
+      if (!g.visible) continue;
+      const tx = fx.cx + 0.5, tz = fx.cz + 0.5, dx = tx - g.position.x, dz = tz - g.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      g.position.y = fx.cy;
+      if (dist > 3) { g.position.x = tx; g.position.z = tz; } // a long way out (just loaded / big jump) — snap
+      else if (dist > 0.001) {
+        const mv = Math.min(dist, TRACTOR_SPEED * dt);
+        g.position.x += dx / dist * mv; g.position.z += dz / dist * mv;
+        const want = Math.atan2(dx, dz);
+        let dy = want - fx.yaw; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
+        fx.yaw += dy * Math.min(1, dt * 8);
+        g.rotation.y = fx.yaw;
+        for (const w of g.userData.wheels) w.piv.rotation.x += mv / w.r;
+      }
+      const f = g.userData.farmer;
+      if (f) f.position.y = 0.53 + (dist > 0.001 ? Math.abs(Math.sin(now / 120)) * 0.015 : 0); // bumping along
+      if (nameEdits.get(k) === mine && dist < 0.05 && now >= fx.nextStep) tractorStep(k, fx, now);
+    }
+    if (tractorTallyAt && now > tractorTallyAt) {
+      const parts = [...tractorTally].map(([item, n]) => n + ' ' + item + (PRODUCE_EMOJI[item] ? ' ' + PRODUCE_EMOJI[item] : ''));
+      if (parts.length) showSaveStatus('🚜 Tractor harvested 🎒 +' + parts.join(', '));
+      tractorTally = new Map(); tractorTallyAt = 0;
+    }
+  }
+  function placeTractor(r) {
+    if (tractorStock() <= 0) { showSaveStatus('🚜 No tractors left — buy one at a Vehicle Shop', true); return; }
+    if (!r || !r.hit || r.isWater || r.isLava) return;
+    const mx = r.hit.x, my = r.hit.y, mz = r.hit.z;
+    if (blocks.get(key(mx, my, mz)) !== MUD_TYPE || blocks.has(key(mx, my + 1, mz))) { showSaveStatus('🚜 Tractors can only go on a mud field — aim at the mud', true); return; }
+    if (chargingVisitor()) { showSaveStatus('🚜 Tractors only work in your own worlds and The Mill', true); return; }
+    const F = tractorField(mx, my, mz);
+    if (!F || F.order.length < 4) { showSaveStatus('🚜 That mud patch is too small — a tractor needs a field of at least 4 mud blocks', true); return; }
+    const ty = my + 1 + TRACTOR_Y_OFF;
+    if (seedEdits.has(key(mx, ty, mz))) { showSaveStatus('🚜 There\u2019s already a tractor there', true); return; }
+    if (!recordSeed(mx, ty, mz, (TRACTOR_BASE + TRACTOR_SAME) * SEED_VALUE_MUL)) { showSaveStatus('🚜 Tractors can only be placed in a saved world', true); return; }
+    recordName(mx, ty, mz, tractorOwnerTag());
+    setTractorStock(tractorStock() - 1);
+    if (tractorStock() <= 0) { vehiclePickTractor = false; updateVehicleSlotIcon(); }
+    seedNextPass = 0;
+    playThud(400);
+    showSaveStatus('🚜 Tractor on a ' + F.order.length + '-block field — ✋ on it to choose what it sows');
+  }
+  // ✋ aimed at a tractor: what should it sow next?
+  const _tractorRay = new THREE.Raycaster();
+  function tractorInSight() {
+    if (!tractorFx.size) return null;
+    const groups = [];
+    for (const fx of tractorFx.values()) if (fx.group.visible && fx.group.position.distanceToSquared(camera.position) < 64) groups.push(fx.group);
+    if (!groups.length) return null;
+    _tractorRay.setFromCamera({ x: 0, y: 0 }, camera); _tractorRay.far = 7;
+    const hits = _tractorRay.intersectObjects(groups, true);
+    if (!hits.length) return null;
+    let o = hits[0].object; while (o && !o.userData.tractorFx) o = o.parent;
+    return o ? o.userData.tractorFx : null;
+  }
+  function tractorKeyOf(fx) { for (const [k, f] of tractorFx) if (f === fx) return k; return null; }
+  function tryTractorAction() {
+    const fx = tractorInSight();
+    if (!fx) return false;
+    const k = tractorKeyOf(fx);
+    if (!k) return true;
+    if (nameEdits.get(k) !== tractorOwnerTag()) { showBriefMessage('🚜 That\u2019s someone else\u2019s tractor'); return true; }
+    openTractorPicker(fx);
+    return true;
+  }
+  let tractorPickEl = null;
+  function openTractorPicker(fx) {
+    if (!tractorPickEl) {
+      tractorPickEl = document.createElement('div');
+      tractorPickEl.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      tractorPickEl.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(420px,94vw);max-height:84vh;overflow:auto;color:#fff;font:14px system-ui,sans-serif;">'
+        + '<div style="font-weight:600;font-size:15px;margin-bottom:4px;">🚜 Tractor — what should it sow next?</div>'
+        + '<div id="tractorPickNow" style="font-size:12px;opacity:0.75;margin-bottom:12px;line-height:1.4;"></div>'
+        + '<div id="tractorPickList" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;"></div>'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;"><button id="tractorScrap" style="background:rgba(200,60,60,0.25);border:1px solid rgba(255,120,120,0.4);color:#fff;border-radius:6px;padding:8px 12px;cursor:pointer;">🗑 Scrap tractor</button>'
+        + '<button id="tractorPickClose" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 14px;cursor:pointer;">Close</button></div></div>';
+      document.body.appendChild(tractorPickEl);
+      tractorPickEl.querySelector('#tractorPickClose').addEventListener('click', () => { tractorPickEl.style.display = 'none'; });
+    }
+    document.exitPointerLock && document.exitPointerLock();
+    const curCode = () => { const k = tractorKeyOf(fx); const v = k && seedEdits.get(k); return v === undefined || !k ? null : Math.floor(v / SEED_VALUE_MUL); };
+    const setSel = sel => {
+      const k = tractorKeyOf(fx); if (!k) return;
+      const v = seedEdits.get(k); if (v === undefined) return;
+      const code = Math.floor(v / SEED_VALUE_MUL), dir = v - code * SEED_VALUE_MUL;
+      const [x, cy, z] = tractorKeyXYZ(k);
+      recordSeed(x, cy + TRACTOR_Y_OFF, z, (TRACTOR_BASE + sel) * SEED_VALUE_MUL + dir);
+    };
+    const c0 = curCode(), selNow = c0 == null ? TRACTOR_SAME : c0 - TRACTOR_BASE;
+    tractorPickEl.querySelector('#tractorPickNow').textContent = 'Sowing now: ' + (selNow === TRACTOR_SAME ? '🔁 the same as it harvests (empty mud left alone)' : SEED_TYPES[selNow].name + ' — everywhere it goes, 💰' + seedCost(SEED_TYPES[selNow]) + ' a seed') + '. It harvests anything that\u2019s ready either way.';
+    const list = tractorPickEl.querySelector('#tractorPickList');
+    list.innerHTML = '';
+    const btnCss = sel => 'display:flex;flex-direction:column;align-items:center;gap:4px;background:' + (sel ? 'rgba(90,158,60,0.35)' : 'rgba(255,255,255,0.06)') + ';border:1px solid ' + (sel ? 'rgba(140,220,100,0.8)' : 'rgba(255,255,255,0.18)') + ';border-radius:8px;padding:8px 4px;color:#fff;font:12px system-ui,sans-serif;cursor:pointer;text-align:center;';
+    const add = (sel, iconEl, label) => {
+      const b = document.createElement('button'); b.style.cssText = btnCss(sel === selNow);
+      b.appendChild(iconEl);
+      const lab = document.createElement('span'); lab.textContent = label; b.appendChild(lab);
+      b.addEventListener('click', () => {
+        tractorPickEl.style.display = 'none';
+        setSel(sel);
+        showSaveStatus(sel === TRACTOR_SAME ? '🚜 Tractor will re-sow whatever it harvests' : '🚜 Tractor will now sow ' + SEED_TYPES[sel].name);
+      });
+      list.appendChild(b);
+    };
+    const same = document.createElement('div'); same.textContent = '🔁'; same.style.cssText = 'font-size:24px;line-height:34px;';
+    add(TRACTOR_SAME, same, 'Same as harvested');
+    SEED_TYPES.forEach((t, i) => { if (t.kind !== 'tree' && t.produce) add(i, seedIconCanvas(i), t.name + ' · 💰' + seedCost(t)); });
+    tractorPickEl.querySelector('#tractorScrap').onclick = () => {
+      if (!confirm('Scrap this tractor? It\u2019s gone for good — no refund.')) return;
+      tractorPickEl.style.display = 'none';
+      const k = tractorKeyOf(fx); if (!k) return;
+      const [x, cy, z] = tractorKeyXYZ(k);
+      recordName(x, cy + TRACTOR_Y_OFF, z, null);
+      recordSeed(x, cy + TRACTOR_Y_OFF, z, -1);
+      seedNextPass = 0;
+      showSaveStatus('🚜 Tractor scrapped');
+    };
+    tractorPickEl.style.display = 'flex';
+  }
+  function tractorIconCanvas() {
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#c62828'; ctx.fillRect(6, 14, 20, 8); ctx.fillRect(16, 9, 10, 6); // body + bonnet
+    ctx.fillStyle = '#3a3a3a'; ctx.fillRect(9, 7, 7, 2); ctx.fillRect(10, 9, 2, 6); // seat / cab post
+    ctx.fillStyle = '#1c1c1c'; ctx.beginPath(); ctx.arc(10, 24, 7, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(26, 26, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e8c020'; ctx.beginPath(); ctx.arc(10, 24, 3, 0, Math.PI * 2); ctx.fill(); ctx.beginPath(); ctx.arc(26, 26, 2, 0, Math.PI * 2); ctx.fill();
+    return c;
+  }
   function animateIncubators() {
     const t = performance.now() / 1000;
     for (const fx of incubatorFx.values()) {
@@ -24148,6 +24679,10 @@
     }
   }
   function rebuildSnowOverlay() {
+    // Retired: winter snow is now the blocks' own top faces turning white (see SNOW TOPS), so there's no
+    // whole-world scan and no layer of snow slabs to draw.
+    snowMesh.count = 0;
+    return;
     const dummy = new THREE.Object3D();
     let count = 0;
     startBackgroundMapScan(blocks, (k, t) => {
@@ -24640,27 +25175,53 @@
   let weatherTimer = 8;
   const fogTarget = { near: 26, far: 70 };
 
-  let overlayRebuildTimer = null;
-  function scheduleOverlayRebuild(season) {
-    // Debounced rather than immediate. This rebuild scans the ENTIRE
-    // loaded block map (every chunk currently in view) to place/clear
-    // flower and snow decoration — with infinite terrain now loading a
-    // lot more area than the original fixed-size world ever held, that
-    // full scan got expensive enough to cause a visible stall by itself.
-    // Since this now also gets triggered by ordinary chunk streaming (not
-    // just placing/mining), a short debounce meant it could still end up
-    // firing every ~400ms during continuous flying/walking — exactly
-    // the "everything goes grey" symptom, just from a different cause
-    // than the original one. Stretched out to 3 seconds: flowers/snow
-    // trail reality by a few seconds after a change now instead of ~400ms,
-    // which is an easy trade for something this decorative.
-    clearTimeout(overlayRebuildTimer);
-    overlayRebuildTimer = setTimeout(() => {
-      if (season === 0) rebuildSnowOverlay(); else rebuildFlowerOverlay(); // spring/summer: flowers + mushrooms; autumn: mushrooms only; winter: snow only (mushrooms were cleared with the flowers)
-    }, 3000);
+  let overlayRebuildTimer = null, overlayRebuildSeason = 0, overlayLastRun = -Infinity; // see scheduleOverlayRebuild
+  function scheduleOverlayRebuild(season, soon) {
+    // Rebuilding scans the ENTIRE loaded block map to place/clear flower,
+    // mushroom and snow decoration, so it's batched: a request queues one
+    // rebuild a few seconds out and any more in the meantime ride along with
+    // it. Two things here used to stop it ever happening while you played
+    // (it only caught up when you reloaded): (1) it was a debounce — every new
+    // request pushed the rebuild another 3s back, and something somewhere is
+    // nearly always asking (flowing water re-requests it every time it moves,
+    // chunks streaming in, a tractor in winter), so it could be postponed
+    // indefinitely; (2) a new rebuild restarted the background scan from the
+    // top, throwing away the one in progress, so a scan that takes longer than
+    // the gap between requests never finished. Now the first request fixes the
+    // time and later ones don't move it, and a rebuild waits for a scan that's
+    // already running to finish instead of restarting it. `soon` (your own
+    // mining/building) brings a pending rebuild forward to under half a second.
+    // soon === 'background' (flowing water, chunks streaming in — things that
+    // ask over and over without you doing anything) waits until at least 20s
+    // after the last rebuild, so they can't keep the scan running non-stop.
+    overlayRebuildSeason = season;
+    const bg = soon === 'background';
+    if (bg) soon = false;
+    const now = performance.now();
+    const delay = soon ? 400 : bg ? Math.max(3000, overlayLastRun + 20000 - now) : 3000;
+    if (overlayRebuildTimer) {
+      if (overlayRebuildTimer.due <= now + delay) return; // one's already coming at least as soon — ride along with it
+      clearTimeout(overlayRebuildTimer.id); // this one needs it sooner (your own edit, or a normal request behind a slow background one)
+    }
+    const t = { due: now + delay, id: 0 };
+    const run = () => {
+      if (backgroundMapScan) { t.id = setTimeout(run, 250); return; } // let the scan in progress finish first
+      overlayRebuildTimer = null;
+      overlayLastRun = performance.now();
+      if (overlayRebuildSeason === 0) rebuildSnowOverlay(); else rebuildFlowerOverlay(); // spring/summer: flowers + mushrooms; autumn: mushrooms only; winter: snow only (mushrooms were cleared with the flowers)
+    };
+    t.id = setTimeout(run, delay);
+    overlayRebuildTimer = t;
   }
   function updateWeather(dt) {
     const { season } = getSeasonState();
+    // Snow tops (see SNOW TOPS): on in winter; the column-height texture re-uploads at most 4x a second, only
+    // in winter and only if a block's actually changed a column's top since.
+    snowTopUniforms.uSnowOn.value = season === 0 ? 1 : 0;
+    if (season === 0 && snowTopDirty) {
+      const nowT = performance.now();
+      if (nowT >= snowTopNextUpload) { snowTopNextUpload = nowT + 250; snowTopDirty = false; snowTopTexture().needsUpdate = true; }
+    }
     if (season !== currentSeason) {
       currentSeason = season;
       // Leaves are one shared material for every leaf block in the world,
@@ -28467,6 +29028,7 @@
     lava.tick(); // much slower flow, and redraws its own mesh whenever a cell changed — see LAVA
     updateLeafDecay();
     updateSeeds(); // planted seeds growing — see SEEDS
+    updateTractors(dt); // tractors driving their fields — see TRACTORS
     if (actionHeld && (ridingVehicle || weaponEquipped())) doAction(); // held ✋ keeps firing; the gun's own cooldown sets the pace
     updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
     updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
@@ -30282,11 +30844,11 @@
     if (!slotEl) return;
     const old = slotEl.querySelector('canvas.swatch');
     if (old) old.remove();
-    slotEl.insertBefore(vehicleIconCanvas(vehicleTypeIdx), slotEl.querySelector('.family-badge'));
+    slotEl.insertBefore(vehiclePickTractor ? tractorIconCanvas() : vehicleIconCanvas(vehicleTypeIdx), slotEl.querySelector('.family-badge'));
   }
   function showVehiclePopup(slotEl) {
     if (togglePopupFor(slotEl)) return; // pressing a slot again collapses its menu
-    if (!anyVehicleUnlocked()) { showBriefMessage('🚗 No vehicles yet — buy one at a Vehicle Shop (build one from Property)'); return; }
+    if (!anyVehicleUnlocked() && tractorStock() <= 0) { showBriefMessage('🚗 No vehicles yet — buy one at a Vehicle Shop (build one from Property)'); return; }
     fixVehicleSelection();
     const popup = document.createElement('div');
     popup.style.cssText = popupCss(slotEl);
@@ -30304,12 +30866,32 @@
       btn.addEventListener('click', e => {
         e.stopPropagation();
         vehicleTypeIdx = idx;
+        vehiclePickTractor = false;
         updateVehicleSlotIcon();
         selectSlot(VEHICLE_SLOT);
         closeFamilyPopup();
       });
       popup.appendChild(btn);
     });
+    if (tractorStock() > 0) { // bought tractors waiting to be placed — each one placed uses one up (see TRACTORS)
+      const btn = document.createElement('div');
+      btn.className = 'popup-item';
+      btn.title = 'Tractor ×' + tractorStock() + ' — place on a mud field';
+      btn.appendChild(tractorIconCanvas());
+      const label = document.createElement('span');
+      label.className = 'popup-item-label';
+      label.textContent = 'Tractor ×' + tractorStock() + ' · mud fields only';
+      btn.appendChild(label);
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        vehiclePickTractor = true;
+        updateVehicleSlotIcon();
+        selectSlot(VEHICLE_SLOT);
+        closeFamilyPopup();
+        showBriefMessage('🚜 Aim at a mud field and press build to place the tractor');
+      });
+      popup.appendChild(btn);
+    }
     mountPopup(popup, slotEl);
   }
   {

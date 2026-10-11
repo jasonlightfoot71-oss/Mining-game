@@ -662,6 +662,7 @@
     </div>
   </div>
 </div>
+<button id="homeBtn" title="Go back to where this world starts" style="display:none;position:fixed;top:80px;right:108px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">🏠</button>
 <button id="chatOpenBtn" style="display:none;position:fixed;top:80px;right:60px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">💬</button>
 <button id="chatVoiceMicBtn" style="display:none;position:fixed;top:80px;right:12px;z-index:10;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.3);color:#fff;border-radius:6px;padding:6px 10px;font-size:16px;cursor:pointer;align-items:center;justify-content:center;">🎤</button>
 <div id="chatVoiceMicStatus" style="display:none;position:fixed;top:150px;right:12px;z-index:10;background:rgba(0,0,0,0.55);color:#fff;padding:3px 8px;border-radius:5px;font-size:11px;white-space:nowrap;pointer-events:none;"></div>
@@ -1680,7 +1681,7 @@
     for (const [dk, d] of doors) { if (villageOwned.doors.has(dk)) continue; doorsArr.push([d.bx,d.by,d.bz,d.rot,d.doorTypeIdx]); }
     const furnitureArr = [];
     for (const [fk, f] of furniture) { if (villageOwned.furniture.has(fk)) continue; furnitureArr.push([f.bx,f.by,f.bz,f.rot,f.typeIdx]); }
-    const vehiclesArr = vehicles.map(v => v === ridingVehicle
+    const vehiclesArr = vehicles.filter(v => !v.yachtHeli).map(v => v === ridingVehicle // (a yacht's helicopter isn't saved as a loose vehicle — it lives on her helipad)
       ? [player.pos.x, player.pos.y, player.pos.z, yaw, v.typeIdx, v.color] // currently being driven — its own stored x/y/z is stale until exitVehicle() runs, so use the live player position instead
       : [v.x, v.y, v.z, v.yaw, v.typeIdx, v.color]); // 6th field: its paint (null = original) — older copies ignore it
     return {
@@ -6204,6 +6205,7 @@
     uniforms: {
       uTime: { value: 0 },
       uSunDir: { value: new THREE.Vector3(0.4, 1.0, 0.3).normalize() },
+      uHull: { value: [new THREE.Vector4(1e9, 0, 1, 0), new THREE.Vector4(1e9, 0, 1, 0)] }, // see SUPERYACHT (yachtHullUniforms)
     },
     transparent: true,
     depthWrite: false,
@@ -6233,11 +6235,21 @@
     fragmentShader: `
       uniform float uTime;
       uniform vec3 uSunDir;
+      uniform vec4 uHull[2]; // yachts: (x, z, cos yaw, sin yaw) — water isn't drawn inside their hulls (x > 1e8: none)
       varying vec3 vWorldPos;
       varying vec3 vNormal;
       varying float vFall;
       float fallHash(float n) { return fract(sin(n * 12.9898) * 43758.5453); }
       void main() {
+        for (int i = 0; i < 2; i++) {
+          vec4 h = uHull[i];
+          if (h.x < 1.0e8) {
+            vec2 d = vWorldPos.xz - h.xy;
+            float lx = d.x * h.z - d.y * h.w, lz = d.x * h.w + d.y * h.z;
+            float hw = lz < 11.0 ? 5.0 : (lz < 14.0 ? 4.0 : (lz < 16.0 ? 2.75 : 1.25));
+            if (lz > -17.05 && lz < 17.5 && abs(lx) < hw) discard;
+          }
+        }
         vec3 normal = normalize(vNormal);
         vec3 viewDir = normalize(cameraPosition - vWorldPos);
 
@@ -10550,18 +10562,18 @@
   // messages, no coins, no menus — and it carries the state they ended up in, so a toggle can't come out the
   // wrong way round if it's already in that state here.
   // ================= POOL =================
-  // ✋ on a pool table opens a game on it: a top-down view of the table to aim on, a power slider and Shoot.
-  // The table's own 3D balls are the game — they roll, knock into each other, bounce off the cushions and drop
-  // into the six pockets, so anyone standing round the table sees it play out. Clear all ten colours, with the
-  // black last (pot it early and the frame's lost); the cue ball going down is a foul and it comes back to the
-  // spot. Counts your shots. Controls: drag / click on the table to aim (or ← →, Shift for fine), ↑ ↓ power,
-  // Space or Enter to shoot, R to re-rack, Esc to close. Controller: left stick aims (right stick fine-tunes),
-  // D-pad ▲▼ power, A shoot, Y re-rack, B close. Everything in table-local units (the baize is 1.1 x 1.9).
+  // ✋ on a pool table: you step up to it and play it for real, in first person. You're always crouched behind the
+  // cue ball looking down the shot — turn (look left / right, A / D, the stick) and you walk round the ball, and the
+  // shot always goes straight ahead from wherever you're standing. All you choose is the power: hold ✋ and the cue
+  // draws back (the bar fills, then empties again if you keep holding), let go to strike. A dotted guide shows the
+  // line and a ring where the cue ball would meet the first ball. Jump leaves the table.
+  // The table's own 3D balls are the game: they roll, knock into each other, bounce off the cushions and drop into
+  // the six pockets, so anyone round the table sees it play out. Clear all ten colours, black last (pot it early
+  // and the frame's lost); the cue ball going down is a foul and it comes back to the spot. When the frame's over,
+  // ✋ re-racks. Everything is in table-local units (the baize is 1.1 x 1.9).
   const POOL_R = 0.03, POOL_HX = 0.55, POOL_HZ = 0.95, POOL_BLACK = 7, POOL_SPOT = [0, -0.5];
   const POOL_POCKETS = [[-0.55, -0.95, 0.058], [0.55, -0.95, 0.058], [-0.565, 0, 0.05], [0.565, 0, 0.05], [-0.55, 0.95, 0.058], [0.55, 0.95, 0.058]];
-  const POOL_BALL_CSS = ['#f2c14e', '#2468b0', '#c0392b', '#6a2a8a', '#e8702a', '#2f8f4a', '#7a1f1f', '#111111', '#f2c14e', '#2468b0', '#ffffff'];
   const poolGames = new Set();
-  let poolUI = null; // { el, canvas, ctx, game, keyHandler, padPrev }
   function poolGameFor(fk) {
     const f = furniture.get(fk); if (!f) return null;
     const g = f.group;
@@ -10629,16 +10641,15 @@
       if (game.moving) {
         const steps = Math.ceil(Math.min(dt, 0.05) / (1 / 480));
         for (let s = 0; s < steps; s++) poolStep(game, Math.min(dt, 0.05) / steps);
-        if (game.balls.every(b => b.potted || Math.hypot(b.vx, b.vz) < 0.004)) { game.balls.forEach(b => { b.vx = b.vz = 0; }); poolSettle(game); }
+        if (game.balls.every(b => b.potted || Math.hypot(b.vx, b.vz) < 0.004)) { game.balls.forEach(b => { b.vx = b.vz = 0; }); poolSettle(game); if (poolPlay && poolPlay.game === game) showBriefMessage('🎱 ' + game.msg + (game.over ? ' — ✋ to re-rack' : '')); }
       }
       let busy = game.moving;
       for (const b of game.balls) {
         if (b.potted) { if (b.sink > 0) { b.sink = Math.max(0, b.sink - dt * 4); b.mesh.position.set(b.px, 0.86 - (1 - b.sink) * 0.08, b.pz); busy = true; if (!b.sink) b.mesh.visible = false; } continue; }
         b.mesh.position.x = b.x; b.mesh.position.z = b.z;
       }
-      if (!busy && !(poolUI && poolUI.game === game)) poolGames.delete(game);
+      if (!busy && !(poolPlay && poolPlay.game === game)) poolGames.delete(game);
     }
-    if (poolOpen() && poolUI.game) { if (!poolUI.game.g.parent) closePoolGame(); else { poolPadInput(dt); drawPool(); } }
   }
   // first thing the aim line meets: a ball (with where the cue ball would be on contact) or a cushion
   function poolAimTrace(game) {
@@ -10653,109 +10664,96 @@
     if (tw < best) { best = tw; hit = null; }
     return { x: c.x + dx * best, z: c.z + dz * best, ball: hit };
   }
-  function drawPool() {
-    const ui = poolUI, game = ui.game, cv = ui.canvas, x = ui.ctx, W = cv.width, H = cv.height;
-    const S = Math.min((W - 40) / (2 * POOL_HZ + 0.24), (H - 40) / (2 * POOL_HX + 0.24)), cx = W / 2, cy = H / 2;
-    const P = (tx, tz) => [cx + tz * S, cy - tx * S]; // table z runs across the screen, x up it
-    ui.S = S;
-    x.clearRect(0, 0, W, H);
-    x.fillStyle = '#4a2a14'; x.fillRect(cx - (POOL_HZ + 0.11) * S, cy - (POOL_HX + 0.11) * S, (2 * POOL_HZ + 0.22) * S, (2 * POOL_HX + 0.22) * S);
-    x.fillStyle = '#1f6b3a'; x.fillRect(cx - POOL_HZ * S, cy - POOL_HX * S, 2 * POOL_HZ * S, 2 * POOL_HX * S);
-    x.strokeStyle = 'rgba(255,255,255,0.18)'; x.beginPath(); x.moveTo(...P(-POOL_HX, POOL_SPOT[1])); x.lineTo(...P(POOL_HX, POOL_SPOT[1])); x.stroke();
-    x.fillStyle = '#050505'; for (const [px, pz, pr] of POOL_POCKETS) { const [a, b2] = P(px, pz); x.beginPath(); x.arc(a, b2, pr * S, 0, Math.PI * 2); x.fill(); }
-    const c = poolCue(game);
-    if (!game.moving && !game.over && !c.potted) {
-      const tr = poolAimTrace(game), [ax, ay] = P(c.x, c.z), [bx, by] = P(tr.x, tr.z);
-      x.setLineDash([6, 6]); x.strokeStyle = 'rgba(255,255,255,0.7)'; x.lineWidth = 1.5; x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke(); x.setLineDash([]);
-      x.strokeStyle = 'rgba(255,255,255,0.8)'; x.beginPath(); x.arc(bx, by, POOL_R * S, 0, Math.PI * 2); x.stroke();
-      if (tr.ball) { const nx = tr.ball.x - tr.x, nz = tr.ball.z - tr.z, l = Math.hypot(nx, nz) || 1, [ex, ey] = P(tr.ball.x + nx / l * 0.25, tr.ball.z + nz / l * 0.25), [sx2, sy2] = P(tr.ball.x, tr.ball.z);
-        x.strokeStyle = 'rgba(255,230,120,0.75)'; x.beginPath(); x.moveTo(sx2, sy2); x.lineTo(ex, ey); x.stroke(); }
-      const back = 0.05 + game.power * 0.25, dx = Math.sin(game.aim), dz = Math.cos(game.aim);
-      const [k1x, k1y] = P(c.x - dx * (POOL_R + back), c.z - dz * (POOL_R + back)), [k2x, k2y] = P(c.x - dx * (POOL_R + back + 0.9), c.z - dz * (POOL_R + back + 0.9));
-      x.strokeStyle = '#c8a06a'; x.lineWidth = 5; x.lineCap = 'round'; x.beginPath(); x.moveTo(k1x, k1y); x.lineTo(k2x, k2y); x.stroke(); x.lineWidth = 1;
+  // ---- playing at the table ----
+  let poolPlay = null; // { fk, f, game, eye: Vector3|null, charging: t0|0, spaceArmed, guide, ghost, stick }
+  const _poolV = new THREE.Vector3(), _poolW = new THREE.Vector3();
+  let poolBarEl = null;
+  function poolPowerBar(show, frac) {
+    if (!poolBarEl) {
+      poolBarEl = document.createElement('div');
+      poolBarEl.style.cssText = 'position:fixed;left:50%;bottom:120px;transform:translateX(-50%);width:220px;height:14px;border-radius:7px;background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.5);z-index:15;display:none;overflow:hidden;pointer-events:none;';
+      poolBarEl.innerHTML = '<div style="height:100%;width:0;background:linear-gradient(90deg,#5c9e3f,#f2c14e,#e8502a);"></div>';
+      document.body.appendChild(poolBarEl);
     }
-    game.balls.forEach((b, i) => { if (b.potted && !b.sink) return; const [a, b2] = P(b.potted ? b.px : b.x, b.potted ? b.pz : b.z);
-      x.fillStyle = POOL_BALL_CSS[i] || '#fff'; x.beginPath(); x.arc(a, b2, POOL_R * S * (b.potted ? b.sink : 1), 0, Math.PI * 2); x.fill();
-      x.strokeStyle = 'rgba(0,0,0,0.5)'; x.stroke(); if (i === POOL_BLACK) { x.fillStyle = '#fff'; x.font = 'bold ' + Math.round(POOL_R * S) + 'px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('8', a, b2 + 1); } });
-    const left = poolColoursLeft(game);
-    ui.status.textContent = 'Shots ' + game.shots + ' · ' + (10 - left) + '/10 potted' + (game.fouls ? ' · fouls ' + game.fouls : '') + (game.msg ? '  —  ' + game.msg : '');
-    ui.shootBtn.disabled = game.moving || game.over || c.potted; ui.shootBtn.style.opacity = ui.shootBtn.disabled ? 0.45 : 1;
-    if (document.activeElement !== ui.power) ui.power.value = Math.round(game.power * 100);
+    poolBarEl.style.display = show ? 'block' : 'none';
+    if (show) poolBarEl.firstChild.style.width = Math.round(frac * 100) + '%';
   }
-  function openPoolGame(fk) {
-    const game = poolGameFor(fk); if (!game) return;
-    if (!poolUI) {
-      const el = document.createElement('div'); el.id = 'poolPanel';
-      el.style.cssText = 'position:fixed;inset:0;z-index:47;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;';
-      el.innerHTML = '<div style="background:rgba(18,22,26,0.94);color:#fff;border-radius:12px;padding:10px;width:min(96vw,860px);box-sizing:border-box;">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><b>🎱 Pool</b><span style="font-size:11px;opacity:0.6;">drag on the table to aim · ← → aim · ↑ ↓ power · Space shoot · R re-rack · Esc close</span></div>'
-        + '<canvas id="poolCanvas" width="860" height="520" style="width:100%;height:auto;display:block;touch-action:none;border-radius:8px;cursor:crosshair;"></canvas>'
-        + '<div id="poolStatus" style="font-size:13px;margin:6px 2px;min-height:18px;"></div>'
-        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
-        + '<button id="poolL" style="background:#2a2d34;border:none;color:#fff;border-radius:6px;padding:8px 12px;font-size:15px;cursor:pointer;">⟲</button>'
-        + '<button id="poolR" style="background:#2a2d34;border:none;color:#fff;border-radius:6px;padding:8px 12px;font-size:15px;cursor:pointer;">⟳</button>'
-        + '<label style="display:flex;align-items:center;gap:6px;flex:1;min-width:140px;font-size:13px;">Power <input id="poolPower" type="range" min="5" max="100" value="55" style="flex:1;"></label>'
-        + '<button id="poolShoot" style="background:#5c9e3f;border:none;color:#fff;border-radius:6px;padding:9px 18px;font-weight:700;cursor:pointer;">Shoot</button>'
-        + '<button id="poolRack" style="background:#3d6fb3;border:none;color:#fff;border-radius:6px;padding:9px 12px;font-weight:700;cursor:pointer;">Re-rack</button>'
-        + '<button id="poolClose" style="background:rgba(255,255,255,0.12);border:none;color:#fff;border-radius:6px;padding:9px 12px;cursor:pointer;">Close</button></div></div>';
-      document.body.appendChild(el);
-      const canvas = el.querySelector('#poolCanvas');
-      poolUI = { el, canvas, ctx: canvas.getContext('2d'), status: el.querySelector('#poolStatus'), shootBtn: el.querySelector('#poolShoot'), power: el.querySelector('#poolPower'), padPrev: [] };
-      const aimAt = e => { const ui = poolUI, r = canvas.getBoundingClientRect(), px = (e.clientX - r.left) * canvas.width / r.width, py = (e.clientY - r.top) * canvas.height / r.height;
-        const tz = (px - canvas.width / 2) / ui.S, tx = -(py - canvas.height / 2) / ui.S, c = poolCue(ui.game); if (Math.hypot(tx - c.x, tz - c.z) > 0.01) ui.game.aim = Math.atan2(tx - c.x, tz - c.z); };
-      let dragging = false;
-      canvas.addEventListener('pointerdown', e => { dragging = true; canvas.setPointerCapture(e.pointerId); aimAt(e); });
-      canvas.addEventListener('pointermove', e => { if (dragging) aimAt(e); });
-      canvas.addEventListener('pointerup', () => { dragging = false; });
-      const hold = (btn, d) => { let iv = null; const go = () => { poolUI.game.aim += d; }; btn.addEventListener('pointerdown', e => { e.preventDefault(); go(); iv = setInterval(go, 40); }); const stop = () => { clearInterval(iv); iv = null; }; btn.addEventListener('pointerup', stop); btn.addEventListener('pointerleave', stop); };
-      hold(el.querySelector('#poolL'), 0.02); hold(el.querySelector('#poolR'), -0.02);
-      poolUI.power.addEventListener('input', () => { poolUI.game.power = poolUI.power.value / 100; });
-      poolUI.shootBtn.addEventListener('click', () => poolShoot(poolUI.game));
-      el.querySelector('#poolRack').addEventListener('click', () => { poolRerack(poolUI.game); playThud(420); });
-      el.querySelector('#poolClose').addEventListener('click', () => closePoolGame());
-      el.addEventListener('click', e => { if (e.target === el) closePoolGame(); });
-      window.addEventListener('keydown', e => {
-        if (!poolOpen() || !poolUI.game) return;
-        const gm = poolUI.game, step = e.shiftKey ? 0.004 : 0.03; let used = true;
-        if (e.code === 'ArrowLeft' || e.code === 'KeyA') gm.aim += step;
-        else if (e.code === 'ArrowRight' || e.code === 'KeyD') gm.aim -= step;
-        else if (e.code === 'ArrowUp' || e.code === 'KeyW') gm.power = Math.min(1, gm.power + 0.05);
-        else if (e.code === 'ArrowDown' || e.code === 'KeyS') gm.power = Math.max(0.05, gm.power - 0.05);
-        else if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) poolShoot(gm);
-        else if (e.code === 'KeyR' && !e.repeat) { poolRerack(gm); playThud(420); }
-        else if (e.code === 'Escape' || e.code === 'KeyC') closePoolGame();
-        else used = false;
-        if (used) { e.preventDefault(); e.stopImmediatePropagation(); }
-      }, true);
+  function poolChargeFrac() { const t = (performance.now() - poolPlay.charging) / 1300; const p = t % 2; return Math.max(0.04, p <= 1 ? p : 2 - p); } // fills, then empties again if you keep holding
+  function enterPoolPlay(fk) {
+    const f = furniture.get(fk), game = poolGameFor(fk); if (!f || !game) return;
+    if (poolPlay) leavePoolPlay(true);
+    const g = f.group, mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.visible = false; g.add(m); return m; };
+    const guide = mk(new THREE.BoxGeometry(0.006, 0.004, 1), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false }));
+    const ghost = mk(new THREE.TorusGeometry(POOL_R, 0.003, 6, 20).rotateX(Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, depthWrite: false }));
+    const stick = new THREE.Group(); stick.visible = false; g.add(stick);
+    { const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.013, 1.3, 8).rotateX(Math.PI / 2), new THREE.MeshPhongMaterial({ color: 0xc8a06a, shininess: 40 })); shaft.position.z = -0.65; stick.add(shaft);
+      const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.0065, 0.0065, 0.015, 8).rotateX(Math.PI / 2), new THREE.MeshPhongMaterial({ color: 0x3a6ab0 })); tip.position.z = -0.006; stick.add(tip); }
+    poolPlay = { fk, f, game, eye: null, charging: 0, spaceArmed: !keys['Space'], guide, ghost, stick };
+    poolGames.add(game);
+    // face down the table from the cue ball towards the pack (or wherever you're already looking from)
+    const c = poolCue(game); g.updateMatrixWorld(); const cw = g.localToWorld(_poolV.set(c.x, 0.86, c.z));
+    yaw = Math.atan2(-(cw.x - player.pos.x), -(cw.z - player.pos.z)); pitch = -0.38;
+    if (game.over) poolRerack(game);
+    showSaveStatus('🎱 Pool — turn to walk round the cue ball · hold ✋ for power, let go to strike · jump to leave the table');
+  }
+  function leavePoolPlay(quiet) {
+    const pp = poolPlay; if (!pp) return;
+    poolPlay = null; poolPowerBar(false);
+    for (const m of [pp.guide, pp.ghost, pp.stick]) { if (m.parent) m.parent.remove(m); disposeObject3D(m); }
+    const g = pp.f.group;
+    if (g.parent) { // step back from the table onto the floor beside it
+      g.updateMatrixWorld();
+      const l = g.worldToLocal(_poolV.copy(player.pos)), ax = Math.abs(l.x) / 0.85, az = Math.abs(l.z) / 1.25;
+      if (ax >= az) l.x = Math.sign(l.x || 1) * Math.max(Math.abs(l.x), 0.95); else l.z = Math.sign(l.z || 1) * Math.max(Math.abs(l.z), 1.35);
+      l.y = 0; const w = g.localToWorld(l); player.pos.set(w.x, w.y + 0.02, w.z); player.vel.set(0, 0, 0);
     }
-    poolUI.game = game; poolGames.add(game);
-    poolUI.power.value = Math.round(game.power * 100);
-    poolUI.el.style.display = 'flex';
-    poolUI.padPrev = [true, true, true, true]; // ignore the press that opened it
-    for (const k in keys) keys[k] = false;
-    if (!isTouchDevice && document.pointerLockElement) { poolUI.relock = true; document.exitPointerLock(); } else poolUI.relock = false;
-    drawPool();
+    pitch = 0;
+    if (!quiet) showBriefMessage('🎱 Left the table');
   }
-  function poolOpen() { return !!(poolUI && poolUI.el.style.display !== 'none'); }
-  function closePoolGame() {
-    if (!poolUI) return;
-    poolUI.el.style.display = 'none';
-    const relock = poolUI.relock; poolUI.relock = false;
-    if (relock && !padConnected && document.pointerLockElement !== renderer.domElement) renderer.domElement.requestPointerLock();
-    poolUI.game = null; // (any balls still rolling finish on their own — see updatePoolGames)
+  function poolStartCharge() {
+    const pp = poolPlay; if (!pp) return;
+    const game = pp.game;
+    if (game.over) { poolRerack(game); playThud(420); showBriefMessage('🎱 Racked up — break off'); return; }
+    if (game.moving || poolCue(game).potted) return;
+    pp.charging = performance.now();
   }
-  function poolPadInput(dt) {
-    if (!poolOpen() || !poolUI.game) return;
-    const pad = getActivePad(); if (!pad) return;
-    const gm = poolUI.game, bt = i => !!(pad.buttons[i] && (pad.buttons[i].pressed || pad.buttons[i].value > 0.5));
-    const [lx] = padStick(pad.axes[0] || 0, pad.axes[1] || 0), [rx] = padStick(pad.axes[2] || 0, pad.axes[3] || 0);
-    gm.aim -= (lx * 1.4 + rx * 0.2) * dt;
-    if (bt(14)) gm.aim += 0.8 * dt; if (bt(15)) gm.aim -= 0.8 * dt;
-    if (bt(12)) gm.power = Math.min(1, gm.power + 0.6 * dt); if (bt(13)) gm.power = Math.max(0.05, gm.power - 0.6 * dt);
-    const edge = i => { const d = bt(i), was = poolUI.padPrev[i]; poolUI.padPrev[i] = d; return d && !was; };
-    if (edge(0)) poolShoot(gm);
-    if (edge(3)) { poolRerack(gm); playThud(420); }
-    if (edge(1)) closePoolGame();
+  function poolReleaseCharge() {
+    const pp = poolPlay; if (!pp || !pp.charging) return;
+    pp.game.power = poolChargeFrac(); pp.charging = 0; poolPowerBar(false);
+    poolShoot(pp.game);
+  }
+  // every frame, after the physics: put you behind the cue ball (see the pin step in animate)
+  function pinPool(dt) {
+    const pp = poolPlay; if (!pp) return;
+    const g = pp.f.group, game = pp.game;
+    if (!g.parent || !furniture.has(pp.fk)) { leavePoolPlay(true); return; }
+    if (!keys['Space']) pp.spaceArmed = true;
+    if (pp.spaceArmed && keys['Space']) { keys['Space'] = false; leavePoolPlay(); return; }
+    // turning: look left / right as usual, or A / D / the movement stick
+    let turn = (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0);
+    if (Math.abs(moveState.x) > 0.15) turn = -moveState.x;
+    yaw += turn * dt * 1.3;
+    g.updateMatrixWorld();
+    const gy = Math.atan2(g.matrixWorld.elements[8], g.matrixWorld.elements[10]); // the table's own heading in the world
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw), cg = Math.cos(gy), sg = Math.sin(gy);
+    const lx = fx * cg - fz * sg, lz = fx * sg + fz * cg; // the way you're facing, in the table's own frame
+    if (!game.moving) game.aim = Math.atan2(lx, lz);
+    const c = poolCue(game), cw = g.localToWorld(_poolW.set(c.x, 0.86, c.z));
+    const target = _poolV.set(cw.x - fx * 0.85, cw.y + 0.42, cw.z - fz * 0.85);
+    if (!pp.eye) pp.eye = target.clone();
+    else if (!game.moving) pp.eye.lerp(target, Math.min(1, dt * 6)); // glides round with you (and after the cue ball once it's stopped)
+    player.pos.set(pp.eye.x, pp.eye.y - player.height * 0.92, pp.eye.z); player.vel.set(0, 0, 0); player.onGround = true;
+    // the guide line, the ghost ball and the cue
+    const show = !game.moving && !game.over && !c.potted;
+    pp.guide.visible = pp.ghost.visible = pp.stick.visible = show;
+    if (show) {
+      const tr = poolAimTrace(game), len = Math.max(0.001, Math.hypot(tr.x - c.x, tr.z - c.z));
+      pp.guide.scale.z = len; pp.guide.position.set((c.x + tr.x) / 2, 0.832, (c.z + tr.z) / 2); pp.guide.rotation.y = game.aim;
+      pp.ghost.position.set(tr.x, 0.86, tr.z);
+      const frac = pp.charging ? poolChargeFrac() : 0, back = POOL_R + 0.03 + frac * 0.28;
+      pp.stick.position.set(c.x - Math.sin(game.aim) * back, 0.875, c.z - Math.cos(game.aim) * back); pp.stick.rotation.set(0, game.aim, 0); pp.stick.rotateX(0.08); // butt end raised a touch, like a real cue
+      poolPowerBar(!!pp.charging, frac);
+    } else poolPowerBar(false);
   }
 
   function interactFurniture(fk, remote) {
@@ -10790,9 +10788,9 @@
       furnFx.set(fk, { fk, f, kind: 'piano', t: 0, parts: [], note: 0 });
       say('🎹 ♪'); return true;
     }
-    if (name === 'Pool Table') { // ✋ opens a game of pool on it — see POOL
+    if (name === 'Pool Table') { // ✋ steps up to the table to play — see POOL
       if (remote) return true; // (each player's game is their own)
-      openPoolGame(fk); return true;
+      enterPoolPlay(fk); return true;
     }
     if (name === 'Garage Door') {
       const open = remote ? !!remote.on : !g.userData.garageOpen;
@@ -21454,6 +21452,7 @@
       else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); }
     }
     if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
+    if (e.code === 'KeyV' && !e.repeat && yachtDriving) toggleYachtView(); // the yacht's driving view — see SUPERYACHT
     if (e.code === 'KeyG' && currentWorldId === PUB_WORLD_ID) {
       landscapeModeEnabled = !landscapeModeEnabled;
       showChatLogLine('🛠️', landscapeModeEnabled ? 'Landscaping mode ON — you can build and mine near the games now. Press G again when you\'re done.' : 'Landscaping mode OFF — the games are protected again.');
@@ -22457,7 +22456,7 @@
   const PLACE_COOLDOWN = 220; // ms — minimum gap between continuous placements, so a fast sweep doesn't wall you in instantly
 
   function doMine() {
-    if (onMoon || launchSeq) return; // nothing to dig on the Moon (it isn't made of blocks)
+    if (onMoon || launchSeq || poolPlay) return; // nothing to dig on the Moon (it isn't made of blocks)
     // Mine only mines now. Firing weapons, Battleship shots, the shopkeeper,
     // bells, treasure and harvesting all moved to the action button — see ACTION.
     // Sees straight through water to whatever's behind/under it unless
@@ -22685,6 +22684,7 @@
   function actionPress() {
     ensureAudio();
     actionHeld = true;
+    if (poolPlay) { poolStartCharge(); return; } // at a pool table: hold for power — see POOL
     if (tryGameTriggerBlock()) return;
     if (!ridingVehicle && !weaponEquipped()) {
       if (tennisChargeEligible()) { tennisStartCharge(); return; }
@@ -22695,6 +22695,7 @@
   function actionRelease() {
     actionHeld = false;
     tennisReleaseCharge(); golfPauseCharge(); // harmless no-ops unless one was charging
+    poolReleaseCharge(); // (likewise — let go of the cue)
   }
   function doAction() {
     if (ridingVehicle) { fireVehicleGun(); return; }
@@ -22802,7 +22803,7 @@
     }
   }
   function doPlace() {
-    if (onMoon || launchSeq) return;
+    if (onMoon || launchSeq || poolPlay) return;
     // Every vehicle's gun intercepts the build button entirely while
     // riding one — same "reuse an existing input for a vehicle-specific
     // action" idea as the minigame interceptions below, just gated on
@@ -28728,22 +28729,82 @@
   // The spec keeps where it is: spec.yacht = { x, z, yaw }. Others in the world see it move (a 'yachtPos' broadcast).
   var yachts = new Map(); // ck -> yacht
   let yachtDriving = null;
+  // ---- layout ----
+  // Local frame: x across (port -, starboard +), y up from the waterline, z forward (bow +z). Hull 34 long, 10 wide.
+  //   Lower deck (floor y -1.2, ceiling 1.8), under the saloon: down the stairs in the saloon's forward-port corner to a
+  //     corridor along the port side; off it, the bathroom (aft) and the owner's cabin (forward), both with portholes.
+  //   Main deck (y 2): aft deck with a sunken splash pool (one deep), sun loungers and a table; the saloon behind
+  //     sliding glass doors (sofas and a TV, a dining table, drinks); foredeck sun pads.
+  //   Upper deck (y 5): the bridge, behind its own sliding doors, with clear windows all round; an open deck aft.
+  //   Top (y 7.5): the helipad and its helicopter (✋ beside it to fly it). Stairs between every deck, railings round.
+  // Walls are real, thin, two-sided walls with real doorways (it used to be solid blocks you saw straight through from
+  // inside); the furniture is the game's own, and you bump into it. The sea is kept out of the hull: the water isn't
+  // drawn inside her outline (see uHull in waterMat) and you don't swim in her lower deck (yachtDryAt).
+  const yb = (x0, x1, y0, y1, z0, z1) => [x0, x1, y0, y1, z0, z1];
+  // furniture aboard: [name, x, floor y, z, facing] — facing is the [dx, dz] its front looks along, or (for a piece
+  // hung on a wall) the rotation that turns its screen / glass out into the room
+  const YACHT_FURN = [
+    // saloon
+    ['Wall TV', 1.6, 2, 5.3, Math.PI], ['2-Seater Couch', 1.1, 2, 1.6, [0, 1]], ['2-Seater Couch', 2.1, 2, 1.6, [0, 1]], ['Coffee Table', 1.6, 2, 3.2, [0, -1]],
+    ['Armchair', 3.3, 2, 3.2, [-1, 0]], ['Armchair', -0.5, 2, 3.2, [1, 0]],
+    ['Table', -0.5, 2, -3.4, [0, -1]], ['Table', 0.5, 2, -3.4, [0, -1]],
+    ['Chair', -0.5, 2, -4.25, [0, 1]], ['Chair', 0.5, 2, -4.25, [0, 1]], ['Chair', -0.5, 2, -2.55, [0, -1]], ['Chair', 0.5, 2, -2.55, [0, -1]], ['Chair', -1.4, 2, -3.4, [1, 0]], ['Chair', 1.4, 2, -3.4, [-1, 0]],
+    ['Drinks Cabinet', 3.4, 2, -1.2, [-1, 0]], ['Bottle Fridge', 3.45, 2, -2.4, [-1, 0]],
+    // aft deck
+    ['Table', -0.5, 2, -9.0, [0, -1]], ['Table', 0.5, 2, -9.0, [0, -1]], ['Chair', -0.5, 2, -9.8, [0, 1]], ['Chair', 0.5, 2, -9.8, [0, 1]], ['Chair', -0.5, 2, -8.2, [0, -1]], ['Chair', 0.5, 2, -8.2, [0, -1]],
+    // bridge
+    ['2-Seater Couch', 3.65, 5.04, 2.4, [-1, 0]], ['2-Seater Couch', -3.65, 5.04, 2.4, [1, 0]],
+    // lower deck: the bathroom
+    ['Shower', 4.05, -1.2, -8.45, [0, 1]], ['Toilet', 2.6, -1.2, -8.5, [0, 1]], ['Sink', 1.3, -1.2, -8.55, [0, 1]],
+    // lower deck: the cabin
+    ['Double Bed', 3.55, -1.2, 1.0, [1, 0]], ['Chest of Drawers', 4.25, -1.2, -0.9, [-1, 0]], ['Chest of Drawers', 4.25, -1.2, 2.9, [-1, 0]],
+    ['Wardrobe', 0.6, -1.2, 5.6, [0, -1]], ['Armchair', 0.2, -1.2, -3.5, [0, 1]],
+    ['Wall TV', -1.5, -1.2, 1.0, Math.PI / 2], ['Full-Length Mirror', -1.5, -1.2, 4.2, [-1, 0]],
+  ];
+  const YACHT_LOUNGERS = [[-3.9, -14.5], [-2.7, -14.5], [2.1, -14.5]];
+  const YACHT_PORTHOLES = { stbdIn: [-7.0, -2.8, 1.0, 4.6], stbdOut: [-7.0, -2.8, 1.0, 4.6], portIn: [-7.5, -5.0, -2.5], portOut: [-7.5, -5.0, -2.5, 1.0, 3.5] };
+  function yachtFurnRot(name, facing) { return typeof facing === 'number' ? facing : furnRotFacing(name, facing[0], facing[1]) * Math.PI / 2; }
   const YACHT_BOXES = (() => { // [x0,x1, y0,y1, z0,z1] — what you can't walk through / can stand on
     const b = [];
-    b.push([-5, 5, -2, 2, -17, 11], [-4, 4, -1.5, 2, 11, 14], [-2.75, 2.75, -1.5, 2, 14, 16], [-1.25, 1.25, -1.2, 2, 16, 17.5]); // hull
-    b.push([-5, -4.8, 2, 3, -17, 11], [4.8, 5, 2, 3, -17, 11], [-4, -3.8, 2, 3, 11, 14], [3.8, 4, 2, 3, 11, 14], [-2.75, -2.55, 2, 3, 14, 16], [2.55, 2.75, 2, 3, 14, 16], [-5, 5, 2, 3, -17, -16.8]); // railings
-    b.push([-4, -3.8, 2, 4.6, -6, 6], [3.8, 4, 2, 4.6, -6, 6], [-4, -1, 2, 4.6, -6, -5.8], [1, 4, 2, 4.6, -6, -5.8], [-1, 1, 4.2, 4.6, -6, -5.8], [-4, 4, 2, 4.6, 5.8, 6]); // saloon walls (door aft)
-    b.push([-4, 1.5, 2, 4.6, 0, 0.2], [3, 4, 2, 4.6, 0, 0.2]); // cabin wall (door to starboard)
-    b.push([-4.5, 4.5, 4.6, 5.0, -10, 6]); // upper deck
-    b.push([-4.5, -4.3, 5, 6, -10, 1], [4.3, 4.5, 5, 6, -10, 1], [-3, 3, 5, 6, -10, -9.8]); // upper deck railings (gaps at the stairs)
-    b.push([-4.5, -4.3, 5, 7.4, 1, 6], [4.3, 4.5, 5, 7.4, 1, 6], [-4.5, -1, 5, 7.4, 1, 1.2], [1, 4.5, 5, 7.4, 1, 1.2], [-1, 1, 7.0, 7.4, 1, 1.2], [-4.5, 4.5, 5, 7.4, 5.8, 6]); // bridge
+    // hull: the bottom, the solid ends either side of the lower deck, its sides, and the tapering bow
+    b.push(yb(-5, 5, -2, -1.2, -17, 11), yb(-5, 5, -1.2, 1.0, -17, -9), yb(-5, 5, 1.0, 2, -13, -9), yb(-5, -1.5, 1.0, 2, -17, -13), yb(1.5, 5, 1.0, 2, -17, -13), yb(-1.5, 1.5, 1.0, 2, -17, -16)); // aft (round the splash pool)
+    b.push(yb(-1.45, -0.85, 1.0, 1.5, -16, -13)); // the pool's step
+    b.push(yb(-5, 5, -1.2, 2, 6, 11), yb(-5, -4.6, -1.2, 2, -9, 6), yb(4.6, 5, -1.2, 2, -9, 6));
+    b.push([-4, 4, -1.5, 2, 11, 14], [-2.75, 2.75, -1.5, 2, 14, 16], [-1.25, 1.25, -1.2, 2, 16, 17.5]);
+    // the main deck over the lower deck, open over the stairs (x -3.8..-2.4, z -1..5)
+    b.push(yb(-4.6, -3.8, 1.8, 2, -9, 6), yb(-2.4, 4.6, 1.8, 2, -9, 6), yb(-3.8, -2.4, 1.8, 2, -9, -1), yb(-3.8, -2.4, 1.8, 2, 5, 6));
+    // railings
+    b.push([-5, -4.8, 2, 3, -17, 11], [4.8, 5, 2, 3, -17, 11], [-4, -3.8, 2, 3, 11, 14], [3.8, 4, 2, 3, 11, 14], [-2.75, -2.55, 2, 3, 14, 16], [2.55, 2.75, 2, 3, 14, 16], [-5, 5, 2, 3, -17, -16.8]);
+    // saloon walls (sliding doors aft, x -1..1)
+    b.push(yb(-4, -3.8, 2, 4.6, -6, 6), yb(3.8, 4, 2, 4.6, -6, 6), yb(-4, -1, 2, 4.6, -6, -5.8), yb(1, 4, 2, 4.6, -6, -5.8), yb(-1, 1, 4.2, 4.6, -6, -5.8), yb(-4, 4, 2, 4.6, 5.8, 6));
+    b.push(yb(-2.45, -2.35, 2, 3, -1, 4.0), yb(-3.8, -2.35, 2, 3, -1.05, -0.95)); // the rail round the stairwell
+    // the stairs down: forward-port corner of the saloon, heading aft, 0.5 a step
+    for (let k = 1; k <= 6; k++) b.push(yb(-3.8, -2.4, -1.2, 2 - 0.5 * k, 5 - k, 6 - k));
+    b.push(yb(-4.6, -3.8, -1.2, 1.8, -1, 6), yb(-3.8, -2.4, -1.2, 1.8, 5, 6)); // (the dead space beside / under the top step)
+    // lower deck walls: corridor | rooms (doorways to the bathroom and the cabin), bathroom | cabin
+    b.push(yb(-2.4, -2.0, -1.2, 1.8, -1, 6), yb(-2.2, -2.0, -1.2, 1.8, -9, -7.5), yb(-2.2, -2.0, -1.2, 1.8, -6.5, -3.4), yb(-2.2, -2.0, -1.2, 1.8, -2.4, -1));
+    b.push(yb(-2.2, -2.0, 0.9, 1.8, -7.5, -6.5), yb(-2.2, -2.0, 0.9, 1.8, -3.4, -2.4), yb(-2.0, 4.6, -1.2, 1.8, -4.6, -4.4));
+    // upper deck, its railings (gaps at the stairs), the bridge (sliding doors aft) and its console
+    b.push([-4.5, 4.5, 4.6, 5.0, -10, 6]);
+    b.push([-4.5, -4.3, 5, 6, -10, 1], [4.3, 4.5, 5, 6, -10, 1], [-3, 3, 5, 6, -10, -9.8]);
+    b.push(yb(-4.5, -4.3, 5, 7.4, 1, 6), yb(4.3, 4.5, 5, 7.4, 1, 6), yb(-4.5, -1, 5, 7.4, 1, 1.2), yb(1, 4.5, 5, 7.4, 1, 1.2), yb(-1, 1, 7.0, 7.4, 1, 1.2), yb(-4.5, 4.5, 5, 7.4, 5.8, 6));
+    b.push(yb(-2, 2, 5, 6, 4.8, 5.6));
     b.push([-4.5, 4.5, 7.4, 7.6, -4, 6]); // helipad
     b.push([4.3, 4.5, 7.6, 8.2, -4, 6], [-4.5, -4.3, 7.6, 8.2, -3, 6], [-4.5, 4.5, 7.6, 8.2, 5.8, 6]); // helipad rail (gap at the port stair)
     for (let k = 1; k <= 6; k++) b.push([3, 4.4, 2, 2 + 0.5 * k, -16 + (k - 1), -16 + k]);   // stairs: main deck -> upper deck (starboard)
     for (let k = 1; k <= 5; k++) b.push([-4.2, -3.0, 5, 5 + 0.5 * k, -9.5 + (k - 1), -9.5 + k]); // stairs: upper deck -> helipad (port)
+    b.push(yb(-1.8, 1.8, 2, 2.3, 7.5, 10.5)); // foredeck sun pads
+    // the furniture (from its own footprint — see FURN_BOXES), and the sun loungers
+    for (const [name, x, y, z, facing] of YACHT_FURN) {
+      const dims = FURN_BOXES[name]; if (!dims || typeof facing === 'number') continue;
+      const r = furnRotFacing(name, facing[0], facing[1]), th = r * Math.PI / 2, odd = r % 2 === 1;
+      const hw = (odd ? dims[1] : dims[0]) / 2, hd = (odd ? dims[0] : dims[1]) / 2, cx = x + dims[3] * Math.sin(th), cz = z + dims[3] * Math.cos(th);
+      b.push(yb(cx - hw, cx + hw, y, y + dims[2], cz - hd, cz + hd));
+    }
+    for (const [x, z] of YACHT_LOUNGERS) b.push(yb(x - 0.36, x + 0.36, 2, 2.45, z - 0.95, z + 0.95));
     return b;
   })();
-  const YACHT_HELM = [0, 5.0, 3.5], YACHT_AFT = [0, 2.0, -12];
+  const YACHT_HELM = [0, 5.0, 3.5], YACHT_AFT = [0, 2.0, -11.5];
   function yachtState(spec) { return spec.yacht; }
   function yachtLocal(e, x, z) { const c = Math.cos(e.yaw), s = Math.sin(e.yaw), dx = x - e.x, dz = z - e.z; return [dx * c - dz * s, dx * s + dz * c]; }
   function yachtWorld(e, lx, lz) { const c = Math.cos(e.yaw), s = Math.sin(e.yaw); return [e.x + lx * c + lz * s, e.z - lx * s + lz * c]; }
@@ -28757,7 +28818,18 @@
     }
     return false;
   }
-  function yachtAboard(e, p) { const [lx, lz] = yachtLocal(e, p.x, p.z), ly = p.y - yachtWaterY(); return lx > -5.5 && lx < 5.5 && lz > -17.5 && lz < 18 && ly > 1.5 && ly < 9.5; }
+  function yachtAboard(e, p) { const [lx, lz] = yachtLocal(e, p.x, p.z), ly = p.y - yachtWaterY(); return lx > -5.5 && lx < 5.5 && lz > -17.5 && lz < 18 && ly > -1.5 && ly < 9.5; }
+  // Inside a yacht's hull, below the main deck (the lower deck, the splash pool): dry, whatever the sea is doing
+  // outside — you don't swim down there, and it isn't drawn as underwater.
+  function yachtDryAt(x, y, z) {
+    if (!yachts.size) return false;
+    for (const e of yachts.values()) {
+      if (!e.group || e.worldId !== currentWorldId) continue;
+      const ly = y - yachtWaterY(); if (ly < -1.6 || ly > 2.2) continue;
+      const [lx, lz] = yachtLocal(e, x, z); if (lx > -5 && lx < 5 && lz > -17 && lz < 11) return true;
+    }
+    return false;
+  }
   // Deep enough to float here? Natural sea, at least 3 deep, nothing built on it. Works for ground you've seen even
   // if it's not loaded now (natural water comes from the remembered ground height).
   function yachtDeepAt(x, z) {
@@ -28772,53 +28844,111 @@
     return true;
   }
   // ---- the model ----
+  let _portholeTex = null;
+  function portholeTexture() { // the view out: sky over sea, through slightly misty glass
+    if (_portholeTex) return _portholeTex;
+    const c = document.createElement('canvas'); c.width = c.height = 64; const x = c.getContext('2d');
+    const gr = x.createLinearGradient(0, 0, 0, 64); gr.addColorStop(0, '#bfe3f7'); gr.addColorStop(0.5, '#e8f4fb'); gr.addColorStop(0.52, '#2f7fa8'); gr.addColorStop(1, '#1b4f72');
+    x.fillStyle = gr; x.fillRect(0, 0, 64, 64); x.fillStyle = 'rgba(255,255,255,0.35)'; x.beginPath(); x.ellipse(22, 20, 10, 5, -0.6, 0, Math.PI * 2); x.fill();
+    return (_portholeTex = new THREE.CanvasTexture(c));
+  }
   function buildYachtModel(name) {
     const g = new THREE.Group();
-    const W = 0xf4f4f2, NAVY = 0x1d2a44, TEAK = 0xb07a48, GLASS = 0x1a2a3a, CHROME = 0xc8ced2, GREY = 0x8a8f94, CUSH = 0xe9e3d3;
-    const L = [];
-    // hull: navy below the waterline stripe, white above; the bow tapered in three steps
-    for (const [x, z0, z1] of [[5, -17, 11], [4, 11, 14], [2.75, 14, 16], [1.25, 16, 17.5]]) {
-      L.push([x * 2, 1.6, z1 - z0, 0, -0.8, (z0 + z1) / 2, 0, NAVY], [x * 2, 2.2, z1 - z0, 0, 0.9, (z0 + z1) / 2, 0, W], [x * 2 + 0.02, 0.15, z1 - z0 + 0.02, 0, 0.1, (z0 + z1) / 2, 0, 0xc0392b]);
-      L.push([x * 2 - 0.1, 0.05, z1 - z0 - 0.1, 0, 2.0, (z0 + z1) / 2, 0, TEAK]); // teak deck
-    }
+    const W = 0xf4f4f2, NAVY = 0x1d2a44, TEAK = 0xb07a48, CHROME = 0xc8ced2, GREY = 0x8a8f94, CUSH = 0xe9e3d3, CREAM = 0xefe9dc, DARK = 0x2a2a2a, TILE = 0x7fc8e0;
+    const L = [], GL = [];
+    const box = (x0, x1, y0, y1, z0, z1, col, list) => (list || L).push([x1 - x0, y1 - y0, z1 - z0, (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2, 0, col]);
+    const hullBands = (x0, x1, z0, z1, top) => { // navy below the waterline, a red stripe, white above
+      box(x0, x1, -1.6, 0, z0, z1, NAVY); box(x0, x1, -0.2, top, z0, z1, W);
+      box(x0 - (x0 < -4 ? 0.01 : 0), x1 + (x1 > 4 ? 0.01 : 0), 0.025, 0.175, z0 - (z0 <= -17 ? 0.01 : 0), z1, 0xc0392b);
+    };
+    // the bow, tapered in three steps (solid)
+    for (const [x, z0, z1] of [[4, 11, 14], [2.75, 14, 16], [1.25, 16, 17.5]]) { hullBands(-x, x, z0, z1, 2.0); box(-x + 0.05, x - 0.05, 1.975, 2.025, z0, z1 - 0.05, TEAK); }
+    // the main hull: solid fore and aft of the lower deck (aft: cut round the splash pool), hollow skins between
+    hullBands(-5, 5, 6, 11, 2.0);
+    box(-5, 5, -1.6, 0, -17, -9, NAVY); box(-5, 5, -0.2, 1.0, -17, -9, W); box(-5.01, 5.01, 0.025, 0.175, -17.01, -9, 0xc0392b);
+    box(-5, -1.5, 1.0, 2.0, -17, -9, W); box(1.5, 5, 1.0, 2.0, -17, -9, W); box(-1.5, 1.5, 1.0, 2.0, -17, -16, W); box(-1.5, 1.5, 1.0, 2.0, -13, -9, W);
+    for (const s of [-1, 1]) { const a = s < 0 ? -5 : 4.6, b2 = s < 0 ? -4.6 : 5; box(a, b2, -1.6, 0, -9, 6, NAVY); box(a, b2, -0.2, 1.8, -9, 6, W); box(s < 0 ? -5.01 : 4.6, s < 0 ? -4.6 : 5.01, 0.025, 0.175, -9, 6, 0xc0392b); }
+    box(-4.6, 4.6, -1.6, -1.25, -9, 6, NAVY); // under the lower deck
+    // lower deck: floors, linings, ceiling, walls
+    box(-4.6, -2.0, -1.25, -1.2, -9, 6, 0xc8a878); box(-2.0, 4.6, -1.25, -1.2, -9, -4.4, 0xdfe6ea); box(-2.0, 4.6, -1.25, -1.2, -4.4, 6, 0xb8a68a);
+    box(4.55, 4.6, -1.2, 1.8, -9, 6, CREAM); box(-4.6, -4.55, -1.2, 1.8, -9, 6, CREAM); box(-4.6, 4.6, -1.2, 1.8, -9, -8.95, CREAM); box(-4.6, 4.6, -1.2, 1.8, 5.95, 6, CREAM);
+    box(-5, -3.8, 1.8, 1.975, -9, 6, W); box(-2.4, 5, 1.8, 1.975, -9, 6, W); box(-3.8, -2.4, 1.8, 1.975, -9, -1, W); box(-3.8, -2.4, 1.8, 1.975, 5, 6, W);
+    box(-4.55, -3.8, -1.2, 1.8, -1, 5.95, CREAM); box(-3.8, -2.4, -1.2, 1.8, 5, 5.95, CREAM);
+    box(-2.4, -2.0, -1.2, 1.8, -1, 5.95, CREAM); box(-2.2, -2.0, -1.2, 1.8, -8.95, -7.5, CREAM); box(-2.2, -2.0, -1.2, 1.8, -6.5, -3.4, CREAM); box(-2.2, -2.0, -1.2, 1.8, -2.4, -1, CREAM);
+    box(-2.2, -2.0, 0.9, 1.8, -7.5, -6.5, CREAM); box(-2.2, -2.0, 0.9, 1.8, -3.4, -2.4, CREAM); box(-2.0, 4.55, -1.2, 1.8, -4.6, -4.4, CREAM);
+    for (const [z0, z1] of [[-7.5, -6.5], [-3.4, -2.4]]) { box(-2.25, -1.95, -1.2, 0.95, z0 - 0.06, z0, TEAK); box(-2.25, -1.95, -1.2, 0.95, z1, z1 + 0.06, TEAK); box(-2.25, -1.95, 0.9, 0.96, z0 - 0.06, z1 + 0.06, TEAK); } // door frames
+    for (let k = 1; k <= 6; k++) box(-3.8, -2.4, -1.2, 2 - 0.5 * k, 5 - k, 6 - k, TEAK); // the stairs down
+    // the main deck (teak), open over the stairs and the splash pool
+    box(-4.95, -3.8, 1.975, 2.025, -16.95, 10.95, TEAK); box(-2.4, -1.5, 1.975, 2.025, -16.95, 10.95, TEAK); box(1.5, 4.95, 1.975, 2.025, -16.95, 10.95, TEAK);
+    box(-1.5, 1.5, 1.975, 2.025, -16.95, -16, TEAK); box(-1.5, 1.5, 1.975, 2.025, -13, 10.95, TEAK); box(-3.8, -2.4, 1.975, 2.025, -16.95, -1, TEAK); box(-3.8, -2.4, 1.975, 2.025, 5, 10.95, TEAK);
+    // the splash pool: one deep, tiled, a step down into it on the port side, a white coping round the top
+    box(-1.5, 1.5, 0.95, 1.0, -16, -13, TILE); box(-1.5, -1.45, 1.0, 1.98, -16, -13, TILE); box(1.45, 1.5, 1.0, 1.98, -16, -13, TILE); box(-1.45, 1.45, 1.0, 1.98, -16, -15.95, TILE); box(-1.45, 1.45, 1.0, 1.98, -13.05, -13, TILE);
+    box(-1.45, -0.85, 1.0, 1.5, -15.95, -13.05, TILE);
+    box(-1.65, 1.65, 2.0, 2.06, -16.15, -16, W); box(-1.65, 1.65, 2.0, 2.06, -13, -12.85, W); box(-1.65, -1.5, 2.0, 2.06, -16, -13, W); box(1.5, 1.65, 2.0, 2.06, -16, -13, W);
     // swim platform at the stern
     L.push([9, 0.25, 1.6, 0, 0.6, -17.8, 0, TEAK]);
-    // saloon / cabin block, with windows
-    L.push([8, 2.6, 12, 0, 3.3, 0, 0, W]);
-    for (const sx of [-4.02, 4.02]) L.push([0.04, 1.2, 10, sx, 3.5, 0, 0, GLASS]);
-    L.push([6, 1.6, 0.04, 0, 3.4, -6.02, 0, GLASS]);
-    // upper deck and bridge
+    // the saloon: windows down both sides, sliding glass doors aft, a solid forward wall (the TV's on it)
+    for (const s of [-1, 1]) { const a = s < 0 ? -4 : 3.8, b2 = s < 0 ? -3.8 : 4;
+      box(a, b2, 2, 3.0, -6, 6, W); box(a, b2, 4.2, 4.6, -6, 6, W); box(a, b2, 3.0, 4.2, -6, -5, W); box(a, b2, 3.0, 4.2, 5, 6, W); box(a + 0.05, b2 - 0.05, 3.0, 4.2, -5, 5, 0x9ec4d8, GL); }
+    box(-4, 4, 2, 4.6, 5.8, 6, W);
+    box(-3.8, -1.15, 2, 2.15, -6, -5.8, W); box(1.15, 3.8, 2, 2.15, -6, -5.8, W); box(-4, 4, 4.2, 4.6, -6, -5.8, W); box(-1.15, -1, 2, 4.2, -6, -5.8, CHROME); box(1, 1.15, 2, 4.2, -6, -5.8, CHROME);
+    box(-3.8, -1.15, 2.15, 4.2, -5.95, -5.85, 0x9ec4d8, GL); box(1.15, 3.8, 2.15, 4.2, -5.95, -5.85, 0x9ec4d8, GL);
+    // upper deck (the saloon's roof)
     L.push([9, 0.4, 16, 0, 4.8, -2, 0, W], [8.9, 0.05, 15.9, 0, 5.02, -2, 0, TEAK]);
-    L.push([9, 2.4, 5, 0, 6.2, 3.5, 0, W]);
-    for (const sx of [-4.52, 4.52]) L.push([0.04, 1.0, 4.6, sx, 6.5, 3.5, 0, GLASS]);
-    const wind = [8.4, 1.1, 0.06, 0, 6.6, 6.0, 0, GLASS]; L.push(wind);
+    // the bridge: windows both sides, a clear windscreen, sliding doors aft, the console
+    for (const s of [-1, 1]) { const a = s < 0 ? -4.5 : 4.3, b2 = s < 0 ? -4.3 : 4.5;
+      box(a, b2, 5, 6.2, 1, 6, W); box(a, b2, 7.1, 7.4, 1, 6, W); box(a, b2, 6.2, 7.1, 1, 1.6, W); box(a, b2, 6.2, 7.1, 5.4, 6, W); box(a + 0.05, b2 - 0.05, 6.2, 7.1, 1.6, 5.4, 0xbfe0ee, GL); }
+    box(-4.3, 4.3, 5, 6.05, 5.8, 6, W); box(-4.3, 4.3, 7.15, 7.4, 5.8, 6, W); box(-4.3, 4.3, 6.05, 7.15, 5.85, 5.95, 0xbfe0ee, GL);
+    box(-4.3, -1, 5, 7.4, 1, 1.2, W); box(1, 4.3, 5, 7.4, 1, 1.2, W); box(-1, 1, 7.0, 7.4, 1, 1.2, W);
+    box(-2, 2, 5, 6, 4.8, 5.6, DARK); box(-1.8, 1.8, 6.0, 6.04, 4.9, 5.4, 0x2a5a8a);
     // helipad, with its H and circle
     L.push([9, 0.2, 10, 0, 7.5, 1, 0, GREY]);
     for (const b of [[0.25, 0.02, 2.2, -0.7, 7.61, 1, 0, W], [0.25, 0.02, 2.2, 0.7, 7.61, 1, 0, W], [1.4, 0.02, 0.25, 0, 7.61, 1, 0, W]]) L.push(b);
     for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; L.push([0.7, 0.02, 0.15, Math.cos(a) * 3.2, 7.61, 1 + Math.sin(a) * 3.2, -a + Math.PI / 2, 0xf2c14e]); }
     // radar arch and mast
     L.push([0.3, 2.2, 0.3, -3.5, 8.6, 5, 0, W], [0.3, 2.2, 0.3, 3.5, 8.6, 5, 0, W], [7.3, 0.35, 0.5, 0, 9.7, 5, 0, W], [0.1, 1.4, 0.1, 0, 10.6, 5, 0, CHROME], [1.4, 0.06, 0.12, 0, 10.05, 5, 0, CHROME]);
-    // stairs (match the solid boxes)
+    // outside stairs (match the solid boxes)
     for (let k = 1; k <= 6; k++) L.push([1.4, 0.5, 1, 3.7, 2 + 0.5 * k - 0.25, -16 + (k - 1) + 0.5, 0, TEAK]);
     for (let k = 1; k <= 5; k++) L.push([1.2, 0.5, 1, -3.6, 5 + 0.5 * k - 0.25, -9.5 + (k - 1) + 0.5, 0, TEAK]);
-    // railings: posts and a top rail round the decks
+    // railings: posts and a top rail round the decks (and round the stairwell in the saloon)
     const rail = (x0, z0, x1, z1, y) => { const len = Math.hypot(x1 - x0, z1 - z0); L.push([0.06, 0.06, len, (x0 + x1) / 2, y + 0.95, (z0 + z1) / 2, Math.atan2(x1 - x0, z1 - z0), CHROME]); for (let t = 0; t <= len; t += 1.5) { const f = t / len; L.push([0.05, 0.95, 0.05, x0 + (x1 - x0) * f, y + 0.47, z0 + (z1 - z0) * f, 0, CHROME]); } };
     rail(-4.9, -16.9, -4.9, 11, 2); rail(4.9, -16.9, 4.9, 11, 2); rail(-4.9, -16.9, 4.9, -16.9, 2);
     rail(-4.9, 11, -3.9, 14, 2); rail(4.9, 11, 3.9, 14, 2); rail(-3.9, 14, -2.6, 16, 2); rail(3.9, 14, 2.6, 16, 2); rail(-2.6, 16, 2.6, 16, 2);
     rail(-4.4, -9.9, -4.4, 1, 5); rail(4.4, -9.9, 4.4, 1, 5); rail(-3, -9.9, 3, -9.9, 5); rail(4.4, -4, 4.4, 6, 7.6); rail(-4.4, -3, -4.4, 6, 7.6);
-    // aft deck: hot tub, loungers, dining table
-    L.push([3, 0.7, 3, 0, 2.35, -13.5, 0, W]);
-    for (const x of [-3.2, -1.6, 1.6, 3.2]) L.push([1.1, 0.35, 2.0, x, 2.2, -9.5 + (x < 0 ? 0 : 0), 0, CUSH]);
-    L.push([2.2, 0.08, 1.2, 0, 2.75, -8.6, 0, TEAK], [0.2, 0.7, 0.2, 0, 2.35, -8.6, 0, CHROME]);
-    // saloon: sofas, a coffee table, a TV; cabin: a double bed and a wardrobe
-    L.push([0.9, 0.5, 4, -3.2, 2.25, -3, 0, CUSH], [0.9, 0.5, 4, 3.2, 2.25, -3, 0, CUSH], [1.4, 0.4, 1.4, 0, 2.2, -3, 0, TEAK], [1.6, 0.9, 0.08, 0, 3.4, -0.15, 0, 0x111111]);
-    L.push([2.2, 0.5, 2.6, -1.5, 2.25, 3.5, 0, CUSH], [2.2, 0.8, 0.2, -1.5, 2.7, 4.8, 0, TEAK], [1.4, 2.2, 0.6, 3, 3.1, 5.4, 0, TEAK]);
+    rail(-2.4, -1, -2.4, 4.0, 2); rail(-3.8, -1, -2.4, -1, 2);
+    box(-2.42, -2.38, 2.1, 2.9, -1, 4.0, 0xbfe0ee, GL); box(-3.8, -2.4, 2.1, 2.9, -1.02, -0.98, 0xbfe0ee, GL); // glass under the rail
     // foredeck sun pads
     L.push([3.6, 0.3, 3, 0, 2.15, 9, 0, CUSH]);
-    // bridge: the console and the wheel
-    L.push([4, 1.0, 0.8, 0, 5.5, 5.2, 0, 0x2a2a2a], [3.6, 0.04, 0.5, 0, 6.02, 5.15, 0, 0x2a5a8a]);
     const hull = mergedBoxes(L); g.add(hull);
-    // the wheel, the hot tub's water, navigation lights, the name on the stern, the helicopter
+    const glass = mergedBoxes(GL); glass.material = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, opacity: 0.28, shininess: 90, depthWrite: false, side: THREE.DoubleSide }); glass.castShadow = false; glass.renderOrder = 2; g.add(glass);
+    // the splash pool's water: one deep, its surface well below the coping (no flicker against the deck)
+    { const w = new THREE.Mesh(new THREE.BoxGeometry(2.88, 0.84, 2.88), new THREE.MeshPhongMaterial({ color: 0x4fb8dc, transparent: true, opacity: 0.55, shininess: 100, depthWrite: false })); w.position.set(0, 1.425, -14.5); w.renderOrder = 1; g.add(w); g.userData.poolWater = w; }
+    // sliding glass doors (saloon, bridge): two panels that part as you come near
+    const doorMat = new THREE.MeshPhongMaterial({ color: 0xbfe0ee, transparent: true, opacity: 0.35, shininess: 100, depthWrite: false, side: THREE.DoubleSide }), frameMat = new THREE.MeshPhongMaterial({ color: CHROME, shininess: 90 });
+    const doors = [];
+    for (const [y0, y1, z] of [[2.0, 4.2, -6.06], [5.04, 7.0, 0.94]]) for (const s of [-1, 1]) {
+      const p = new THREE.Group(), h = y1 - y0;
+      const pane = new THREE.Mesh(new THREE.BoxGeometry(0.96, h, 0.03), doorMat); p.add(pane);
+      for (const fx of [-0.48, 0.48]) { const f = new THREE.Mesh(new THREE.BoxGeometry(0.04, h, 0.05), frameMat); f.position.x = fx; p.add(f); }
+      p.position.set(s * 0.5, (y0 + y1) / 2, z); g.add(p);
+      doors.push({ p, closed: s * 0.5, open: s * 1.5, y: (y0 + y1) / 2, z });
+    }
+    g.userData.doors = doors;
+    // portholes: a chrome ring with the view out, inside and outside the hull
+    { const ringMat = new THREE.MeshPhongMaterial({ color: CHROME, shininess: 110 }), viewMat = new THREE.MeshBasicMaterial({ map: portholeTexture() });
+      const ringGeo = new THREE.TorusGeometry(0.22, 0.035, 8, 20), viewGeo = new THREE.CircleGeometry(0.2, 20);
+      const port = (x, z, out) => { const t = new THREE.Group(); t.add(new THREE.Mesh(ringGeo, ringMat)); t.add(new THREE.Mesh(viewGeo, viewMat)); t.position.set(x, 0.7, z); t.rotation.y = out ? Math.PI / 2 : -Math.PI / 2; g.add(t); };
+      for (const z of YACHT_PORTHOLES.stbdIn) port(4.54, z, false); for (const z of YACHT_PORTHOLES.stbdOut) port(5.02, z, true);
+      for (const z of YACHT_PORTHOLES.portIn) port(-4.54, z, true); for (const z of YACHT_PORTHOLES.portOut) port(-5.02, z, false);
+    }
+    // the furniture: the game's own pieces (merged, see FURNITURE MERGING), and the loungers by the pool
+    for (const [nm, x, y, z, facing] of YACHT_FURN) {
+      const t = FURNITURE_TYPES.find(ft => ft.name === nm); if (!t) continue;
+      const fg = t.build(); try { mergeFurniturePieces(fg); } catch (err) {}
+      fg.position.set(x, y, z); fg.rotation.y = yachtFurnRot(nm, facing); g.add(fg);
+    }
+    for (const [x, z] of YACHT_LOUNGERS) { const l = buildSunLounger(); l.position.set(x, 2, z); g.add(l); }
+    // the wheel, navigation lights, the name on the stern, the helicopter
     // the helm: a big chrome-rimmed wheel with wooden spokes on a pedestal, facing aft (you stand behind it)
     const wheel = new THREE.Group(); wheel.position.set(0, 6.25, 4.3); wheel.rotation.x = -0.35; g.add(wheel);
     wheel.add(new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.05, 8, 24), new THREE.MeshPhongMaterial({ color: CHROME, shininess: 110 })));
@@ -28826,17 +28956,17 @@
     wheel.add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.12, 12).rotateX(Math.PI / 2), new THREE.MeshPhongMaterial({ color: CHROME })));
     { const ped = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.0, 0.3), new THREE.MeshPhongMaterial({ color: 0x2a2a2a })); ped.position.set(0, 5.5, 4.4); g.add(ped); }
     { const c = document.createElement('canvas'); c.width = 256; c.height = 64; const x = c.getContext('2d'); x.fillStyle = '#1d2a44'; x.fillRect(0, 0, 256, 64); x.fillStyle = '#ffd34d'; x.font = 'bold 40px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('⎈ HELM', 128, 34);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.4), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) })); sign.rotation.y = Math.PI; sign.position.set(0, 7.15, 0.98); g.add(sign); } // over the bridge door, facing aft
-    const tubWater = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.05, 2.6), new THREE.MeshPhongMaterial({ color: 0x5fc6e0, transparent: true, opacity: 0.85, shininess: 100 })); tubWater.position.set(0, 2.68, -13.5); g.add(tubWater);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.4), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) })); sign.rotation.y = Math.PI; sign.position.set(0, 7.2, 0.97); g.add(sign); } // over the bridge doors, facing aft
     for (const [x, col] of [[-4.95, 0xff2a2a], [4.95, 0x2aff4a]]) { const nl = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), new THREE.MeshBasicMaterial({ color: col })); nl.position.set(x, 3.1, 10.5); g.add(nl); }
     { const c = document.createElement('canvas'); c.width = 512; c.height = 96; const x = c.getContext('2d'); x.fillStyle = '#f4f4f2'; x.fillRect(0, 0, 512, 96); x.fillStyle = '#1d2a44'; x.font = 'bold italic 62px Georgia, serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(name, 256, 52);
       const nm = new THREE.Mesh(new THREE.PlaneGeometry(5, 0.95), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c) })); nm.rotation.y = Math.PI; nm.position.set(0, 1.25, -17.03); g.add(nm); }
     { const heli = mergedBoxes([[1.6, 1.3, 3.2, 0, 0.9, 0, 0, 0xc0392b], [1.4, 0.8, 1.4, 0, 1.1, 1.3, 0, 0x1a2a3a], [0.3, 0.3, 3.0, 0, 1.2, -2.6, 0, 0xc0392b], [0.1, 0.9, 0.6, 0, 1.6, -4.0, 0, 0xc0392b], [0.1, 0.5, 2.6, -0.8, 0.12, 0, 0, 0x2a2a2a], [0.1, 0.5, 2.6, 0.8, 0.12, 0, 0, 0x2a2a2a],
         [0.12, 0.3, 0.12, 0, 1.7, 0, 0, 0x2a2a2a], [7.5, 0.04, 0.3, 0, 1.85, 0, 0.6, 0x222222], [7.5, 0.04, 0.3, 0, 1.85, 0, -0.95, 0x222222]]);
-      heli.position.set(0, 7.6, 1); heli.rotation.y = 0.3; g.add(heli); }
-    // a warm light in the saloon after dark
+      heli.position.set(0, 7.6, 1); heli.rotation.y = 0.3; g.add(heli); g.userData.heli = heli; }
+    // a warm light in the saloon after dark; the lower deck's always lit (only portholes down there)
     const lamp = makePooledLight(0xffe2b0, 0, 10, 0.6); lamp.castShadow = false; lamp.position.set(0, 4.2, 0); g.add(lamp); g.userData.lamp = lamp;
-    g.userData.tubWater = tubWater; g.userData.wheel = wheel;
+    for (const [x, z] of [[1.3, 0.8], [1.3, -6.8], [-3.3, -5]]) { const l2 = makePooledLight(0xffe7c4, 1.1, 7, 0.8); l2.castShadow = false; l2.position.set(x, 1.4, z); g.add(l2); }
+    g.userData.wheel = wheel;
     return g;
   }
   // ---- buying ----
@@ -28879,7 +29009,13 @@
       if (e.group) {
         e.group.position.set(e.x, yachtWaterY() + Math.sin(now / 1400) * 0.05, e.z); e.group.rotation.y = e.yaw; e.group.rotation.z = Math.sin(now / 1900) * 0.008; // a gentle swell
         if (e.group.userData.lamp) e.group.userData.lamp.intensity = night ? 1.6 : 0;
-        e.group.userData.tubWater.position.y = 2.68 + Math.sin(now / 160) * 0.01;
+        // the sliding doors part when you come near (and close behind you)
+        if (e.group.userData.doors) { const [plx, plz] = yachtLocal(e, player.pos.x, player.pos.z), ply = player.pos.y - yachtWaterY();
+          for (const dr of e.group.userData.doors) { const near = Math.abs(plx) < 2.4 && Math.abs(plz - dr.z) < 2.4 && Math.abs(ply + 0.9 - dr.y) < 1.8;
+            const want = near ? dr.open : dr.closed; dr.p.position.x += (want - dr.p.position.x) * Math.min(1, dt * 6); } }
+        // the helicopter's away while you're flying it — it flies itself back when you get out
+        if (e.heliOut && !(ridingVehicle && ridingVehicle.yachtHeli === e)) { e.heliOut = false; showBriefMessage('🚁 The helicopter has flown itself back to ' + yachtName(e.spec) + '\u2019s helipad'); }
+        if (e.group.userData.heli) e.group.userData.heli.visible = !e.heliOut;
       }
       // walking onto the bridge: say what it's for
       if (!yachtDriving && yachtAboard(e, player.pos)) { const [lx, lz] = yachtLocal(e, player.pos.x, player.pos.z), ly = player.pos.y - yachtWaterY();
@@ -28887,7 +29023,20 @@
         if (onBridge && !e.onBridgeHinted) { e.onBridgeHinted = true; showBriefMessage('⎈ The helm — press ✋ to take the wheel'); } else if (!onBridge) e.onBridgeHinted = false; }
       // a nudge about boarding when you walk up to the water's edge near her
       if (!yachtDriving && d < 26 && !yachtAboard(e, player.pos) && now > yachtHintAt) { yachtHintAt = now + 30000; showBriefMessage('🛥️ ' + yachtName(e.spec) + ' — press ✋ to go aboard'); }
+      // up on the helipad beside the helicopter: say it can be flown
+      if (!yachtDriving && !e.heliOut && e.group && yachtAboard(e, player.pos) && player.pos.y - yachtWaterY() > 7.3) {
+        const [lx, lz] = yachtLocal(e, player.pos.x, player.pos.z), nearHeli = Math.hypot(lx, lz - 1) < 4;
+        if (nearHeli && !e.heliHinted) { e.heliHinted = true; showBriefMessage('🚁 The helicopter — press ✋ to fly it'); } else if (!nearHeli) e.heliHinted = false;
+      }
     }
+    yachtHullUniforms();
+  }
+  // Tells the water shader where the yachts' hulls are, so the sea isn't drawn inside them (see uHull in waterMat)
+  function yachtHullUniforms() {
+    const u = waterMat.uniforms.uHull && waterMat.uniforms.uHull.value; if (!u) return;
+    let i = 0;
+    for (const e of yachts.values()) { if (i >= u.length) break; if (!e.group || e.worldId !== currentWorldId) continue; u[i++].set(e.x, e.z, Math.cos(e.yaw), Math.sin(e.yaw)); }
+    for (; i < u.length; i++) u[i].set(1e9, 0, 1, 0);
   }
   function yachtDrive(e, dt, now) {
     // throttle and steering from the keys / the stick
@@ -28924,19 +29073,60 @@
   function yachtPinHelm() { // driving: you stand at the wheel
     const e = yachtDriving; if (!e) return;
     const [wx, wz] = yachtWorld(e, YACHT_HELM[0], YACHT_HELM[2]);
-    player.pos.set(wx, yachtWaterY() + YACHT_HELM[1] + 0.02, wz); player.vel.set(0, 0, 0); player.onGround = true;
+    player.pos.set(wx, yachtWaterY() + YACHT_HELM[1] + 0.32, wz); player.vel.set(0, 0, 0); player.onGround = true; // (raised a touch: your eye's just above the wheel, looking out through the windscreen)
+  }
+  // ---- driving views ----
+  // At the wheel (looking out over it through the bridge's windscreen) or from above and behind the boat. V, the
+  // 🎥 button, or D-pad ▲ switches. Remembered for next time.
+  let yachtView = 'wheel';
+  try { if (localStorage.getItem('voxelYachtView') === 'chase') yachtView = 'chase'; } catch (e) {}
+  function yachtViewButton(show) {
+    let b = document.getElementById('yachtViewBtn');
+    if (!b) {
+      b = document.createElement('button'); b.id = 'yachtViewBtn';
+      b.style.cssText = 'display:none;position:fixed;bottom:118px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(60,100,190,0.6);border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600;';
+      b.addEventListener('click', e => { e.stopPropagation(); toggleYachtView(); });
+      document.body.appendChild(b);
+    }
+    b.style.display = show ? 'block' : 'none';
+    b.textContent = yachtView === 'wheel' ? '🎥 View from above' : '🎥 View from the wheel';
+  }
+  function toggleYachtView() {
+    if (!yachtDriving) return;
+    yachtView = yachtView === 'wheel' ? 'chase' : 'wheel';
+    try { localStorage.setItem('voxelYachtView', yachtView); } catch (e) {}
+    yachtViewButton(true);
+    showBriefMessage(yachtView === 'wheel' ? '⎈ At the wheel' : '🎥 From above');
+  }
+  const _ycamLook = new THREE.Vector3(), _ycamPos = new THREE.Vector3();
+  let yachtCamPrimed = false;
+  function yachtCamera(dt) { // runs after the normal camera's placed — takes it over in the view from above
+    if (!yachtDriving || yachtView !== 'chase') { yachtCamPrimed = false; return false; }
+    const e = yachtDriving, fx = Math.sin(e.yaw), fz = Math.cos(e.yaw), wy = yachtWaterY();
+    const tx = e.x - fx * 30, tz = e.z - fz * 30, ty = wy + 17;
+    if (!yachtCamPrimed) { _ycamPos.set(tx, ty, tz); yachtCamPrimed = true; } else _ycamPos.lerp(_ycamLook.set(tx, ty, tz), Math.min(1, dt * 3));
+    camera.position.copy(_ycamPos); camera.lookAt(e.x + fx * 14, wy + 2, e.z + fz * 14);
+    return true;
   }
   // ✋ on / near a yacht: take the wheel / drop anchor / board / go ashore. True if it did something.
   function tryYachtAction() {
     if (!yachts.size) return false;
-    if (yachtDriving) { const e = yachtDriving; yachtDriving = null; e.v = 0; yachtSavePose(e); showSaveStatus('⚓ Anchor down — ' + yachtName(e.spec) + '\u2019s position is saved'); return true; }
+    if (yachtDriving) { const e = yachtDriving; yachtDriving = null; e.v = 0; yachtSavePose(e); yachtViewButton(false); pitch = 0; showSaveStatus('⚓ Anchor down — ' + yachtName(e.spec) + '\u2019s position is saved'); return true; }
     for (const e of yachts.values()) {
       if (!e.group) continue;
       const aboard = yachtAboard(e, player.pos), [lx, lz] = yachtLocal(e, player.pos.x, player.pos.z), ly = player.pos.y - yachtWaterY();
+      if (aboard && ly > 7.3 && !e.heliOut && Math.hypot(lx, lz - 1) < 4) { // beside the helicopter on the helipad: fly it
+        if (visitMode) { showBriefMessage('🚁 Only her owner flies the helicopter'); return true; }
+        const ti = VEHICLE_TYPES.findIndex(t => t.name === 'Helicopter'); if (ti < 0) return false;
+        const hp = e.group.userData.heli.getWorldPosition(new THREE.Vector3());
+        const v = addVehicle(hp.x, hp.y, hp.z, e.yaw + 0.3, ti); v.yachtHeli = e; e.heliOut = true; e.group.userData.heli.visible = false;
+        enterVehicle(v);
+        showSaveStatus('🚁 Up and away — fly as usual; get out anywhere and she flies herself back to the helipad'); return true;
+      }
       if (aboard && lx > -4.3 && lx < 4.3 && lz > 1.2 && lz < 5.8 && ly > 4.5 && ly < 7.2) { // anywhere on the bridge
         if (visitMode) { showBriefMessage('🛥️ Only her owner takes the wheel'); return true; }
-        yachtDriving = e; e.v = 0; yaw = e.yaw + Math.PI; pitch = -0.05;
-        showSaveStatus('🛥️ At the wheel — forward / back for throttle, left / right to steer, ✋ to drop anchor'); return true;
+        yachtDriving = e; e.v = 0; yaw = e.yaw + Math.PI; pitch = -0.12; yachtCamPrimed = false; yachtViewButton(true);
+        showSaveStatus('🛥️ At the wheel — forward / back for throttle, left / right to steer, V or 🎥 to change the view, ✋ to drop anchor'); return true;
       }
       if (aboard && lz < -11 && ly < 3.5) { // the aft deck: go ashore at the nearest land
         let best = null, bd = Infinity;
@@ -28952,7 +29142,7 @@
       if (!aboard && Math.hypot(player.pos.x - e.x, player.pos.z - e.z) < 30) { // board from nearby
         const [wx, wz] = yachtWorld(e, YACHT_AFT[0], YACHT_AFT[2]);
         player.pos.set(wx, yachtWaterY() + YACHT_AFT[1] + 0.05, wz); player.vel.set(0, 0, 0); yaw = e.yaw + Math.PI;
-        showSaveStatus('🛥️ Welcome aboard ' + yachtName(e.spec) + '! To sail her: take the stairs on the right-hand side of this deck up to the upper deck, walk forward through the door marked HELM, and ✋ on the bridge. ✋ back here on the aft deck to go ashore.'); return true;
+        showSaveStatus('🛥️ Welcome aboard ' + yachtName(e.spec) + '! The saloon\u2019s through the glass doors ahead (stairs down to the cabin and bathroom in its far corner). To sail her: the stairs on the right go up to the bridge (doors marked HELM) — ✋ there takes the wheel. The helicopter\u2019s on the top deck. ✋ back here on the aft deck to go ashore.'); return true;
       }
     }
     return false;
@@ -36253,7 +36443,7 @@
   function padPlaying() {
     const ws = document.getElementById('worldSelect'), ae = document.activeElement;
     const typing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
-    return padConnected && playStarted && !(ws && ws.style.display === 'flex') && !typing && !(typeof poolOpen === 'function' && poolOpen()); // (the pool game reads the controller itself)
+    return padConnected && playStarted && !(ws && ws.style.display === 'flex') && !typing;
   }
   // The hotbar as LB/RB walk it: one stop per slot in the row (a family slot lands on whichever material is
   // currently chosen for it), not one per block type — the wheel's stop-per-type would be dozens of presses.
@@ -36370,7 +36560,7 @@
     if (down(4)) padCycleSlot(-1);
     if (down(5)) padCycleSlot(1);
     if (down(14)) rotateTargetBlock();
-    if (down(12)) tiltTargetBlock();
+    if (down(12)) { if (yachtDriving) toggleYachtView(); else tiltTargetBlock(); } // (at a yacht's wheel: D-pad ▲ changes the view)
     if (down(13)) padCycleVariant(1);
     if (down(15)) padCycleVariant(-1);
     if (down(11)) { if (ridingVehicle) document.getElementById('vehicleViewToggleBtn').click(); else actionPress(); } // R3: ✋ action on foot (in a vehicle it keeps the view toggle — fire with RT there, below)
@@ -36623,7 +36813,7 @@
       // sank you into the bridge.
       const feetCellK = key(Math.floor(player.pos.x), Math.floor(player.pos.y + 0.05), Math.floor(player.pos.z));
       const standingDry = player.onGround && !swimFluidHas(feetCellK);
-      const submerged = !flying && waterDepthHere >= 2 && !standingDry;
+      const submerged = !flying && waterDepthHere >= 2 && !standingDry && !yachtDryAt(player.pos.x, player.pos.y + 0.5, player.pos.z); // (a yacht's lower deck is dry — see SUPERYACHT)
       // Golf: build charges power (handled entirely by the build-button
       // handlers themselves — mousedown/touchstart call golfStartCharge,
       // mouseup/touchend call golfPauseCharge), jump actually takes the
@@ -36983,12 +37173,12 @@
       }
 
       const eyeKey = key(Math.floor(player.pos.x), Math.floor(player.pos.y + player.height*0.92), Math.floor(player.pos.z));
-      const eyeSubmerged = waterBlocks.has(eyeKey);
+      const eyeSubmerged = waterBlocks.has(eyeKey) && !yachtDryAt(player.pos.x, player.pos.y + player.height * 0.92, player.pos.z);
       const eyeInLava = !eyeSubmerged && lava.has(eyeKey);
       document.getElementById('waterOverlay').style.display = eyeSubmerged ? 'block' : 'none';
       document.getElementById('lavaOverlay').style.display = eyeInLava ? 'block' : 'none'; // same underwater view, tinted red
 
-      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (furnSeat) pinSeat(); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
+      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (furnSeat) pinSeat(); else if (poolPlay) pinPool(dt); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
       camera.position.set(player.pos.x, player.pos.y + player.height*0.92, player.pos.z);
       camera.rotation.order = 'YXZ';
       camera.rotation.y = yaw;
@@ -36999,6 +37189,7 @@
       updateGolfCameraFocus(dt); // ditto again, near the golf course
       try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnActRecoverEl = document.getElementById('btnAction'); if (btnActRecoverEl) btnActRecoverEl.textContent = '✋'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       moonCamera(); // on the Moon, or watching a launch — takes the camera over (see ROCKET & MOON BASE)
+      const yachtCamOn = yachtCamera(dt); // sailing the yacht, viewed from above — see SUPERYACHT
       updateVehicleEngineSound();
       // Single authoritative crosshair check, run after all four camera
       // modes above have settled for this frame — replaces relying on
@@ -37006,7 +37197,7 @@
       // foot AND while riding any vehicle (every vehicle can fire its own
       // gun along this same reticle now), hidden only in the third-person
       // pull-back views where there's nothing under it to aim at.
-      const crosshairShouldShow = !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive;
+      const crosshairShouldShow = !tennisCamWasActive && !footballCamWasActive && !golfCamWasActive && !yachtCamOn;
       const crosshairEl = document.getElementById('crosshair');
       if (crosshairEl) crosshairEl.style.display = crosshairShouldShow ? 'block' : 'none';
 
@@ -38862,6 +39053,30 @@
     document.getElementById('chatModal').style.display = 'none';
   }
   document.getElementById('chatOpenBtn').addEventListener('click', openChatModal);
+  // ---- HOME ----
+  // 🏠 (top right, beside chat): back to where this world starts — the spawn point by its "Start" teleporter (in
+  // The Mill, the usual arrival spot). Gets you out of whatever you're in first: a seat, the pool table, the yacht's
+  // wheel (dropping anchor), a vehicle. Held in the air there until the ground is loaded, so you never fall through.
+  function goHome() {
+    if (onMoon || launchSeq) { showBriefMessage('🏠 Not from up here — come back down to Earth first'); return; }
+    if (rideNow) { showBriefMessage('🏠 Hang on till the ride\u2019s over'); return; }
+    if (poolPlay) leavePoolPlay(true);
+    if (furnSeat) standUpFromSeat();
+    if (yachtDriving) tryYachtAction(); // drops anchor
+    if (ridingVehicle) exitVehicle();
+    if (currentWorldId === PUB_WORLD_ID || !terrainStreamingActive) spawnDefault();
+    else {
+      const [sx, sz] = findLandSpawn();
+      player.pos.set(sx + 0.5, Math.max(SEA_LEVEL, Math.ceil(rawTerrainHeight(sx, sz))) + 3, sz + 0.5);
+      player.vel.set(0, 0, 0);
+      updateChunkStreaming();
+      holdUntilGround(); // settles onto the real ground the moment it's there
+    }
+    yaw = 0; pitch = 0;
+    try { playCoin(); } catch (e) {}
+    showBriefMessage('🏠 Home');
+  }
+  document.getElementById('homeBtn').addEventListener('click', e => { e.stopPropagation(); goHome(); });
   document.getElementById('chatCancelBtn').addEventListener('click', closeChatModal);
   // Press-and-hold rather than a toggle — releasing the button is what
   // actually sends it, so there's no separate "stop" step to forget.
@@ -39206,7 +39421,9 @@
     '🍽️ A Restaurant cooks your own crops and meat into meals worth far more. Hire a head chef, stock the pantry — or hire a manager to restock it from your bag.',
     '🎢 The Theme Park (💰5,000,000) has a rollercoaster, ferris wheel and carousel you can ride — ✋ on a ride\u2019s gate. Visitors pay every day.',
     '🏟️ The Football Stadium (💰5,000,000) has a match every afternoon at 15:00 — be there to watch it live. Any other time, kick the ball about yourself.',
-    '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm on the bridge to sail, ✋ again to drop anchor.',
+    '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm on the bridge to sail (V switches the view), ✋ again to drop anchor. ✋ beside her helicopter to fly it.',
+    '🎱 Pool: ✋ on a pool table steps up to play — turn to walk round the cue ball, hold ✋ for power and let go to strike, jump to leave.',
+    '🏠 The house button (top right) takes you back to where your world starts.',
     '🚀 The Rocket & Moon Base (💰10,000,000): ✋ the launch console to fly to the Moon — low gravity, a moon base and moon rock samples worth 💰400 each.',
     '🏰 The Mansion costs a million — fully furnished, with a pool and tennis court. Press ✋ on the butler to rename it.',
     '🧑‍💼 Hire a World Manager (top of the Property menu): every sunrise they empty every till, safe and rent pot and sell your harvest, all for 1%.',
@@ -39334,6 +39551,7 @@
       window.addEventListener('pagehide', saveWorld);
       connectMultiplayer(currentWorldId); // joins everyone else currently in this same world — safe no-op if the realtime library failed to load for any reason
       document.getElementById('chatOpenBtn').style.display = 'flex';
+      document.getElementById('homeBtn').style.display = 'flex';
       document.getElementById('chatVoiceMicBtn').style.display = 'flex';
       document.getElementById('chatLog').style.display = 'flex';
     } else {

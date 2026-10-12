@@ -8339,14 +8339,14 @@
     g.add(light);
     return g;
   }
-  function addTreasureChest(bx, by, bz, amount) {
+  function addTreasureChest(bx, by, bz, amount, src) {
     const tk = key(bx, by, bz);
     if (treasureChests.has(tk)) return tk;
     const group = buildTreasureChestMesh();
     group.position.set(bx + 0.5, by + 1, bz + 0.5);
     group.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(group);
-    treasureChests.set(tk, { group, bx, by, bz, amount });
+    treasureChests.set(tk, { group, bx, by, bz, amount, src });
     return tk;
   }
   function removeTreasureChest(tk) {
@@ -8371,7 +8371,7 @@
   function collectTreasureChest(tk) {
     const t = treasureChests.get(tk);
     if (!t) return;
-    addCoins(t.amount);
+    addCoins(t.amount); objNote('treasure'); if (t.src) objNote('chest_' + t.src); // see OBJECTIVES
     showTreasurePopup(t.amount);
     playTreasureSound();
     showSaveStatus('💰 Found treasure — +' + t.amount + ' coins!');
@@ -8383,10 +8383,10 @@
   // registry (village reg, windmill reg, shipwreck reg) owns this
   // structure, so the chest gets torn down correctly alongside
   // everything else if it's never found.
-  function maybeAddTreasure(bx, by, bz, reg) {
+  function maybeAddTreasure(bx, by, bz, reg, src) { // src: 'wreck' / 'mill' / 'castle' — which treasure objective it counts for
     if (Math.random() >= 0.5) return;
     const amount = 100 + Math.floor(Math.random() * 901); // 100-1000 inclusive
-    const tk = addTreasureChest(bx, by, bz, amount);
+    const tk = addTreasureChest(bx, by, bz, amount, src);
     if (tk) reg.treasureKeys.push(tk);
   }
   // Windmill sails — a standalone scene object like the bell, for the
@@ -10362,11 +10362,20 @@
       const l = furnBoxCells.get(x + ',' + z); if (!l) continue;
       for (const b of l) if (!b.ignore && p.x + r > b.x0 && p.x - r < b.x1 && p.z + r > b.z0 && p.z - r < b.z1 && p.y + player.height > b.y0 && p.y < b.y1 - 0.02) { b.ignore = true; furnIgnored.push(b); }
     }
-    if (furnSeat) { const f = furniture.get(furnSeat.fk); if (f && f.box && !f.box.ignore) { f.box.ignore = true; furnIgnored.push(f.box); } }
+    if (furnSeat) { const f = furnGet(furnSeat.fk); if (f && f.box && !f.box.ignore) { f.box.ignore = true; furnIgnored.push(f.box); } }
   }
 
   // ---- local <-> world for a placed piece ----
+  // Furniture aboard a yacht (see SUPERYACHT — yachtFurn) is a child of the yacht's model, so its own position is
+  // in the yacht's frame: these give the real world position / heading / floor for any piece, on land or at sea.
+  const yachtFurn = new Map(); // 'y|<ck>|<n>' -> { group, typeIdx, yachtPiece, yacht, localY, bx, by, bz, rot }
+  function furnGet(fk) { return furniture.get(fk) || yachtFurn.get(fk); }
+  const _furnPosV = new THREE.Vector3();
+  function furnPos(g) { if (!g.parent || g.parent === scene) return g.position; return g.getWorldPosition(new THREE.Vector3()); }
+  function furnWorldYaw(f) { return f.yachtPiece ? f.group.rotation.y + f.yacht.yaw : f.group.rotation.y; }
+  function furnFloorY(f) { return f.yachtPiece ? yachtWaterY() + f.localY : f.group.position.y; }
   function furnLocalToWorld(f, lx, ly, lz) {
+    if (f.yachtPiece) { f.group.updateMatrixWorld(true); return f.group.localToWorld(new THREE.Vector3(lx, ly, lz)); }
     const th = f.group.rotation.y, c = Math.cos(th), s = Math.sin(th);
     return new THREE.Vector3(f.group.position.x + lx * c + lz * s, f.group.position.y + ly, f.group.position.z - lx * s + lz * c);
   }
@@ -10439,16 +10448,16 @@
   function sitOn(fk, f, seat) {
     let best = null;
     for (const sx of seat.xs) { const w = furnLocalToWorld(f, sx, seat.y, -0.04); const d = w.distanceTo(player.pos); if (!best || d < best.d) best = { w, d }; }
-    const th = f.group.rotation.y, front = [-Math.sin(th), -Math.cos(th)];
+    const th = furnWorldYaw(f), front = [-Math.sin(th), -Math.cos(th)];
     const stand = furnLocalToWorld(f, 0, 0, -0.85);
-    furnSeat = { fk, x: best.w.x, y: best.w.y, z: best.w.z, yaw: th, standAt: [stand.x, stand.z], floorY: f.group.position.y };
+    furnSeat = { fk, x: best.w.x, y: best.w.y, z: best.w.z, yaw: th, standAt: [stand.x, stand.z], floorY: furnFloorY(f) };
     yaw = th; pitch = -0.05;
     player.vel.set(0, 0, 0);
     showBriefMessage('🛋️ Sitting down — move, jump or ✋ to get up');
   }
   function pinSeat() {
     if (!furnSeat) return;
-    const f = furniture.get(furnSeat.fk);
+    const f = furnGet(furnSeat.fk);
     if (!f || !f.group.parent) { furnSeat = null; return; }
     // camera ends up at seat + 0.8 (it sits at pos.y + height*0.92)
     player.pos.set(furnSeat.x, furnSeat.y + 0.8 - player.height * 0.92, furnSeat.z);
@@ -10678,6 +10687,17 @@
     poolBarEl.style.display = show ? 'block' : 'none';
     if (show) poolBarEl.firstChild.style.width = Math.round(frac * 100) + '%';
   }
+  function poolLeaveButton(show) { // the same as jumping: leave the table
+    let b = document.getElementById('poolLeaveBtn');
+    if (!b) {
+      b = document.createElement('button'); b.id = 'poolLeaveBtn'; b.textContent = '🚶 Leave the table (jump)';
+      b.style.cssText = 'display:none;position:fixed;bottom:150px;left:50%;transform:translateX(-50%);z-index:15;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.5);color:#fff;border-radius:8px;padding:8px 14px;font-size:13px;cursor:pointer;';
+      const go = e => { e.preventDefault(); e.stopPropagation(); leavePoolPlay(); };
+      b.addEventListener('click', go); b.addEventListener('touchstart', go);
+      document.body.appendChild(b);
+    }
+    b.style.display = show ? 'block' : 'none';
+  }
   function poolChargeFrac() { const t = (performance.now() - poolPlay.charging) / 1300; const p = t % 2; return Math.max(0.04, p <= 1 ? p : 2 - p); } // fills, then empties again if you keep holding
   function enterPoolPlay(fk) {
     const f = furniture.get(fk), game = poolGameFor(fk); if (!f || !game) return;
@@ -10688,7 +10708,8 @@
     const stick = new THREE.Group(); stick.visible = false; g.add(stick);
     { const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.013, 1.3, 8).rotateX(Math.PI / 2), new THREE.MeshPhongMaterial({ color: 0xc8a06a, shininess: 40 })); shaft.position.z = -0.65; stick.add(shaft);
       const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.0065, 0.0065, 0.015, 8).rotateX(Math.PI / 2), new THREE.MeshPhongMaterial({ color: 0x3a6ab0 })); tip.position.z = -0.006; stick.add(tip); }
-    poolPlay = { fk, f, game, eye: null, charging: 0, spaceArmed: !keys['Space'], guide, ghost, stick };
+    poolPlay = { fk, f, game, eye: null, charging: 0, spaceArmed: !keys['Space'] && !touchJumpHeld, guide, ghost, stick };
+    poolLeaveButton(true);
     poolGames.add(game);
     // face down the table from the cue ball towards the pack (or wherever you're already looking from)
     const c = poolCue(game); g.updateMatrixWorld(); const cw = g.localToWorld(_poolV.set(c.x, 0.86, c.z));
@@ -10698,7 +10719,7 @@
   }
   function leavePoolPlay(quiet) {
     const pp = poolPlay; if (!pp) return;
-    poolPlay = null; poolPowerBar(false);
+    poolPlay = null; poolPowerBar(false); poolLeaveButton(false);
     for (const m of [pp.guide, pp.ghost, pp.stick]) { if (m.parent) m.parent.remove(m); disposeObject3D(m); }
     const g = pp.f.group;
     if (g.parent) { // step back from the table onto the floor beside it
@@ -10727,8 +10748,9 @@
     const pp = poolPlay; if (!pp) return;
     const g = pp.f.group, game = pp.game;
     if (!g.parent || !furniture.has(pp.fk)) { leavePoolPlay(true); return; }
-    if (!keys['Space']) pp.spaceArmed = true;
-    if (pp.spaceArmed && keys['Space']) { keys['Space'] = false; leavePoolPlay(); return; }
+    const jump = keys['Space'] || touchJumpHeld;
+    if (!jump) pp.spaceArmed = true;
+    if (pp.spaceArmed && jump) { keys['Space'] = false; touchJumpHeld = false; touchJumpQueued = false; leavePoolPlay(); return; } // jump: leave the table, back to the game
     // turning: look left / right as usual, or A / D / the movement stick
     let turn = (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0) - (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0);
     if (Math.abs(moveState.x) > 0.15) turn = -moveState.x;
@@ -10757,16 +10779,16 @@
   }
 
   function interactFurniture(fk, remote) {
-    const f = furniture.get(fk); if (!f) return false;
+    const f = furnGet(fk); if (!f) return false;
     const t = FURNITURE_TYPES[f.typeIdx]; if (!t) return false;
     const g = f.group, name = t.name, fx = furnFx.get(fk);
     const say = (m) => { if (!remote) showBriefMessage(m); };
-    const thud = (hz) => { if (!remote || g.position.distanceTo(player.pos) < 14) playThud(hz); };
+    const thud = (hz) => { if (!remote || furnPos(g).distanceTo(player.pos) < 14) playThud(hz); };
     if (SEATS[name]) { if (remote) return true; sitOn(fk, f, SEATS[name]); return true; }
     if (name === 'Single Bed' || name === 'Double Bed') { if (remote) return true; goToSleep(); return true; }
     if (name === 'TV' || name === 'Wall TV') {
       g.traverse(o => { if (o.userData.tvScreen) { if (o.material.map) o.material.map.dispose(); o.material.map = buildTVPictureTexture(); o.material.needsUpdate = true; o.userData.nextChannelAt = performance.now() + 30000 + Math.random() * 30000; } });
-      if (!remote || g.position.distanceTo(player.pos) < 14) playBeep(880, 0.08, 0.05, g.position);
+      if (!remote || furnPos(g).distanceTo(player.pos) < 14) playBeep(880, 0.08, 0.05, furnPos(g));
       say('📺 Channel changed'); return true;
     }
     if (t.blind) { // lower / raise
@@ -10830,7 +10852,7 @@
       if (!on) { stopFurnFx(fk); if (g.userData.mwDoor) g.userData.mwDoor.material.emissive.setHex(0x000000); say('⏹ Microwave off'); return true; }
       furnFx.set(fk, { fk, f, kind: 'microwave', t: 0, parts: [], remote: !!remote });
       if (g.userData.mwDoor) g.userData.mwDoor.material.emissive.setHex(0xa86a10);
-      if (!remote || g.position.distanceTo(player.pos) < 14) playBeep(1500, 0.07, 0.05, g.position);
+      if (!remote || furnPos(g).distanceTo(player.pos) < 14) playBeep(1500, 0.07, 0.05, furnPos(g));
       say('🔥 Microwave on — 10 seconds'); return true;
     }
     if (name === 'Open Log Fire' || name === 'Fireplace') {
@@ -10848,7 +10870,7 @@
       const disc = new THREE.Mesh(new THREE.CircleGeometry(name === 'Toilet' ? 0.15 : 0.1, 14), new THREE.MeshBasicMaterial({ color: 0x9fd3ea, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false }));
       disc.rotation.x = -Math.PI / 2; disc.position.set(bowl[0], bowl[1], bowl[2]); g.add(disc);
       furnFx.set(fk, { fk, f, kind: 'flush', t: 0, parts: [disc], disc });
-      playFlush(g.position); say('🚽 Flush!'); return true;
+      playFlush(furnPos(g)); say('🚽 Flush!'); return true;
     }
     if (name === 'Sink' || name === 'Kitchen Sink' || name === 'Bathroom Cabinet') {
       const on = remote ? !!remote.on : !fx;
@@ -10930,7 +10952,7 @@
   // are block positions, so they're the same in everyone's game); applyRemoteFurnFx replays it via
   // interactFurniture(…, remote). Sitting is shared through the position broadcast instead (see updateMultiplayer).
   function sendFurnFx(fk) {
-    const f = furniture.get(fk); if (!f) return;
+    const f = furnGet(fk); if (!f) return;
     const t = FURNITURE_TYPES[f.typeIdx]; if (!t) return;
     const name = t.name, fx = furnFx.get(fk), g = f.group;
     if (SEATS[name] || name === 'Single Bed' || name === 'Double Bed' || name === 'Street Light' || name === 'Office Safe' || name === 'Letting Board' || name === 'Bakery Till' || name === 'Ticket Booth' || name === 'Ride Gate' || name === 'Launch Console' || name === 'Chandelier') return;
@@ -10949,7 +10971,7 @@
     sendWeaponMsg('furnFx', p);
   }
   function applyRemoteFurnFx(p) {
-    if (!p || typeof p.k !== 'string' || !furniture.has(p.k)) return;
+    if (!p || typeof p.k !== 'string' || !furnGet(p.k)) return;
     interactFurniture(p.k, p);
   }
 
@@ -10962,7 +10984,7 @@
     const now = performance.now();
     for (const [fk, fx] of [...furnFx]) {
       const f = fx.f, g = f.group;
-      if (!g.parent || furniture.get(fk) !== f) { removeFxParts(fx); furnFx.delete(fk); continue; }
+      if (!g.parent || furnGet(fk) !== f) { removeFxParts(fx); furnFx.delete(fk); continue; }
       fx.t += dt;
       if (fx.kind === 'doors') {
         let moving = false;
@@ -11018,7 +11040,7 @@
         while (fx.note < TUNE.length && fx.t >= fx.note * 0.24) {
           const hz = TUNE[fx.note++];
           if (hz && audioCtx) {
-            const gn = distGain(g.position, 22); if (gn > 0) {
+            const gn = distGain(furnPos(g), 22); if (gn > 0) {
               const now2 = audioCtx.currentTime, o = audioCtx.createOscillator(), o2 = audioCtx.createOscillator(), out = audioCtx.createGain();
               o.type = 'triangle'; o.frequency.value = hz; o2.type = 'sine'; o2.frequency.value = hz * 2;
               out.gain.setValueAtTime(0.0001, now2); out.gain.exponentialRampToValueAtTime(0.12 * gn, now2 + 0.01); out.gain.exponentialRampToValueAtTime(0.0001, now2 + 0.9);
@@ -11046,7 +11068,7 @@
           furnFx.delete(fk);
           if (g.userData.washBody) g.userData.washBody.position.x = 0;
           if (g.userData.washLed) g.userData.washLed.material.color.setHex(0x3a3a3a);
-          playBeep(1000, 0.25, 0.06, g.position); setTimeout(() => playBeep(1300, 0.3, 0.06, g.position), 300);
+          playBeep(1000, 0.25, 0.06, furnPos(g)); setTimeout(() => playBeep(1300, 0.3, 0.06, furnPos(g)), 300);
           if (!fx.remote) showBriefMessage('🧺 Washing done');
         }
       } else if (fx.kind === 'wash') {
@@ -11055,7 +11077,7 @@
         if (fx.t >= 12) {
           removeFxParts(fx); furnFx.delete(fk);
           if (g.userData.washLed) g.userData.washLed.material.color.setHex(0x3a3a3a);
-          playBeep(1100, 0.2, 0.06, g.position);
+          playBeep(1100, 0.2, 0.06, furnPos(g));
           if (!fx.remote) showBriefMessage('🧼 Glasswash done — clean glasses');
         }
       } else if (fx.kind === 'flush') {
@@ -11064,7 +11086,7 @@
         if (fx.t > 2.4) { removeFxParts(fx); furnFx.delete(fk); }
       } else if (fx.kind === 'microwave') {
         if (g.userData.mwDoor) g.userData.mwDoor.material.emissive.setHex(Math.sin(fx.t * 9) > -0.6 ? 0xa86a10 : 0x7a4a08);
-        if (fx.t >= 10) { furnFx.delete(fk); if (g.userData.mwDoor) g.userData.mwDoor.material.emissive.setHex(0x000000); playBeep(1250, 0.35, 0.09, g.position); setTimeout(() => playBeep(1250, 0.35, 0.09, g.position), 450); if (!fx.remote) showBriefMessage('🔔 Ding! Microwave done'); }
+        if (fx.t >= 10) { furnFx.delete(fk); if (g.userData.mwDoor) g.userData.mwDoor.material.emissive.setHex(0x000000); playBeep(1250, 0.35, 0.09, furnPos(g)); setTimeout(() => playBeep(1250, 0.35, 0.09, furnPos(g)), 450); if (!fx.remote) showBriefMessage('🔔 Ding! Microwave done'); }
       } else if (fx.kind === 'fruit') {
         // reels blur, then stop one at a time (left at 0.9s, middle 1.3s, right 1.7s)
         const stopAt = [0.9, 1.3, 1.7];
@@ -11073,12 +11095,12 @@
           const shown = fx.reels.map((r, i) => fx.t >= stopAt[i] ? r : FRUIT_SYMBOLS[Math.floor(Math.random() * FRUIT_SYMBOLS.length)]);
           drawFruitScreen(fx.scr, shown, 'SPINNING…', '#9fd3ff');
         }
-        if (now >= fx.nextBeep) { fx.nextBeep = now + 110; playBeep(600 + Math.random() * 600, 0.05, 0.03, g.position); }
+        if (now >= fx.nextBeep) { fx.nextBeep = now + 110; playBeep(600 + Math.random() * 600, 0.05, 0.03, furnPos(g)); }
         if (fx.t >= 1.9) {
           furnFx.delete(fk);
           const win = fruitPrize(fx.reels);
           drawFruitScreen(fx.scr, fx.reels, win ? 'WIN 💰' + win + '!' : 'NO WIN', win ? '#7ee08a' : '#ff9a7a');
-          if (win) { playBeep(1046, 0.18, 0.08, g.position); setTimeout(() => playBeep(1318, 0.18, 0.08, g.position), 160); setTimeout(() => playBeep(1568, 0.35, 0.08, g.position), 320); }
+          if (win) { playBeep(1046, 0.18, 0.08, furnPos(g)); setTimeout(() => playBeep(1318, 0.18, 0.08, furnPos(g)), 160); setTimeout(() => playBeep(1568, 0.35, 0.08, furnPos(g)), 320); }
           if (fx.remote) continue; // someone else's spin — they get the prize
           if (win) { addCoins(win); playCoin(); showSaveStatus('🎰 ' + fx.reels.join(' ') + ' — you won 💰' + win + '!'); }
           else showBriefMessage('🎰 ' + fx.reels.join(' ') + ' — no win this time');
@@ -12742,7 +12764,7 @@
     // activeFires/updateFires), and warmer for a dungeon than a fixed
     // torch.
     placeVillageProp(buildLogFire, rx0, floorY, rz0, 0, reg);
-    maybeAddTreasure(rx1, floorY, rz0, reg); // 10% chance, opposite corner from the fire — well clear of the cell
+    maybeAddTreasure(rx1, floorY, rz0, reg, 'castle'); // 10% chance, opposite corner from the fire — well clear of the cell
     // Staircase down from the keep's own ground floor — real stone
     // Step blocks (half-height, L-shaped riser) rather than full cubes,
     // carved LAST so it always wins over the room above wherever the
@@ -12892,7 +12914,7 @@
     // gives them room top and bottom without clipping into the ground
     // or the roofline.
     addWindmillSails(midX + 0.5, gy + h / 2 + 4, z0 - 0.1, ck); // raised a further 2 blocks on top of the earlier +2 raise
-    maybeAddTreasure(x0 + 1, gy, z1 - 1, reg); // 10% chance, tucked in a floor corner
+    maybeAddTreasure(x0 + 1, gy, z1 - 1, reg, 'mill'); // 10% chance, tucked in a floor corner
     return { shell, reg };
   }
   const WINDMILL_CHUNK_STRIDE = 40; // 40*32 = 1280 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request for all buildings
@@ -13210,7 +13232,7 @@
     [[hx0 + 2, hullBottomY + 2, hzMid - halfW, 0, 1, 0], [hx1 - 2, hullBottomY + 2, hzMid + halfW, 0, -1, 0]].forEach(([bx, by, bz, nx, ny, nz]) => {
       if (fixtures.size < MAX_LIGHTS) { const fk = addFixture(bx, by, bz, nx, ny, nz); if (fk) reg.fixtureKeys.push(fk); }
     });
-    maybeAddTreasure(hx1 - 2, hullBottomY, hzMid, reg); // 10% chance, tucked at the stern end of the hold
+    maybeAddTreasure(hx1 - 2, hullBottomY, hzMid, reg, 'wreck'); // 10% chance, tucked at the stern end of the hold
   }
   // True if there's a natural body of water at (x,z) at least minDepth
   // blocks deep — natural water always tops out at SEA_LEVEL, so its
@@ -14266,6 +14288,42 @@
     group.userData.muzzle = muzzle;
     return group;
   }
+  // Moon Buggy: the lunar rover — an open silver frame on four big wire-mesh wheels under gold-foil fenders, two
+  // seats, a TV camera and the umbrella dish up front. Nose +Z. You drive the one parked at the moon base; doing
+  // that unlocks it here on Earth too (in the Vehicles menu — it's never in a Vehicle Shop). See ROCKET & MOON BASE.
+  function buildMoonBuggy() {
+    const g = new THREE.Group();
+    const frame = new THREE.MeshPhongMaterial({ color: 0xc9ced2, shininess: 90 }); frame.userData.paint = true;
+    const gold = new THREE.MeshPhongMaterial({ color: 0xd9b04a, shininess: 110 }), dark = new THREE.MeshPhongMaterial({ color: 0x2a2d34, shininess: 20 });
+    const seatMat = new THREE.MeshPhongMaterial({ color: 0x3a5a8a, shininess: 10 }), tyre = new THREE.MeshPhongMaterial({ color: 0x5a5e62, shininess: 30 }), hub = new THREE.MeshPhongMaterial({ color: 0xb08a3a, shininess: 80 });
+    const add = (geo, m, x, y, z, parent) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); (parent || g).add(o); return o; };
+    // chassis: the floor pan and the frame rails
+    add(new THREE.BoxGeometry(1.3, 0.08, 2.4), frame, 0, 0.5, 0);
+    for (const x of [-0.68, 0.68]) add(new THREE.BoxGeometry(0.07, 0.07, 2.6), frame, x, 0.55, 0);
+    for (const z of [-1.25, 1.25]) add(new THREE.BoxGeometry(1.5, 0.07, 0.07), frame, 0, 0.55, z);
+    // the two seats (folded-tube frames with blue webbing) and the hand controller between them
+    for (const x of [-0.33, 0.33]) { add(new THREE.BoxGeometry(0.5, 0.06, 0.5), seatMat, x, 0.62, -0.15); const back = add(new THREE.BoxGeometry(0.5, 0.5, 0.06), seatMat, x, 0.86, -0.42); back.rotation.x = -0.18; }
+    add(new THREE.BoxGeometry(0.08, 0.32, 0.08), dark, 0, 0.72, 0.22); add(new THREE.BoxGeometry(0.06, 0.12, 0.06), dark, 0, 0.92, 0.24);
+    // the console, the TV camera and the high-gain dish on its mast
+    add(new THREE.BoxGeometry(0.7, 0.32, 0.18), dark, 0, 0.72, 0.7); add(new THREE.BoxGeometry(0.66, 0.02, 0.14), gold, 0, 0.89, 0.7);
+    add(new THREE.CylinderGeometry(0.025, 0.025, 1.1, 6), frame, 0.42, 1.1, 1.05);
+    { const dish = add(new THREE.SphereGeometry(0.42, 16, 6, 0, Math.PI * 2, 0, 0.75), new THREE.MeshPhongMaterial({ color: 0xe8e8e2, shininess: 60, side: THREE.DoubleSide }), 0.42, 1.68, 1.05); dish.rotation.x = -1.1; }
+    add(new THREE.BoxGeometry(0.16, 0.12, 0.2), dark, -0.42, 0.98, 1.12); add(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), frame, -0.42, 0.75, 1.12);
+    // pallets on the back
+    add(new THREE.BoxGeometry(1.1, 0.25, 0.4), gold, 0, 0.66, -1.05);
+    // the wheels (they turn as it drives — userData.wheels), each under a gold fender
+    const wheels = [];
+    for (const x of [-0.8, 0.8]) for (const z of [-0.95, 0.95]) {
+      const w = new THREE.Group(); w.position.set(x, 0.38, z); g.add(w);
+      const t = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 0.22, 16).rotateZ(Math.PI / 2), tyre); w.add(t);
+      for (let i = 0; i < 6; i++) { const ch = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.03, 0.06), dark); ch.position.set(0, Math.cos(i / 6 * Math.PI * 2) * 0.375, Math.sin(i / 6 * Math.PI * 2) * 0.375); ch.rotation.x = -i / 6 * Math.PI * 2; w.add(ch); } // the chevron treads
+      w.add(new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.26, 10).rotateZ(Math.PI / 2), hub));
+      wheels.push(w);
+      const fender = add(new THREE.CylinderGeometry(0.46, 0.46, 0.28, 12, 1, true, 0, Math.PI).rotateZ(Math.PI / 2), gold, x, 0.4, z); fender.rotation.x = 0; fender.material.side = THREE.DoubleSide;
+    }
+    g.userData.wheels = wheels;
+    return g;
+  }
   const VEHICLE_TYPES = [
     // gunOffset: local-space point (roughly the front of each model) the
     // vehicle gun's tracer visually fires from — see getVehicleMuzzleWorldPos.
@@ -14280,6 +14338,8 @@
     { name: 'E-Bike',           build: buildEBike,         swatch: 0x2e8b57, cost: 200, flies: false, boat: false, speedMult: 1.9, riderY: 0.40, riderSeated: true,  ramps: true, gunOffset: [0, 1.25, 0.55] },
     { name: 'Tank',             build: buildTank,          swatch: 0x556b2f, cost: 800, flies: false, boat: false, speedMult: 1.25, riderY: 0.55, riderSeated: true, tank: true, gunOffset: [0, 1.55, 0.3] },
     { name: 'Motorbike',        build: buildMotorbike,     swatch: 0xa0232b, cost: 450, flies: false, boat: false, speedMult: 2.3, riderY: 0.42, riderSeated: true,  ramps: true, gunOffset: [0, 1.3, 0.75] }, // sport tourer — fastest on the ground
+    // notForSale: never in a Vehicle Shop — you unlock it by driving the one at the moon base (see ROCKET & MOON BASE)
+    { name: 'Moon Buggy',       build: buildMoonBuggy,     swatch: 0xc9ced2, cost: 0,   flies: false, boat: false, speedMult: 1.7, riderY: 0.62, riderSeated: true,  ramps: true, gunOffset: [0, 1.1, 1.3], notForSale: true },
   ];
   var vehiclePickTractor = false; // the Vehicles menu's Tractor entry is the one selected — see TRACTORS
   let vehicleTypeIdx = 0; // which vehicle the hotbar's Vehicles slot currently places — mirrors roomTypeIdx etc.
@@ -16799,6 +16859,7 @@
     if (!recordSeed(mx, ty, mz, FDRONE_CODE * SEED_VALUE_MUL)) { showSaveStatus('🛰️ Field drones can only be placed in a saved world', true); return false; }
     recordName(mx, ty, mz, droneOwnerTag());
     setFieldDroneStock(fieldDroneStock() - 1);
+    objNote('drone'); // see OBJECTIVES
     fixWeaponSelection(); updateWeaponSlotIcon();
     seedNextPass = 0;
     playThud(400);
@@ -16906,6 +16967,7 @@
     if (now - lastWeaponFireTime < w.cooldown) return;
     lastWeaponFireTime = now;
     ensureAudio();
+    if (w.kind !== 'teleporter' && w.kind !== 'fielddrone') objNote('shoot'); // see OBJECTIVES
     if (w.kind === 'sword') fireSword(w);
     else if (w.kind === 'gun') fireGunWeapon(w);
     else if (w.kind === 'laser') fireLaser(w);
@@ -17462,7 +17524,8 @@
   }
   function fireVehicleGun() {
     if (!ridingVehicle) return;
-    if (currentWorldId === PUB_WORLD_ID) return; // the Mill is a no-shooting zone — a social space, not somewhere combat (in any vehicle) belongs; enterVehicle already keeps flying vehicles out entirely, but ground vehicles (the Scooter) can still be parked/ridden in there, so this stays as a belt-and-braces check
+    if (currentWorldId === PUB_WORLD_ID) return;
+    objNote('shoot'); // see OBJECTIVES // the Mill is a no-shooting zone — a social space, not somewhere combat (in any vehicle) belongs; enterVehicle already keeps flying vehicles out entirely, but ground vehicles (the Scooter) can still be parked/ridden in there, so this stays as a belt-and-braces check
     if ((VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank) { fireTankShell(); return; } // shells, not bullets — see fireTankShell
     const now = performance.now();
     if (now - lastVehicleFireTime < VEHICLE_FIRE_COOLDOWN) return;
@@ -17755,6 +17818,18 @@
       g.add(brim);
       return g;
     }
+    if (hatType === 'crown') { // the Mogul's Golden Crown — the 100% objectives reward (see OBJECTIVES)
+      const g = new THREE.Group();
+      const gold = new THREE.MeshPhongMaterial({ color: hex != null ? hex : 0xd4af37, shininess: 90, specular: 0xfff1b0, emissive: 0x3a2a00 });
+      const band = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.1, 0.46), gold); band.position.y = headY + 0.15; g.add(band);
+      const gem = new THREE.MeshPhongMaterial({ color: hex2 != null ? hex2 : 0xc0392b, shininess: 100, emissive: 0x330000 });
+      for (const [x, z] of [[-0.2, -0.2], [0, -0.2], [0.2, -0.2], [-0.2, 0.2], [0, 0.2], [0.2, 0.2], [-0.2, 0], [0.2, 0]]) {
+        const pt = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.12, 0.07), gold); pt.position.set(x, headY + 0.26, z); g.add(pt);
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 4), gold); ball.position.set(x, headY + 0.34, z); g.add(ball);
+      }
+      for (const [x, z] of [[0, 0.235], [0, -0.235], [0.235, 0], [-0.235, 0]]) { const j = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), gem); j.position.set(x, headY + 0.15, z); g.add(j); }
+      return g;
+    }
     if (hatType === 'beanie' || hatType === 'bobble') { // hex: a Tailor-knitted colour (see WARDROBE); 'bobble' adds a pompom
       const g = new THREE.Group();
       const col = hex != null ? hex : 0x8a3a3a;
@@ -17794,6 +17869,12 @@
     } else if (pattern === 'check') {
       ctx.fillStyle = 'rgba(0,0,0,0.28)';
       for (let y=0;y<size;y+=4) for (let x=(y/4)%2===0?0:4;x<size;x+=8) ctx.fillRect(x,y,4,4);
+    } else if (pattern === 'gold') { // the Mogul's Golden Jumper (100% objectives reward) — gold knit with a crown motif
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      for (let x=1;x<size;x+=4) ctx.fillRect(x,0,1,size);
+      ctx.fillStyle = 'rgba(255,248,200,0.75)';
+      for (let y=1;y<size;y+=5) for (let x=(y%2)*2;x<size;x+=4) ctx.fillRect(x,y,1,1);
+      ctx.fillStyle = '#7a1010'; ctx.fillRect(5,6,6,2); ctx.fillRect(5,4,1,2); ctx.fillRect(7,3,2,3); ctx.fillRect(10,4,1,2); // little crown
     } else if (pattern === 'knit') { // cable-knit ribs, for Tailor jumpers
       ctx.fillStyle = 'rgba(0,0,0,0.22)';
       for (let x=1;x<size;x+=4) ctx.fillRect(x,0,1,size);
@@ -19792,7 +19873,7 @@
       // Drain tool) used to leave any fish that had been in it stranded,
       // just floating in open air exactly where the water used to be.
       const fx = Math.floor(f.mesh.position.x), fz = Math.floor(f.mesh.position.z), fy = Math.round(f.baseY);
-      if (!waterBlocks.has(key(fx, fy, fz)) && !waterBlocks.has(key(fx, fy-1, fz))) {
+      if ((!waterBlocks.has(key(fx, fy, fz)) && !waterBlocks.has(key(fx, fy-1, fz))) || (yachts.size && yachtDryAt(f.mesh.position.x, f.baseY, f.mesh.position.z))) { // (or a yacht's sailed over it — no fish inside her hull)
         scene.remove(f.mesh); disposeObject3D(f.mesh); ambientFish.splice(i, 1);
       }
     }
@@ -19822,7 +19903,7 @@
         // there. Blocked → just picks a fresh (hopefully reachable)
         // target next frame instead of forcing its way through.
         const checkY = Math.round(f.baseY);
-        if (waterBlocks.has(key(Math.floor(nx), checkY, Math.floor(nz))) || waterBlocks.has(key(Math.floor(nx), checkY-1, Math.floor(nz)))) {
+        if ((waterBlocks.has(key(Math.floor(nx), checkY, Math.floor(nz))) || waterBlocks.has(key(Math.floor(nx), checkY-1, Math.floor(nz)))) && !(yachts.size && yachtDryAt(nx, f.baseY, nz))) { // (and never into a yacht's hull)
           f.mesh.position.x = nx; f.mesh.position.z = nz;
           // Local "forward" for this mesh is +X (the body cone points
           // that way by default, see buildFishMesh), not +Z the way the
@@ -21824,6 +21905,7 @@
   }
 
   function waterDepthAt(x, z) {
+    if (yachts.size && yachtDryAt(x, player.pos.y + 0.5, z)) return 0; // inside a yacht's hull (the lower deck, the stairs, the splash pool): dry — see SUPERYACHT
     const topY = waterSurfaceNear(x, z);
     if (topY === null) return 0;
     const px = Math.floor(x), pz = Math.floor(z);
@@ -22380,6 +22462,13 @@
       if (f.box) { const b = f.box; consider('furniture', fk, (b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2, Math.min(1.1, Math.max(0.55, Math.max(b.x1 - b.x0, b.z1 - b.z0, b.y1 - b.y0) / 2 + 0.05))); return; } // aim at the middle of its solid box
       consider('furniture', fk, f.group.position.x, f.by + 1.4, f.group.position.z, type && type.span ? 1.0 : 0.8); // the group's own centre — right for beds (footprint) and the bath (span) alike
     });
+    if (yachtFurn.size) yachtFurn.forEach((f, fk) => { // aboard a yacht (kind 'yfurn': used like furniture, but never mined away)
+      if (!f.group.parent) return;
+      const t = FURNITURE_TYPES[f.typeIdx], dims = t && FURN_BOXES[t.name];
+      if (t && t.name === 'Wall TV') { const w = f.group.localToWorld(_wallTvAim.set(0, 1.7, -0.375)); consider('yfurn', fk, w.x, w.y, w.z, 0.7); return; }
+      const w = f.group.localToWorld(_wallTvAim.set(0, dims ? dims[2] / 2 : 0.9, dims ? dims[3] : 0));
+      consider('yfurn', fk, w.x, w.y, w.z, dims ? Math.min(1.1, Math.max(0.55, Math.max(dims[0], dims[1], dims[2]) / 2 + 0.05)) : 0.7);
+    });
     fixtures.forEach((f, fk) => {
       consider('fixture', fk, f.bx + 0.5 + f.nx*0.3, f.by + 0.5 + f.ny*0.3, f.bz + 0.5 + f.nz*0.3, 0.55);
     });
@@ -22491,6 +22580,7 @@
       showBriefMessage(furnitureTarget.kind === 'bell' ? '🔔 Press ✋ to ring the bell' : '💰 Press ✋ to open the treasure');
       return;
     }
+    if (furnitureTarget && furnitureTarget.kind === 'yfurn' && furnitureTarget.dist < blockDist) { mineHeld = false; showBriefMessage('🛥️ That\u2019s part of the yacht — press ✋ to use it'); return; }
     if (furnitureTarget && furnitureTarget.dist < blockDist) {
       // Same instant-delete idea for all three kinds now — furniture,
       // torches/fixtures, and doors — dispatched to whichever removeX
@@ -22734,7 +22824,8 @@
     if (ft && ft.kind === 'bell' && ft.dist < blockDist) { const b = bells.get(ft.fk); if (b && canEditAt(b.bx, b.bz)) ringBell(ft.fk); return; }
     if (ft && ft.kind === 'treasure' && ft.dist < blockDist) { collectTreasureChest(ft.fk); return; } // no ownership check — see collectTreasureChest
     if (ft && ft.kind === 'fixture' && ft.dist < blockDist + 0.6) { cycleFixtureDim(ft.fk); return; } // ✋ on a light: dim it — see FIXTURE DIMMING
-    if (ft && ft.kind === 'furniture' && ft.dist < blockDist + 0.8 && interactFurniture(ft.fk)) { sendFurnFx(ft.fk); return; } // taps, beds, sofas, doors… — shared with everyone here, see FURNITURE INTERACTION
+    if (ft && ft.kind === 'furniture' && ft.dist < blockDist + 0.8 && interactFurniture(ft.fk)) { sendFurnFx(ft.fk); return; }
+    if (ft && ft.kind === 'yfurn' && ft.dist < blockDist + 0.8 && interactFurniture(ft.fk)) { sendFurnFx(ft.fk); return; } // aboard a yacht — see SUPERYACHT // taps, beds, sofas, doors… — shared with everyone here, see FURNITURE INTERACTION
     if (tryYachtAction()) { actionHeld = false; return; } // the helm, boarding, going ashore — see SUPERYACHT
     if (r && r.hit && !r.isWater && !r.isLava && tryToggleGate(r.hit.x, r.hit.y, r.hit.z)) return;
     if (selectedSlot === LEAD_SLOT) { useLead(); return; }
@@ -22798,6 +22889,7 @@
         showSaveStatus('🌱 Planted ' + st.name + ' (−💰' + cost + ', ready in ' + fmtGrow(st.growSec) + ')');
       }
       seedNextPass = 0; // show the new sprout straight away
+      objNote('plant'); if (st.kind === 'flower') objNote('flower'); // see OBJECTIVES
       playThud(300);
       return;
     }
@@ -22969,6 +23061,7 @@
         if (!useFurnitureStock(FURNITURE_TYPES[typeIdx0])) return;
         const wrot = ((Math.round(Math.atan2(nx, nz) / (Math.PI / 2)) % 4) + 4) % 4;
         addFurniture(wx, fy + 1, wz, wrot + 4, typeIdx0); // rot 4-7 = stored on the air cell — see addFurniture
+        objFurn(wx, wz); // see OBJECTIVES
         playThud(400);
         return;
       }
@@ -22983,6 +23076,7 @@
       // Pieces already modelled the other way (sinks, mirrors, beds with the headboard at -Z…) keep their rot.
       const rot = (snapYawToStepIndex(yaw) + (FURNITURE_FACE_PLAYER.has(furnType.name) ? 2 : 0)) % 4;
       addFurniture(r.hit.x, r.hit.y, r.hit.z, rot, typeIdx);
+      objFurn(r.hit.x, r.hit.z); // see OBJECTIVES
       playThud(400);
       return;
     }
@@ -23038,6 +23132,7 @@
       const DRAIN_CAP = 4000;
       const drained = drainConnectedWater(r.hit.x, r.hit.y, r.hit.z, DRAIN_CAP);
       if (drained === 0) return;
+      objNote('drain'); // see OBJECTIVES
       rebuildWaterGeometry();
       playThud(260);
       if (drained >= DRAIN_CAP) showSaveStatus('Drained ' + drained + ' blocks and stopped — this space isn\u2019t fully sealed off', true);
@@ -23094,7 +23189,7 @@
       askConfirm('Place an Incubator here for 💰' + INCUBATOR_PRICE + '? (Picking it back up later doesn\u2019t refund it.)', 'Buy · 💰' + INCUBATOR_PRICE, () => {
         if (blocks.has(ik) || seedEdits.has(ik) || coins < INCUBATOR_PRICE) return;
         if (!recordSeed(ix, iy, iz, INCUBATOR_EMPTY * SEED_VALUE_MUL + nowSec())) return;
-        coins -= INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave();
+        coins -= INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave(); objNote('incubator');
         seedNextPass = 0; playThud(260); playCoin();
       });
       return;
@@ -23113,7 +23208,7 @@
       askConfirm('Place a People Incubator here for 💰' + PEOPLE_INCUBATOR_PRICE + '? (Picking it back up later doesn\u2019t refund it.)', 'Buy · 💰' + PEOPLE_INCUBATOR_PRICE, () => {
         if (blocks.has(ik) || blocks.has(ak) || seedEdits.has(ik) || coins < PEOPLE_INCUBATOR_PRICE) return;
         if (!recordSeed(ix, iy, iz, PEOPLE_INC_EMPTY * SEED_VALUE_MUL + nowSec())) return;
-        coins -= PEOPLE_INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave();
+        coins -= PEOPLE_INCUBATOR_PRICE; updateCoinsDisplay(); scheduleStatsSave(); objNote('pinc');
         seedNextPass = 0; playThud(240); playCoin();
       });
       return;
@@ -23145,7 +23240,7 @@
       // the ground and pours over edges. Won't go into water, or into
       // The Mill's grounds (same rule as water there).
       if (!lava.has(k) && !waterBlocks.has(k) && pubWaterAllowed(x, z)) {
-        lava.place(x, y, z);
+        lava.place(x, y, z); objNote('lava'); // see OBJECTIVES
         playThud(260);
       }
       return;
@@ -23155,7 +23250,7 @@
       if (!waterBlocks.has(k)) {
         const h = WATER_HEIGHTS[waterHeightIdx];
         waterBlocks.set(k, h);
-        recordWaterEdit(x, y, z, h);
+        recordWaterEdit(x, y, z, h); objNote('water'); // see OBJECTIVES
         wakeWaterAround(x, y, z); // placed water is a source like Minecraft's — it spreads across flat ground and pours over any edge (see WATER FLOW)
         rebuildWaterGeometry();
         playThud(280);
@@ -23199,6 +23294,7 @@
         if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
+      if (selectedSlot === MUD_TYPE) objNote('mud'); // see OBJECTIVES
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
       clearFlowState(k);
       wakeWaterAround(x, y, z); // plugging a gap in a dam — the stream that was coming through it now recedes
@@ -23412,6 +23508,7 @@
     scheduleOverlayRebuild(s);
     playThud(320);
     showSaveStatus('Filled ' + placed + ' block' + (placed === 1 ? '' : 's'));
+    if (placed > 0) { objNote('fill'); if (selectedSlot === MUD_TYPE) objNote('mud', placed); } // see OBJECTIVES
   }
 
   document.addEventListener('mousedown', e => {
@@ -24007,8 +24104,21 @@
     if (now - lastHudExtrasUpdate < 150) return;
     lastHudExtrasUpdate = now;
     const coordsEl = document.getElementById('coordsDisplay');
-    if (coordsEl) coordsEl.textContent = `📍 X: ${Math.round(player.pos.x)}  Z: ${Math.round(player.pos.z)}`;
     const arrowEl = document.getElementById('millCompassArrow');
+    if (onMoon && moon.U) { // Moon coordinates: latitude / longitude with the base at 0°, 0° (north is the way the base faces), and the compass points home to the base
+      const drv = !!(moon.buggy && moon.buggy.driving), U = drv ? moon.buggy.U : moon.U, MP = drv ? moon.buggy.pos : moon.pos;
+      const lat = Math.asin(Math.max(-1, Math.min(1, -U.z))) * 180 / Math.PI, lon = Math.atan2(U.x, U.y) * 180 / Math.PI;
+      const arc = Math.acos(Math.max(-1, Math.min(1, U.y))) * MOON_RAD, dist = arc < MOON_FLAT ? Math.hypot(MP.x - 8, MP.z) : arc;
+      if (coordsEl) coordsEl.textContent = `🌕 ${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}  ${Math.abs(lon).toFixed(1)}°${lon >= 0 ? 'E' : 'W'}  ·  🏠 ${dist < 1000 ? Math.round(dist) + ' m' : (dist / 1000).toFixed(2) + ' km'}`;
+      if (arrowEl) {
+        const T = new THREE.Vector3(8, 0, 0).sub(MP); T.addScaledVector(moon.U, -T.dot(moon.U)); // towards the base, along the ground
+        if (T.lengthSq() < 1e-6) T.set(0, 0, -1).addScaledVector(moon.U, moon.U.z);
+        const [X, Z] = moonFrame(moon.U, moon.F); // your view is your yaw turned from moon.F (driving too)
+        arrowEl.style.transform = `rotate(${Math.atan2(-T.dot(X), -T.dot(Z)) - yaw}rad)`;
+      }
+      return;
+    }
+    if (coordsEl) coordsEl.textContent = `📍 X: ${Math.round(player.pos.x)}  Z: ${Math.round(player.pos.z)}`;
     if (arrowEl) {
       // yaw=0 faces -Z in this game's convention (forward = (-sin(yaw),
       // -cos(yaw))) — solving that for "which yaw faces the origin from
@@ -24021,6 +24131,647 @@
       arrowEl.style.transform = `rotate(${rel}rad)`;
     }
   }
+
+  // ================= OBJECTIVES =================
+  // Two lists. MAIN OBJECTIVES are a story, one at a time, in the order that best grows your income: treasure
+  // chests for your first real coins (shipwreck, windmill, castle), then farming — crops cycle every few hours and
+  // are where most of the money comes from early on — then the shops that farming needs, the properties that pay
+  // while you're away, animals and Mods, and finally the big-ticket purchases up to the Rocket and the Moon.
+  // SIDE MISSIONS can be done in any order, any time. Each one is checked against the real game where it can be
+  // (what you own in this world, what's planted, who you've hired, your coins); the rest count things as you do
+  // them. A skipped main objective stays open — finish it later and it still counts (and still pays).
+  // 📜 Progress (in the objective box) shows everything done so far with dates, what's left, and the overall %.
+  // Reach 100% (every main objective and every side mission) for the Mogul's reward: a Golden Crown and a Golden
+  // Jumper — wearable, and every other player sees them — plus fireworks. Saved on this device (mw_objectives).
+  const OBJ_KEY = 'mw_objectives';
+  let objState = null;
+  function objLoad() {
+    if (objState) return objState;
+    try { objState = JSON.parse(localStorage.getItem(OBJ_KEY)); } catch (e) { objState = null; }
+    if (!objState || typeof objState !== 'object') objState = {};
+    objState.c = objState.c || {};
+    if (objState.v !== 2) { objState = { v: 2, c: objState.c, done: {}, skip: {} }; } // the old single list — its counts (harvests, sales, rent...) carry over, the list itself starts again
+    objState.done = objState.done || {}; objState.skip = objState.skip || {};
+    return objState;
+  }
+  function objSave() { try { localStorage.setItem(OBJ_KEY, JSON.stringify(objState)); } catch (e) {} }
+  // count something that happened (a crop sown, a chest opened, income collected ...)
+  function objNote(what, n) {
+    try { if (currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); st.c[what] = (st.c[what] || 0) + (n || 1); objSaveSoon(); objNextCheck = 0; } catch (e) {} // The Mill never counts — objectives are for your own worlds
+  }
+  function objMax(what, n) { if (currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); if (n > (st.c[what] || 0)) { st.c[what] = n; objSaveSoon(); } } // a "best so far" (e.g. most hotel rooms let at once)
+  let objSaveTimer = 0;
+  function objSaveSoon() { if (!objSaveTimer) objSaveTimer = setTimeout(() => { objSaveTimer = 0; objSave(); }, 1500); }
+  const objCount = what => (objLoad().c[what] || 0);
+  const objBT = t => BUILDING_TYPES.find(b => b.t === t);
+  const objPrice = t => { const b = objBT(t); return b ? b.price : 0; };
+  // Only your own buildings count — in someone else's world their buildings are "bought" too, but not by you.
+  function objOwned(t) { if (visitMode) return 0; let n = 0; for (const sp of structureSpecs.values()) if (sp && sp.t === t && sp.bought) n++; return n; }
+  function objAnySpec(t, test) { if (visitMode) return false; for (const sp of structureSpecs.values()) if (sp && sp.t === t && sp.bought && test(sp)) return true; return false; }
+  function objLandmarkKind(sp) { try { const r = mulberry32(sp.rs >>> 0); r(); return Math.floor(r() * 3); } catch (e) { return -1; } } // same draw that picked it — see rsForLandmark
+  const objOwnsLandmark = kind => objCount('built_lm' + kind) > 0 || objAnySpec('landmark', sp => objLandmarkKind(sp) === kind);
+  const objHouses = () => objOwned('lethouse') + objOwned('house');
+  const objFmt = n => '💰' + Math.round(n).toLocaleString();
+  const objBuyHow = t => { const b = objBT(t); return '🏗️ Property → ' + (b ? b.emoji + ' ' + b.name : t) + ' (' + objFmt(objPrice(t)) + '). Aim at clear, flat ground in your own world and press 🧱 to build it.'; };
+  const objStep = (...parts) => [parts.reduce((a, p) => a + (p ? 1 : 0), 0), parts.length]; // [how many of these are true, how many there are]
+  // Furniture you place inside a house (or mansion) you own — see doPlace.
+  function objFurn(x, z) {
+    try {
+      if (visitMode) return;
+      for (const sp of structureSpecs.values()) {
+        if (!sp || !sp.bought || !sp.site || (sp.t !== 'lethouse' && sp.t !== 'house' && sp.t !== 'mansion')) continue;
+        if (x >= sp.site.sx0 && x <= sp.site.sx1 && z >= sp.site.sz0 && z <= sp.site.sz1) { objNote('furn_house'); return; }
+      }
+    } catch (e) {}
+  }
+  // ---- What's planted: fields, worked out from the seed records (cached — it's a flood fill) ----
+  // A FIELD is a run of planted cells joined side by side. "Fully sown" = no bare mud left along its edge.
+  let objCropList = null; // every vegetable/fruit crop in the game (not trees, not flowers) — worked out on first use (SEED_TYPES is defined further down)
+  function objCrops() { if (!objCropList) { objCropList = []; SEED_TYPES.forEach((t, i) => { if (t.produce && t.kind !== 'flower' && t.kind !== 'tree') objCropList.push(i); }); } return objCropList; }
+  let objFieldCache = null, objFieldAt = 0;
+  function objFields() {
+    const now = performance.now();
+    if (objFieldCache && now - objFieldAt < 5000) return objFieldCache;
+    objFieldAt = now;
+    const cells = new Map(); // "x,y,z" -> seed type index
+    for (const [k, v] of seedEdits) {
+      const code = Math.floor(v / SEED_VALUE_MUL);
+      if (code < 0 || code >= SEED_TYPES.length || SEED_TYPES[code].kind === 'tree') continue;
+      cells.set(k, code);
+    }
+    const res = { total: cells.size, bestFull: 0, perType: new Map() }; // perType: type -> biggest single-crop field
+    const seenAll = new Set(), seenType = new Set();
+    const nb = (x, y, z) => [[x + 1, y, z], [x - 1, y, z], [x, y, z + 1], [x, y, z - 1]];
+    for (const [k0, t0] of cells) {
+      const [x0, y0, z0] = k0.split(',').map(Number);
+      // any crop, fully sown
+      if (!seenAll.has(k0)) {
+        let n = 0, bare = false; const q = [[x0, y0, z0]]; seenAll.add(k0);
+        while (q.length) {
+          const [x, y, z] = q.pop(); n++;
+          for (const [nx, ny, nz] of nb(x, y, z)) {
+            const nk = nx + ',' + ny + ',' + nz;
+            if (cells.has(nk)) { if (!seenAll.has(nk)) { seenAll.add(nk); q.push([nx, ny, nz]); } }
+            else if (!bare && blocks.get(key(nx, ny - 1, nz)) === MUD_TYPE && !blocks.has(nk)) bare = true;
+          }
+        }
+        if (!bare && n > res.bestFull) res.bestFull = n;
+      }
+      // one crop only
+      if (!seenType.has(k0)) {
+        let n = 0; const q = [[x0, y0, z0]]; seenType.add(k0);
+        while (q.length) {
+          const [x, y, z] = q.pop(); n++;
+          for (const [nx, ny, nz] of nb(x, y, z)) {
+            const nk = nx + ',' + ny + ',' + nz;
+            if (cells.get(nk) === t0 && !seenType.has(nk)) { seenType.add(nk); q.push([nx, ny, nz]); }
+          }
+        }
+        if (n > (res.perType.get(t0) || 0)) res.perType.set(t0, n);
+      }
+    }
+    // remember the best ever, so a tractor harvesting half a field doesn't undo it
+    objMax('field_full', res.bestFull);
+    for (const [t, n] of res.perType) objMax('field_t' + t, n);
+    objFieldCache = res;
+    return res;
+  }
+  const objCropFieldsDone = () => { objFields(); return objCrops().filter(t => objCount('field_t' + t) >= 100).length; };
+  // ---- Incubators and what's hatched (also from the seed records) ----
+  let objSeedScan = null, objSeedScanAt = 0;
+  function objSeeds() {
+    const now = performance.now();
+    if (objSeedScan && now - objSeedScanAt < 3000) return objSeedScan;
+    objSeedScanAt = now;
+    const s = { inc: false, pinc: false, hatched: new Set(), mods: new Set() };
+    for (const v of seedEdits.values()) {
+      const info = incInfo(Math.floor(v / SEED_VALUE_MUL)); if (!info) continue;
+      if (!info.people && info.state !== 'hatched') s.inc = true;
+      if (info.people && info.state !== 'hatched') s.pinc = true;
+      if (info.state === 'hatched') (info.people ? s.mods : s.hatched).add(info.idx);
+    }
+    if (visitMode) { s.inc = false; s.pinc = false; s.hatched.clear(); s.mods.clear(); }
+    for (const i of s.hatched) objMax('hatch_' + i, 1);
+    for (const i of s.mods) objMax('mod_' + i, 1);
+    objSeedScan = s; return s;
+  }
+  const objHatched = idx => { objSeeds(); return objCount('hatch_' + idx) > 0; };
+  const objGuardianIdx = () => MOD_TYPES.findIndex(m => m.name === 'Stone Guardian');
+  // ---- "A building of your own": standing on a floor you placed, with walls you placed (or a door) all round and a roof over you ----
+  function objInShelter() {
+    if (!terrainStreamingActive || onMoon) return false;
+    const fx = Math.floor(player.pos.x), fy = Math.floor(player.pos.y + 0.05), fz = Math.floor(player.pos.z);
+    const mine = k => { const e = blockEdits.get(k); return e !== undefined && e >= 0; };
+    if (!mine(key(fx, fy - 1, fz))) return false; // floor
+    let roof = false;
+    for (let y = fy + 2; y <= fy + 14; y++) { const k = key(fx, y, fz); if (blocks.has(k)) { roof = mine(k); break; } }
+    if (!roof) return false;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      let wall = false;
+      for (let i = 1; i <= 16; i++) {
+        const x = fx + dx * i, z = fz + dz * i, k = key(x, fy, z), k2 = key(x, fy + 1, z);
+        if (doors.has(k) || doors.has(k2)) { wall = true; break; }
+        if (blocks.has(k)) { wall = mine(k); break; }
+        if (blocks.has(k2)) { wall = mine(k2); break; }
+      }
+      if (!wall) return false;
+    }
+    return true;
+  }
+  // Each: icon, title, what to do (text), how (tip), prog() → [have, need] (done when have >= need), reward (bonus coins).
+  // money: shows progress as coins. doneIf: also counts as done (you've clearly been past it).
+  const OBJECTIVES = [
+    // --- First coins: treasure ---
+    { id: 'chest_wreck', icon: '🏴‍☠️', title: 'Sunken treasure', reward: 50,
+      text: () => 'Find a treasure chest in a shipwreck.',
+      tip: () => 'Wrecks lie in lakes and the sea. Swim down into the hold (through the hole in the deck, or the breach in the hull) — about half have a glowing chest, 💰100 to 💰1,000. ✋ it to open it. No chest? Try another wreck.',
+      prog: () => [objCount('chest_wreck'), 1] },
+    { id: 'chest_mill', icon: '🌬️', title: 'Windmill treasure', reward: 50,
+      text: () => 'Find a treasure chest in a windmill.',
+      tip: () => 'Windmills stand on their own out in the countryside. Go inside and look in the corners — about half have a chest.',
+      prog: () => [objCount('chest_mill'), 1] },
+    { id: 'chest_castle', icon: '🏰', title: 'Castle treasure', reward: 75,
+      text: () => 'Find a treasure chest in a castle dungeon.',
+      tip: () => 'Head down into a castle’s dungeon — about half hide a chest. With three chests found you’ve got enough to start farming properly.',
+      prog: () => [objCount('chest_castle'), 1] },
+    // --- Farming: where the money is ---
+    { id: 'mud', icon: '🟫', title: 'Lay a mud field', reward: 25,
+      text: () => 'Lay at least 10 blocks of Mud.',
+      tip: () => 'Crops only grow in <b>Mud</b> — open the <b>Dirt</b> block’s options on the hotbar and pick Mud. Lay a flat patch side by side. Tip: build a frame and hold 🧱 inside it to fill it in one go.',
+      prog: () => [Math.max(objCount('mud'), objFields().total), 10] },
+    { id: 'plant', icon: '🌱', title: 'Plant your first crops', reward: 30,
+      text: () => 'Plant 10 crops.',
+      tip: () => 'Pick 🌱 <b>Seeds</b> on the Farming menu, choose a crop and ✋ on top of the mud. Strawberries are quickest; Pumpkins take longest but pay the most per hour.',
+      prog: () => [objCount('plant'), 10] },
+    { id: 'harvest', icon: '🧺', title: 'Bring in the harvest', reward: 30,
+      text: () => 'Harvest 10 crops.',
+      tip: () => 'Aim at a crop and ✋ to see how long it has left. Once it’s fully grown, ✋ picks it — it goes in your 🎒 bag.',
+      prog: () => [objCount('harvest'), 10] },
+    { id: 'grocer', icon: '🧺', title: 'Open a Grocer’s', reward: 60,
+      text: () => 'Buy a Grocer’s Shop.',
+      tip: () => 'You need a grocer to sell your crops — build your own next to your fields so you can sell the moment you harvest. ' + objBuyHow('shop'),
+      prog: () => [objOwned('shop'), 1] },
+    { id: 'sell', icon: '💷', title: 'Sell your crops', reward: 40,
+      text: () => 'Sell 💰50 of produce.',
+      tip: () => '✋ the shopkeeper in your Grocer’s and <b>Sell everything</b>.',
+      prog: () => [objCount('sell'), 50], money: true },
+    { id: 'field100', icon: '🌾', title: 'A proper field', reward: 250,
+      text: () => 'Make a field of at least 100 blocks and sow every block of it.',
+      tip: () => 'One joined-up patch of mud, 100+ blocks (10 × 10 is perfect), with a crop on every block — no bare mud left round the edge. Pumpkins pay best over a few hours.',
+      prog: () => { objFields(); return [Math.min(objCount('field_full'), 100), 100]; } },
+    { id: 'vshop', icon: '🚗', title: 'Vehicle Shop', reward: 150,
+      text: () => 'Buy a Vehicle Shop.',
+      tip: () => 'It sells tractors (and cars, bikes, helicopters...). ' + objBuyHow('vehicleshop'),
+      prog: () => [objOwned('vehicleshop'), 1] },
+    { id: 'eshop', icon: '⚔️', title: 'Equipment Shop', reward: 150,
+      text: () => 'Buy an Equipment Shop.',
+      tip: () => 'It sells field drones that guard your crops from thieves — and weapons. ' + objBuyHow('equipshop'),
+      prog: () => [objOwned('equipshop'), 1] },
+    { id: 'farm', icon: '🐄', title: 'Buy a Farm', reward: 200,
+      text: () => 'Buy a Farm.',
+      tip: () => 'Ready-made mud fields plus cows and sheep — milk and wool every day to sell. ' + objBuyHow('farm'),
+      prog: () => [objOwned('farm'), 1] },
+    { id: 'tractor', icon: '🚜', title: 'Put a tractor to work', reward: 250,
+      text: () => 'Buy a tractor and place it on a crop field.',
+      tip: () => 'Buy one at your Vehicle Shop, pick it on the Vehicles slot and aim at the mud of a field. It sows the bare blocks, harvests whatever’s fully grown, and keeps going while you’re away. ✋ it to choose what it sows.',
+      prog: () => [(objCount('tractor') > 0 || (!visitMode && tractorFx.size > 0)) ? 1 : 0, 1] },
+    { id: 'drone', icon: '🛰️', title: 'Guard your crops', reward: 250,
+      text: () => 'Buy a field drone and set it watching a field.',
+      tip: () => 'Buy one at your Equipment Shop, pick it on the Equipment → weapons slot and fire it at the mud of a field. It chases off anyone who comes to steal your crops.',
+      prog: () => [(objCount('drone') > 0 || (!visitMode && fieldDroneFx.size > 0)) ? 1 : 0, 1] },
+    { id: 'allcrops', icon: '🥇', title: 'Master farmer', reward: 25000,
+      text: () => 'Have a field of at least 100 blocks of every crop in the game (' + objCrops().length + ' crops).',
+      tip: () => 'A 100-block field of just one crop, for each of: ' + objCrops().map(i => SEED_TYPES[i].name + (objCount('field_t' + i) >= 100 ? ' ✅' : ' (' + Math.min(99, objCount('field_t' + i)) + ')')).join(', ') + '. They don’t all have to be growing at once — each one counts as soon as it’s been done. <b>Big bonus.</b>',
+      prog: () => [objCropFieldsDone(), objCrops().length] },
+    // --- Property that pays while you're away ---
+    { id: 'house', icon: '🏠', title: 'Buy a House', reward: 300,
+      text: () => 'Buy a House to let (' + objFmt(objPrice('lethouse')) + ').',
+      tip: () => 'Furnished, with tenants who pay rent <b>every night, even while you’re away</b>. ' + objBuyHow('lethouse'),
+      prog: () => [Math.min(1, objHouses()), 1] },
+    { id: 'rent', icon: '🔑', title: 'Collect the rent', reward: 200,
+      text: () => 'Collect rent from your house.',
+      tip: () => 'Rent builds up each night. ✋ the red <b>Letting Board</b> in the front garden to collect it. Add furniture inside and the rent goes up.',
+      prog: () => [objCount('collect_let') > 0 ? 1 : 0, 1] },
+    { id: 'bakery', icon: '🥖', title: 'Mill & Bakery', reward: 500,
+      text: () => 'Buy a Mill & Bakery and hire a manager.',
+      tip: () => 'Turns your wheat into bread and eggs and milk into cakes — worth far more than raw. ' + objBuyHow('bakery') + ' Then ✋ the <b>Bakery Till</b> → hire a manager.',
+      prog: () => objStep(objOwned('bakery'), objAnySpec('bakery', sp => sp.bake && sp.bake.mgr)) },
+    { id: 'rest', icon: '🍽️', title: 'Restaurant', reward: 750,
+      text: () => 'Buy a Restaurant and hire a manager.',
+      tip: () => 'Cooks your crops and meat into meals. ' + objBuyHow('restaurant') + ' Then ✋ the <b>Office Safe</b> → hire a head chef to cook, and a manager to keep the pantry stocked from your bag.',
+      prog: () => objStep(objOwned('restaurant'), objAnySpec('restaurant', sp => sp.rest && sp.rest.mgr)) },
+    { id: 'pub', icon: '🍺', title: 'Your own Pub', reward: 1000,
+      text: () => 'Buy a Pub and hire a manager.',
+      tip: () => objBuyHow('pub') + ' Then ✋ the <b>Office Safe</b> in the office → hire a manager and it opens every night. Collect the takings from the same safe.',
+      prog: () => objStep(objOwned('pub'), objAnySpec('pub', sp => sp.pub && sp.pub.mgr)) },
+    { id: 'carpenter', icon: '🪚', title: 'The Carpenter', reward: 300,
+      text: () => 'Buy a Carpenter.',
+      tip: () => 'Sells furniture (for your hotel rooms, next) and buys wood. ' + objBuyHow('carpenter'),
+      prog: () => [objOwned('carpenter'), 1] },
+    { id: 'hotel', icon: '🏨', title: 'Open a Hotel', reward: 1500,
+      text: () => 'Buy a Hotel and fully furnish at least 3 rooms.',
+      tip: () => objBuyHow('hotel') + ' A room is let once it has a bed, a sofa or armchair, a TV, fridge, oven, kitchen sink, toilet, bathroom sink and a shower or bath. ✋ the receptionist to see what each room still needs.',
+      prog: () => { let best = 0; if (!visitMode) for (const h of hotelEntries.values()) best = Math.max(best, h.rented ? h.rented.size : 0); objMax('hotel_rooms', best); return [Math.min(1, objOwned('hotel')) + Math.min(3, objCount('hotel_rooms')), 4]; } },
+    // --- Animals ---
+    { id: 'incubator', icon: '🥚', title: 'Buy an Incubator', reward: 300,
+      text: () => 'Place an Incubator (' + objFmt(INCUBATOR_PRICE) + ').',
+      tip: () => 'Farming menu → <b>Incubator</b>, then aim at a block and press 🧱. Animal Seeds (also on the Farming menu) go in it.',
+      prog: () => [(objCount('incubator') > 0 || objSeeds().inc || objSeeds().hatched.size > 0) ? 1 : 0, 1] },
+    { id: 'sheep', icon: '🐑', title: 'Grow a sheep', reward: 200,
+      text: () => 'Hatch a sheep in your incubator.',
+      tip: () => 'Farming menu → Animal Seeds → Sheep, and ✋ it into an empty incubator. Sheep give wool for the Tailor.',
+      prog: () => [objHatched(1) ? 1 : 0, 1] },
+    { id: 'cow', icon: '🐄', title: 'Grow a cow', reward: 250,
+      text: () => 'Hatch a cow.',
+      tip: () => 'Animal Seeds → Cow, into an empty incubator. Cows give milk — and the most meat.',
+      prog: () => [objHatched(0) ? 1 : 0, 1] },
+    { id: 'chicken', icon: '🐔', title: 'Grow a chicken', reward: 150,
+      text: () => 'Hatch a chicken.',
+      tip: () => 'Animal Seeds → Chicken. Chickens lay eggs for the bakery’s cakes.',
+      prog: () => [objHatched(2) ? 1 : 0, 1] },
+    { id: 'tailor', icon: '🧶', title: 'Tailor-made', reward: 400,
+      text: () => 'Buy a Tailor and have her knit you a jumper.',
+      tip: () => objBuyHow('tailor') + ' Sell her your wool (3 makes a jumper), then buy a <b>Wool Jumper</b> — you put it straight on.',
+      prog: () => objStep(objOwned('tailor'), wardrobe().some(g => g.slot === 'jumper' && g.style !== 'gold')) },
+    { id: 'slaughter', icon: '🔪', title: 'The Slaughterhouse', reward: 400,
+      text: () => 'Buy a Slaughterhouse and take an animal to the butcher.',
+      tip: () => objBuyHow('slaughter') + ' Lead a cow, pig, sheep or chicken there on the 🪢 Lead (Equipment), aim at the butcher and ✋.',
+      prog: () => objStep(objOwned('slaughter'), objCount('slaughter') > 0) },
+    { id: 'bbq', icon: '🍖', title: 'Fire up the BBQ', reward: 400,
+      text: () => 'Buy a BBQ Shop and have the chef cook your meat.',
+      tip: () => objBuyHow('bbq') + ' ✋ the chef and sell him at least one piece of meat — he cooks it on the grill and pays you.',
+      prog: () => objStep(objOwned('bbq'), objCount('meat_sold') > 0) },
+    // --- Mods ---
+    { id: 'pinc', icon: '🧬', title: 'People Incubator', reward: 500,
+      text: () => 'Place a People Incubator (' + objFmt(PEOPLE_INCUBATOR_PRICE) + ').',
+      tip: () => 'Farming menu → <b>People Incubator</b>, aim at a block and press 🧱. Mods (also on the Farming menu) grow in it.',
+      prog: () => [(objCount('pinc') > 0 || objSeeds().pinc || objSeeds().mods.size > 0) ? 1 : 0, 1] },
+    { id: 'guardian', icon: '🗿', title: 'Grow a Stone Guardian', reward: 750,
+      text: () => 'Grow a Stone Guardian in your People Incubator.',
+      tip: () => 'Farming menu → Mods → <b>Stone Guardian</b>, and ✋ it into an empty People Incubator.',
+      prog: () => { objSeeds(); return [objCount('mod_' + objGuardianIdx()) > 0 ? 1 : 0, 1]; } },
+    // --- Running an empire ---
+    { id: 'wm', icon: '🧑‍💼', title: 'Hire a World Manager', reward: 2000,
+      text: () => 'Hire a World Manager (' + objFmt(WM_COST) + ').',
+      tip: () => 'Every sunrise they empty every till, safe and rent pot for you and sell your harvest — for 1%. 🏗️ Property → <b>World Manager</b>.',
+      prog: () => [!visitMode && wmState().hired ? 1 : 0, 1] },
+    { id: 'houses5', icon: '🏘️', title: 'Lettings empire', reward: 3000,
+      text: () => 'Own 5 Houses.',
+      tip: () => 'Every house is more rent every night. ' + objBuyHow('lethouse'),
+      prog: () => [objHouses(), 5] },
+    { id: 'save1m', icon: '🏦', title: 'Millionaire', reward: 10000,
+      text: () => 'Save up 💰1,000,000.',
+      tip: () => 'Big fields of slow crops and a World Manager selling the lot every morning — keep adding fields and properties.',
+      money: true, prog: () => [coins, 1000000], doneIf: () => objOwned('mansion') > 0 },
+    { id: 'mansion', icon: '🏰', title: 'Buy a Mansion', reward: 15000,
+      text: () => 'Buy a Mansion (' + objFmt(objPrice('mansion')) + ').',
+      tip: () => 'A fully furnished country house with grounds, pool and tennis court. ' + objBuyHow('mansion'),
+      prog: () => [objOwned('mansion'), 1] },
+    { id: 'save5m', icon: '💎', title: 'Multi-millionaire', reward: 25000,
+      text: () => 'Save up 💰5,000,000.',
+      tip: () => 'The Theme Park, Stadium and Superyacht are 💰5,000,000 each — they’re next.',
+      money: true, prog: () => [coins, 5000000], doneIf: () => objOwned('themepark') + objOwned('stadium') + objOwned('yacht') > 0 },
+    { id: 'park', icon: '🎢', title: 'Theme Park', reward: 30000,
+      text: () => 'Buy a Theme Park.',
+      tip: () => 'Visitors pay every day, and you can ride the rollercoaster, ferris wheel and carousel. ' + objBuyHow('themepark') + ' Collect at the <b>Ticket Booth</b>.',
+      prog: () => [objOwned('themepark'), 1] },
+    { id: 'stadium', icon: '🏟️', title: 'Football Stadium', reward: 30000,
+      text: () => 'Buy a Football Stadium.',
+      tip: () => 'A match every afternoon and gate money every day. ' + objBuyHow('stadium') + ' Collect at the <b>Ticket Booth</b>.',
+      prog: () => [objOwned('stadium'), 1] },
+    { id: 'yacht', icon: '🛥️', title: 'Superyacht', reward: 30000,
+      text: () => 'Buy a Superyacht.',
+      tip: () => 'Stand on the shore facing deep water and buy her from 🏗️ Property → 🛥️ Superyacht. Sail her anywhere.',
+      prog: () => [objOwned('yacht'), 1] },
+    { id: 'save10m', icon: '👑', title: 'Ten million', reward: 50000,
+      text: () => 'Save up 💰10,000,000.',
+      tip: () => 'Enough for the Rocket & Moon Base.',
+      money: true, prog: () => [coins, 10000000], doneIf: () => objOwned('rocket') > 0 },
+    { id: 'moon', icon: '🚀', title: 'To the Moon', reward: 100000,
+      text: () => 'Buy the Rocket, fly to the Moon and bring back 3 moon rocks.',
+      tip: () => objBuyHow('rocket') + ' ✋ the launch console to fly. On the Moon, glowing samples are scattered right round the globe — ✋ to bag them. Each one is worth 💰1,000 to 💰10,000 at a grocer.',
+      prog: () => [Math.min(1, objOwned('rocket')) + (objCount('moonvisit') > 0 ? 1 : 0) + Math.min(3, objCount('moonrock')), 5] },
+  ];
+  // Side missions — any order, any time.
+  const SIDE_MISSIONS = [
+    { id: 's_lava', icon: '🌋', title: 'Lava pool', reward: 100, text: () => 'Pour out a lava pool (4 lava blocks).', tip: () => 'Lava is on the Terrain menu. Dig a hole first so it doesn’t run everywhere.', prog: () => [objCount('lava'), 4] },
+    { id: 's_water', icon: '🏊', title: 'Water pool', reward: 100, text: () => 'Fill a pool with water (4 water blocks).', tip: () => 'Water is on the Terrain menu — dig a hole and pour it in.', prog: () => [objCount('water'), 4] },
+    { id: 's_tree', icon: '🌳', title: 'Grow a tree', reward: 100, text: () => 'Plant a sapling and let it grow into a tree.', tip: () => 'Saplings are free on the Seeds list — sow one on grass or mud and give it 20 minutes.', prog: () => [objCount('tree'), 1] },
+    { id: 's_fill', icon: '🧱', title: 'Fill it in', reward: 100, text: () => 'Fill a gap in one go by holding the build button.', tip: () => 'Build a frame (or find a hole in a floor or wall), aim inside it and <b>hold</b> 🧱 (or press H on a keyboard).', prog: () => [objCount('fill'), 1] },
+    { id: 's_drain', icon: '🪣', title: 'Drain it', reward: 100, text: () => 'Drain a body of water with the drain tool.', tip: () => 'Pick <b>Drain</b> on the Action menu (U on a keyboard) and aim at water. Works best on a sealed pond or pool.', prog: () => [objCount('drain'), 1] },
+    { id: 's_furn', icon: '🛋️', title: 'Make it home', reward: 150, text: () => 'Add a piece of furniture to a house you own.', tip: () => 'Buy furniture at a Carpenter, then place it inside your house — more furniture, more rent.', prog: () => [objCount('furn_house'), 1] },
+    { id: 's_ride', icon: '🏍️', title: 'Take a ride', reward: 100, text: () => 'Ride a vehicle.', tip: () => 'Buy one at a Vehicle Shop and get on.', prog: () => [objCount('ride'), 1] },
+    { id: 's_shoot', icon: '🔫', title: 'Fire away', reward: 100, text: () => 'Use a weapon.', tip: () => 'Buy one at an Equipment Shop (or ride a vehicle with a gun) and fire. Not allowed in The Mill.', prog: () => [objCount('shoot'), 1] },
+    { id: 's_church', icon: '⛪', title: 'Build a church', reward: 300, text: () => 'Build a Church.', tip: () => objBuyHow('church'), prog: () => [objOwned('church'), 1] },
+    { id: 's_well', icon: '🪣', title: 'Build a well', reward: 150, text: () => 'Build a Well.', tip: () => '🏗️ Property → 🪣 Well.', prog: () => [objOwnsLandmark(0) ? 1 : 0, 1] },
+    { id: 's_statue', icon: '🗿', title: 'Build a statue', reward: 150, text: () => 'Build a Statue.', tip: () => '🏗️ Property → 🗿 Statue.', prog: () => [objOwnsLandmark(1) ? 1 : 0, 1] },
+    { id: 's_bell', icon: '🔔', title: 'Build a bell', reward: 150, text: () => 'Build a Bell.', tip: () => '🏗️ Property → 🔔 Bell. ✋ it to ring it.', prog: () => [objOwnsLandmark(2) ? 1 : 0, 1] },
+    { id: 's_shelter', icon: '🛖', title: 'Your own four walls', reward: 250, text: () => 'Build something with a floor, 4 walls and a roof — and stand inside it.', tip: () => 'Build it yourself, block by block (a door counts as wall). Stand inside on the floor you laid, with your roof over your head.', prog: () => [objCount('shelter'), 1] },
+    { id: 's_flowers', icon: '🌷', title: 'Flower garden', reward: 150, text: () => 'Plant 20 flowers.', tip: () => 'Flower seeds are on the Seeds list with the crops — sow them on mud. They sell at the grocer too.', prog: () => [objCount('flower'), 20] },
+    { id: 's_pet', icon: '🐕', title: 'A pet of your own', reward: 200, text: () => 'Hatch a dog, a cat or a horse.', tip: () => 'Animal Seeds → Dog, Cat or Horse, into an incubator. Ride the horse!', prog: () => [(objHatched(3) || objHatched(4) || objHatched(5)) ? 1 : 0, 1] },
+    { id: 's_lead', icon: '🪢', title: 'Walkies', reward: 100, text: () => 'Lead an animal on the lead.', tip: () => 'Equipment → 🪢 Lead, then ✋ near an animal.', prog: () => [objCount('lead'), 1] },
+    { id: 's_explore', icon: '🧭', title: 'Explorer', reward: 200, text: () => 'Travel 1,000 blocks from the middle of your world.', tip: () => 'The arrow by the clock always points back to the middle. A vehicle makes it quicker.', prog: () => [Math.min(1000, Math.floor(objCount('far'))), 1000] },
+    { id: 's_sky', icon: '☁️', title: 'Head in the clouds', reward: 150, text: () => 'Fly 100 blocks above sea level.', tip: () => 'Toggle flying (or take a helicopter) and keep going up.', prog: () => [Math.min(100, Math.floor(objCount('high'))), 100] },
+    { id: 's_harvest1k', icon: '🎃', title: 'Bumper crop', reward: 1000, text: () => 'Harvest 1,000 crops by hand.', tip: () => 'Every crop you ✋ pick counts.', prog: () => [objCount('harvest'), 1000] },
+  ];
+  const OBJ_ALL = OBJECTIVES.concat(SIDE_MISSIONS);
+  function objPercent() { const st = objLoad(); let d = 0; for (const o of OBJ_ALL) if (st.done[o.id]) d++; return Math.floor(d / OBJ_ALL.length * 100); }
+  function objCurrentIdx() { const st = objLoad(); for (let i = 0; i < OBJECTIVES.length; i++) { const id = OBJECTIVES[i].id; if (!st.done[id] && !st.skip[id]) return i; } return -1; }
+
+  // ---- The 100% reward: the Mogul's Golden Crown and Golden Jumper (see WARDROBE), and fireworks ----
+  function objGrantMogul() {
+    const st = objLoad();
+    if (st.mogul) return;
+    st.mogul = Date.now(); objSave();
+    try {
+      const w = wardrobe();
+      if (!w.some(g => g.style === 'crown')) { const crown = { id: 'mogulcrown', slot: 'hat', style: 'crown', hex: 0xd4af37, hex2: 0xc0392b }; addToWardrobe(crown); wearGarment(crown.id); }
+      if (!wardrobe().some(g => g.style === 'gold')) { const j = { id: 'moguljumper', slot: 'jumper', style: 'gold', hex: 0xd4af37 }; addToWardrobe(j); wearGarment(j.id); }
+    } catch (e) {}
+    objFireworks();
+    try { playCrowdCheer(); } catch (e) {}
+    objShowMogul();
+  }
+  function objFireworks() {
+    const colors = [0xffd65a, 0xffcc22, 0xfff2a8, 0xff5a5a, 0x7ee08a, 0xffffff];
+    for (let shell = 0; shell < 12; shell++) {
+      setTimeout(() => {
+        const base = objWhere();
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        const particleCount = 50;
+        const positions = new Float32Array(particleCount * 3);
+        const velocities = [];
+        const o = new THREE.Vector3(base.x + (Math.random() - 0.5) * 14, base.y + 9 + Math.random() * 6, base.z + (Math.random() - 0.5) * 14);
+        for (let i = 0; i < particleCount; i++) {
+          positions[i * 3] = o.x; positions[i * 3 + 1] = o.y; positions[i * 3 + 2] = o.z;
+          const theta = Math.random() * Math.PI * 2, phi = Math.acos(2 * Math.random() - 1), speed = 2.5 + Math.random() * 2.5;
+          velocities.push(new THREE.Vector3(Math.sin(phi) * Math.cos(theta) * speed, Math.sin(phi) * Math.sin(theta) * speed, Math.cos(phi) * speed));
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        const mat = new THREE.PointsMaterial({ color, size: 0.32, transparent: true, opacity: 1 });
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+        const t0 = performance.now();
+        (function anim() {
+          const el = (performance.now() - t0) / 1000;
+          if (el > 2) { if (points.parent) points.parent.remove(points); geo.dispose(); mat.dispose(); return; }
+          const p = geo.attributes.position.array;
+          for (let i = 0; i < particleCount; i++) { p[i * 3] = o.x + velocities[i].x * el; p[i * 3 + 1] = o.y + velocities[i].y * el - 1.2 * el * el; p[i * 3 + 2] = o.z + velocities[i].z * el; }
+          geo.attributes.position.needsUpdate = true; mat.opacity = Math.max(0, 1 - el / 2);
+          requestAnimationFrame(anim);
+        })();
+      }, shell * 300);
+    }
+  }
+  function objShowMogul() {
+    objToast('👑 100% — MINING WORLD MOGUL!', 'You’ve done every objective and every side mission. The Golden Crown and Golden Jumper are yours — you’re wearing them now, and everyone can see them. (👕 Wardrobe to change.)', 9000);
+  }
+
+  // ---- UI ----
+  // A small 🎯 button just right of the clock (main objective number + a thin progress bar). Tap it (or press O) and
+  // the current objective opens in the middle of the screen — what to do, progress, how-to tip, skip, and 📜 Progress
+  // (everything done so far, what's left, side missions). It closes when you tap again, or as soon as you move.
+  let objBtn = null, objBox = null, objRep = null, objOpen = false, objOpenAt = null, objNextCheck = 0, objPulseUntil = 0, objWorld = null, objCatchUpUntil = 0, objRepTab = 'main';
+  function objBuildUi() {
+    if (objBtn) return;
+    const css = document.createElement('style');
+    css.textContent = `#objBtn{position:fixed;top:46px;left:130px;z-index:10;color:#fff;font:600 13px system-ui,sans-serif;background:rgba(0,0,0,0.35);padding:6px 10px 8px;border-radius:6px;cursor:pointer;user-select:none;-webkit-user-select:none;display:none;line-height:16px;transition:box-shadow .25s, background .25s}
+#objBtn .ob2{position:absolute;left:8px;right:8px;bottom:3px;height:3px;background:rgba(255,255,255,0.2);border-radius:2px;overflow:hidden}
+#objBtn .ob2 div{height:100%;background:linear-gradient(90deg,#ffd65a,#7ee08a)}
+#objBtn.pulse{background:rgba(60,140,70,0.75);box-shadow:0 0 0 2px rgba(255,214,90,0.85)}
+#objBtn.on{background:rgba(212,160,23,0.55)}
+#objBox{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;width:min(340px,calc(100vw - 32px));max-height:calc(100vh - 40px);overflow:auto;background:rgba(16,18,24,0.9);border:1px solid rgba(255,214,90,0.55);border-radius:12px;color:#fff;font:13px/1.45 system-ui,sans-serif;padding:14px 16px 14px;box-shadow:0 8px 30px rgba(0,0,0,0.5);display:none;cursor:pointer}
+#objBox .oh{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.6px;color:#ffd65a;text-transform:uppercase}
+#objBox .oh span{flex:1}
+#objBox .ot{font-size:17px;font-weight:700;margin:6px 0 2px}
+#objBox .ox{opacity:.95}
+#objBox .obar,#objRep .obar{height:7px;background:rgba(255,255,255,0.15);border-radius:4px;margin-top:10px;overflow:hidden}
+#objBox .obar div,#objRep .obar div{height:100%;background:linear-gradient(90deg,#ffd65a,#7ee08a);border-radius:4px}
+#objBox .op{display:flex;justify-content:space-between;font-size:11.5px;opacity:.85;margin-top:4px}
+#objBox .otip{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.15);font-size:12.5px;opacity:.95}
+#objBox .ofoot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:12px;font-size:11px;opacity:.85}
+#objBox .ofoot span{flex:1;opacity:.8}
+#objBox .oskip,#objBox .orep{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:4px 10px;font-size:11.5px;cursor:pointer}
+#objBox .orep{background:rgba(212,160,23,0.35);border-color:rgba(255,214,90,0.6)}
+#objRep{position:fixed;inset:0;z-index:47;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center}
+#objRep .rp{background:#16181e;border:1px solid rgba(255,214,90,0.55);border-radius:12px;width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 40px);overflow:auto;color:#fff;font:13px/1.4 system-ui,sans-serif;padding:14px 16px}
+#objRep .rh{display:flex;align-items:center;justify-content:space-between;font-weight:700;font-size:16px}
+#objRep .rx{background:none;border:none;color:#fff;font-size:20px;cursor:pointer;padding:0 4px}
+#objRep .rsum{display:flex;gap:8px;margin-top:10px}
+#objRep .rsum div{flex:1;background:rgba(255,255,255,0.06);border-radius:8px;padding:6px 8px;text-align:center}
+#objRep .rsum b{display:block;font-size:17px;color:#ffd65a}
+#objRep .rsum small{font-size:10.5px;opacity:.75}
+#objRep .rtabs{display:flex;gap:6px;margin:12px 0 6px}
+#objRep .rtab{flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:6px;padding:6px;font-size:12.5px;cursor:pointer}
+#objRep .rtab.sel{background:rgba(212,160,23,0.4);border-color:rgba(255,214,90,0.7)}
+#objRep .rrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.07)}
+#objRep .rrow .ri{width:22px;text-align:center;flex:none}
+#objRep .rrow .rn{flex:1;min-width:0}
+#objRep .rrow .rn small{display:block;opacity:.65;font-size:11px}
+#objRep .rrow .rr{font-size:11px;opacity:.8;text-align:right;flex:none}
+#objRep .rrow.todo .rn{opacity:.55}
+#objRep .rrow.cur{background:rgba(212,160,23,0.14);border-radius:6px}
+#objRep .rrow.skip .rn{opacity:.7}
+#objRep .rmini{height:3px;background:rgba(255,255,255,0.15);border-radius:2px;margin-top:3px;overflow:hidden}
+#objRep .rmini div{height:100%;background:#7ee08a}
+#objRep .rgold{margin-top:12px;padding:10px;border-radius:8px;background:linear-gradient(135deg,rgba(212,175,55,0.3),rgba(212,175,55,0.08));border:1px solid rgba(255,214,90,0.5);font-size:12.5px}
+#objToast{position:fixed;top:22%;left:50%;transform:translateX(-50%) scale(.9);z-index:40;background:rgba(16,18,24,0.92);border:1px solid rgba(255,214,90,0.7);color:#fff;border-radius:12px;padding:14px 20px;text-align:center;font:600 14px system-ui,sans-serif;max-width:min(340px,calc(100vw - 32px));opacity:0;pointer-events:none;transition:opacity .3s, transform .3s}
+#objToast.show{opacity:1;transform:translateX(-50%) scale(1)}
+#objToast .t1{font-size:18px;color:#7ee08a;margin-bottom:4px}
+#objToast .t2{font-size:13px;opacity:.9;font-weight:500}`;
+    document.head.appendChild(css);
+    objBtn = document.createElement('div'); objBtn.id = 'objBtn'; objBtn.title = 'Objective (O)';
+    objBox = document.createElement('div'); objBox.id = 'objBox';
+    objRep = document.createElement('div'); objRep.id = 'objRep';
+    const toast = document.createElement('div'); toast.id = 'objToast';
+    document.body.appendChild(objBtn); document.body.appendChild(objBox); document.body.appendChild(objRep); document.body.appendChild(toast);
+    const stop = e => { e.stopPropagation(); };
+    for (const el of [objBtn, objBox, objRep]) { el.addEventListener('mousedown', stop); el.addEventListener('touchstart', stop, { passive: true }); el.addEventListener('pointerdown', stop); el.addEventListener('touchend', stop); }
+    objBtn.addEventListener('click', e => { e.stopPropagation(); objToggle(); });
+    objBox.addEventListener('click', e => {
+      e.stopPropagation();
+      if (e.target.closest('.orep')) { objOpen = false; objRender(); objShowReport(); return; }
+      if (e.target.closest('.oskip')) {
+        const st = objLoad(), o = OBJECTIVES[objCurrentIdx()]; if (!o) return;
+        objOpen = false; objRender();
+        askConfirm('Skip “' + o.title + '” for now? It stays on your list — do it later and it still counts.', 'Skip', () => { st.skip[o.id] = Date.now(); objSave(); objNextCheck = 0; objRender(); });
+        return;
+      }
+      objToggle(false);
+    });
+    objRep.addEventListener('click', e => {
+      e.stopPropagation();
+      const tab = e.target.closest('.rtab');
+      if (tab) { objRepTab = tab.dataset.tab; objRenderReport(); return; }
+      if (e.target === objRep || e.target.closest('.rx')) objRep.style.display = 'none';
+    });
+    document.addEventListener('keydown', e => {
+      if (e.code !== 'KeyO' || e.repeat) return;
+      const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      if (objRep.style.display === 'flex') { objRep.style.display = 'none'; return; }
+      if (objBtn.style.display === 'none') return;
+      objToggle();
+    });
+  }
+  function objShowReport() {
+    if (!objRep) return;
+    document.exitPointerLock && document.exitPointerLock();
+    objRenderReport();
+    objRep.style.display = 'flex';
+  }
+  const objDate = ts => { try { return new Date(ts).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); } catch (e) { return ''; } };
+  function objRenderReport() {
+    const st = objLoad(), cur = objCurrentIdx();
+    const mainDone = OBJECTIVES.filter(o => st.done[o.id]).length, sideDone = SIDE_MISSIONS.filter(o => st.done[o.id]).length;
+    const pct = objPercent();
+    let bonus = 0; for (const o of OBJ_ALL) if (st.done[o.id] && st.done[o.id] !== 1) bonus += o.reward || 0;
+    let h = '<div class="rp"><div class="rh"><span>📜 Progress report</span><button class="rx">✕</button></div>'
+      + '<div class="obar"><div style="width:' + pct + '%"></div></div>'
+      + '<div class="rsum"><div><b>' + pct + '%</b><small>complete</small></div><div><b>' + mainDone + '/' + OBJECTIVES.length + '</b><small>main</small></div><div><b>' + sideDone + '/' + SIDE_MISSIONS.length + '</b><small>side missions</small></div></div>'
+      + '<div class="rsum"><div><b>' + objFmt(bonus) + '</b><small>bonuses earned</small></div><div><b>' + objCount('harvest').toLocaleString() + '</b><small>crops picked</small></div><div><b>' + objFmt(objCount('sell')) + '</b><small>produce sold</small></div></div>'
+      + '<div class="rtabs"><button class="rtab' + (objRepTab === 'main' ? ' sel' : '') + '" data-tab="main">🎯 Main</button><button class="rtab' + (objRepTab === 'side' ? ' sel' : '') + '" data-tab="side">⭐ Side missions</button></div>';
+    const list = objRepTab === 'side' ? SIDE_MISSIONS : OBJECTIVES;
+    list.forEach((o, i) => {
+      const done = st.done[o.id], skipped = !done && st.skip[o.id], isCur = objRepTab === 'main' && i === cur;
+      const [have, need] = done ? [1, 1] : objProg(o), p = Math.max(0, Math.min(100, have / need * 100));
+      const cls = done ? 'done' : isCur ? 'cur' : skipped ? 'skip' : 'todo';
+      const icon = done ? '✅' : isCur ? '▶️' : skipped ? '⏭' : objRepTab === 'side' ? '⬜' : '🔒';
+      const right = done ? (done === 1 ? 'done' : objDate(done)) : (o.money ? objFmt(Math.min(have, need)) + ' / ' + objFmt(need) : Math.min(Math.floor(have), need) + ' / ' + need);
+      h += '<div class="rrow ' + cls + '"><span class="ri">' + icon + '</span><span class="rn">' + (objRepTab === 'main' ? (i + 1) + '. ' : '') + o.icon + ' ' + o.title
+        + '<small>' + o.text() + (skipped ? ' · skipped — still counts if you do it' : '') + (o.reward ? ' · bonus ' + objFmt(o.reward) : '') + '</small>'
+        + (!done && have > 0 ? '<div class="rmini"><div style="width:' + p.toFixed(0) + '%"></div></div>' : '') + '</span><span class="rr">' + right + '</span></div>';
+    });
+    h += st.mogul
+      ? '<div class="rgold">👑 <b>Mining World Mogul</b> since ' + objDate(st.mogul) + '. Your Golden Crown and Golden Jumper are in your 👕 Wardrobe.</div>'
+      : '<div class="rgold">👑 <b>Reach 100%</b> — every main objective and every side mission — to become a <b>Mining World Mogul</b>: a Golden Crown and a Golden Jumper that everyone can see you wearing, and fireworks.</div>';
+    h += '</div>';
+    objRep.innerHTML = h;
+  }
+  function objWhere() { return (onMoon && moon.pos) ? moon.pos : player.pos; }
+  function objToggle(force) {
+    objOpen = force === undefined ? !objOpen : !!force;
+    if (objOpen) objOpenAt = objWhere().clone();
+    objRender();
+  }
+  function objToast(t1, t2, ms) {
+    const el = document.getElementById('objToast'); if (!el) return;
+    el.innerHTML = '<div class="t1">' + t1 + '</div><div class="t2">' + t2 + '</div>';
+    el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), ms || 4200);
+  }
+  function objProg(o) { try { const [h, n] = o.prog(); return [Math.max(0, h || 0), n]; } catch (e) { return [0, 1]; } }
+  function objSetHtml(el, h) { if (el._h !== h) { el._h = h; el.innerHTML = h; } } // only when it changes — rewriting it every tick swallowed taps on its buttons
+  function objRender() {
+    if (!objBtn) return;
+    const st = objLoad();
+    const playing = document.getElementById('coinsDisplay') && document.getElementById('coinsDisplay').style.display === 'block' && document.getElementById('overlay').style.display === 'none';
+    const busy = (document.getElementById('golfScoreHud') || {}).style?.display === 'block' || (document.getElementById('tennisScoreHud') || {}).style?.display === 'block';
+    const show = playing && !busy && !!currentWorldId && currentWorldId !== PUB_WORLD_ID; // created worlds only — not The Mill
+    if (!show) { objBtn.style.display = 'none'; objBox.style.display = 'none'; objOpen = false; return; }
+    // sit just right of the clock
+    const clk = document.getElementById('clockDisplay');
+    if (clk && clk.style.display !== 'none') { const r = clk.getBoundingClientRect(); if (r.width) { objBtn.style.left = Math.round(r.right + 6) + 'px'; objBtn.style.top = Math.round(r.top) + 'px'; } }
+    objBtn.style.display = 'block';
+    // moved since it was opened? close it
+    if (objOpen && objOpenAt && objWhere().distanceTo(objOpenAt) > 0.35) objOpen = false;
+    const ci = objCurrentIdx(), o = OBJECTIVES[ci];
+    const pulse = performance.now() < objPulseUntil, cls = (pulse ? 'pulse' : '') + (objOpen ? ' on' : '');
+    if (objBtn.className !== cls) objBtn.className = cls;
+    const pctAll = objPercent();
+    const sideLine = '<div class="op" style="margin-top:8px"><span>⭐ Side missions ' + SIDE_MISSIONS.filter(s => st.done[s.id]).length + ' / ' + SIDE_MISSIONS.length + '</span><span>Overall ' + pctAll + '%</span></div>';
+    if (!o) {
+      const skipped = OBJECTIVES.filter(x => !st.done[x.id] && st.skip[x.id]).length;
+      objSetHtml(objBtn, (st.mogul ? '👑 ' : '🏆 ') + pctAll + '%<div class="ob2"><div style="width:' + pctAll + '%"></div></div>');
+      objSetHtml(objBox, '<div class="oh">🏆 <span>Main objectives finished</span></div>'
+        + '<div class="ot">' + (st.mogul ? '👑 Mining World Mogul' : skipped ? skipped + ' skipped to go back to' : 'Side missions left') + '</div>'
+        + '<div class="ox">' + (st.mogul ? 'Every objective and every side mission done. Keep building your empire!' : 'Finish ' + (skipped ? 'the skipped objectives and ' : '') + 'every side mission to hit 100% and become a Mining World Mogul.') + '</div>'
+        + sideLine
+        + '<div class="ofoot"><span>Tap or move to close</span><button class="orep">📜 Progress</button></div>');
+      objBox.style.display = objOpen ? 'block' : 'none';
+      return;
+    }
+    const [h, n] = objProg(o), pct = Math.max(0, Math.min(100, h / n * 100));
+    objSetHtml(objBtn, '🎯 ' + (ci + 1) + '/' + OBJECTIVES.length + '<div class="ob2"><div style="width:' + pct.toFixed(0) + '%"></div></div>');
+    objBox.style.display = objOpen ? 'block' : 'none';
+    if (!objOpen) return;
+    const pr = o.money ? objFmt(Math.min(h, n)) + ' / ' + objFmt(n) : Math.min(Math.floor(h), n) + ' / ' + n;
+    objSetHtml(objBox, '<div class="oh">🎯 <span>Objective ' + (ci + 1) + ' of ' + OBJECTIVES.length + '</span></div>'
+      + '<div class="ot">' + o.icon + ' ' + o.title + '</div><div class="ox">' + o.text() + '</div>'
+      + '<div class="obar"><div style="width:' + pct.toFixed(1) + '%"></div></div>'
+      + '<div class="op"><span>' + pr + '</span><span>' + (o.reward ? 'Bonus ' + objFmt(o.reward) : '') + '</span></div>'
+      + '<div class="otip">💡 ' + o.tip() + '</div>'
+      + sideLine
+      + '<div class="ofoot"><span>Tap or move to close</span><button class="orep">📜 Progress</button><button class="oskip">⏭ Skip</button></div>');
+  }
+  // Things that are just "happening right now" — checked every tick, wherever you are.
+  let objShelterAt = 0;
+  function objWatch(now) {
+    const st = objLoad();
+    const inGame = document.getElementById('coinsDisplay') && document.getElementById('coinsDisplay').style.display === 'block';
+    if (!inGame || currentWorldId === PUB_WORLD_ID) return;
+    if (ridingVehicle && !st.c.ride) objNote('ride');
+    if (onMoon && !st.c.moonvisit) objNote('moonvisit');
+    if (leadRec && !st.c.lead) objNote('lead');
+    if (currentWorldId && currentWorldId !== PUB_WORLD_ID && !visitMode && !onMoon && terrainStreamingActive) {
+      objMax('far', Math.hypot(player.pos.x, player.pos.z));
+      objMax('high', player.pos.y - SEA_LEVEL);
+      if (!st.done.s_shelter && now >= objShelterAt) { objShelterAt = now + 1500; if (objInShelter()) objNote('shelter'); }
+    }
+  }
+  function objComplete(o, quiet, now) {
+    const st = objLoad();
+    st.done[o.id] = quiet ? 1 : Date.now(); // 1 = caught up on (already done when the list arrived) — no bonus, no date
+    delete st.skip[o.id];
+    if (!quiet) {
+      if (o.reward) { coins += o.reward; updateCoinsDisplay(); scheduleStatsSave(); }
+      try { playCoin(); } catch (e) {}
+      const isSide = SIDE_MISSIONS.indexOf(o) >= 0, next = OBJECTIVES[objCurrentIdx()];
+      objToast('✅ ' + o.icon + ' ' + o.title + (o.reward ? ' · +' + objFmt(o.reward) : ''),
+        isSide ? '⭐ Side mission done — ' + SIDE_MISSIONS.filter(s => st.done[s.id]).length + ' of ' + SIDE_MISSIONS.length + ' · ' + objPercent() + '% overall'
+          : next ? 'Next: ' + next.icon + ' ' + next.title + ' — ' + next.text() : '🏆 That’s every main objective done!');
+      objPulseUntil = now + 3500;
+    }
+  }
+  let objSideAt = 0;
+  function objTick() {
+    try {
+      objBuildUi();
+      const st = objLoad(), now = performance.now();
+      objWatch(now);
+      if (now >= objNextCheck) {
+        objNextCheck = now + 700;
+        const playing = document.getElementById('coinsDisplay') && document.getElementById('coinsDisplay').style.display === 'block' && currentWorldId && currentWorldId !== PUB_WORLD_ID;
+        if (playing && currentWorldId !== objWorld) { objWorld = currentWorldId; objCatchUpUntil = now + 8000; } // a world's buildings arrive over its first few seconds — anything already done then is just caught up on, no bonus
+        const catchUp = now < objCatchUpUntil;
+        if (playing) {
+          let changed = false;
+          // the main story: the current one, and straight on through any that are already done
+          if (playing) {
+            for (let guard = 0; guard < OBJECTIVES.length; guard++) {
+              const ci = objCurrentIdx(), o = OBJECTIVES[ci]; if (!o) break;
+              const [h, n] = objProg(o);
+              if (h >= n || (o.doneIf && o.doneIf())) { objComplete(o, catchUp, now); changed = true; continue; }
+              break;
+            }
+          }
+          // skipped main objectives, and side missions — any order (every couple of seconds is plenty)
+          if (now >= objSideAt) {
+            objSideAt = now + 2000;
+            const cands = SIDE_MISSIONS.concat(OBJECTIVES.filter(o => st.skip[o.id]));
+            for (const o of cands) {
+              if (st.done[o.id]) continue;
+              const [h, n] = objProg(o);
+              if (h >= n || (o.doneIf && o.doneIf())) { objComplete(o, catchUp, now); changed = true; }
+            }
+          }
+          if (changed) objSave();
+          if (!st.mogul && OBJ_ALL.every(o => st.done[o.id])) objGrantMogul();
+        }
+      }
+      objRender();
+    } catch (e) { console.warn('objectives error (recovered):', e); }
+  }
+  setInterval(objTick, 350);
 
   // ================= SEASONS & WEATHER =================
   // Season is derived from real wall-clock time rather than saved
@@ -24481,7 +25232,11 @@
   //  * beyond ~110 blocks: not drawn.
   // Only the near batches' full geometry is kept; it's thrown away again when you move off. Rebuilding a
   // near batch (as plants grow a stage) happens at most every few seconds, a few milliseconds a frame.
-  const SEED_BATCH = 8, SEED_NEAR = 36, SEED_NEAR_OFF = 42, SEED_HIDE = 110, SEED_BATCH_MS = 3;
+  // (Near was 36 blocks — standing in a big field that was half a million triangles of crops. Full plants now only
+  // close by; beyond that each one's a pair of crossed cards of its height and colour, 4 triangles, which reads as
+  // foliage rather than a box. And every plant's full model is now baked once per crop / stage / shape — see
+  // seedTemplate — so a batch rebuild is a copy, not hundreds of fresh models.)
+  const SEED_BATCH = 8, SEED_NEAR = 14, SEED_NEAR_OFF = 18, SEED_HIDE = 110, SEED_BATCH_MS = 3;
   const seedBatches = new Map(); // "bx_bz" -> { keys:Set, cx, cz, near, detail, lod, dirtyDetail, dirtyLod, nextDetail }
   function seedBatchOf(x, z) { return Math.floor(x / SEED_BATCH) + '_' + Math.floor(z / SEED_BATCH); }
   function seedBatchFor(bk) {
@@ -24501,15 +25256,36 @@
     if (fx.bk) { const b = seedBatches.get(fx.bk); if (b) { b.keys.delete(k); b.dirtyDetail = true; b.dirtyLod = true; } }
     seedFx.delete(k);
   }
-  // A plant's full model, baked (see mergeSeedGroup) and moved to where it stands: { pos, nor, col } arrays.
+  // A plant's full model at the origin, baked once for each crop / stage / one of SEED_VARIANTS shapes.
+  const SEED_VARIANTS = 6, seedTemplates = new Map();
+  function seedTemplate(type, typeIdx, stage, v) {
+    const k = typeIdx + '|' + stage + '|' + v;
+    let t = seedTemplates.get(k);
+    if (!t) { t = seedPlantArraysRaw({ type, stage, x: v * 3.7 + 0.31, z: v * 1.3 + 0.77, y: 0 }, true); seedTemplates.set(k, t || { pos: new Float32Array(0), nor: new Float32Array(0), col: new Float32Array(0) }); if (seedTemplates.size > 900) seedTemplates.clear(); }
+    return t;
+  }
+  // A plant where it stands: its template (shape picked from its spot), given a quarter-turn from its spot too,
+  // and moved into place: { pos, nor, col }.
   function seedPlantArrays(fx) {
+    const h = Math.abs(Math.sin(fx.x * 12.9898 + fx.z * 78.233) * 43758.5453) % 1, v = Math.floor(h * SEED_VARIANTS) % SEED_VARIANTS, q = Math.floor(h * 97) % 4;
+    const t = seedTemplate(fx.type, fx.typeIdx, fx.stage, v); if (!t.pos.length) return null;
+    const n = t.pos.length, pos = new Float32Array(n), nor = new Float32Array(n), ox = fx.x + 0.5, oz = fx.z + 0.5;
+    for (let i = 0; i < n; i += 3) {
+      let x = t.pos[i], z = t.pos[i + 2], nx = t.nor[i], nz = t.nor[i + 2];
+      if (q === 1) { const a = x; x = -z; z = a; const b = nx; nx = -nz; nz = b; } else if (q === 2) { x = -x; z = -z; nx = -nx; nz = -nz; } else if (q === 3) { const a = x; x = z; z = -a; const b = nx; nx = nz; nz = -b; }
+      pos[i] = x + ox; pos[i + 1] = t.pos[i + 1] + fx.y; pos[i + 2] = z + oz; nor[i] = nx; nor[i + 1] = t.nor[i + 1]; nor[i + 2] = nz;
+    }
+    return { pos, nor, col: t.col };
+  }
+  function seedPlantArraysRaw(fx, atOrigin) {
     const g = mergeSeedGroup(buildSeedModel(fx.type, fx.stage, fx.x, fx.z));
     let out = null;
     g.traverse(o => {
       if (out || !o.isMesh || o.material !== seedMergedMat) return;
       const ga = o.geometry, p = ga.attributes.position.array, pos = new Float32Array(p.length);
-      for (let i = 0; i < p.length; i += 3) { pos[i] = p[i] + fx.x + 0.5; pos[i + 1] = p[i + 1] + fx.y; pos[i + 2] = p[i + 2] + fx.z + 0.5; }
-      out = { pos, nor: ga.attributes.normal.array, col: ga.attributes.color.array };
+      const ox = atOrigin ? 0 : fx.x + 0.5, oz = atOrigin ? 0 : fx.z + 0.5;
+      for (let i = 0; i < p.length; i += 3) { pos[i] = p[i] + ox; pos[i + 1] = p[i + 1] + fx.y; pos[i + 2] = p[i + 2] + oz; }
+      out = { pos, nor: Float32Array.from(ga.attributes.normal.array), col: Float32Array.from(ga.attributes.color.array) };
     });
     g.traverse(o => { if (o.isMesh && o.geometry && !o.geometry.userData.shared) o.geometry.dispose(); });
     return out;
@@ -24520,7 +25296,7 @@
     const ck = fx.typeIdx + '|' + fx.stage;
     let info = seedLodCache.get(ck);
     if (!info) {
-      const a = seedPlantArrays({ type: fx.type, stage: fx.stage, x: 0, y: 0, z: 0 });
+      const a = seedPlantArraysRaw({ type: fx.type, stage: fx.stage, x: 0, y: 0, z: 0 });
       info = { min: [0.3, 0, 0.3], max: [0.7, 0.1, 0.7], col: [0.3, 0.55, 0.25] };
       if (a && a.pos.length) {
         const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity], c = [0, 0, 0];
@@ -24540,18 +25316,18 @@
     [[0, 1, 0], [[0,1,1],[1,1,1],[1,1,0],[0,1,0]]],
     [[0, 0, 1], [[0,0,1],[1,0,1],[1,1,1],[0,1,1]]], [[0, 0, -1], [[1,0,0],[0,0,0],[0,1,0],[1,1,0]]],
   ]; // no bottom face — it sits on the mud
-  function seedLodArrays(fx) {
-    const info = seedLodInfo(fx), ox = fx.x, oy = fx.y, oz = fx.z;
-    const pos = new Float32Array(5 * 6 * 3), nor = new Float32Array(5 * 6 * 3), col = new Float32Array(5 * 6 * 3);
+  function seedLodArrays(fx) { // two crossed cards, the plant's height and spread, in its average colour (4 triangles)
+    const info = seedLodInfo(fx), cx = fx.x + (info.min[0] + info.max[0]) / 2, cz = fx.z + (info.min[2] + info.max[2]) / 2;
+    const hw = Math.max(0.1, Math.max(info.max[0] - info.min[0], info.max[2] - info.min[2]) * 0.5), y0 = fx.y + info.min[1], y1 = fx.y + Math.max(info.min[1] + 0.08, info.max[1] / 0.85);
+    const pos = new Float32Array(12 * 3), nor = new Float32Array(12 * 3), col = new Float32Array(12 * 3);
     let v = 0;
-    for (const [n, cs] of SEED_BOX_FACES) {
-      for (const ci of [0, 1, 2, 0, 2, 3]) {
-        const c = cs[ci];
-        pos[v] = ox + (c[0] ? info.max[0] : info.min[0]); pos[v + 1] = oy + (c[1] ? info.max[1] : info.min[1]); pos[v + 2] = oz + (c[2] ? info.max[2] : info.min[2]);
-        nor[v] = n[0]; nor[v + 1] = n[1]; nor[v + 2] = n[2];
-        const shade = n[1] ? 1 : 0.85;
-        col[v] = info.col[0] * shade; col[v + 1] = info.col[1] * shade; col[v + 2] = info.col[2] * shade;
-        v += 3;
+    for (const [dx, dz] of [[0.7071, 0.7071], [0.7071, -0.7071]]) {
+      // tapered (wide at the base, narrow at the top) so a far field reads as plants rather than a wall of slabs
+      const ax = cx - dx * hw, az = cz - dz * hw, bx = cx + dx * hw, bz = cz + dz * hw, tw = hw * 0.3;
+      const tax = cx - dx * tw, taz = cz - dz * tw, tbx = cx + dx * tw, tbz = cz + dz * tw;
+      for (const [x, y, z, sh] of [[ax, y0, az, 0.7], [bx, y0, bz, 0.7], [tbx, y1, tbz, 1.1], [ax, y0, az, 0.7], [tbx, y1, tbz, 1.1], [tax, y1, taz, 1.1]]) {
+        pos[v] = x; pos[v + 1] = y; pos[v + 2] = z; nor[v] = 0; nor[v + 1] = 1; nor[v + 2] = 0;
+        col[v] = Math.min(1, info.col[0] * sh); col[v + 1] = Math.min(1, info.col[1] * sh); col[v + 2] = Math.min(1, info.col[2] * sh); v += 3;
       }
     }
     return { pos, nor, col };
@@ -24665,12 +25441,21 @@
       else if (incInfo(code) && incInfo(code).state !== 'hatched') recordSeed(x, y, z, -1);
     }
   }
+  // Every second, a pass over every planted thing — done a slice at a time (about 2ms a frame), not all in one frame:
+  // with a few thousand crops that one pass was a regular ~15ms hitch.
+  let seedPass = null;
   function updateSeeds() {
     const now = performance.now();
-    if (now < seedNextPass) return;
-    seedNextPass = now + 1000;
-    const tractorSeen = new Set(), droneSeen = new Set(), tpSeen = new Set(), plantedCols = new Map();
-    for (const [k] of seedEdits) {
+    if (!seedPass) {
+      if (now < seedNextPass) return;
+      seedNextPass = now + 1000;
+      seedPass = { keys: [...seedEdits.keys()], i: 0, tractorSeen: new Set(), droneSeen: new Set(), tpSeen: new Set(), plantedCols: new Map() };
+    }
+    const SP = seedPass, tractorSeen = SP.tractorSeen, droneSeen = SP.droneSeen, tpSeen = SP.tpSeen, plantedCols = SP.plantedCols, t0 = now;
+    while (SP.i < SP.keys.length) {
+      if ((SP.i & 31) === 31 && performance.now() - t0 > 2) return; // the rest next frame
+      const k = SP.keys[SP.i++];
+      if (!seedEdits.has(k)) continue;
       const c1 = k.indexOf(','), c2 = k.lastIndexOf(',');
       const x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
       const code = seedCode(k);
@@ -24688,7 +25473,7 @@
       // real when a player actually digs out the mud or builds over them — see seedGroundEdited.
       if (blocks.get(key(x, y - 1, z)) !== MUD_TYPE || blocks.has(k)) { removeSeedFx(k); continue; }
       const p = seedProgress(s);
-      if (s.type.kind === 'tree' && p >= 1) { removeSeed(k, x, y, z); growSeedTree(x, y, z, s.type); continue; }
+      if (s.type.kind === 'tree' && p >= 1) { removeSeed(k, x, y, z); growSeedTree(x, y, z, s.type); objNote('tree'); continue; }
       const stage = Math.round(p * 10) / 10;
       if (s.type.kind !== 'tree' || p < 1) plantedCols.set(x + ',' + z, y); // for SNOW TOPS: no snow on a planted bed
       const fx = seedFx.get(k);
@@ -24707,6 +25492,15 @@
       g.matrixAutoUpdate = false; g.updateMatrix(); // a plant never moves — skip recomputing its matrix every frame
       scene.add(g);
       seedFx.set(k, { group: g, stage, typeIdx: s.typeIdx });
+    }
+    seedPass = null;
+    // Tractors / drones / teleporters: re-read from the live records, not the pass's snapshot. The pass now runs over
+    // several frames, and a tractor that drove on in the meantime has a new key the snapshot never saw — so it was
+    // dropped and re-made every second (the tractors blinking in and out).
+    tractorSeen.clear(); droneSeen.clear(); tpSeen.clear();
+    for (const [k, v] of seedEdits) {
+      const code = Math.floor(v / SEED_VALUE_MUL);
+      if (isTractorCode(code)) tractorSeen.add(k); else if (code === FDRONE_CODE) droneSeen.add(k); else if (code === TP_CODE) tpSeen.add(k);
     }
     for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) removeSeedFx(k); // world changed / removed elsewhere
     snowTopPlanted(plantedCols); // see SNOW TOPS
@@ -24874,6 +25668,7 @@
     removeSeed(pk, x, y, z);
     const n = sd.type.yield || 1, item = sd.type.produce || sd.type.name;
     addToInventory(item, n);
+    objNote('harvest'); // see OBJECTIVES
     showSaveStatus('🎒 +' + n + ' ' + item + (PRODUCE_EMOJI[item] ? ' ' + PRODUCE_EMOJI[item] : ''));
   }
 
@@ -24891,7 +25686,24 @@
   // Meat — from the Slaughterhouse, sold only at the BBQ Shop (see SLAUGHTERHOUSE & BBQ).
   const MEAT_PRICES = { Beef: 50, Pork: 45, Mutton: 45, 'Chicken Meat': 60 }; // an animal's meat sells for 3x its seed — see ANIMAL_TYPES
   const isMeat = name => MEAT_PRICES[name] !== undefined;
-  const producePrice = name => MEAT_PRICES[name] || PRODUCE_PRICES[name] || FLOWER_PRICE;
+  const producePrice = name => name === 'Moon Rock' ? moonRockAvg() : (MEAT_PRICES[name] || PRODUCE_PRICES[name] || FLOWER_PRICE);
+  // Moon rock: every sample is worth something different — 💰1,000 to 💰10,000, rolled when you bag it. The values
+  // are kept (on this device) in the order you bagged them, one per rock in your bag; selling takes them in order.
+  // Shown prices are the average of what you're holding.
+  const MOON_ROCK_MIN = 1000, MOON_ROCK_MAX = 10000;
+  const rollMoonRock = () => MOON_ROCK_MIN + Math.floor(Math.random() * (MOON_ROCK_MAX - MOON_ROCK_MIN + 1));
+  function moonRockVals() {
+    let v; try { v = JSON.parse(localStorage.getItem('mw_moonrock_vals') || '[]'); } catch (e) { v = []; }
+    if (!Array.isArray(v)) v = [];
+    const have = Math.max(0, Math.floor(inventory['Moon Rock'] || 0));
+    while (v.length < have) v.push(rollMoonRock()); // bagged before rocks had values
+    if (v.length > have) v.length = have;
+    return v;
+  }
+  function saveMoonRockVals(v) { try { localStorage.setItem('mw_moonrock_vals', JSON.stringify(v)); } catch (e) {} }
+  function moonRockAvg() { const v = moonRockVals(); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : Math.round((MOON_ROCK_MIN + MOON_ROCK_MAX) / 2); }
+  function moonRockTake(n) { const v = moonRockVals(); const take = v.splice(0, Math.max(0, n)); saveMoonRockVals(v); return take.reduce((a, b) => a + b, 0); } // call BEFORE the rocks leave the bag
+  function moonRockBag() { const v = moonRockVals(), val = rollMoonRock(); v.push(val); saveMoonRockVals(v); addToInventory('Moon Rock', 1); return val; }
   // Seed prices are each type's own `cost` — see the ECONOMY table by
   // SEED_TYPES for what each crop's harvest sells for against it.
   // Saplings produce nothing to sell, so they stay free.
@@ -24940,12 +25752,13 @@
     const have = inventory[name] || 0;
     n = Math.min(n, have);
     if (n <= 0) return 0;
+    const earned = name === 'Moon Rock' ? moonRockTake(n) : n * producePrice(name);
     inventory[name] = have - n;
     if (inventory[name] <= 0) delete inventory[name];
     saveInventory();
     renderInventory();
-    const earned = n * producePrice(name);
-    addCoins(earned);
+    addCoins(earned); objNote('sell', earned); // see OBJECTIVES
+    if (MEAT_PRICES[name]) objNote('meat_sold', n); // the BBQ chef cooks it
     if (name === 'Wool') addTailorWool(n); // she knits it into clothes you can buy back — see TAILOR
     if (chargingVisitor()) { // selling in someone else's shop — they take a cut (see VISITOR CHARGES)
       const cut = Math.floor(earned * VISITOR_SHOP_CUT);
@@ -25030,7 +25843,7 @@
     { t: 'hotel',     name: 'Hotel',          emoji: '🏨', price: 10000, sx: 19, sz: 21, h: 52, note: '10 floors + rooftop pool — furnish the rooms to rent them out' },
     { t: 'bakery',    name: 'Mill & Bakery',  emoji: '🥖', price: 9000, sx: 25, sz: 23, h: 13, note: 'turns your wheat into bread, eggs and milk into cakes' },
     { t: 'restaurant', name: 'Restaurant',    emoji: '🍽️', price: 18000, sx: 27, sz: 27, h: 7, note: 'cooks your crops and meat into meals — hire a head chef' },
-    { t: 'rocket',    name: 'Rocket & Moon Base', emoji: '🚀', price: 10000000, sx: 36, sz: 36, h: 36, note: 'launch to the Moon — low gravity, a moon base, moon rock worth 💰400 a sample' },
+    { t: 'rocket',    name: 'Rocket & Moon Base', emoji: '🚀', price: 10000000, sx: 36, sz: 36, h: 36, note: 'launch to the Moon — low gravity, a moon base, moon rock worth 💰1,000–10,000 a sample' },
     { t: 'yacht',     name: 'Superyacht',     emoji: '🛥️', price: 5000000, sx: 12, sz: 36, h: 12, note: 'sail her anywhere there\u2019s deep water — stand on the shore facing the sea to buy' },
     { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day' },
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
@@ -25231,6 +26044,7 @@
       const spec = { t: bt.t, ck, site: { sx0: site.sx0, sz0: site.sz0, sx1: site.sx1, sz1: site.sz1, floor: site.floor }, rs, bought: true };
       if (use.door) spec.door = use.door; // the door faces where you're standing now — see pickDoorSide
       claimRegionForSpec(spec);
+      objNote('built_' + (bt.t === 'landmark' ? 'lm' + bt.kind : bt.t)); // see OBJECTIVES
       recordStructureSpec(spec); // saved (promptly) and sent live to anyone else here
       try { replayStructureSpec(spec); } catch (e) { console.error('[voxel] bought building failed to build', e); }
       playCoin(); playThud(420);
@@ -25751,7 +26565,7 @@
       const amt = Math.floor((h.spec && h.spec.takings) || 0);
       if (amt <= 0) return;
       h.spec.takings = 0; hotelSaveSpec(h);
-      coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin();
+      coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_hotel', amt);
       showSaveStatus('🏨 Collected 💰' + amt + ' from ' + hotelDisplayName(h));
       showHotelStatus(keeper);
     });
@@ -26368,7 +27182,7 @@
     $('pubCollect').addEventListener('click', () => {
       const amt = Math.floor(st.safe || 0); if (amt <= 0) return;
       st.safe = 0; specSave(p.ck, p.spec);
-      coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin();
+      coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_pub', amt);
       showSaveStatus('🍺 Collected 💰' + amt + ' from the safe at ' + pubName(p));
       openPubOffice(fk);
     });
@@ -26836,7 +27650,7 @@
     const $ = id => document.getElementById(id);
     $('letCollect').addEventListener('click', () => {
       const amt = Math.floor(st.pot || 0); if (amt <= 0) return;
-      st.pot = 0; specSave(h.ck, h.spec); coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin();
+      st.pot = 0; specSave(h.ck, h.spec); coins += amt; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_let', amt);
       showSaveStatus('🏠 Collected 💰' + amt + ' rent'); openLetPanel(fk);
     });
     if ($('letNotice')) $('letNotice').addEventListener('click', () => {
@@ -27199,7 +28013,7 @@
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) b.spec.name = c; else delete b.spec.name; specSave(b.ck, b.spec); bizSetSign(b.sign, bakeName(b), '#4a2a14', '#f3dc9a'); playThud(500); openBakePanel(fk); };
     $('bakeRename').addEventListener('click', rename);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
-    $('bakeCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(b.ck, b.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('🥖 Collected 💰' + a + ' from the till'); openBakePanel(fk); });
+    $('bakeCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(b.ck, b.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_bake', a); showSaveStatus('🥖 Collected 💰' + a + ' from the till'); openBakePanel(fk); });
     $('bakeBring').addEventListener('click', () => {
       const got = bizTakeFromBag(['Wheat', 'Egg', 'Milk']);
       st.wheat = (st.wheat || 0) + (got.Wheat || 0); st.eggs = (st.eggs || 0) + (got.Egg || 0); st.milk = (st.milk || 0) + (got.Milk || 0);
@@ -27478,7 +28292,7 @@
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) r.spec.name = c; else delete r.spec.name; specSave(r.ck, r.spec); bizSetSign(r.sign, restName(r), '#183323', '#f3dc9a'); playThud(500); openRestOffice(fk); };
     $('restRename').addEventListener('click', rename);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
-    $('restCollect').addEventListener('click', () => { const a = Math.floor(st.safe || 0); if (a <= 0) return; st.safe = 0; specSave(r.ck, r.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('🍽️ Collected 💰' + a + ' from the safe'); openRestOffice(fk); });
+    $('restCollect').addEventListener('click', () => { const a = Math.floor(st.safe || 0); if (a <= 0) return; st.safe = 0; specSave(r.ck, r.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_rest', a); showSaveStatus('🍽️ Collected 💰' + a + ' from the safe'); openRestOffice(fk); });
     $('restStock').addEventListener('click', () => {
       const got = bizTakeFromBag(REST_INGREDIENTS);
       for (const [k, v] of Object.entries(got)) st.pantry[k] = (st.pantry[k] || 0) + v;
@@ -28015,7 +28829,7 @@
       for (const [name, n] of Object.entries(inventory)) {
         const c = Math.floor(n || 0) - (keep[name] || 0); if (c <= 0) continue;
         const price = producePrice(name); if (!(price > 0)) continue;
-        sold += c * price; soldItems[name] = c; inventory[name] = Math.floor(n || 0) - c;
+        sold += name === 'Moon Rock' ? moonRockTake(c) : c * price; soldItems[name] = c; inventory[name] = Math.floor(n || 0) - c;
       }
       if (sold) { saveInventory(); renderInventory(); }
     }
@@ -28023,6 +28837,7 @@
     if (!gross) { st.last = { collected: 0, sold: 0, fee: 0, net: 0, got, soldItems: {} }; wmSave(st); return; }
     const fee = Math.round(gross * WM_FEE), net = gross - fee;
     coins += net; updateCoinsDisplay(); scheduleStatsSave(); playCoin();
+    { const K = { hotels: 'collect_hotel', pubs: 'collect_pub', houses: 'collect_let', bakeries: 'collect_bake', restaurants: 'collect_rest', parks: 'collect_park', stadiums: 'collect_stad' }; for (const k in got) if (got[k] > 0 && K[k]) objNote(K[k], got[k]); if (sold) objNote('sell', sold); } // see OBJECTIVES
     st.last = { collected, sold, fee, net, got, soldItems }; wmSave(st);
     showSaveStatus('🧑‍💼 Your world manager brought in 💰' + gross + (sold ? ' (💰' + sold + ' from selling the harvest)' : '') + ' — 💰' + net + ' to you after their 1%');
   }
@@ -28175,8 +28990,9 @@
     const carCols = [0xc0392b, 0xf2c14e, 0x2f8f4a];
     for (let i = 0; i < 3; i++) {
       const car = new THREE.Group();
-      const list = [[1.0, 0.4, 1.4, 0, 0.25, 0, 0, carCols[i]], [0.9, 0.35, 0.1, 0, 0.6, -0.45, 0, carCols[i]], [0.9, 0.35, 0.1, 0, 0.6, 0.25, 0, carCols[i]], [0.08, 0.4, 0.08, 0.3, 0.75, 0.05, 0, 0xc8ced2, 0.8], [0.08, 0.4, 0.08, -0.3, 0.75, 0.05, 0, 0xc8ced2, 0.8]];
-      if (i === 0) list.push([1.0, 0.3, 0.4, 0, 0.3, 0.85, 0, 0xffd34d]);
+      // low-sided cars (the sides come up to your hips, not your chin) with low seat backs, so you see out all round
+      const list = [[1.0, 0.26, 1.4, 0, 0.18, 0, 0, carCols[i]], [0.9, 0.22, 0.1, 0, 0.42, -0.45, 0, carCols[i]], [0.9, 0.22, 0.1, 0, 0.42, 0.25, 0, carCols[i]], [0.08, 0.26, 0.08, 0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8], [0.08, 0.26, 0.08, -0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8]];
+      if (i === 0) list.push([1.0, 0.2, 0.4, 0, 0.21, 0.85, 0, 0xffd34d]);
       for (const x of [-0.45, 0.45]) for (const z of [-0.5, 0.5]) list.push([0.1, 0.18, 0.18, x, 0.0, z, 0, 0x222222]);
       car.add(mergedBoxes(list)); g.add(car); cars.push(car);
     }
@@ -28282,7 +29098,7 @@
     let seat;
     if (r.kind === 'coaster') {
       const C = r.p.coaster.userData, t = r.p.coasterT, pt = C.curve.getPointAt(t), tg = C.curve.getTangentAt(t);
-      seat = pt.clone().add(new THREE.Vector3(0, 0.55, 0));
+      seat = pt.clone().add(new THREE.Vector3(0, 0.95, 0)); // sitting up high in the car — your eye's well above its sides
       // Your view turns and tilts with the car, and on top of that you can look wherever you like: anything the
       // mouse / stick / touch changed since last frame is kept as your own look, added to the track's heading.
       const trackYaw = Math.atan2(-tg.x, -tg.z), trackPitch = Math.asin(Math.max(-1, Math.min(1, tg.y))) * 0.9;
@@ -28297,10 +29113,104 @@
   }
   function interactRideGate(fk) { startRide(fk); }
 
+  // ---- the coaster's sound ----
+  // All synthesised (no sound files): a ratchet clack up the chain lift, a rolling roar and rumble that rise with the
+  // train's speed, wheels clattering over the track joints, riders screaming over the first drop (when you're on), and
+  // an air-brake hiss as it pulls into the station. It fades with distance from the train.
+  let coasterAudio = null;
+  const _coasterSndPos = new THREE.Vector3();
+  function coasterAudioStart() {
+    ensureAudio(); if (!audioCtx || coasterAudio) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const out = audioCtx.createGain(); out.gain.value = 0.0001; out.connect(audioCtx.destination);
+    const src = audioCtx.createBufferSource(); src.buffer = yachtNoiseBuffer(); src.loop = true;
+    const roarF = audioCtx.createBiquadFilter(); roarF.type = 'lowpass'; roarF.frequency.value = 300;
+    const roarG = audioCtx.createGain(); roarG.gain.value = 0.0001;
+    src.connect(roarF); roarF.connect(roarG); roarG.connect(out);
+    const rum = audioCtx.createOscillator(); rum.type = 'triangle'; rum.frequency.value = 36;
+    const rumG = audioCtx.createGain(); rumG.gain.value = 0.0001; rum.connect(rumG); rumG.connect(out);
+    src.start(); rum.start();
+    coasterAudio = { out, src, roarF, roarG, rum, rumG, clickAcc: 0, jointAcc: 0, quietFor: 0, lastScream: 0 };
+  }
+  function coasterAudioStop() {
+    const A = coasterAudio; coasterAudio = null; if (!A || !audioCtx) return;
+    A.out.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.2);
+    setTimeout(() => { try { A.src.stop(); A.rum.stop(); A.out.disconnect(); } catch (err) {} }, 1200);
+  }
+  function coasterClick(level, freq, q, dur) {
+    const A = coasterAudio; if (!A) return;
+    const t = audioCtx.currentTime;
+    const n = audioCtx.createBufferSource(); n.buffer = yachtNoiseBuffer();
+    const f = audioCtx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(level, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(f); f.connect(g); g.connect(A.out); n.start(t, Math.random() * 1.5); n.stop(t + dur + 0.03);
+  }
+  function coasterScream(level, crowd) { // a few voices rising, holding and falling away — through vowel-ish formant filters
+    const A = coasterAudio; if (!A) return;
+    const t0 = audioCtx.currentTime;
+    for (let i = 0; i < crowd; i++) {
+      const t = t0 + Math.random() * 0.25, dur = 1.6 + Math.random() * 0.9, f0 = 420 + Math.random() * 380;
+      const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+      o.frequency.setValueAtTime(f0 * 0.8, t); o.frequency.linearRampToValueAtTime(f0 * 1.35, t + 0.25);
+      o.frequency.linearRampToValueAtTime(f0 * 1.25, t + dur * 0.7); o.frequency.linearRampToValueAtTime(f0 * 0.8, t + dur);
+      const vib = audioCtx.createOscillator(), vibG = audioCtx.createGain(); vib.frequency.value = 5 + Math.random() * 3; vibG.gain.value = f0 * 0.04;
+      vib.connect(vibG); vibG.connect(o.frequency);
+      const g = audioCtx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(level / crowd, t + 0.12);
+      g.gain.setValueAtTime(level / crowd, t + dur * 0.75); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      for (const [ff, qq, gg] of [[950, 6, 1], [2600, 8, 0.45]]) {
+        const bp = audioCtx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = ff * (0.9 + Math.random() * 0.2); bp.Q.value = qq;
+        const bg = audioCtx.createGain(); bg.gain.value = gg; o.connect(bp); bp.connect(bg); bg.connect(g);
+      }
+      g.connect(A.out); o.start(t); vib.start(t); o.stop(t + dur + 0.05); vib.stop(t + dur + 0.05);
+    }
+  }
+  function coasterBrake(level) {
+    const A = coasterAudio; if (!A) return;
+    const t = audioCtx.currentTime;
+    const n = audioCtx.createBufferSource(); n.buffer = yachtNoiseBuffer();
+    const f = audioCtx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 2400;
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(level, t + 0.05); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+    n.connect(f); f.connect(g); g.connect(A.out); n.start(t); n.stop(t + 1.5);
+  }
+  function coasterSoundTick(p, vol, riding, dt) {
+    if (!p || vol <= 0.01) {
+      if (coasterAudio && (coasterAudio.quietFor += dt) > 2) coasterAudioStop();
+      else if (coasterAudio) coasterAudio.out.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.2);
+      for (const q of parks.values()) q._sndRun = q.coasterRun;
+      return;
+    }
+    if (!coasterAudio) coasterAudioStart();
+    const A = coasterAudio; if (!A) return;
+    A.quietFor = 0;
+    const t = audioCtx.currentTime, run = p.coasterRun, v = run ? p.coasterV : 0, sp = Math.min(1, v / 14), lift = run && p._onLift;
+    A.out.gain.setTargetAtTime(Math.max(0.0001, vol * 0.85), t, 0.15);
+    A.roarG.gain.setTargetAtTime(run ? (lift ? 0.015 : 0.03 + sp * 0.26) : 0.0001, t, 0.2);
+    A.roarF.frequency.setTargetAtTime(220 + sp * 1700, t, 0.2);
+    A.rumG.gain.setTargetAtTime(run ? 0.04 + sp * 0.16 : 0.0001, t, 0.2);
+    A.rum.frequency.setTargetAtTime(30 + sp * 34, t, 0.2);
+    if (lift) { // the chain dog clacking over the ratchet
+      A.clickAcc += dt * 6.5;
+      while (A.clickAcc >= 1) { A.clickAcc -= 1; coasterClick(0.32, 2300, 4, 0.03); coasterClick(0.18, 700, 3, 0.05); }
+    } else if (run) { // wheels over the track joints — each joint a quick pair as the bogies cross it
+      A.jointAcc += v * dt / 3.2;
+      while (A.jointAcc >= 1) { A.jointAcc -= 1; coasterClick(0.08 + sp * 0.2, 850 + sp * 500, 2.5, 0.05); setTimeout(() => coasterClick(0.06 + sp * 0.16, 800 + sp * 450, 2.5, 0.05), 60); }
+    }
+    // screaming: over the crest of the lift, and now and then at full speed — only with you aboard
+    const now = performance.now();
+    if (riding && run) {
+      if (p._sndLift && !lift) { coasterScream(0.22, 4); A.lastScream = now; }
+      else if (!lift && sp > 0.8 && now - A.lastScream > 7000 && Math.random() < dt * 0.6) { coasterScream(0.16, 3); A.lastScream = now; }
+    }
+    if (p._sndRun && !run) coasterBrake(0.18); // pulling into the station
+    for (const q of parks.values()) q._sndRun = q.coasterRun;
+    p._sndLift = lift;
+  }
+
   // ---- the rides move ----
   function updateParks(dt) {
-    if (!parks.size) return;
+    if (!parks.size) { if (coasterAudio) coasterSoundTick(null, 0, false, dt); return; }
     const now = performance.now();
+    let sndVol = 0, sndP = null, sndRiding = false;
     if (!visitMode && parkPrevDayTime !== null && parkPrevDayTime > 0.9 && dayTime < 0.1) parkNightPassed();
     parkPrevDayTime = dayTime;
     for (const p of parks.values()) {
@@ -28320,6 +29230,7 @@
       if (p.coasterRun) {
         const t = p.coasterT, y = C.curve.getPointAt(t).y;
         const onLift = t > p.coasterLapStart + 0.01 && t < C.topT; // climbing the chain lift
+        p._onLift = onLift;
         if (onLift) p.coasterV = 3.2;
         else { const g = 7; p.coasterV = Math.max(3, Math.sqrt(Math.max(0, 3.2 * 3.2 + 2 * g * (C.topY - y)))); } // energy from the top of the lift
         let nt = t + p.coasterV * dt / C.length;
@@ -28337,7 +29248,14 @@
         car.position.copy(pt); car.lookAt(pt.clone().add(tg));
       });
       try { updateParkPeople(p, dt, now); } catch (err) { console.warn('park people error (recovered):', err); }
+      // the coaster's sound: whichever park's train is loudest where you are
+      const riding = !!(rideNow && rideNow.kind === 'coaster' && rideNow.p === p);
+      let vol = 0;
+      if (riding) vol = 1;
+      else if (p.coasterRun || p._sndRun) { C.cars[0].getWorldPosition(_coasterSndPos); vol = Math.pow(Math.max(0, 1 - _coasterSndPos.distanceTo(player.pos) / 75), 1.6); }
+      if (vol > sndVol) { sndVol = vol; sndP = p; sndRiding = riding; }
     }
+    coasterSoundTick(sndP, sndVol, sndRiding, dt);
   }
   function updateParkPeople(p, dt, now) {
     const cx = (p.bx0 + p.bx1) / 2 + 0.5, cz = (p.bz0 + p.bz1) / 2 + 0.5;
@@ -28390,7 +29308,7 @@
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) p.spec.name = c; else delete p.spec.name; specSave(p.ck, p.spec); bizSetSign(p.sign, parkName(p), '#c0392b', '#ffffff'); playThud(500); openParkBooth(fk); };
     $('parkRename').addEventListener('click', rename);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
-    $('parkCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(p.ck, p.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('🎟️ Collected 💰' + a); openParkBooth(fk); });
+    $('parkCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(p.ck, p.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_park', a); showSaveStatus('🎟️ Collected 💰' + a); openParkBooth(fk); });
     $('parkClose').addEventListener('click', () => { el.style.display = 'none'; });
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
@@ -28636,8 +29554,8 @@
     const dusk = Math.sin(dayTime * Math.PI * 2) < 0.15;
     for (const s2 of stadiums.values()) {
       if (s2.worldId !== currentWorldId || !s2.board || !s2.board.parent) { stadClear(s2); continue; }
-      for (const g of s2.lamps) g.material.color.setHex(dusk || s2.match ? 0xfffbe8 : 0x555555);
-      for (const l of s2.lights) l.intensity = dusk ? 2.2 : 0;
+      for (const g of s2.lamps) g.material.color.setHex(dusk || s2.match ? 0xe9e4d2 : 0x555555);
+      for (const l of s2.lights) l.intensity = dusk ? 1.4 : 0; // was 2.2 — too glaring on the pitch
       const near = Math.hypot(player.pos.x - s2.board.position.x, player.pos.z - s2.board.position.z) < 90;
       const st = stadState(s2), done = st.lastResult && st.lastResult.day === stadDayNumber(s2);
       if (inWindow && !done && near) {
@@ -28708,7 +29626,7 @@
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) s2.spec.name = c; else delete s2.spec.name; specSave(s2.ck, s2.spec); stadDrawBoard(s2, true); playThud(500); openStadiumOffice(fk); };
     $('stadRename').addEventListener('click', rename);
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
-    $('stadCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(s2.ck, s2.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('🎟️ Collected 💰' + a); openStadiumOffice(fk); });
+    $('stadCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(s2.ck, s2.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_stad', a); showSaveStatus('🎟️ Collected 💰' + a); openStadiumOffice(fk); });
     $('stadClose').addEventListener('click', () => { el.style.display = 'none'; });
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
@@ -28782,8 +29700,8 @@
     for (let k = 1; k <= 6; k++) b.push(yb(-3.8, -2.4, -1.2, 2 - 0.5 * k, 5 - k, 6 - k));
     b.push(yb(-4.6, -3.8, -1.2, 1.8, -1, 6), yb(-3.8, -2.4, -1.2, 1.8, 5, 6)); // (the dead space beside / under the top step)
     // lower deck walls: corridor | rooms (doorways to the bathroom and the cabin), bathroom | cabin
-    b.push(yb(-2.4, -2.0, -1.2, 1.8, -1, 6), yb(-2.2, -2.0, -1.2, 1.8, -9, -7.5), yb(-2.2, -2.0, -1.2, 1.8, -6.5, -3.4), yb(-2.2, -2.0, -1.2, 1.8, -2.4, -1));
-    b.push(yb(-2.2, -2.0, 0.9, 1.8, -7.5, -6.5), yb(-2.2, -2.0, 0.9, 1.8, -3.4, -2.4), yb(-2.0, 4.6, -1.2, 1.8, -4.6, -4.4));
+    b.push(yb(-2.4, -2.0, -1.2, 1.8, -1, 6), yb(-2.2, -2.0, -1.2, 1.8, -9, -7.6), yb(-2.2, -2.0, -1.2, 1.8, -6.4, -3.5), yb(-2.2, -2.0, -1.2, 1.8, -2.3, -1));
+    b.push(yb(-2.2, -2.0, 1.0, 1.8, -7.6, -6.4), yb(-2.2, -2.0, 1.0, 1.8, -3.5, -2.3), yb(-2.0, 4.6, -1.2, 1.8, -4.6, -4.4));
     // upper deck, its railings (gaps at the stairs), the bridge (sliding doors aft) and its console
     b.push([-4.5, 4.5, 4.6, 5.0, -10, 6]);
     b.push([-4.5, -4.3, 5, 6, -10, 1], [4.3, 4.5, 5, 6, -10, 1], [-3, 3, 5, 6, -10, -9.8]);
@@ -28819,6 +29737,18 @@
     return false;
   }
   function yachtAboard(e, p) { const [lx, lz] = yachtLocal(e, p.x, p.z), ly = p.y - yachtWaterY(); return lx > -5.5 && lx < 5.5 && lz > -17.5 && lz < 18 && ly > -1.5 && ly < 9.5; }
+  // Under cover aboard a yacht: anything of hers overhead (a deck, the saloon or bridge roof, the helipad). Rain
+  // doesn't fall there (see updateWeather).
+  function yachtCoveredAt(x, y, z) {
+    if (!yachts || !yachts.size) return false;
+    for (const e of yachts.values()) {
+      if (!e.group || e.worldId !== currentWorldId) continue;
+      const ly = y - yachtWaterY(); if (ly < -2 || ly > 8.4) continue;
+      const [lx, lz] = yachtLocal(e, x, z); if (lx < -5 || lx > 5 || lz < -17 || lz > 17.5) continue;
+      for (const b of YACHT_BOXES) if (lx >= b[0] && lx < b[1] && lz >= b[4] && lz < b[5] && b[2] > ly + 1.2 && b[3] - b[2] < 1.2 && b[1] - b[0] > 2) return true; // a slab (not a wall) over your head
+    }
+    return false;
+  }
   // Inside a yacht's hull, below the main deck (the lower deck, the splash pool): dry, whatever the sea is doing
   // outside — you don't swim down there, and it isn't drawn as underwater.
   function yachtDryAt(x, y, z) {
@@ -28874,15 +29804,16 @@
     box(4.55, 4.6, -1.2, 1.8, -9, 6, CREAM); box(-4.6, -4.55, -1.2, 1.8, -9, 6, CREAM); box(-4.6, 4.6, -1.2, 1.8, -9, -8.95, CREAM); box(-4.6, 4.6, -1.2, 1.8, 5.95, 6, CREAM);
     box(-5, -3.8, 1.8, 1.975, -9, 6, W); box(-2.4, 5, 1.8, 1.975, -9, 6, W); box(-3.8, -2.4, 1.8, 1.975, -9, -1, W); box(-3.8, -2.4, 1.8, 1.975, 5, 6, W);
     box(-4.55, -3.8, -1.2, 1.8, -1, 5.95, CREAM); box(-3.8, -2.4, -1.2, 1.8, 5, 5.95, CREAM);
-    box(-2.4, -2.0, -1.2, 1.8, -1, 5.95, CREAM); box(-2.2, -2.0, -1.2, 1.8, -8.95, -7.5, CREAM); box(-2.2, -2.0, -1.2, 1.8, -6.5, -3.4, CREAM); box(-2.2, -2.0, -1.2, 1.8, -2.4, -1, CREAM);
-    box(-2.2, -2.0, 0.9, 1.8, -7.5, -6.5, CREAM); box(-2.2, -2.0, 0.9, 1.8, -3.4, -2.4, CREAM); box(-2.0, 4.55, -1.2, 1.8, -4.6, -4.4, CREAM);
-    for (const [z0, z1] of [[-7.5, -6.5], [-3.4, -2.4]]) { box(-2.25, -1.95, -1.2, 0.95, z0 - 0.06, z0, TEAK); box(-2.25, -1.95, -1.2, 0.95, z1, z1 + 0.06, TEAK); box(-2.25, -1.95, 0.9, 0.96, z0 - 0.06, z1 + 0.06, TEAK); } // door frames
+    box(-2.4, -2.0, -1.2, 1.8, -1, 5.95, CREAM); box(-2.2, -2.0, -1.2, 1.8, -8.95, -7.6, CREAM); box(-2.2, -2.0, -1.2, 1.8, -6.4, -3.5, CREAM); box(-2.2, -2.0, -1.2, 1.8, -2.3, -1, CREAM);
+    box(-2.2, -2.0, 1.0, 1.8, -7.6, -6.4, CREAM); box(-2.2, -2.0, 1.0, 1.8, -3.5, -2.3, CREAM); box(-2.0, 4.55, -1.2, 1.8, -4.6, -4.4, CREAM);
+    // door frames — kept clear of every face of the wall they sit in (no two surfaces in the same place to flicker)
+    for (const [z0, z1] of [[-7.6, -6.4], [-3.5, -2.3]]) { box(-2.26, -1.94, -1.19, 1.02, z0 - 0.07, z0 + 0.03, TEAK); box(-2.26, -1.94, -1.19, 1.02, z1 - 0.03, z1 + 0.07, TEAK); box(-2.26, -1.94, 0.97, 1.06, z0 - 0.07, z1 + 0.07, TEAK); }
     for (let k = 1; k <= 6; k++) box(-3.8, -2.4, -1.2, 2 - 0.5 * k, 5 - k, 6 - k, TEAK); // the stairs down
     // the main deck (teak), open over the stairs and the splash pool
     box(-4.95, -3.8, 1.975, 2.025, -16.95, 10.95, TEAK); box(-2.4, -1.5, 1.975, 2.025, -16.95, 10.95, TEAK); box(1.5, 4.95, 1.975, 2.025, -16.95, 10.95, TEAK);
     box(-1.5, 1.5, 1.975, 2.025, -16.95, -16, TEAK); box(-1.5, 1.5, 1.975, 2.025, -13, 10.95, TEAK); box(-3.8, -2.4, 1.975, 2.025, -16.95, -1, TEAK); box(-3.8, -2.4, 1.975, 2.025, 5, 10.95, TEAK);
     // the splash pool: one deep, tiled, a step down into it on the port side, a white coping round the top
-    box(-1.5, 1.5, 0.95, 1.0, -16, -13, TILE); box(-1.5, -1.45, 1.0, 1.98, -16, -13, TILE); box(1.45, 1.5, 1.0, 1.98, -16, -13, TILE); box(-1.45, 1.45, 1.0, 1.98, -16, -15.95, TILE); box(-1.45, 1.45, 1.0, 1.98, -13.05, -13, TILE);
+    box(-1.5, 1.5, 1.0, 1.04, -16, -13, TILE); box(-1.5, -1.45, 1.0, 1.98, -16, -13, TILE); // (the floor sits just above the hull below it — not level with it, which flickered) box(1.45, 1.5, 1.0, 1.98, -16, -13, TILE); box(-1.45, 1.45, 1.0, 1.98, -16, -15.95, TILE); box(-1.45, 1.45, 1.0, 1.98, -13.05, -13, TILE);
     box(-1.45, -0.85, 1.0, 1.5, -15.95, -13.05, TILE);
     box(-1.65, 1.65, 2.0, 2.06, -16.15, -16, W); box(-1.65, 1.65, 2.0, 2.06, -13, -12.85, W); box(-1.65, -1.5, 2.0, 2.06, -16, -13, W); box(1.5, 1.65, 2.0, 2.06, -16, -13, W);
     // swim platform at the stern
@@ -28922,7 +29853,7 @@
     const hull = mergedBoxes(L); g.add(hull);
     const glass = mergedBoxes(GL); glass.material = new THREE.MeshPhongMaterial({ vertexColors: true, transparent: true, opacity: 0.28, shininess: 90, depthWrite: false, side: THREE.DoubleSide }); glass.castShadow = false; glass.renderOrder = 2; g.add(glass);
     // the splash pool's water: one deep, its surface well below the coping (no flicker against the deck)
-    { const w = new THREE.Mesh(new THREE.BoxGeometry(2.88, 0.84, 2.88), new THREE.MeshPhongMaterial({ color: 0x4fb8dc, transparent: true, opacity: 0.55, shininess: 100, depthWrite: false })); w.position.set(0, 1.425, -14.5); w.renderOrder = 1; g.add(w); g.userData.poolWater = w; }
+    { const w = new THREE.Mesh(new THREE.BoxGeometry(2.88, 0.8, 2.88), new THREE.MeshPhongMaterial({ color: 0x4fb8dc, transparent: true, opacity: 0.55, shininess: 100, depthWrite: false })); w.position.set(0, 1.445, -14.5); w.renderOrder = 1; g.add(w); g.userData.poolWater = w; }
     // sliding glass doors (saloon, bridge): two panels that part as you come near
     const doorMat = new THREE.MeshPhongMaterial({ color: 0xbfe0ee, transparent: true, opacity: 0.35, shininess: 100, depthWrite: false, side: THREE.DoubleSide }), frameMat = new THREE.MeshPhongMaterial({ color: CHROME, shininess: 90 });
     const doors = [];
@@ -28933,6 +29864,14 @@
       p.position.set(s * 0.5, (y0 + y1) / 2, z); g.add(p);
       doors.push({ p, closed: s * 0.5, open: s * 1.5, y: (y0 + y1) / 2, z });
     }
+    // the bathroom and cabin doors: hinged, swinging open into the room as you come near
+    for (const [z0, z1] of [[-7.6, -6.4], [-3.5, -2.3]]) {
+      const pivot = new THREE.Group(); pivot.position.set(-2.1, -1.2, z0 + 0.04);
+      const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2.15, z1 - z0 - 0.08), new THREE.MeshPhongMaterial({ color: 0xe8dcc4, shininess: 20 })); leaf.position.set(0, 1.08, (z1 - z0 - 0.08) / 2); pivot.add(leaf);
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), new THREE.MeshPhongMaterial({ color: CHROME, shininess: 110 })); knob.position.set(0.05, 1.0, z1 - z0 - 0.2); pivot.add(knob);
+      const knob2 = knob.clone(); knob2.position.x = -0.05; pivot.add(knob2);
+      g.add(pivot); doors.push({ p: pivot, hinge: true, cx: -2.1, z: (z0 + z1) / 2, y: -0.1 });
+    }
     g.userData.doors = doors;
     // portholes: a chrome ring with the view out, inside and outside the hull
     { const ringMat = new THREE.MeshPhongMaterial({ color: CHROME, shininess: 110 }), viewMat = new THREE.MeshBasicMaterial({ map: portholeTexture() });
@@ -28942,10 +29881,12 @@
       for (const z of YACHT_PORTHOLES.portIn) port(-4.54, z, true); for (const z of YACHT_PORTHOLES.portOut) port(-5.02, z, false);
     }
     // the furniture: the game's own pieces (merged, see FURNITURE MERGING), and the loungers by the pool
+    g.userData.furn = [];
     for (const [nm, x, y, z, facing] of YACHT_FURN) {
-      const t = FURNITURE_TYPES.find(ft => ft.name === nm); if (!t) continue;
-      const fg = t.build(); try { mergeFurniturePieces(fg); } catch (err) {}
+      const ti = FURNITURE_TYPES.findIndex(ft => ft.name === nm); if (ti < 0) continue;
+      const fg = FURNITURE_TYPES[ti].build(); try { mergeFurniturePieces(fg); } catch (err) {}
       fg.position.set(x, y, z); fg.rotation.y = yachtFurnRot(nm, facing); g.add(fg);
+      g.userData.furn.push({ group: fg, typeIdx: ti, localY: y }); // ✋ works on these like any furniture — see yachtFurn
     }
     for (const [x, z] of YACHT_LOUNGERS) { const l = buildSunLounger(); l.position.set(x, 2, z); g.add(l); }
     // the wheel, navigation lights, the name on the stern, the helicopter
@@ -28995,14 +29936,15 @@
     if (now >= yachtScanAt) {
       yachtScanAt = now + 1000;
       for (const [ck, spec] of structureSpecs) if (spec && spec.t === 'yacht' && spec.yacht && !yachts.has(ck)) yachts.set(ck, { ck, spec, x: spec.yacht.x, z: spec.yacht.z, yaw: spec.yacht.yaw, v: 0, group: null, worldId: currentWorldId });
-      for (const [ck, e] of yachts) if (e.worldId !== currentWorldId || structureSpecs.get(ck) !== e.spec) { if (e.group) { scene.remove(e.group); disposeObject3D(e.group); } yachts.delete(ck); if (yachtDriving === e) yachtDriving = null; }
+      for (const [ck, e] of yachts) if (e.worldId !== currentWorldId || structureSpecs.get(ck) !== e.spec) { if (e.group) { yachtFurnUnregister(e); scene.remove(e.group); disposeObject3D(e.group); } yachts.delete(ck); if (yachtDriving === e) yachtDriving = null; }
     }
+    if (yachtEngine && !yachtDriving) yachtEngineStop(); // (however you came to leave the wheel)
     if (!yachts.size) return;
     const night = Math.sin(dayTime * Math.PI * 2) < 0.1;
     for (const e of yachts.values()) {
       const d = Math.hypot(player.pos.x - e.x, player.pos.z - e.z);
-      if (!e.group && d < 160) { e.group = buildYachtModel(yachtName(e.spec)); e.group.userData.noCull = true; scene.add(e.group); }
-      else if (e.group && d > 220 && yachtDriving !== e) { scene.remove(e.group); disposeObject3D(e.group); e.group = null; }
+      if (!e.group && d < 160) { e.group = buildYachtModel(yachtName(e.spec)); e.group.userData.noCull = true; scene.add(e.group); yachtFurnRegister(e); }
+      else if (e.group && d > 220 && yachtDriving !== e) { yachtFurnUnregister(e); scene.remove(e.group); disposeObject3D(e.group); e.group = null; }
       // someone else is sailing it: ease towards where they've told us it is
       if (e.remote && yachtDriving !== e) { const k = Math.min(1, dt * 4); e.x += (e.remote.x - e.x) * k; e.z += (e.remote.z - e.z) * k; let dy = e.remote.yaw - e.yaw; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2; e.yaw += dy * k; }
       if (yachtDriving === e) yachtDrive(e, dt, now);
@@ -29011,7 +29953,10 @@
         if (e.group.userData.lamp) e.group.userData.lamp.intensity = night ? 1.6 : 0;
         // the sliding doors part when you come near (and close behind you)
         if (e.group.userData.doors) { const [plx, plz] = yachtLocal(e, player.pos.x, player.pos.z), ply = player.pos.y - yachtWaterY();
-          for (const dr of e.group.userData.doors) { const near = Math.abs(plx) < 2.4 && Math.abs(plz - dr.z) < 2.4 && Math.abs(ply + 0.9 - dr.y) < 1.8;
+          for (const dr of e.group.userData.doors) {
+            if (dr.hinge) { const near = Math.abs(plx - dr.cx) < 2.0 && Math.abs(plz - dr.z) < 1.9 && Math.abs(ply + 0.9 - dr.y) < 1.8;
+              const want = near ? 1.45 : 0; dr.p.rotation.y += (want - dr.p.rotation.y) * Math.min(1, dt * 5); continue; }
+            const near = Math.abs(plx) < 2.4 && Math.abs(plz - dr.z) < 2.4 && Math.abs(ply + 0.9 - dr.y) < 1.8;
             const want = near ? dr.open : dr.closed; dr.p.position.x += (want - dr.p.position.x) * Math.min(1, dt * 6); } }
         // the helicopter's away while you're flying it — it flies itself back when you get out
         if (e.heliOut && !(ridingVehicle && ridingVehicle.yachtHeli === e)) { e.heliOut = false; showBriefMessage('🚁 The helicopter has flown itself back to ' + yachtName(e.spec) + '\u2019s helipad'); }
@@ -29031,6 +29976,8 @@
     }
     yachtHullUniforms();
   }
+  function yachtFurnRegister(e) { (e.group.userData.furn || []).forEach((p, i) => yachtFurn.set('y|' + e.ck + '|' + i, { group: p.group, typeIdx: p.typeIdx, localY: p.localY, yachtPiece: true, yacht: e, rot: 0, bx: Math.floor(e.x), by: 0, bz: Math.floor(e.z) })); }
+  function yachtFurnUnregister(e) { const pre = 'y|' + e.ck + '|'; for (const k of Array.from(yachtFurn.keys())) if (k.startsWith(pre)) { yachtFurn.delete(k); furnFx.delete(k); if (furnSeat && furnSeat.fk === k) furnSeat = null; } }
   // Tells the water shader where the yachts' hulls are, so the sea isn't drawn inside them (see uHull in waterMat)
   function yachtHullUniforms() {
     const u = waterMat.uniforms.uHull && waterMat.uniforms.uHull.value; if (!u) return;
@@ -29048,7 +29995,9 @@
     e.v = Math.max(-maxR, Math.min(maxF, e.v));
     const turn = -steer * 0.32 * Math.min(1, Math.abs(e.v) / 4) * Math.sign(e.v || 1) * dt;
     const nyaw = e.yaw + turn, nx = e.x + Math.sin(nyaw) * e.v * dt, nz = e.z + Math.cos(nyaw) * e.v * dt;
+    yachtEngineUpdate(e, thr);
     if (Math.abs(e.v) > 0.01 && !yachtFits(nx, nz, nyaw)) {
+      if (Math.abs(e.v) > 0.8) { yachtCrashSound(Math.abs(e.v)); if (now > yachtShallowMsgAt - 3000) showBriefMessage('💥 Ran aground!'); }
       e.v = 0;
       if (now > yachtShallowMsgAt) { yachtShallowMsgAt = now + 4000; showBriefMessage('🛥️ Too shallow (or unknown water) that way — turn her round'); }
       return;
@@ -29062,6 +30011,61 @@
     // tell the world (and save her position now and then)
     if (now >= yachtSendAt) { yachtSendAt = now + 250; try { sendWeaponMsg('yachtPos', { ck: e.ck, x: +e.x.toFixed(2), z: +e.z.toFixed(2), yaw: +e.yaw.toFixed(3) }); } catch (err) {} }
     if (now >= yachtSaveAt) { yachtSaveAt = now + 6000; yachtSavePose(e); }
+  }
+  // ---- sound: the engines (a deep diesel note that rises with speed, and the rush of water along the hull) and
+  // running aground (a crunch and a groan, louder the faster you hit) ----
+  let yachtEngine = null, _yachtNoiseBuf = null;
+  function yachtNoiseBuffer() {
+    if (_yachtNoiseBuf) return _yachtNoiseBuf;
+    const n = audioCtx.sampleRate * 2, b = audioCtx.createBuffer(1, n, audioCtx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    return (_yachtNoiseBuf = b);
+  }
+  function yachtEngineStart() {
+    ensureAudio(); if (!audioCtx || yachtEngine) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const out = audioCtx.createGain(); out.gain.value = 0.0001; out.connect(audioCtx.destination);
+    const filt = audioCtx.createBiquadFilter(); filt.type = 'lowpass'; filt.frequency.value = 320; filt.connect(out);
+    const o1 = audioCtx.createOscillator(), o2 = audioCtx.createOscillator(); o1.type = 'sawtooth'; o2.type = 'sawtooth'; o1.frequency.value = 62; o2.frequency.value = 65.5;
+    o1.connect(filt); o2.connect(filt);
+    const lfo = audioCtx.createOscillator(), lfoG = audioCtx.createGain(); lfo.frequency.value = 9; lfoG.gain.value = 0.25; lfo.connect(lfoG); // the diesel's chug
+    const chug = audioCtx.createGain(); chug.gain.value = 0.75; lfoG.connect(chug.gain); filt.disconnect(); filt.connect(chug); chug.connect(out);
+    const wash = audioCtx.createBufferSource(); wash.buffer = yachtNoiseBuffer(); wash.loop = true;
+    const washF = audioCtx.createBiquadFilter(); washF.type = 'bandpass'; washF.frequency.value = 700; washF.Q.value = 0.6;
+    const washG = audioCtx.createGain(); washG.gain.value = 0.0001; wash.connect(washF); washF.connect(washG); washG.connect(audioCtx.destination);
+    o1.start(); o2.start(); lfo.start(); wash.start();
+    yachtEngine = { out, filt, o1, o2, lfo, wash, washG, washF };
+    out.gain.setTargetAtTime(0.05, audioCtx.currentTime, 0.4); // she starts up
+  }
+  function yachtEngineStop() {
+    const y = yachtEngine; if (!y || !audioCtx) { yachtEngine = null; return; }
+    yachtEngine = null; const t = audioCtx.currentTime;
+    y.out.gain.setTargetAtTime(0.0001, t, 0.25); y.washG.gain.setTargetAtTime(0.0001, t, 0.4);
+    setTimeout(() => { try { y.o1.stop(); y.o2.stop(); y.lfo.stop(); y.wash.stop(); } catch (err) {} }, 1600);
+  }
+  function yachtEngineUpdate(e, thr) {
+    const y = yachtEngine; if (!y || !audioCtx) return;
+    const t = audioCtx.currentTime, sp = Math.min(1, Math.abs(e.v) / 11), work = Math.max(sp, Math.abs(thr) * 0.6);
+    y.o1.frequency.setTargetAtTime(62 + work * 38, t, 0.3); y.o2.frequency.setTargetAtTime(65.5 + work * 40, t, 0.3);
+    y.lfo.frequency.setTargetAtTime(9 + work * 14, t, 0.3);
+    y.filt.frequency.setTargetAtTime(320 + work * 700, t, 0.3);
+    y.out.gain.setTargetAtTime(0.05 + work * 0.07, t, 0.3);
+    y.washG.gain.setTargetAtTime(0.0001 + sp * 0.09, t, 0.5); y.washF.frequency.setTargetAtTime(500 + sp * 900, t, 0.5);
+  }
+  function yachtCrashSound(speed) {
+    if (!audioCtx) return;
+    const k = Math.min(1, speed / 8), t = audioCtx.currentTime;
+    const n = audioCtx.createBufferSource(); n.buffer = yachtNoiseBuffer();
+    const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(1800, t); f.frequency.exponentialRampToValueAtTime(200, t + 0.9);
+    const g = audioCtx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25 + 0.35 * k, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.1);
+    n.connect(f); f.connect(g); g.connect(audioCtx.destination); n.start(t); n.stop(t + 1.2);
+    const o = audioCtx.createOscillator(), og = audioCtx.createGain(); o.type = 'sine'; o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(32, t + 0.6);
+    og.gain.setValueAtTime(0.0001, t); og.gain.exponentialRampToValueAtTime(0.4 + 0.3 * k, t + 0.015); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    o.connect(og); og.connect(audioCtx.destination); o.start(t); o.stop(t + 0.75);
+    const c = audioCtx.createOscillator(), cg = audioCtx.createGain(); c.type = 'sawtooth'; c.frequency.setValueAtTime(140, t + 0.1); c.frequency.linearRampToValueAtTime(95, t + 1.0); // the hull groaning
+    const cf = audioCtx.createBiquadFilter(); cf.type = 'lowpass'; cf.frequency.value = 500;
+    cg.gain.setValueAtTime(0.0001, t + 0.1); cg.gain.exponentialRampToValueAtTime(0.06 + 0.08 * k, t + 0.25); cg.gain.exponentialRampToValueAtTime(0.0001, t + 1.05);
+    c.connect(cf); cf.connect(cg); cg.connect(audioCtx.destination); c.start(t + 0.1); c.stop(t + 1.1);
   }
   function yachtSavePose(e) { e.spec.yacht = { x: +e.x.toFixed(2), z: +e.z.toFixed(2), yaw: +e.yaw.toFixed(3) }; specSave(e.ck, e.spec); }
   // the yacht carries you even when you're not the one driving: anyone aboard a moving remote yacht moves with it
@@ -29111,7 +30115,7 @@
   // ✋ on / near a yacht: take the wheel / drop anchor / board / go ashore. True if it did something.
   function tryYachtAction() {
     if (!yachts.size) return false;
-    if (yachtDriving) { const e = yachtDriving; yachtDriving = null; e.v = 0; yachtSavePose(e); yachtViewButton(false); pitch = 0; showSaveStatus('⚓ Anchor down — ' + yachtName(e.spec) + '\u2019s position is saved'); return true; }
+    if (yachtDriving) { const e = yachtDriving; yachtDriving = null; e.v = 0; yachtSavePose(e); yachtViewButton(false); yachtEngineStop(); pitch = 0; showSaveStatus('⚓ Anchor down — ' + yachtName(e.spec) + '\u2019s position is saved'); return true; }
     for (const e of yachts.values()) {
       if (!e.group) continue;
       const aboard = yachtAboard(e, player.pos), [lx, lz] = yachtLocal(e, player.pos.x, player.pos.z), ly = player.pos.y - yachtWaterY();
@@ -29125,7 +30129,7 @@
       }
       if (aboard && lx > -4.3 && lx < 4.3 && lz > 1.2 && lz < 5.8 && ly > 4.5 && ly < 7.2) { // anywhere on the bridge
         if (visitMode) { showBriefMessage('🛥️ Only her owner takes the wheel'); return true; }
-        yachtDriving = e; e.v = 0; yaw = e.yaw + Math.PI; pitch = -0.12; yachtCamPrimed = false; yachtViewButton(true);
+        yachtDriving = e; e.v = 0; yaw = e.yaw + Math.PI; pitch = -0.12; yachtCamPrimed = false; yachtViewButton(true); yachtEngineStart();
         showSaveStatus('🛥️ At the wheel — forward / back for throttle, left / right to steer, V or 🎥 to change the view, ✋ to drop anchor'); return true;
       }
       if (aboard && lz < -11 && ly < 3.5) { // the aft deck: go ashore at the nearest land
@@ -29167,9 +30171,12 @@
   // On the Moon: your rocket on the landing pad (✋ it to go home), the moon base — habitat modules, a glass dome
   // greenhouse, solar arrays, a dish, a rover, a flag — and glowing MOON ROCK samples scattered across the craters.
   // ✋ a sample to bag it (💰400 each at the grocer, or the world manager sells them); each one's back a game-day later.
-  const MOON_G = -3.1, MOON_JUMP = 6, MOON_SPEED = 4.6, MOON_R = 150;
+  // Moon physics: gravity exactly a sixth of Earth's (GRAVITY / 6), and a jump that's a bit weaker than on Earth (you're
+  // in a spacesuit) — so you go up about four blocks and hang there for three seconds or so, like the Apollo footage.
+  // You also carry your momentum: very little steering in mid-air, and slithery, loping footing on the ground.
+  const MOON_G = -18 / 6, MOON_JUMP = 4.9, MOON_SPEED = 4.6, MOON_R = 150;
   var moonScene = null, onMoon = false, launchSeq = null;
-  const moon = { pos: new THREE.Vector3(6, 0, 6), vel: new THREE.Vector3(), onGround: true, solids: [], craters: [], samples: [], rocket: null };
+  const moon = { pos: new THREE.Vector3(6, 0, 6), vel: new THREE.Vector3(), onGround: true, solids: [], craters: [], gcraters: [], samples: [], rocket: null, dust: [], dip: 0, buggy: null, U: null, F: null, vh: null, alt: 0, vy: 0 };
   var rocketSites = new Map(); // ck -> launch site on Earth
 
   // ---- the rocket (the same model stands on the Earth pad and the Moon pad) ----
@@ -29246,40 +30253,196 @@
     const k = db < 42 ? 0 : db > 58 ? 1 : (db - 42) / 16;
     return h * k;
   }
-  function moonGroundAt(x, z, y) { // the terrain, or the top of something solid you're over (if you're above it)
-    let g = moonHeightRaw(x, z);
-    for (const s of moon.solids) { if (moonInSolid(s, x, z, 0) && s.top <= y + 0.6 && s.walkable) g = Math.max(g, s.top); }
-    return g;
+  // ---- the Moon is a globe ----
+  // MOON_RAD across (about 2,500 blocks right round — nine minutes' walk, four in the buggy), centred straight below
+  // the base. Gravity pulls towards the centre and your view turns with the curve, so you can walk (or drive) all the
+  // way round and come back to the base from the other side. Round the base (out to MOON_FLAT) the ground is flat —
+  // it's built on a level plain — and it curves away into the sphere by MOON_BLEND.
+  // Positions on it: moon.U (the unit direction from the centre: which way is "up" where you are), moon.alt (height
+  // above the ground), moon.F (a forward direction carried along with you as you go — your yaw / pitch turn from it).
+  const MOON_RAD = 400, MOON_C = new THREE.Vector3(8, -400, 0), MOON_FLAT = 50, MOON_BLEND = 100;
+  function moonH3(U) { // the lie of the land out on the globe: gentle rolling ground and the craters
+    const px = U.x * MOON_RAD, py = U.y * MOON_RAD, pz = U.z * MOON_RAD;
+    let h = 0.6 * Math.sin(px * 0.08) * Math.cos(pz * 0.07) + 0.3 * Math.sin(px * 0.21 + pz * 0.17) + 0.7 * Math.sin(py * 0.05 + px * 0.03) * Math.cos(pz * 0.045 - py * 0.035);
+    const crater = c => {
+      const dot = U.x * c.d.x + U.y * c.d.y + U.z * c.d.z; if (dot < c.cosMax) return;
+      const d = Math.acos(Math.min(1, dot)) * MOON_RAD, r = c.r;
+      h += d < r ? (-r * 0.32 * (1 - (d / r) * (d / r)) + r * 0.12 * Math.pow(d / r, 4)) : r * 0.12 * Math.exp(-Math.pow((d - r) / (r * 0.35), 2));
+    };
+    for (const c of moon.gcraters) crater(c);
+    const L = moon.scraters && moon.scraters.get(Math.floor(px / 24) + ',' + Math.floor(py / 24) + ',' + Math.floor(pz / 24));
+    if (L) for (const c of L) crater(c);
+    return h;
+  }
+  function moonSurfR(U) { // how far the ground is from the centre in direction U
+    const arc = Math.acos(Math.max(-1, Math.min(1, U.y))) * MOON_RAD;
+    let w = arc <= MOON_FLAT ? 0 : arc >= MOON_BLEND ? 1 : (arc - MOON_FLAT) / (MOON_BLEND - MOON_FLAT); w = w * w * (3 - 2 * w);
+    const rs = w > 0 ? MOON_RAD + moonH3(U) : 0;
+    if (w >= 1) return rs;
+    const t0 = MOON_RAD / U.y, rf = (MOON_RAD + moonHeightRaw(8 + U.x * t0, U.z * t0)) / U.y; // the level plain round the base (y = 0 there)
+    return rf * (1 - w) + rs * w;
+  }
+  function moonFlatU(x, z) { return new THREE.Vector3(x - 8, MOON_RAD, z).normalize(); } // straight down onto the plain at (x, z) near the base
+  function moonPoint(U, alt, out) { return (out || new THREE.Vector3()).copy(MOON_C).addScaledVector(U, moonSurfR(U) + alt); }
+  function moonNearBase(U) { return U.y > 0.97; } // (within ~100 blocks of it — where the base's buildings are)
+  function moonTangent(U, v) { return v.addScaledVector(U, -v.dot(U)).normalize(); }
+  function moonPlaceFlat(x, z) { // stand at (x, z) on the plain by the base, the usual way round
+    moon.U = moonFlatU(x, z); moon.alt = 0; moon.vy = 0; moon.vh = new THREE.Vector3(); moon.onGround = true;
+    moon.F = moonTangent(moon.U, new THREE.Vector3(0, 0, -1));
+    moonPoint(moon.U, 0, moon.pos); moon.vel.set(0, 0, 0);
+  }
+  // Fine detail painted on in the shader, from the ground's own world position — so it stays exactly where it is as you
+  // walk or drive over it: mottling, grain, and three sizes of little craters (each sits wholly inside its own cell of
+  // a 3D grid, so one look-up per size is enough). It fades out with distance so it doesn't shimmer.
+  const MOON_DETAIL_GLSL = `
+float mHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float mNoise(vec3 x) { vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(mHash(i), mHash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(mHash(i + vec3(0.0, 1.0, 0.0)), mHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(mHash(i + vec3(0.0, 0.0, 1.0)), mHash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(mHash(i + vec3(0.0, 1.0, 1.0)), mHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z); }
+float mCraterlets(vec3 p) {
+  vec3 i = floor(p), f = p - i;
+  if (mHash(i) > 0.62) return 0.0;
+  vec3 c = 0.3 + 0.4 * vec3(mHash(i + 3.1), mHash(i + 7.7), mHash(i + 11.3));
+  float r = 0.07 + 0.11 * mHash(i + 5.1), t = length(f - c) / r;
+  if (t > 1.6) return 0.0;
+  return t < 1.0 ? -0.3 * (1.0 - t * t) + 0.16 * pow(t, 6.0) : 0.16 * exp(-pow((t - 1.0) / 0.22, 2.0));
+}
+float moonDetail(vec3 p, float d) {
+  float s = 1.0 + 0.30 * (mNoise(p * 0.045) - 0.5) + 0.18 * (mNoise(p * 0.21) - 0.5);
+  float mid = 1.0 - smoothstep(90.0, 260.0, d);
+  if (mid > 0.0) s += mid * (mCraterlets(p * 0.08) + 0.7 * mCraterlets(p * 0.19 + 13.7));
+  float fine = 1.0 - smoothstep(18.0, 55.0, d);
+  if (fine > 0.0) s += fine * (0.12 * (mNoise(p * 1.7) - 0.5) + 0.07 * (mNoise(p * 7.0) - 0.5) + 0.8 * mCraterlets(p * 0.6 + 5.3) + 0.6 * mCraterlets(p * 1.4 + 2.1));
+  return clamp(s, 0.45, 1.4);
+}
+`;
+  function moonGroundMaterial() {
+    const m = new THREE.MeshLambertMaterial({ vertexColors: true });
+    m.onBeforeCompile = sh => {
+      sh.vertexShader = 'varying vec3 vMoonW;\nvarying float vMoonD;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n  vMoonW = (modelMatrix * vec4(transformed, 1.0)).xyz; vMoonD = -mvPosition.z;');
+      sh.fragmentShader = 'varying vec3 vMoonW;\nvarying float vMoonD;\n' + MOON_DETAIL_GLSL + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= moonDetail(vMoonW, vMoonD);');
+    };
+    return m;
+  }
+  // the ground: rings out from the base (close together on the plain, wider apart out on the globe), cut into tiles so
+  // only the part in view is drawn. The triangles face OUTWARDS — wound the other way they were culled, and you saw the
+  // inside of the far side of the Moon through the ground (the "imprint" that went everywhere with you).
+  function buildMoonGlobe() {
+    const SEG = 320, ringS = [];
+    for (let sArc = 0; sArc < 120; sArc += 2) ringS.push(sArc);
+    for (let sArc = 120; sArc < Math.PI * MOON_RAD; sArc += 3.5) ringS.push(sArc);
+    ringS.push(Math.PI * MOON_RAD);
+    const NR = ringS.length, W = SEG + 1, pos = new Float32Array(NR * W * 3), col = new Float32Array(NR * W * 3), U = new THREE.Vector3(), P = new THREE.Vector3();
+    for (let r = 0; r < NR; r++) {
+      const sArc = ringS[r], th = sArc / MOON_RAD, st = Math.sin(th), ct = Math.cos(th);
+      for (let j = 0; j <= SEG; j++) {
+        const ph = j / SEG * Math.PI * 2; U.set(st * Math.cos(ph), ct, st * Math.sin(ph)); if (sArc === 0) U.set(0, 1, 0);
+        const rad = moonSurfR(U); P.copy(MOON_C).addScaledVector(U, rad);
+        const o = (r * W + j) * 3; pos[o] = P.x; pos[o + 1] = P.y; pos[o + 2] = P.z;
+        const h = sArc < MOON_BLEND ? 0 : rad - MOON_RAD; // craters a shade darker in their floors, their rims lighter
+        const v = 0.5 + 0.05 * Math.sin(P.x * 0.031 + P.z * 0.023) * Math.cos(P.y * 0.027 - P.x * 0.011) + Math.min(0.08, Math.max(-0.12, h * 0.02));
+        col[o] = v; col[o + 1] = v; col[o + 2] = v * 1.02;
+      }
+    }
+    // normals over the whole grid (so the tiles join without seams in the shading)
+    const idx = [];
+    for (let r = 0; r < NR - 1; r++) for (let j = 0; j < SEG; j++) { const a = r * W + j, b = a + 1, c = a + W, d = c + 1; idx.push(a, b, c, b, d, c); }
+    const full = new THREE.BufferGeometry(); full.setAttribute('position', new THREE.BufferAttribute(pos, 3)); full.setIndex(idx); full.computeVertexNormals();
+    const nor = full.attributes.normal.array;
+    for (let r = 0; r < NR; r++) { const a = r * W * 3, b = (r * W + SEG) * 3; for (let k = 0; k < 3; k++) { const m = (nor[a + k] + nor[b + k]) / 2; nor[a + k] = m; nor[b + k] = m; } } // the 0 / 360° seam
+    full.dispose();
+    const grp = new THREE.Group(), mat = moonGroundMaterial(), TR = 48, TS = 64;
+    for (let r0 = 0; r0 < NR - 1; r0 += TR) for (let j0 = 0; j0 < SEG; j0 += TS) {
+      const r1 = Math.min(NR - 1, r0 + TR), j1 = Math.min(SEG, j0 + TS), tw = j1 - j0 + 1, n = (r1 - r0 + 1) * tw;
+      const tp = new Float32Array(n * 3), tn = new Float32Array(n * 3), tc = new Float32Array(n * 3), ti = [];
+      let v = 0;
+      for (let r = r0; r <= r1; r++) for (let j = j0; j <= j1; j++, v++) { const o = (r * W + j) * 3; for (let k = 0; k < 3; k++) { tp[v * 3 + k] = pos[o + k]; tn[v * 3 + k] = nor[o + k]; tc[v * 3 + k] = col[o + k]; } }
+      for (let r = 0; r < r1 - r0; r++) for (let j = 0; j < j1 - j0; j++) { const a = r * tw + j, b = a + 1, c = a + tw, d = c + 1; ti.push(a, b, c, b, d, c); }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(tp, 3)); g.setAttribute('normal', new THREE.BufferAttribute(tn, 3)); g.setAttribute('color', new THREE.BufferAttribute(tc, 3));
+      g.setIndex(ti); g.computeBoundingSphere();
+      const m = new THREE.Mesh(g, mat); m.matrixAutoUpdate = false; grp.add(m);
+    }
+    return grp;
+  }
+  // rocks and pebbles strewn right round the globe (in tiles too) — so you can see the ground going by
+  function buildMoonRocks(rnd) {
+    const pebble = new THREE.OctahedronGeometry(1, 0), rock = new THREE.IcosahedronGeometry(1, 0);
+    const buckets = new Map(), M = new THREE.Matrix4(), N = new THREE.Matrix3(), Q = new THREE.Quaternion(), Qy = new THREE.Quaternion(), S = new THREE.Vector3(), P = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0), v3 = new THREE.Vector3();
+    const add = (U, size) => {
+      const sArc = Math.acos(Math.max(-1, Math.min(1, U.y))) * MOON_RAD, ph = Math.atan2(U.z, U.x);
+      const bk = Math.floor(sArc / 130) + ':' + Math.floor((ph + Math.PI) / (Math.PI / 4));
+      let B = buckets.get(bk); if (!B) { B = { pos: [], nor: [], col: [] }; buckets.set(bk, B); }
+      const geo = size > 0.45 ? rock : pebble, gp = geo.attributes.position.array, gn = geo.attributes.normal.array;
+      Q.setFromUnitVectors(Y, U); Qy.setFromAxisAngle(Y, rnd() * Math.PI * 2); Q.multiply(Qy);
+      S.set(size * (0.8 + rnd() * 0.5), size * (0.45 + rnd() * 0.35), size * (0.8 + rnd() * 0.5));
+      moonPoint(U, -size * 0.18, P); M.compose(P, Q, S); N.getNormalMatrix(M);
+      const shade = 0.52 + rnd() * 0.22;
+      for (let i = 0; i < gp.length; i += 3) {
+        v3.set(gp[i], gp[i + 1], gp[i + 2]).applyMatrix4(M); B.pos.push(v3.x, v3.y, v3.z);
+        v3.set(gn[i], gn[i + 1], gn[i + 2]).applyMatrix3(N).normalize(); B.nor.push(v3.x, v3.y, v3.z);
+        B.col.push(shade, shade, shade * 1.02);
+      }
+    };
+    for (let i = 0; i < 12000; i++) { // all round
+      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, sq = Math.sqrt(1 - u * u), U = new THREE.Vector3(sq * Math.cos(a), u, sq * Math.sin(a));
+      if (Math.acos(U.y) * MOON_RAD < 60) continue;
+      add(U, 0.1 + Math.pow(rnd(), 3.6) * 1.3);
+    }
+    for (let i = 0; i < 260; i++) { // a scattering out on the base's plain, clear of its buildings and the pad
+      const a = rnd() * Math.PI * 2, d = 14 + rnd() * 50, x = 8 + Math.cos(a) * d, z = Math.sin(a) * d;
+      if (Math.hypot(x, z) < 11 || moon.solids.some(s2 => moonInSolid(s2, x, z, 2.5))) continue;
+      add(moonFlatU(x, z), 0.1 + Math.pow(rnd(), 3) * 0.5);
+    }
+    const grp = new THREE.Group(), mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+    for (const B of buckets.values()) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(B.nor, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(B.col, 3));
+      g.computeBoundingSphere(); const m = new THREE.Mesh(g, mat); m.matrixAutoUpdate = false; grp.add(m);
+    }
+    pebble.dispose(); rock.dispose();
+    return grp;
   }
   function moonInSolid(s, x, z, pad) { return s.r ? Math.hypot(x - s.x, z - s.z) < s.r + pad : (x > s.x0 - pad && x < s.x1 + pad && z > s.z0 - pad && z < s.z1 + pad); }
   function buildMoonScene(seed) {
     const sc = new THREE.Scene(); sc.background = new THREE.Color(0x000000);
     const rnd = mulberry32(seed >>> 0);
-    moon.craters = [];
-    for (let i = 0; i < 46; i++) { const r = 5 + rnd() * 26, a = rnd() * Math.PI * 2, d = 60 + rnd() * 90; moon.craters.push({ x: 8 + Math.cos(a) * d, z: Math.sin(a) * d, r }); }
-    // the ground
-    const N = 160, S = 320, geo = new THREE.PlaneGeometry(S, S, N, N); geo.rotateX(-Math.PI / 2);
-    const pa = geo.attributes.position, cols = [];
-    for (let i = 0; i < pa.count; i++) {
-      const x = pa.getX(i), z = pa.getZ(i), h = moonHeightRaw(x, z); pa.setY(i, h);
-      const n = 0.5 + 0.5 * Math.sin(x * 0.9 + z * 0.4) * Math.cos(z * 0.7 - x * 0.3), v = 0.48 + n * 0.12 + Math.min(0.08, Math.max(-0.12, h * 0.02));
-      cols.push(v, v, v * 1.02);
+    moon.craters = []; // (the old flat map's — the globe has its own, below)
+    moon.gcraters = [];
+    for (let i = 0; i < 170; i++) { // craters all round the globe (none on the base's plain)
+      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, sq = Math.sqrt(1 - u * u), d = new THREE.Vector3(sq * Math.cos(a), u, sq * Math.sin(a));
+      const r = 5 + Math.pow(rnd(), 1.8) * 34; if (Math.acos(d.y) * MOON_RAD < MOON_BLEND + r * 1.5) continue;
+      moon.gcraters.push({ d, r, cosMax: Math.cos(r * 2.2 / MOON_RAD) });
     }
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3)); geo.computeVertexNormals();
-    sc.add(new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true })));
+    // ...and lots of smaller ones, kept in a grid of 24-block cells (each one listed in every cell it reaches) so finding
+    // the ones under a point is a single look-up
+    moon.scraters = new Map();
+    for (let i = 0; i < 700; i++) {
+      const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, sq = Math.sqrt(1 - u * u), d = new THREE.Vector3(sq * Math.cos(a), u, sq * Math.sin(a));
+      const r = 3 + Math.pow(rnd(), 1.5) * 7; if (Math.acos(d.y) * MOON_RAD < MOON_BLEND + r * 2.5) continue;
+      const c = { d, r, cosMax: Math.cos(r * 2.2 / MOON_RAD) }, reach = r * 2.2, px = d.x * MOON_RAD, py = d.y * MOON_RAD, pz = d.z * MOON_RAD;
+      for (let gx = Math.floor((px - reach) / 24); gx <= Math.floor((px + reach) / 24); gx++) for (let gy = Math.floor((py - reach) / 24); gy <= Math.floor((py + reach) / 24); gy++) for (let gz = Math.floor((pz - reach) / 24); gz <= Math.floor((pz + reach) / 24); gz++) {
+        const k = gx + ',' + gy + ',' + gz; let L = moon.scraters.get(k); if (!L) moon.scraters.set(k, L = []); L.push(c);
+      }
+    }
+    // the ground: the whole globe
+    sc.add(buildMoonGlobe());
     // light: a hard white sun, a little blue fill
     sc.add(new THREE.AmbientLight(0x8890a8, 0.38));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.25); sun.position.set(-120, 90, 60); sc.add(sun);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.25); sun.position.set(-120, 90, 60); sc.add(sun); sc.userData.sun = sun; // turned to stay a low afternoon sun wherever you are (see moonCamera) — otherwise half the globe sat in pitch-black lunar night
     // stars, and the Earth
-    { const p = []; for (let i = 0; i < 2600; i++) { const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, r = 900, s = Math.sqrt(1 - u * u); if (u < -0.05) continue; p.push(Math.cos(a) * s * r, u * r, Math.sin(a) * s * r); }
-      const g2 = new THREE.BufferGeometry(); g2.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); sc.add(new THREE.Points(g2, new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false }))); }
+    // the sky (stars all round, and the Earth) goes wherever you go, so it's always the same distance away — the globe
+    // itself hides whatever's below your horizon (the Earth sets as you walk round to the far side)
+    const sky = new THREE.Group(); sc.add(sky); sc.userData.sky = sky;
+    { const p = []; for (let i = 0; i < 4200; i++) { const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, r = 900, s = Math.sqrt(1 - u * u); p.push(Math.cos(a) * s * r, u * r, Math.sin(a) * s * r); }
+      const g2 = new THREE.BufferGeometry(); g2.setAttribute('position', new THREE.Float32BufferAttribute(p, 3)); sky.add(new THREE.Points(g2, new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false }))); }
     { const c = document.createElement('canvas'); c.width = 256; c.height = 128; const x = c.getContext('2d');
       x.fillStyle = '#1e5aa8'; x.fillRect(0, 0, 256, 128);
       for (let i = 0; i < 14; i++) { x.fillStyle = i % 3 ? '#3f8f3f' : '#9a7a4a'; x.beginPath(); x.ellipse(rnd() * 256, 20 + rnd() * 88, 8 + rnd() * 26, 6 + rnd() * 16, rnd() * 3, 0, Math.PI * 2); x.fill(); }
       x.fillStyle = 'rgba(255,255,255,0.75)'; for (let i = 0; i < 22; i++) { x.beginPath(); x.ellipse(rnd() * 256, rnd() * 128, 10 + rnd() * 30, 2 + rnd() * 5, 0, 0, Math.PI * 2); x.fill(); }
       x.fillStyle = '#f4f4f4'; x.fillRect(0, 0, 256, 8); x.fillRect(0, 120, 256, 8);
       const earth = new THREE.Mesh(new THREE.SphereGeometry(55, 32, 20), new THREE.MeshLambertMaterial({ map: new THREE.CanvasTexture(c), emissive: 0x112244, emissiveIntensity: 0.4 }));
-      earth.position.set(260, 520, -560); sc.add(earth); sc.userData.earth = earth; }
+      earth.position.set(260, 520, -560); sky.add(earth); sc.userData.earth = earth; }
     // the base: landing pad, habitat modules, the dome, solar arrays, the dish, the rover, a flag
     moon.solids = [];
     const solid = o => moon.solids.push(o);
@@ -29291,9 +30454,11 @@
     hab.push([new THREE.SphereGeometry(3, 20, 14).translate(20, 2.8, 0), W], [new THREE.CylinderGeometry(1.2, 1.2, 10, 12).rotateZ(Math.PI / 2).translate(28, 2.0, 0), W]); solid({ x: 20, z: 0, r: 3, top: 5.8 }); solid({ x0: 23, x1: 31, z0: -1.2, z1: 1.2, top: 3.2 });
     for (const [x, z] of [[-20, -15], [-20, 15], [-28, -15], [-28, 15]]) { hab.push([new THREE.CylinderGeometry(0.15, 0.15, 3, 8).translate(x, 1.5, z), 0x9aa2a8], [new THREE.BoxGeometry(6, 0.12, 3.2).rotateX(0.5).translate(x, 3.1, z), 0x1d2a5a]); solid({ x, z, r: 0.4, top: 3 }); }
     hab.push([new THREE.CylinderGeometry(0.3, 0.4, 4, 10).translate(8, 2, -22), 0x9aa2a8], [new THREE.SphereGeometry(3, 18, 10, 0, Math.PI * 2, 0, 1.0).rotateX(-0.8).translate(8, 5, -22), W]); solid({ x: 8, z: -22, r: 1.2, top: 7 });
-    hab.push([new THREE.BoxGeometry(3.2, 1.0, 2.2).translate(-8, 1.1, 18), 0xd9d9d9], [new THREE.BoxGeometry(1.2, 0.8, 1.6).translate(-7.2, 1.9, 18), 0x2a2d34]);
-    for (const [dx, dz] of [[-1.3, -1.1], [1.3, -1.1], [-1.3, 1.1], [1.3, 1.1]]) hab.push([new THREE.CylinderGeometry(0.45, 0.45, 0.35, 12).rotateX(Math.PI / 2).translate(-8 + dx, 0.45, 18 + dz), 0x1a1a1a]);
-    solid({ x0: -9.8, x1: -6.2, z0: 16.6, z1: 19.4, top: 2.3, walkable: true });
+    // the Moon Buggy, parked by the base (✋ it to drive — see moonBuggyStep)
+    { const bg = buildMoonBuggy(); bg.scale.setScalar(1.25); sc.add(bg);
+      const U = moonFlatU(-8, 18), r0 = moonSurfR(U);
+      moon.buggy = { group: bg, U, F: moonTangent(U, new THREE.Vector3(1, 0, 0)), rad: r0, prevR: r0, vy: 0, v: 0, pitch: 0, roll: 0, onGround: true, driving: false, pos: new THREE.Vector3() };
+      moonBuggyPlace(); }
     hab.push([new THREE.CylinderGeometry(0.05, 0.05, 3.2, 6).translate(4, 1.6, -6), 0xcccccc], [new THREE.BoxGeometry(1.6, 1.0, 0.03).translate(4.8, 2.7, -6), 0xc0392b], [new THREE.BoxGeometry(0.7, 0.5, 0.035).translate(4.35, 2.95, -6), 0x1d2a5a]);
     sc.add(mergedBoxes([], hab));
     const dome = new THREE.Mesh(new THREE.SphereGeometry(6, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshPhongMaterial({ color: 0xbfe6ff, transparent: true, opacity: 0.3, shininess: 120, side: THREE.DoubleSide, depthWrite: false }));
@@ -29301,13 +30466,16 @@
     { const plants = []; for (let i = 0; i < 18; i++) { const a = i / 18 * Math.PI * 2, r = 1.5 + (i % 3) * 1.2; plants.push([0.5, 0.8 + (i % 4) * 0.25, 0.5, 38 + Math.cos(a) * r, 0.5, Math.sin(a) * r, a, i % 2 ? 0x3f8f3f : 0x5aa04a]); } sc.add(mergedBoxes(plants)); }
     // your rocket, standing on the pad (✋ it to go home)
     moon.rocket = buildRocket(); moon.rocket.position.set(0, 0.2, 0); sc.add(moon.rocket); solid({ x: 0, z: 0, r: 2.6, top: 34 });
-    // the moon rock samples
+    sc.add(buildMoonRocks(rnd));
+    // the moon rock samples: a few out from the base, the rest scattered right round the globe
     moon.samples = [];
     const glowMat = new THREE.MeshPhongMaterial({ color: 0x8fe6ff, emissive: 0x2a8aaa, emissiveIntensity: 0.9, shininess: 80 });
-    for (let i = 0; i < 14; i++) {
-      let x, z; do { const a = rnd() * Math.PI * 2, d = 30 + rnd() * 110; x = 8 + Math.cos(a) * d; z = Math.sin(a) * d; } while (moon.solids.some(s => moonInSolid(s, x, z, 2)));
-      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), glowMat); m.position.set(x, moonHeightRaw(x, z) + 0.4, z); sc.add(m);
-      moon.samples.push({ i, mesh: m, x, z });
+    for (let i = 0; i < 30; i++) {
+      let U;
+      if (i < 8) { let x, z; do { const a = rnd() * Math.PI * 2, d = 30 + rnd() * 110; x = 8 + Math.cos(a) * d; z = Math.sin(a) * d; } while (moon.solids.some(s2 => moonInSolid(s2, x, z, 2))); U = moonFlatU(x, z); }
+      else { const u = rnd() * 2 - 1, a = rnd() * Math.PI * 2, sq = Math.sqrt(1 - u * u); U = new THREE.Vector3(sq * Math.cos(a), u, sq * Math.sin(a)); if (moonNearBase(U)) U.y = -U.y; }
+      const m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), glowMat); moonPoint(U, 0.4, m.position); sc.add(m);
+      moon.samples.push({ i, mesh: m, U });
     }
     return sc;
   }
@@ -29347,7 +30515,7 @@
     if (!moonScene) moonScene = buildMoonScene(pubSeedNum(site.ck, 11));
     moonRefreshSamples();
     onMoon = true; moon.site = site;
-    moon.pos.set(6, moonHeightRaw(6, 6), 6); moon.vel.set(0, 0, 0); moon.onGround = true;
+    moonPlaceFlat(6, 6);
     yaw = Math.atan2(6, 6); pitch = 0.05; // looking back at the rocket
     moon.rocket.position.y = 0.2; moon.rocket.userData.flames.visible = false;
   }
@@ -29380,16 +30548,17 @@
         }
       } else if (L.dir === 'arrive') {
         moonOverlay('', 1 - L.t / 1.5);
-        if (L.t >= 1.5) { launchSeq = null; moonOverlay('', 0); showSaveStatus('🌕 Welcome to the Moon! Low gravity — jump! Bag the glowing moon rock samples (💰400 each). ✋ your rocket to go home.'); }
+        if (L.t >= 1.5) { launchSeq = null; moonOverlay('', 0); showSaveStatus('🌕 Welcome to the Moon! Low gravity — jump! Bag the glowing moon rock samples (💰1,000–10,000 each). ✋ your rocket to go home.'); }
       } else if (L.dir === 'home') {
         const n = 3 - Math.floor(L.t);
         if (n > 0 && n !== L.lastN) { L.lastN = n; moonOverlay(String(n), 0); playBeep(1200, 0.12, 0.08); if (n === 3) launchRumble(false); }
         animateRocketFx(moon.rocket, L.t >= 1.5, dt, 1, 0.2);
         if (L.t >= 3) { if (!L.lo) { L.lo = true; moonOverlay('LIFT-OFF!', 0); } moon.rocket.position.y = 0.2 + 0.5 * 5 * (L.t - 3) * (L.t - 3); }
         // you're aboard: ride up with it
-        moon.pos.set(1.6, moon.rocket.position.y + 8, 1.6);
+        moon.U = moonFlatU(1.6, 1.6); moon.F = moonTangent(moon.U, new THREE.Vector3(0, 0, -1)); moon.alt = moon.rocket.position.y + 8; moonPoint(moon.U, moon.alt, moon.pos);
         if (L.t > 4.2) moonOverlay('', (L.t - 4.2) / 1.3);
         if (L.t >= 5.5) { // home
+          if (moon.buggy && moon.buggy.driving) moonBuggyExit();
           onMoon = false; moon.rocket.position.y = 0.2; animateRocketFx(moon.rocket, false, 1, 1);
           player.pos.copy(site.view); player.vel.set(0, 0, 0);
           { const [rx, rz] = [site.rocket.position.x, site.rocket.position.z]; yaw = Math.atan2(-(rx - site.view.x), -(rz - site.view.z)); pitch = 0.15; }
@@ -29401,28 +30570,174 @@
         if (L.t >= 1.5) { launchSeq = null; moonOverlay('', 0); showSaveStatus('🌍 Back on Earth'); }
       }
     }
-    if (onMoon && !(launchSeq && launchSeq.dir === 'home')) { moonPinEarth(); moonStep(dt); }
-    if (onMoon) { for (const s of moon.samples) if (s.mesh.visible) { s.mesh.rotation.y += dt * 0.8; s.mesh.position.y = moonHeightRaw(s.x, s.z) + 0.45 + Math.sin(performance.now() / 500 + s.i) * 0.08; } }
+    if (onMoon && !(launchSeq && launchSeq.dir === 'home')) { moonPinEarth(); if (moon.buggy && moon.buggy.driving) moonBuggyStep(dt); else moonStep(dt); }
+    if (onMoon) updateMoonDust(dt);
+    if (onMoon) { for (const s of moon.samples) if (s.mesh.visible) { s.mesh.rotation.y += dt * 0.8; moonPoint(s.U, 0.45 + Math.sin(performance.now() / 500 + s.i) * 0.08, s.mesh.position); } }
+  }
+  // your frame where you stand: up (U), and the right / back axes your yaw turns from
+  const _mX = new THREE.Vector3(), _mZ = new THREE.Vector3(), _moonQ = new THREE.Quaternion(), _mA = new THREE.Vector3(), _mP = new THREE.Vector3();
+  function moonFrame(U, F) { _mZ.copy(F).negate(); _mX.crossVectors(U, _mZ).normalize(); return [_mX, _mZ]; }
+  function moonBlockedAt(P) { // the base's buildings (they're on the flat plain, in its own x / z)
+    const U = _mA.copy(P).sub(MOON_C).normalize(); if (!moonNearBase(U)) return false;
+    if (moon.buggy && !moon.buggy.driving && P.distanceTo(moon.buggy.pos) < 2.1 && P.y < moon.buggy.pos.y + 1.6) return true; // the parked buggy
+    return moon.solids.some(sv => moonInSolid(sv, P.x, P.z, 0.35) && P.y < sv.top - 0.4);
+  }
+  // carry you (and anything riding with you) along the globe: turn U, F and your velocity together about the centre
+  function moonCarry(axis, ang, extra) {
+    _moonQ.setFromAxisAngle(axis, ang);
+    moon.U.applyQuaternion(_moonQ).normalize(); moon.F.applyQuaternion(_moonQ); moon.vh.applyQuaternion(_moonQ);
+    for (const v of extra || []) v.applyQuaternion(_moonQ);
+    moonTangent(moon.U, moon.F);
   }
   function moonStep(dt) {
     let fwd = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0), str = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
     if (isTouchDevice || padStickActive) { if (Math.abs(moveState.y) > 0.12) fwd = -moveState.y; if (Math.abs(moveState.x) > 0.12) str = moveState.x; }
-    const sp = MOON_SPEED * (keys['ShiftLeft'] ? 1.5 : 1);
-    const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw);
-    let mx = (fx * fwd + rx * str), mz = (fz * fwd + rz * str); const ml = Math.hypot(mx, mz); if (ml > 1) { mx /= ml; mz /= ml; }
-    const p = moon.pos;
-    const blocked = (x, z) => moon.solids.some(s => moonInSolid(s, x, z, 0.35) && p.y < s.top - 0.4);
-    const nx = p.x + mx * sp * dt, nz = p.z + mz * sp * dt;
-    if (!blocked(nx, p.z)) p.x = nx;
-    if (!blocked(p.x, nz)) p.z = nz;
-    const rr = Math.hypot(p.x - 8, p.z); if (rr > MOON_R) { p.x = 8 + (p.x - 8) / rr * MOON_R; p.z = p.z / rr * MOON_R; }
-    if (keys['Space'] && moon.onGround) { moon.vel.y = MOON_JUMP; moon.onGround = false; }
-    moon.vel.y += MOON_G * dt; p.y += moon.vel.y * dt;
-    const gy = moonGroundAt(p.x, p.z, p.y);
-    if (p.y <= gy) { p.y = gy; moon.vel.y = 0; moon.onGround = true; } else if (p.y > gy + 0.05) moon.onGround = false;
+    const sp = MOON_SPEED * (keys['ShiftLeft'] ? 1.5 : 1), U = moon.U;
+    const [X, Z] = moonFrame(U, moon.F);
+    const lfx = -Math.sin(yaw), lfz = -Math.cos(yaw), lrx = Math.cos(yaw), lrz = -Math.sin(yaw);
+    let mx = (lfx * fwd + lrx * str), mz = (lfz * fwd + lrz * str); const ml = Math.hypot(mx, mz); if (ml > 1) { mx /= ml; mz /= ml; }
+    const target = _mP.copy(X).multiplyScalar(mx * sp).addScaledVector(Z, mz * sp);
+    // momentum: on the ground you pick up and lose speed slowly (low grip, a loping gait); in the air you barely steer
+    const grip = moon.onGround ? 6 : 0.8, k = Math.min(1, grip * dt);
+    moon.vh.addScaledVector(target.sub(moon.vh), k); moon.vh.addScaledVector(U, -moon.vh.dot(U));
+    const spd = moon.vh.length();
+    if (spd > 1e-4) {
+      const ang = spd * dt / (moonSurfR(U) + moon.alt), axis = new THREE.Vector3().crossVectors(U, moon.vh).normalize();
+      const nU = U.clone().applyAxisAngle(axis, ang), nP = moonPoint(nU, moon.alt);
+      if (moonBlockedAt(nP)) moon.vh.set(0, 0, 0); else moonCarry(axis, ang);
+    }
+    const jump = keys['Space'] || touchJumpHeld;
+    if (jump && moon.onGround && !moon.jumpLatch) { moon.vy = MOON_JUMP; moon.onGround = false; moon.jumpLatch = true; moonPoint(moon.U, 0, _mP); moonDust(_mP, 6, 0.8); try { playJump(); } catch (e) {} }
+    if (!jump) moon.jumpLatch = false;
+    const fallV = moon.vy;
+    moon.vy += MOON_G * dt; moon.alt += moon.vy * dt;
+    if (moon.alt <= 0) {
+      if (!moon.onGround && fallV < -1.5) { moonPoint(moon.U, 0, _mP); moonDust(_mP, 10 + Math.min(14, -fallV * 3), Math.min(1.6, -fallV * 0.25)); moon.dip = Math.min(0.35, -fallV * 0.05); playThud(140); } // landing: a puff of dust and a soft bump
+      moon.alt = 0; moon.vy = 0; moon.onGround = true;
+    } else if (moon.alt > 0.05) moon.onGround = false;
+    moonPoint(moon.U, moon.alt, moon.pos);
   }
+  // Dust kicked up on the Moon: no air, so it flies in clean low-gravity arcs and drops straight back down — no drifting cloud.
+  function moonDust(P, n, power) {
+    if (!moonScene) return;
+    const U = P.clone().sub(MOON_C).normalize(), T1 = moonTangent(U, new THREE.Vector3(1, 0, 0).addScaledVector(U, 0.001)), T2 = new THREE.Vector3().crossVectors(U, T1);
+    if (!moon.dustMat) moon.dustMat = new THREE.MeshLambertMaterial({ color: 0x9a9a96, transparent: true, opacity: 0.9, depthWrite: false });
+    if (!moon.dustGeo) moon.dustGeo = new THREE.SphereGeometry(0.06, 5, 4);
+    for (let i = 0; i < n && moon.dust.length < 160; i++) {
+      const m = new THREE.Mesh(moon.dustGeo, moon.dustMat.clone()), a = Math.random() * Math.PI * 2, sp = (0.6 + Math.random()) * power * 2;
+      const dir = T1.clone().multiplyScalar(Math.cos(a)).addScaledVector(T2, Math.sin(a));
+      m.position.copy(P).addScaledVector(dir, 0.3).addScaledVector(U, 0.05); moonScene.add(m);
+      moon.dust.push({ m, v: dir.multiplyScalar(sp).addScaledVector(U, (0.5 + Math.random()) * power * 2.2), t: 0 });
+    }
+  }
+  function updateMoonDust(dt) {
+    for (let i = moon.dust.length - 1; i >= 0; i--) {
+      const d = moon.dust[i]; d.t += dt;
+      const U = _mA.copy(d.m.position).sub(MOON_C); const r = U.length(); U.divideScalar(r);
+      d.v.addScaledVector(U, MOON_G * dt); d.m.position.addScaledVector(d.v, dt); // falling towards the centre
+      const gr = moonSurfR(U);
+      if (r < gr) { d.m.position.copy(MOON_C).addScaledVector(U, gr); d.v.multiplyScalar(0.3); d.v.addScaledVector(U, -d.v.dot(U)); }
+      d.m.material.opacity = Math.max(0, 0.9 - Math.max(0, d.t - 1.2));
+      if (d.t > 2.1) { moonScene.remove(d.m); d.m.material.dispose(); moon.dust.splice(i, 1); }
+    }
+  }
+  // ---- the Moon Buggy ----
+  function moonBuggyPlace() {
+    const B = moon.buggy; if (!B) return;
+    B.pos.copy(MOON_C).addScaledVector(B.U, B.rad); B.group.position.copy(B.pos);
+    const Xb = new THREE.Vector3().crossVectors(B.U, B.F).normalize(), m = new THREE.Matrix4().makeBasis(Xb, B.U, B.F); // nose +Z along F, up along U
+    B.group.quaternion.setFromRotationMatrix(m);
+    B.group.rotateX(-B.pitch); B.group.rotateZ(B.roll);
+  }
+  function moonBuggyEnter() {
+    const B = moon.buggy; if (!B || B.driving) return;
+    B.driving = true; B.v = 0;
+    // your frame becomes the buggy's (facing the way it points)
+    moon.U.copy(B.U); moon.F.copy(B.F); moon.vh.set(0, 0, 0); yaw = 0; pitch = -0.2;
+    if (!B.astro) { // you, in your spacesuit, in the driver's seat (you're seen from behind while driving)
+      const W2 = 0xf2f2ee;
+      B.astro = mergedBoxes([[0.42, 0.5, 0.3, 0, 0.95, -0.2, 0, W2], [0.36, 0.36, 0.36, 0, 1.4, -0.17, 0, W2], [0.26, 0.18, 0.04, 0, 1.42, 0.02, 0, 0xd9a520], [0.34, 0.4, 0.14, 0, 1.02, -0.42, 0, 0xdcdcd6],
+        [0.14, 0.14, 0.42, -0.14, 0.7, 0.05, 0, W2], [0.14, 0.14, 0.42, 0.14, 0.7, 0.05, 0, W2], [0.12, 0.12, 0.4, -0.26, 0.92, 0.08, 0, W2], [0.12, 0.12, 0.4, 0.26, 0.92, 0.08, 0, W2]]);
+      B.astro.position.set(0.33, 0, 0); B.group.add(B.astro);
+    }
+    B.astro.visible = true;
+    const t = VEHICLE_TYPES.find(vt => vt.name === 'Moon Buggy');
+    if (t && !vehicleUnlocked(t)) { ownVehicle(t, null); showSaveStatus('🌕 Moon Buggy unlocked! It\u2019s in your Vehicles menu back on Earth now. Here: forward / back to drive, left / right to steer, ✋ to get out.'); }
+    else showSaveStatus('🌕 Moon Buggy — forward / back to drive, left / right to steer, ✋ to get out. Drive right round the Moon if you like!');
+  }
+  function moonBuggyExit() {
+    const B = moon.buggy; if (!B || !B.driving) return;
+    B.driving = false; B.v = 0; if (B.astro) B.astro.visible = false;
+    const left = new THREE.Vector3().crossVectors(B.U, B.F).normalize(); // its left-hand side
+    for (const s2 of [1, -1]) {
+      const U = B.U.clone().applyAxisAngle(new THREE.Vector3().crossVectors(B.U, left).normalize(), 2.4 * s2 / moonSurfR(B.U)).normalize();
+      if (!moonBlockedAt(moonPoint(U, 0)) || s2 < 0) { moon.U.copy(U); break; }
+    }
+    moon.F.copy(B.F); moonTangent(moon.U, moon.F); moon.alt = 0; moon.vy = 0; moon.vh.set(0, 0, 0); moon.onGround = true; moonPoint(moon.U, 0, moon.pos);
+    yaw = Math.PI / 2; // looking back at it
+    moonBuggyPlace();
+  }
+  function moonBuggyStep(dt) {
+    const B = moon.buggy;
+    let thr = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0), steer = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+    if (isTouchDevice || padStickActive) { if (Math.abs(moveState.y) > 0.12) thr = -moveState.y; if (Math.abs(moveState.x) > 0.12) steer = moveState.x; }
+    if (B.onGround) { B.v += thr * (thr * B.v < 0 ? 7 : 3.2) * dt; if (!thr) B.v *= Math.pow(0.45, dt); } // (no air: the wheels only push while they're touching the ground)
+    B.v = Math.max(-3.5, Math.min(11, B.v));
+    if (B.onGround) { const turn = -steer * 1.2 * Math.min(1, Math.abs(B.v) / 2.5) * Math.sign(B.v || 1) * dt; B.F.applyAxisAngle(B.U, turn); moon.F.applyAxisAngle(B.U, turn); } // (your view turns with it)
+    // drive along the globe: turn the buggy (and you, and your view's frame) about the centre
+    const dist = B.v * dt;
+    if (Math.abs(dist) > 1e-5) {
+      const axis = new THREE.Vector3().crossVectors(B.U, B.F).normalize(), ang = dist / B.rad;
+      const nU = B.U.clone().applyAxisAngle(axis, ang).normalize(), nP = moonPoint(nU, Math.max(0, B.rad - moonSurfR(nU)));
+      const near = moonNearBase(nU) && moon.solids.find(sv => moonInSolid(sv, nP.x, nP.z, 1.3) && nP.y < sv.top - 0.4);
+      if (near) { if (Math.abs(B.v) > 2) { playThud(110); moonDust(B.pos, 10, 0.8); showBriefMessage('💥 Bump!'); } B.v = -B.v * 0.25; }
+      else { _moonQ.setFromAxisAngle(axis, ang); B.U.applyQuaternion(_moonQ).normalize(); B.F.applyQuaternion(_moonQ); moonTangent(B.U, B.F); moon.F.applyQuaternion(_moonQ); }
+    }
+    moon.U.copy(B.U); moonTangent(moon.U, moon.F);
+    // up and down: a sixth of Earth's gravity, so going over a crest at speed throws you clear of the ground
+    const fallV = B.vy, r = moonSurfR(B.U);
+    B.vy += MOON_G * dt; B.rad += B.vy * dt;
+    if (B.rad <= r) {
+      if (!B.onGround && fallV < -2.2) { playThud(120); moonPoint(B.U, 0, _mP); moonDust(_mP, 16, Math.min(1.6, -fallV * 0.3)); moon.dip = Math.min(0.4, -fallV * 0.06); B.vy = -fallV * 0.22; B.rad = r + 0.01; B.onGround = false; } // lands, and bounces a little
+      else { B.vy = Math.max(0, (r - B.prevR) / Math.max(dt, 1e-3)); B.rad = r; B.onGround = true; } // following the ground (climbing gives it the speed it takes off with at the top)
+    } else if (B.rad > r + 0.08) B.onGround = false;
+    B.prevR = r;
+    if (B.onGround && Math.abs(B.v) > 4 && Math.random() < dt * 8) moonDust(moonPoint(B.U, 0).addScaledVector(B.F, -1.2), 2, 0.5); // a rooster tail of dust behind
+    // lean with the ground under the wheels
+    if (B.onGround) {
+      const ax = new THREE.Vector3().crossVectors(B.U, B.F).normalize(), fwdU = B.U.clone().applyAxisAngle(ax, 1.2 / r), backU = B.U.clone().applyAxisAngle(ax, -1.2 / r);
+      const lU = B.U.clone().applyAxisAngle(B.F, 1.0 / r), rU = B.U.clone().applyAxisAngle(B.F, -1.0 / r);
+      const tp = Math.atan2(moonSurfR(fwdU) - moonSurfR(backU), 2.4), tr = Math.atan2(moonSurfR(rU) - moonSurfR(lU), 2.0);
+      B.pitch += (tp - B.pitch) * Math.min(1, dt * 8); B.roll += (tr - B.roll) * Math.min(1, dt * 8);
+    }
+    for (const w of B.group.userData.wheels || []) w.rotation.x += B.v * dt / 0.38;
+    moonBuggyPlace();
+    moon.alt = Math.max(0, B.rad - r) + 0.4; moon.vy = 0; moon.vh.set(0, 0, 0); moon.onGround = true; moonPoint(moon.U, moon.alt, moon.pos);
+  }
+  const _mcQ = new THREE.Quaternion(), _mcE = new THREE.Euler(0, 0, 0, 'YXZ'), _mcM = new THREE.Matrix4();
   function moonCamera() { // called after the normal camera's been placed — takes it over on the Moon and during a launch
-    if (onMoon) { camera.position.set(moon.pos.x, moon.pos.y + 1.6, moon.pos.z); return; }
+    moon.dip = Math.max(0, moon.dip - 0.016 * 1.6);
+    if (onMoon && moon.U) {
+      const sky = moonScene && moonScene.userData.sky;
+      const U = moon.U, [X, Z] = moonFrame(U, moon.F);
+      _mcM.makeBasis(X, U, Z); _mcQ.setFromRotationMatrix(_mcM); // your frame on the globe
+      _mcE.set(pitch, yaw, 0, 'YXZ');
+      if (moon.buggy && moon.buggy.driving && !launchSeq) { // driving: from behind and above the buggy (look around as usual)
+        const B = moon.buggy, look = new THREE.Vector3(0, 0, -1).applyEuler(new THREE.Euler(0, yaw, 0)).applyQuaternion(_mcQ);
+        camera.up.copy(U);
+        camera.position.copy(B.pos).addScaledVector(look, -7).addScaledVector(U, 3.4 - moon.dip);
+        camera.lookAt(_mP.copy(B.pos).addScaledVector(look, 3).addScaledVector(U, 1.2 + pitch * 4));
+      } else {
+        camera.up.set(0, 1, 0);
+        camera.position.copy(moon.pos).addScaledVector(U, 1.6 - moon.dip);
+        camera.quaternion.copy(_mcQ).multiply(new THREE.Quaternion().setFromEuler(_mcE));
+      }
+      if (sky) sky.position.copy(camera.position);
+      const sun = moonScene.userData.sun;
+      if (sun) { _mP.set(-1, 0, 0.5).addScaledVector(U, -(-U.x + 0.5 * U.z)).normalize(); sun.position.copy(U).multiplyScalar(0.72).addScaledVector(_mP, 0.7).multiplyScalar(100); sun.target.position.set(0, 0, 0); sun.target.updateMatrixWorld(); }
+      return;
+    }
+    camera.up.set(0, 1, 0);
     if (launchSeq && launchSeq.dir === 'up') {
       const s = launchSeq.site, r = s.rocket; camera.position.set(s.view.x, s.view.y + 2.4, s.view.z);
       camera.lookAt(r.position.x, r.position.y + 14, r.position.z);
@@ -29431,18 +30746,21 @@
   // ✋ on the Moon: a sample in reach — bag it; near your rocket — go home
   function moonAction() {
     if (launchSeq) return;
-    let best = null, bd = 2.6;
-    for (const s of moon.samples) { if (!s.mesh.visible) continue; const d = Math.hypot(s.x - moon.pos.x, s.z - moon.pos.z); if (d < bd) { bd = d; best = s; } }
+    const B = moon.buggy, driving = !!(B && B.driving);
+    let best = null, bd = driving ? 3.4 : 2.6;
+    for (const s of moon.samples) { if (!s.mesh.visible) continue; const d = s.mesh.position.distanceTo(moon.pos); if (d < bd + 1) { bd = d; best = s; } }
     if (best) {
       best.mesh.visible = false; const taken = moonTakenMap(); taken[best.i] = Date.now(); try { localStorage.setItem(moonSampleKey(), JSON.stringify(taken)); } catch (e) {}
-      addToInventory('Moon Rock', 1); playCoin(); showSaveStatus('🌑 Moon rock sample bagged — worth 💰' + producePrice('Moon Rock') + ' at the grocer');
+      const rockVal = moonRockBag(); playCoin(); objNote('moonrock'); showSaveStatus('🌑 Moon rock sample bagged — this one’s worth 💰' + rockVal.toLocaleString() + ' at the grocer');
       return;
     }
-    if (Math.hypot(moon.pos.x, moon.pos.z) < 6.5) {
+    if (driving) { moonBuggyExit(); return; } // ✋ in the buggy (with no sample in reach): get out
+    if (B && B.pos.distanceTo(moon.pos) < 3.4) { moonBuggyEnter(); return; }
+    if (moon.pos.distanceTo(_mP.set(0, 0, 0)) < 7) {
       askConfirm('🚀 Head home to Earth?', 'Lift off', () => { launchSeq = { dir: 'home', site: moon.site, t: 0, lastN: 4 }; });
       return;
     }
-    showBriefMessage('🌕 ✋ near a glowing sample to bag it, or by your rocket to go home');
+    showBriefMessage('🌕 ✋ near a glowing sample to bag it, by the buggy to drive it, or by your rocket to go home');
   }
 
   // ================= SLAUGHTERHOUSE & BBQ =================
@@ -29486,7 +30804,7 @@
         if (a.nameKey) { const [x, y, z] = a.nameKey.split(',').map(Number); recordName(x, y, z, PEN_GONE); }
         destroyVillageAnimal(a);
       }
-      addToInventory(job.meat, job.n);
+      addToInventory(job.meat, job.n); objNote('slaughter'); // see OBJECTIVES
       playCoin();
       showSaveStatus('🔪 +' + job.n + ' ' + job.meat + ' ' + (PRODUCE_EMOJI[job.meat] || '') + ' — sell it at a BBQ Shop');
     });
@@ -29799,7 +31117,7 @@
     placeShellLight(f.shell, doorSide, reg);
     VEHICLE_TYPES.forEach((t, i) => {
       const bay = VEHICLE_BAYS[i];
-      if (!bay) return;
+      if (!bay || t.notForSale) return; // (the Moon Buggy is earned on the Moon, not bought)
       const g = t.build();
       const [px, pz] = f.pos(bay[0] + 0.5, bay[1] + 0.5);
       g.position.set(px, floor + 1, pz);
@@ -30332,6 +31650,8 @@
   }
   function garmentLabel(g) {
     const col = COLOUR_NAMES[g.hex] || 'Knitted';
+    if (g.style === 'crown') return '👑 Mogul’s Golden Crown';
+    if (g.style === 'gold') return '👑 Mogul’s Golden Jumper';
     if (g.slot === 'hat') return col + (g.style === 'bobble' ? ' bobble hat' : ' beanie');
     if (g.slot === 'scarf') return col + (g.style === 'striped' ? ' striped scarf' : ' scarf');
     if (g.slot === 'socks') return col + (g.style === 'striped' ? ' striped socks' : ' socks');
@@ -30463,7 +31783,7 @@
     const me = getMyAvatarColors();
     for (const g of w) {
       const c = TAILOR_CLOTHES.find(t => t.slot === g.slot);
-      if (!c) continue;
+      if (!c || g.style === 'crown' || g.style === 'gold') continue; // the Mogul's reward isn't for selling
       const price = Math.floor(c.price * CLOTHES_SELL_RATE);
       const worn = me[WORN_KEY[g.slot]] === g.id;
       const row = document.createElement('div'); row.className = 'shopItem';
@@ -30699,6 +32019,7 @@
     // incubator still read "ready", and they hatched a duplicate.
     recordSeed(x, y, z, (people ? PEOPLE_INC_EMPTY : INCUBATOR_EMPTY) * SEED_VALUE_MUL + nowSec());
     recordSeed(x, y + 100000 * (n + 1), z, ((people ? MOD_HATCHED_BASE : HATCHED_BASE) + idx) * SEED_VALUE_MUL + nowSec());
+    try { objMax(people ? 'mod_' + idx : 'hatch_' + idx, 1); } catch (e) {} // see OBJECTIVES
     if (people) showSaveStatus('🧬 A ' + MOD_TYPES[idx].name.toLowerCase() + ' stepped out! ' + MOD_TYPES[idx].emoji);
     else showSaveStatus('🐣 A ' + ANIMAL_TYPES[idx].name.toLowerCase() + ' hatched! ' + ANIMAL_EMOJI[idx]);
   }
@@ -31345,6 +32666,7 @@
     if (!recordSeed(mx, ty, mz, (TRACTOR_BASE + TRACTOR_SAME) * SEED_VALUE_MUL)) { showSaveStatus('🚜 Tractors can only be placed in a saved world', true); return; }
     recordName(mx, ty, mz, tractorOwnerTag());
     setTractorStock(tractorStock() - 1);
+    objNote('tractor'); // see OBJECTIVES
     if (tractorStock() <= 0) { vehiclePickTractor = false; updateVehicleSlotIcon(); }
     seedNextPass = 0;
     playThud(400);
@@ -32491,6 +33813,13 @@
       c.n++;
     }
   }
+  function flowerBuildingAt(x, z) { // inside (or within 2 of) any building's footprint
+    const M = 2;
+    for (let i = 0; i < lockedFootprints.length; i++) { const f = lockedFootprints[i]; if (x >= f.x0 - M && x <= f.x1 + M && z >= f.z0 - M && z <= f.z1 + M) return true; }
+    const list = villageHouseFootprints.get(chunkKeyOf(x, z));
+    if (list) for (const e of list) if (x >= e.x0 - M && x <= e.x1 + M && z >= e.z0 - M && z <= e.z1 + M) return true;
+    return false;
+  }
   function rebuildFlowerOverlay() {
     const dummyStem = new THREE.Object3D(), dummyCenter = new THREE.Object3D(), dummyPetal = new THREE.Object3D();
     const counts = FLOWER_TYPES.map(() => ({ stem: 0, leaf: 0, petalByColor: FLOWER_COLORS.map(() => 0) }));
@@ -32518,6 +33847,9 @@
       // Excludes the crazy golf course's own fairways for the same
       // reason — matches its apron footprint from buildGolfCourse.
       if (x >= -85 && x <= -56 && z >= 34 && z <= 78) return false;
+      // ...and every building's own ground: houses, farms, shops, the mansion and its gardens, castles —
+      // anything generated or locked in. Flowers grow out in the open countryside only.
+      if (flowerBuildingAt(x, z)) return false;
       const aboveKey = key(x,y+1,z);
       if (blocks.has(aboveKey) || waterBlocks.has(aboveKey)) return false;
       if (!isExposedToSky(x,y,z)) return false;
@@ -32865,7 +34197,7 @@
     // frame instead of every block in the world. Computed unconditionally
     // now (not just during precip) since the ambient sounds below need
     // it for sunny weather too, not only rain/snow.
-    const playerIndoors = !isExposedToSky(Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z));
+    const playerIndoors = !isExposedToSky(Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)) || yachtCoveredAt(player.pos.x, player.pos.y, player.pos.z) || onMoon; // (a yacht's saloon, lower deck and bridge are under cover too — see SUPERYACHT; and it never rains on the Moon)
     precipPoints.visible = weatherState === 'precip' && !playerIndoors;
     if (weatherState === 'precip' && !playerIndoors) {
       precipMat.color.setHex(snowy ? 0xffffff : 0xaeccff);
@@ -37246,6 +38578,9 @@
           const t = treasureChests.get(furnitureTarget.fk);
           furnitureOutline.position.set(t.bx + 0.5, t.by + 0.7, t.bz + 0.5);
           furnitureOutline.scale.set(0.8, 0.6, 0.6);
+        } else if (furnitureTarget.kind === 'yfurn') {
+          const f = yachtFurn.get(furnitureTarget.fk), w = f.group.getWorldPosition(new THREE.Vector3());
+          furnitureOutline.position.set(w.x, w.y + 0.6, w.z); furnitureOutline.scale.set(0.9, 0.8, 0.9);
         } else {
           const f = furniture.get(furnitureTarget.fk);
           const type = FURNITURE_TYPES[f.typeIdx];
@@ -39058,7 +40393,14 @@
   // The Mill, the usual arrival spot). Gets you out of whatever you're in first: a seat, the pool table, the yacht's
   // wheel (dropping anchor), a vehicle. Held in the air there until the ground is loaded, so you never fall through.
   function goHome() {
-    if (onMoon || launchSeq) { showBriefMessage('🏠 Not from up here — come back down to Earth first'); return; }
+    if (launchSeq) { showBriefMessage('🏠 Hang on — you\u2019re mid-flight'); return; }
+    if (onMoon) { // on the Moon, home is the base station
+      if (moon.buggy && moon.buggy.driving) moonBuggyExit();
+      moonPlaceFlat(6, 6);
+      yaw = Math.atan2(-(20 - 6), -(0 - 6)); pitch = 0.05; // looking at the base
+      try { playCoin(); } catch (e) {}
+      showBriefMessage('🏠 Back at the moon base'); return;
+    }
     if (rideNow) { showBriefMessage('🏠 Hang on till the ride\u2019s over'); return; }
     if (poolPlay) leavePoolPlay(true);
     if (furnSeat) standUpFromSeat();
@@ -39424,7 +40766,7 @@
     '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm on the bridge to sail (V switches the view), ✋ again to drop anchor. ✋ beside her helicopter to fly it.',
     '🎱 Pool: ✋ on a pool table steps up to play — turn to walk round the cue ball, hold ✋ for power and let go to strike, jump to leave.',
     '🏠 The house button (top right) takes you back to where your world starts.',
-    '🚀 The Rocket & Moon Base (💰10,000,000): ✋ the launch console to fly to the Moon — low gravity, a moon base and moon rock samples worth 💰400 each.',
+    '🚀 The Rocket & Moon Base (💰10,000,000): ✋ the launch console to fly to the Moon — low gravity, a moon base and moon rock samples worth 💰1,000 to 💰10,000 each.',
     '🏰 The Mansion costs a million — fully furnished, with a pool and tennis court. Press ✋ on the butler to rename it.',
     '🧑‍💼 Hire a World Manager (top of the Property menu): every sunrise they empty every till, safe and rent pot and sell your harvest, all for 1%.',
     '🌙 Businesses settle up at sunrise — even ones you haven\u2019t been near since starting the game.',

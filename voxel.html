@@ -2530,6 +2530,13 @@
     // deliberately NOT in the name (that would put it in the merged glass system — see GLASS_TYPE_SET).
     { name: 'Chrome Balustrade',            mats: { top: TEX.chromeSteel, side: TEX.chromePane, bottom: TEX.chromeSteel }, fence: 'straight', fenceStyle: 'chrome', transparent: true, paneAlpha: true, cost: 12, isVariant: true },
     { name: 'Chrome Balustrade Corner',     mats: { top: TEX.chromeSteel, side: TEX.chromePane, bottom: TEX.chromeSteel }, fence: 'corner',   fenceStyle: 'chrome', transparent: true, paneAlpha: true, cost: 12, isVariant: true },
+    // RAILWAY TRACK (see TRAINS & STATIONS): a Straight, a Corner and a Slope that climbs one block over its one-block
+    // length. Drawn as rails on sleepers (their own vertex-coloured geometry — see trackGeometryFor), never solid to
+    // walk on or into (you walk over them like a path), and they turn a quarter at a time with R / the rotate
+    // button like a fence (never tilt). A train runs along any line of them joined end to end.
+    { name: 'Rail Track',        mats: TEX.planks, track: 'straight', cost: 20 },
+    { name: 'Rail Track Corner', mats: TEX.planks, track: 'corner',   cost: 20, isVariant: true },
+    { name: 'Rail Track Slope',  mats: TEX.planks, track: 'slope',    cost: 25, isVariant: true },
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
@@ -2543,8 +2550,8 @@
   // types, and layout 8 (the current one) the ten Gate types (five shut, five
   // open), and layout 9 the Hedge block, and layout 10 (the current one) the two Chrome Balustrade pieces. ADDING
   // ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT and recording the old count here.
-  const SLOT_LAYOUT = 10;
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.findIndex(e => e.name === 'Iron Railing Corner') + 1, 8: BLOCK_TYPES.findIndex(e => e.name === 'Iron Gate (Open)') + 1, 9: BLOCK_TYPES.findIndex(e => e.name === 'Hedge') + 1, 10: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 11; // 11: the three Rail Track pieces
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.findIndex(e => e.name === 'Iron Railing Corner') + 1, 8: BLOCK_TYPES.findIndex(e => e.name === 'Iron Gate (Open)') + 1, 9: BLOCK_TYPES.findIndex(e => e.name === 'Hedge') + 1, 10: BLOCK_TYPES.findIndex(e => e.name === 'Chrome Balustrade Corner') + 1, 11: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2608,6 +2615,9 @@
   const GATE_TYPES = ['Oak Gate', 'Spruce Panel Gate', 'White Picket Gate', 'Cobblestone Wall Gate', 'Iron Gate'].map(typeIndexByName);
   const GATE_TYPE = GATE_TYPES[0];
   BLOCK_FAMILIES[GATE_TYPE] = GATE_TYPES;
+  const TRACK_TYPES = ['Rail Track', 'Rail Track Corner', 'Rail Track Slope'].map(typeIndexByName);
+  const TRACK_TYPE = TRACK_TYPES[0], TRACK_CORNER_TYPE = TRACK_TYPES[1], TRACK_SLOPE_TYPE = TRACK_TYPES[2];
+  BLOCK_FAMILIES[TRACK_TYPE] = TRACK_TYPES;
   const GATE_TOGGLE = {}; // shut type <-> open type
   GATE_TYPES.forEach(t => { const o = typeIndexByName(BLOCK_TYPES[t].name + ' (Open)'); GATE_TOGGLE[t] = o; GATE_TOGGLE[o] = t; });
   // Every block type whose name contains "Glass" (the base pane plus its
@@ -4302,6 +4312,7 @@
       case 'pub': maybeBuildPub(cx, cz, spec); break;
       case 'lethouse': maybeBuildLetHouse(cx, cz, spec); break;
       case 'bakery': maybeBuildBakery(cx, cz, spec); break;
+      case 'station': maybeBuildStation(cx, cz, spec); break;
       case 'restaurant': maybeBuildRestaurant(cx, cz, spec); break;
       case 'mansion': maybeBuildMansion(cx, cz, spec); break;
       case 'themepark': maybeBuildThemePark(cx, cz, spec); break;
@@ -4327,7 +4338,9 @@
     // which is exactly during that rebuild. Waiting a tick costs nothing.
     if (rebuildInProgress || needsRebuild) return; // (needsRebuild: one is about to start next frame)
     if (streamJob && streamJob.kind === 'gen') return; // a chunk half-generated next door — wait till it's whole (see STREAMING BUDGET)
+    const tStart = performance.now();
     for (let i = pendingStructureReplays.length - 1; i >= 0; i--) {
+      if (!worldLoading && performance.now() - tStart > 20) break; // one building's worth per tick while you're playing — several landing at once (flying back into your town) was one long freeze
       const spec = pendingStructureReplays[i];
       if (villageFootprintChunkKeys.has(spec.ck) || !generatedChunks.has(spec.ck) || structureSpecs.get(spec.ck) !== spec) {
         pendingStructureReplays.splice(i, 1); // already built, or its chunk isn't loaded (it will replay when it generates), or superseded
@@ -4376,7 +4389,7 @@
     }
     if (!boughtRedrawQueue.length) rebuildGlassGeometry();
   }
-  setInterval(() => { if (pendingStructureReplays.length) { const t0 = performance.now(); processPendingStructureReplays(); perfAdd('building replay', t0); } }, 1000);
+  setInterval(() => { if (pendingStructureReplays.length) { const t0 = performance.now(); processPendingStructureReplays(); perfAdd('building replay', t0); } }, 300);
   // How many of the player's OWN placed blocks (recorded edits, not
   // generated ones) need to sit inside a candidate area before it's
   // treated as "there's a real manual structure here" — a single
@@ -5102,13 +5115,17 @@
         // was still nonzero there).
         if (treeChance && !structureColumn && h > SEA_LEVEL && (surfaceType === 0 || surfaceType === 24 || surfaceType === PODZOL_TYPE) && chunkTreeRoll(x,z,0) < treeChance) {
           const trunkH = 3 + Math.floor(chunkTreeRoll(x,z,11)*2);
-          for (let ty=1; ty<=trunkH; ty++) blocks.set(key(x,h+ty,z), 3);
+          // A saved edit always wins over the tree. The canopy spills one column into the neighbouring chunk, and only
+          // THIS chunk's edits get laid back on top below — so when this chunk regenerated, leaves you'd mined (or
+          // blocks you'd built) in the neighbour's edge column came straight back. Never write over an edited cell.
+          const treeSet = (tk, t) => { if (!blockEdits.has(tk)) blocks.set(tk, t); };
+          for (let ty=1; ty<=trunkH; ty++) treeSet(key(x,h+ty,z), 3);
           const topY = h + trunkH;
           for (let lx2=-1; lx2<=1; lx2++)
             for (let lz2=-1; lz2<=1; lz2++)
               for (let ly=0; ly<=1; ly++)
-                if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8 && !isStructureColumn(x+lx2, z+lz2)) blocks.set(key(x+lx2, topY+ly, z+lz2), 4);
-          blocks.set(key(x, topY+2, z), 4);
+                if (chunkTreeRoll(x+lx2, z+lz2, 22+ly) < 0.8 && !isStructureColumn(x+lx2, z+lz2)) treeSet(key(x+lx2, topY+ly, z+lz2), 4);
+          treeSet(key(x, topY+2, z), 4);
           if (topY+2 > maxY) maxY = topY+2;
           // A tree's canopy spills 1 column into each neighbour, so their
           // own tracked height needs to account for it too, not just this
@@ -5834,6 +5851,63 @@
     out.computeBoundingSphere();
     return out;
   }
+  // ---- RAIL TRACK GEOMETRY (see TRAINS & STATIONS) ----
+  // One vertex-coloured geometry per shape, in the cell's own frame (centre at 0, -0.5..0.5): gravel bed, timber
+  // sleepers and two steel rails 0.5 apart whose tops sit TRACK_RAIL_TOP above the cell's floor. Un-rotated, a
+  // Straight runs along X, a Corner joins the +X edge to the +Z edge round the (+0.5,+0.5) corner, and a Slope runs
+  // along X climbing from its +X end (floor of the cell) to its -X end (top of the cell) — the same way up as a
+  // Slope block at rot 0, so a slope block fits neatly under it. Turned by stepRotations like a fence.
+  const TRACK_RAIL_TOP = 0.15;
+  const trackGeometryCache = {};
+  function trackGeometryFor(shape) {
+    if (trackGeometryCache[shape]) return trackGeometryCache[shape];
+    const pos = [], col = [];
+    const C = { bed: new THREE.Color(0x7a7166), sleeper: new THREE.Color(0x5e3f24), rail: new THREE.Color(0x8d939a), railTop: new THREE.Color(0xc9ced3), post: new THREE.Color(0x4f3520) };
+    const box = (cx, cy, cz, sx, sy, sz, rotY, color, topColor) => {
+      const g = new THREE.BoxGeometry(sx, sy, sz).toNonIndexed();
+      const m = new THREE.Matrix4().makeRotationY(rotY || 0); m.setPosition(cx, cy, cz); g.applyMatrix4(m);
+      const P = g.attributes.position, N = g.attributes.normal;
+      for (let i = 0; i < P.count; i++) {
+        pos.push(P.getX(i), P.getY(i), P.getZ(i));
+        const c = (topColor && N.getY(i) > 0.5) ? topColor : color; col.push(c.r, c.g, c.b);
+      }
+      g.dispose();
+    };
+    const B = -0.5; // the cell's floor
+    if (shape === 'corner') {
+      const R = [0.25, 0.75], seg = 7, a0 = -Math.PI / 2, a1 = -Math.PI;
+      for (let i = 0; i < seg; i++) { // gravel bed in wedges round the curve
+        const a = a0 + (a1 - a0) * (i + 0.5) / seg, len = 2 * 0.5 * Math.sin(Math.abs(a1 - a0) / seg / 2) * 1.25;
+        const cx = 0.5 + 0.5 * Math.cos(a), cz = 0.5 + 0.5 * Math.sin(a), tx = -Math.sin(a), tz = Math.cos(a);
+        box(cx, B + 0.015, cz, len, 0.03, 0.9, Math.atan2(-Math.cos(a), -Math.sin(a)), C.bed);
+      }
+      for (let i = 0; i < 4; i++) { // sleepers point at the curve's centre
+        const a = a0 + (a1 - a0) * (i + 0.5) / 4, cx = 0.5 + 0.5 * Math.cos(a), cz = 0.5 + 0.5 * Math.sin(a);
+        box(cx, B + 0.055, cz, 0.9, 0.05, 0.14, Math.atan2(-Math.sin(a), Math.cos(a)), C.sleeper);
+      }
+      for (const r of R) for (let i = 0; i < seg; i++) {
+        const t0 = a0 + (a1 - a0) * i / seg, t1 = a0 + (a1 - a0) * (i + 1) / seg;
+        const x0 = 0.5 + r * Math.cos(t0), z0 = 0.5 + r * Math.sin(t0), x1 = 0.5 + r * Math.cos(t1), z1 = 0.5 + r * Math.sin(t1);
+        const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) + 0.012;
+        box((x0 + x1) / 2, B + TRACK_RAIL_TOP - 0.035, (z0 + z1) / 2, len, 0.07, 0.06, Math.atan2(-dz, dx), C.rail, C.railTop);
+      }
+    } else {
+      box(0, B + 0.015, 0, 1.0, 0.03, 0.9, 0, C.bed);
+      for (const x of [-0.375, -0.125, 0.125, 0.375]) box(x, B + 0.055, 0, 0.14, 0.05, 0.9, 0, C.sleeper);
+      for (const z of [-0.25, 0.25]) box(0, B + TRACK_RAIL_TOP - 0.035, z, 1.0, 0.07, 0.06, 0, C.rail, C.railTop);
+      if (shape === 'slope') {
+        for (let i = 0; i < pos.length; i += 3) pos[i + 1] += (0.5 - pos[i]); // shear: +1 at the -X end, 0 at the +X end
+        for (const [x, h] of [[-0.25, 0.72], [0.2, 0.27]]) for (const z of [-0.3, 0.3]) box(x, B + h / 2, z, 0.1, h, 0.1, 0, C.post); // trestle legs
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.computeVertexNormals();
+    geo.computeBoundingSphere();
+    return (trackGeometryCache[shape] = geo);
+  }
+  const trackMaterial = new THREE.MeshPhongMaterial({ vertexColors: true, shininess: 12 });
   const fenceGeometryCache = {};
   function fenceGeometryFor(entry) {
     const k = entry.fenceStyle + '|' + entry.fence + (entry.gateOpen ? '|open' : '');
@@ -5885,15 +5959,15 @@
 
   const MAX_INSTANCES = 50000; // raised from 40000 — village skirt-terracing (see buildVillageInChunk) adds a real amount of newly-EXPOSED ground-type blocks (road, plot yards, terraced slopes) on top of ordinary terrain's own usage of this same per-type budget, and that combination was eating into the headroom this cap was originally sized around, reproducing the exact "silently invisible blocks" failure this cap's own comment above already documents
   const meshes = BLOCK_TYPES.map((entry, i) => {
-    const mat = buildMaterialArray(entry);
+    const mat = entry.track ? trackMaterial : buildMaterialArray(entry);
     // Glass types never get a per-cube instance any more (see
     // glassMeshes/rebuildGlassGeometry below) — this mesh for them stays
     // permanently empty, so it only needs a minimal starting buffer
     // rather than the full MAX_INSTANCES every real block type gets.
     // The twelve Curve types start small (they grow on demand — see growBlockMesh): a per-type buffer at
     // MAX_INSTANCES is ~3MB, and no world has anywhere near 50,000 curve blocks.
-    const cap = GLASS_TYPE_SET.has(i) ? 1 : ((entry.curve || entry.fence) ? 2048 : MAX_INSTANCES); // fences grow on demand too, same as curves
-    const m = new THREE.InstancedMesh(entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : (entry.curve ? curveGeometryFor(entry) : (entry.fence ? fenceGeometryFor(entry) : geometry))), mat, cap);
+    const cap = GLASS_TYPE_SET.has(i) ? 1 : ((entry.curve || entry.fence || entry.track) ? 2048 : MAX_INSTANCES); // fences grow on demand too, same as curves
+    const m = new THREE.InstancedMesh(entry.track ? trackGeometryFor(entry.track) : entry.half ? stepLowerGeometry : (entry.slope ? slopeGeometry : (entry.curve ? curveGeometryFor(entry) : (entry.fence ? fenceGeometryFor(entry) : geometry))), mat, cap);
     m.castShadow = !entry.transparent; m.receiveShadow = true;
     m.count = 0;
     scene.add(m);
@@ -5939,9 +6013,9 @@
   // underneath for everything — the merged types are just hidden while this is on — which is what makes the
   // switch instant both ways. Switch: the "Fast terrain" button on the pause screen, or F4. Saved per device.
   const CM_SX = 32, CM_SY = 16, CM_BUDGET_MS = 5;
-  const CM_MERGE = BLOCK_TYPES.map((e, i) => !!e.mats && !e.half && !e.slope && !e.curve && !e.fence && !e.transparent
+  const CM_MERGE = BLOCK_TYPES.map((e, i) => !!e.mats && !e.half && !e.slope && !e.curve && !e.fence && !e.track && !e.transparent
     && !GLASS_TYPE_SET.has(i) && i !== 4 && !/^Winter Branch/.test(e.name || ''));
-  const CM_OCC = BLOCK_TYPES.map(e => !(e.half || e.slope || e.curve || e.fence || e.transparent)); // same rule neighborsAllSolid uses
+  const CM_OCC = BLOCK_TYPES.map(e => !(e.half || e.slope || e.curve || e.fence || e.track || e.transparent)); // same rule neighborsAllSolid uses
   const cmSections = new Map(); // section id -> { keys: Set, mesh, sx, sy, sz }
   const cmDirty = new Set();
   // Which one is on screen. While a lot is still waiting to be meshed (entering a world, switching this on,
@@ -6488,7 +6562,7 @@
     if (nt === undefined) return false;
     const nEntry = BLOCK_TYPES[nt];
     if (nEntry && (nEntry.name||'').includes('Glass')) return true;
-    return !(nEntry && (nEntry.half || nEntry.slope || nEntry.curve || nEntry.fence));
+    return !(nEntry && (nEntry.half || nEntry.slope || nEntry.curve || nEntry.fence || nEntry.track));
   }
   // Unit-cube faces are axis-aligned, so the two in-plane coordinates of
   // each corner (the ones NOT along the face's own normal) already run
@@ -6651,7 +6725,7 @@
     if (mesh.count >= mesh.instanceMatrix.count) mesh = growBlockMesh(type, false); // grow instead of silently dropping the block — see growBlockMesh's own comment
     const idx = mesh.count;
     dummy.position.set(x+0.5, y+0.5, z+0.5);
-    if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // a Slope or Curve faces the way it was placed (and may be tilted); every other full block is symmetric
+    if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence || BLOCK_TYPES[type].track)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // a Slope or Curve faces the way it was placed (and may be tilted); every other full block is symmetric
     dummy.updateMatrix();
     mesh.setMatrixAt(idx, dummy.matrix);
     mesh.count = idx+1;
@@ -6866,7 +6940,7 @@
       // the ceiling block over them, and the wall blocks at their ends all
       // had every neighbour present (one of them a bar), so none of them
       // were drawn, and the cell looked cut out of the room.
-      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].fence || BLOCK_TYPES[t].transparent)); // a Fence hides nothing behind it either; a Slope only fills half its cell, like a Step — and a Curve part of one
+      return t !== undefined && !(BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].fence || BLOCK_TYPES[t].track || BLOCK_TYPES[t].transparent)); // a Fence hides nothing behind it either; a Slope only fills half its cell, like a Step — and a Curve part of one
     };
     return solidAt(x+1,y,z) && solidAt(x-1,y,z) && solidAt(x,y+1,z) && solidAt(x,y-1,z) && solidAt(x,y,z+1) && solidAt(x,y,z-1);
   }
@@ -6956,7 +7030,7 @@
         reverseStepUpperIndex[type][ui] = k;
       } else {
         dummy.position.set(x+0.5, y+0.5, z+0.5);
-        if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // same orientation addFullInstance gives a Slope or Curve
+        if (BLOCK_TYPES[type] && (BLOCK_TYPES[type].slope || BLOCK_TYPES[type].curve || BLOCK_TYPES[type].fence || BLOCK_TYPES[type].track)) setBlockOrientation(dummy, stepRotations.get(k) || 0); else dummy.rotation.set(0, 0, 0); // same orientation addFullInstance gives a Slope or Curve
         dummy.updateMatrix();
         const idx = rebuildCounts[type]++;
         if (idx >= meshes[type].instanceMatrix.count) growBlockMesh(type, false);
@@ -7035,6 +7109,7 @@
     // drawn inside its empty part (see FLUID-FILLED SHAPED BLOCKS), so
     // the face between them would be an extra inner layer — hidden. One
     // ABOVE the water isn't filled, so the water's top still shows there.
+    if (BLOCK_TYPES[t] && BLOCK_TYPES[t].track) return false; // rails don't hide water
     if (BLOCK_TYPES[t] && (BLOCK_TYPES[t].half || BLOCK_TYPES[t].slope || BLOCK_TYPES[t].curve || BLOCK_TYPES[t].fence)) return dy !== undefined && dy <= 0;
     return true;
   }
@@ -10164,6 +10239,7 @@
     { name: 'Ride Gate',              build: buildRideGate,         swatch: 0xffd34d, cost: 0, category: 'office' }, // a theme park's only — ✋ to ride
     { name: 'Launch Console',         build: buildLaunchConsole,    swatch: 0x3a3d42, cost: 0, category: 'office' }, // a rocket launch site's only — ✋ to launch, see ROCKET & MOON BASE
     { name: 'Chandelier',             build: buildChandelierFurniture, swatch: 0xd2b062, cost: 600, category: 'room' }, // aim at the floor under where it should hang; ✋ it to dim — see buildChandelierFurniture
+    { name: 'Ticket Machine',         build: buildTicketMachine,    swatch: 0x2f5fa8, cost: 0, category: 'office' }, // a Train Station's only — ✋ opens the station, see TRAINS & STATIONS
   ];
   const SHOP_COUNTER_IDX = FURNITURE_TYPES.findIndex(t => t.name === 'Shop Counter');
   // Player-placed pieces whose front is modelled on local -Z, turned to face the player when placed — see doPlace.
@@ -10326,7 +10402,7 @@
     'Single Bed': [1.0, 1.9, 0.55, 0], 'Double Bed': [1.7, 1.9, 0.55, 0], 'Wardrobe': [1.16, 0.6, 1.96, 0], 'Chest of Drawers': [0.85, 0.48, 0.9, 0],
     'Toy Box': [0.74, 0.44, 0.5, 0], 'Open Log Fire': [0.8, 0.8, 0.35, 0], 'Full-Length Mirror': [0.86, 0.45, 1.8, -0.25],
     'Shop Counter': [2.9, 0.65, 1.0, 0], 'Street Light': [0.36, 0.36, 4.8, 0], 'Office Safe': [0.6, 0.6, 0.85, 0],
-    'Letting Board': [0.2, 0.2, 1.6, 0], 'Bread Rack': [0.98, 0.44, 1.85, 0], 'Garage Door': [4.0, 0.3, 3.0, 0], 'Fireplace': [1.7, 0.72, 1.15, 0.1], 'Bookcase': [0.98, 0.4, 2.2, 0.02], 'Grand Piano': [1.5, 1.7, 1.1, 0], 'Pool Table': [1.3, 2.05, 0.9, 0], 'Ticket Booth': [1.1, 1.0, 2.1, 0], 'Ride Gate': [0.4, 0.4, 1.0, 0], 'Launch Console': [1.0, 0.6, 1.1, 0], 'Washing Machine': [0.62, 0.6, 0.86, 0], 'Bakery Till': [1.0, 0.66, 1.0, 0], 'Flour Sacks': [0.8, 0.6, 0.8, 0], 'Pub Bar': [1.0, 0.82, 1.0, 0.04], 'Pub Bar Pumps': [1.0, 0.82, 1.0, 0.04], 'Bottle Fridge': [0.66, 0.66, 1.75, -0.01], 'Box Stack': [0.86, 0.84, 3.4, 0],
+    'Letting Board': [0.2, 0.2, 1.6, 0], 'Bread Rack': [0.98, 0.44, 1.85, 0], 'Garage Door': [4.0, 0.3, 3.0, 0], 'Fireplace': [1.7, 0.72, 1.15, 0.1], 'Bookcase': [0.98, 0.4, 2.2, 0.02], 'Grand Piano': [1.5, 1.7, 1.1, 0], 'Pool Table': [1.3, 2.05, 0.9, 0], 'Ticket Booth': [1.1, 1.0, 2.1, 0], 'Ride Gate': [0.4, 0.4, 1.0, 0], 'Launch Console': [1.0, 0.6, 1.1, 0], 'Washing Machine': [0.62, 0.6, 0.86, 0], 'Bakery Till': [1.0, 0.66, 1.0, 0], 'Ticket Machine': [0.62, 0.5, 1.7, 0], 'Flour Sacks': [0.8, 0.6, 0.8, 0], 'Pub Bar': [1.0, 0.82, 1.0, 0.04], 'Pub Bar Pumps': [1.0, 0.82, 1.0, 0.04], 'Bottle Fridge': [0.66, 0.66, 1.75, -0.01], 'Box Stack': [0.86, 0.84, 3.4, 0],
   };
   var furnBoxCells = new Map(); // "x,z" -> [box] — see isSolid
   function registerFurnBox(fk, f) {
@@ -10914,6 +10990,7 @@
     }
     if (name === 'Office Safe') { if (!remote) { if (restForFurniture(fk)) openRestOffice(fk); else openPubOffice(fk); } return true; } // see PUB / RESTAURANT
     if (name === 'Bakery Till') { if (!remote) openBakePanel(fk); return true; } // see MILL & BAKERY
+    if (name === 'Ticket Machine') { if (!remote) openStationPanel(fk); return true; } // see TRAINS & STATIONS
     if (name === 'Letting Board') { if (!remote) openLetPanel(fk); return true; } // see HOUSE TO LET
     if (name === 'Ticket Booth') { if (!remote) { if (stadForFurniture(fk)) openStadiumOffice(fk); else openParkBooth(fk); } return true; } // see THEME PARK / FOOTBALL STADIUM
     if (name === 'Ride Gate') { if (!remote) startRide(fk); return true; }
@@ -10955,7 +11032,7 @@
     const f = furnGet(fk); if (!f) return;
     const t = FURNITURE_TYPES[f.typeIdx]; if (!t) return;
     const name = t.name, fx = furnFx.get(fk), g = f.group;
-    if (SEATS[name] || name === 'Single Bed' || name === 'Double Bed' || name === 'Street Light' || name === 'Office Safe' || name === 'Letting Board' || name === 'Bakery Till' || name === 'Ticket Booth' || name === 'Ride Gate' || name === 'Launch Console' || name === 'Chandelier') return;
+    if (SEATS[name] || name === 'Single Bed' || name === 'Double Bed' || name === 'Street Light' || name === 'Office Safe' || name === 'Letting Board' || name === 'Bakery Till' || name === 'Ticket Machine' || name === 'Ticket Booth' || name === 'Ride Gate' || name === 'Launch Console' || name === 'Chandelier') return;
     if (name === 'Fruit Machine' && !fx) return; // couldn't afford the spin
     const p = { k: fk };
     if (g.userData.doors) p.on = !!g.userData.doorsOpen;
@@ -11218,15 +11295,49 @@
   // already-generated NEIGHBOURING chunk's blocks directly (which
   // clearing/walls/etc. can all do) changes the real data but never
   // tells that chunk's already-built visuals to catch up on its own.
+  //
+  // RESYNC QUEUE: this used to redraw every WHOLE chunk the range touched, there and then — and every building
+  // (bought ones included) is re-built each time its chunks stream back in, calling it once or twice. A Mansion
+  // touches ~12 chunks: over a second of redrawing on a fast PC (several on a phone or Chromebook), all in one
+  // frame — the freeze when flying back towards your buildings. Now it only redraws the COLUMNS in the range
+  // (not the rest of those chunks), each column once however many times it's asked for, a few milliseconds'
+  // worth a frame (stepResyncQueue, from animate). The loading screen waits for it to empty (see beginPlaying).
+  const resyncColQueue = [], resyncColQueued = new Set();
   function resyncChunksInRange(rx0, rx1, rz0, rz1) {
-    const ccx0 = Math.floor(rx0 / CHUNK_SIZE), ccx1 = Math.floor(rx1 / CHUNK_SIZE);
-    const ccz0 = Math.floor(rz0 / CHUNK_SIZE), ccz1 = Math.floor(rz1 / CHUNK_SIZE);
-    for (let tcx = ccx0; tcx <= ccx1; tcx++) {
-      for (let tcz = ccz0; tcz <= ccz1; tcz++) {
-        if (generatedChunks.has(tcx + '_' + tcz)) syncChunkInstances(tcx, tcz);
+    for (let x = rx0 - 1; x <= rx1 + 1; x++) {
+      const cxk = Math.floor(x / CHUNK_SIZE) + '_';
+      for (let z = rz0 - 1; z <= rz1 + 1; z++) {
+        if (!generatedChunks.has(cxk + Math.floor(z / CHUNK_SIZE))) continue;
+        const ck = x + ',' + z;
+        if (resyncColQueued.has(ck)) continue;
+        resyncColQueued.add(ck); resyncColQueue.push(x, z);
       }
     }
   }
+  function resyncColumnNow(x, z) { // the same per-column band syncChunkSteps redraws
+    const colH = columnHeight.get(x + ',' + z);
+    if (colH === undefined) return;
+    const isVillageColumn = villageGroundHeight.has(x + ',' + z);
+    const shallowYMin = colH - CHUNK_FILL_DEPTH_CAP - (isVillageColumn ? 20 : 2);
+    const deepY = columnDeepY.get(x + ',' + z);
+    const yMin = Math.max(0, deepY !== undefined ? Math.min(shallowYMin, deepY - 1) : shallowYMin);
+    const yMax = colH + (isVillageColumn ? 20 : 3);
+    for (let y = yMin; y <= yMax; y++) updateFullInstanceAt(x, y, z);
+  }
+  let resyncHead = 0;
+  function stepResyncQueue(budgetMs) {
+    if (resyncHead >= resyncColQueue.length) return;
+    const t0 = performance.now();
+    while (resyncHead < resyncColQueue.length) {
+      const x = resyncColQueue[resyncHead++], z = resyncColQueue[resyncHead++];
+      resyncColQueued.delete(x + ',' + z);
+      resyncColumnNow(x, z);
+      if ((resyncHead & 15) === 0 && performance.now() - t0 > budgetMs) break;
+    }
+    if (resyncHead >= resyncColQueue.length) { resyncColQueue.length = 0; resyncHead = 0; }
+    perfAdd('building redraw', t0);
+  }
+  function resyncPending() { return resyncHead < resyncColQueue.length; }
   // This is the general "how close can any two UNRELATED structures be"
   // guard — every standalone system (shops, churches, farms, landmarks,
   // standalone houses, shipwrecks) and every village-vs-other-village
@@ -11525,7 +11636,7 @@
       const t = blocks.get(key(fx, y, fz));
       if (t === undefined) continue;
       const e = BLOCK_TYPES[t];
-      if (e && e.fence) continue;
+      if (e && (e.fence || e.track)) continue;
       return y;
     }
     return ref;
@@ -12948,7 +13059,7 @@
     resyncChunksInRange(sx0 - 10, sx1 + 10, sz0 - 10, sz1 + 10);
     if (!replay) recordStructureSpec(spec);
   }
-  const CASTLE_CHUNK_STRIDE = 100; // 100*32 = 3200 blocks apart, jittered — widened 5x per Jason's "20% of the current rate" request; meant to be a rarer, special find, unlike a windmill or a settlement
+  const CASTLE_CHUNK_STRIDE = 40; // 40*32 = 1280 blocks apart, same spacing as windmills (was 100 = 3200 — on top of needing a very flat 24x15 spot, that made them so rare you could fly 3000 blocks without one; the treasure objectives need them)
   const castleRegionClaimed = new Set(); // same reasoning as windmillRegionClaimed/houseRegionClaimed
   function maybeBuildCastle(cx, cz, replay) {
     const gx = Math.floor(cx / CASTLE_CHUNK_STRIDE), gz = Math.floor(cz / CASTLE_CHUNK_STRIDE);
@@ -12956,6 +13067,9 @@
     if (!replay && castleRegionClaimed.has(regionKey)) return;
     const ck = cx + '_' + cz;
     if (villageFootprintChunkKeys.has(ck)) return; // already built here (this chunk reloading) — don't duplicate
+    // Never where you've been building or farming (this chunk or any next to it — the moat reaches well past the
+    // keep). Matters more now castles are closer together: ground you've already explored can still get one.
+    if (!replay) for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if (blockEdits.byChunk.has((cx + dx) + '_' + (cz + dz))) return;
     const baseX = cx * CHUNK_SIZE, baseZ = cz * CHUNK_SIZE;
     const rng = mulberry32(replay ? replay.rs : seedFromHash(cx*4001 + 601, cz*3001 + 701));
     // Combined keep+tower footprint is 24 wide x 15 deep, but the moat
@@ -12978,7 +13092,7 @@
     // ground beyond it), so a mismatch this size showed up worst there —
     // "not clearing terrain at the front, the bridge side" was this.
     const MOAT_REACH = 9, CASTLE_PAD = MOAT_REACH + 3;
-    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 10, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1);
+    const site = replay ? replay.site : findNearbyFlatSite(baseX+16, baseZ+16, 24, 15, 0, 8, HOUSE_MAX_VARIANCE, rng, 24, ck, baseX, baseX + CHUNK_SIZE - 1, baseZ, baseZ + CHUNK_SIZE - 1); // 24 tries (was 10) — only a few spots in a chunk can hold a 24x15 keep at all
     if (!site) return; // nothing flat/dry enough in THIS particular chunk — region stays unclaimed, some other chunk in it explored later might still work
     const spec = replay || { t: 'castle', ck, site, rs: rng.state() };
     castleRegionClaimed.add(regionKey);
@@ -16566,17 +16680,32 @@
     if (recordSeed(x, y + TP_Y_OFF, z, TP_CODE * SEED_VALUE_MUL)) recordName(x, y + TP_Y_OFF, z, 'Start');
     seedNextPass = 0;
   }
-  function tpReseat(k, fx) { // a pad buried in, or floating above, the ground it was meant to sit on: put it on top
+  // A pad buried in, or floating above, the ground it was meant to sit on gets moved — but only ever to the NEAREST
+  // spot that fits, never to the top of the whole column. It used to jump to the column's highest block the moment
+  // that column's terrain existed — before your own builds, bought buildings and the terrain's later passes had all
+  // been put back after a reload — so a pad on something you'd built was dropped down to the bare ground under it
+  // and then ended up inside it once your blocks came back (and one placed indoors could leap up onto the roof).
+  // Now: buried -> lifted to the first clear 2-high space above; floating -> only dropped once the world has fully
+  // finished loading and rebuilding, to the first solid block below. Checked on every pass, so it self-corrects.
+  function tpWorldSettled() {
+    return !worldLoading && !streamJob && chunkGenQueue.length === 0 && !needsRebuild && !rebuildInProgress
+      && !pendingStructureReplays.some(sp => sp.bought && generatedChunks.has(sp.ck));
+  }
+  function tpReseat(k, fx) {
     const [x, y, z] = tpKeyXYZ(k);
-    if (!groundHeightOnly.has(x + ',' + z)) return;
-    if (!blocks.has(key(x, y, z)) && blocks.has(key(x, y - 1, z))) { fx.checked = true; return; }
-    let top = null;
-    for (let yy = WORLD_HEIGHT + 4; yy > BEDROCK_Y; yy--) if (blocks.has(key(x, yy, z)) && !waterBlocks.has(key(x, yy + 1, z))) { top = yy; break; }
-    fx.checked = true;
-    if (top === null || top + 1 === y || visitMode) return;
+    if (visitMode || !groundHeightOnly.has(x + ',' + z)) return;
+    let ny = null;
+    if (blocks.has(key(x, y, z))) {
+      if (!tpWorldSettled()) return;
+      for (let yy = y + 1; yy < y + 48 && yy < WORLD_HEIGHT + 4; yy++) if (!blocks.has(key(x, yy, z)) && !blocks.has(key(x, yy + 1, z))) { ny = yy; break; }
+    } else if (!blocks.has(key(x, y - 1, z))) {
+      if (!tpWorldSettled()) return;
+      for (let yy = y - 2; yy > BEDROCK_Y; yy--) if (blocks.has(key(x, yy, z))) { if (!waterBlocks.has(key(x, yy + 1, z))) ny = yy + 1; break; }
+    } else { fx.checked = tpWorldSettled(); return; } // sitting on something solid — fine
+    if (ny === null || ny === y) return;
     const name = nameEdits.get(k), v = seedEdits.get(k);
     recordName(x, y + TP_Y_OFF, z, null); recordSeed(x, y + TP_Y_OFF, z, -1);
-    if (recordSeed(x, top + 1 + TP_Y_OFF, z, v)) recordName(x, top + 1 + TP_Y_OFF, z, name || 'Teleporter');
+    if (recordSeed(x, ny + TP_Y_OFF, z, v)) recordName(x, ny + TP_Y_OFF, z, name || 'Teleporter');
     seedNextPass = 0;
   }
   function buildTeleporterModel() {
@@ -16606,7 +16735,7 @@
         tpFx.set(k, fx);
       }
       setTextLabel(fx.label, '🌀 ' + (nameEdits.get(k) || 'Teleporter'));
-      if (!fx.checked) tpReseat(k, fx);
+      if (!fx.checked || blocks.has(key(fx.group.position.x - 0.5, fx.group.position.y, fx.group.position.z - 0.5))) tpReseat(k, fx); // re-checked whenever something now fills its cell
     }
   }
   let tpStandingOn = null, tpStartCheckedFor = null;
@@ -16730,6 +16859,7 @@
     if (!recordSeed(x, y + TP_Y_OFF, z, TP_CODE * SEED_VALUE_MUL)) { showSaveStatus('🌀 Teleporters can only be placed in a saved world', true); return; }
     recordName(x, y + TP_Y_OFF, z, name);
     setTeleporterStock(teleporterStock() - 1);
+    objNote('teleporter'); // see OBJECTIVES
     fixWeaponSelection(); updateWeaponSlotIcon();
     tpStandingOn = null;
     seedNextPass = 0;
@@ -21529,8 +21659,9 @@
       // hides the cursor entirely during normal play, so there's nothing
       // visible to aim a click at). A keyboard shortcut sidesteps that
       // regardless of input device.
-      if (ridingVehicle) exitVehicle();
-      else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); }
+      if (trainDriving) stopDrivingTrain(); // see TRAINS & STATIONS
+      else if (ridingVehicle) exitVehicle();
+      else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); else { const tr = nearestTrainEngine(3); if (tr) startDrivingTrain(tr); } }
     }
     if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
     if (e.code === 'KeyV' && !e.repeat && yachtDriving) toggleYachtView(); // the yacht's driving view — see SUPERYACHT
@@ -21552,7 +21683,7 @@
     }
   });
   // Steps, Slopes, Curves and Fences are the blocks that have a facing, and the only ones that can be rotated.
-  function isShapedBlockEntry(entry) { return !!(entry && (entry.half || entry.slope || entry.curve || entry.fence)); }
+  function isShapedBlockEntry(entry) { return !!(entry && (entry.half || entry.slope || entry.curve || entry.fence || entry.track)); }
   // Touch only: the rotate button is there exactly while a shaped block is what you're holding.
   function updateRotateButton() {
     const el = document.getElementById('btnRotate');
@@ -21560,7 +21691,7 @@
     const show = (isTouchDevice && isShapedBlockEntry(BLOCK_TYPES[selectedSlot])) ? 'flex' : 'none';
     el.style.display = show;
     const tiltEl = document.getElementById('btnTilt');
-    if (tiltEl) tiltEl.style.display = (BLOCK_TYPES[selectedSlot] && BLOCK_TYPES[selectedSlot].fence) ? 'none' : show; // fences only spin, never tip over
+    if (tiltEl) tiltEl.style.display = (BLOCK_TYPES[selectedSlot] && (BLOCK_TYPES[selectedSlot].fence || BLOCK_TYPES[selectedSlot].track)) ? 'none' : show; // fences only spin, never tip over
   }
   // Turns the Step / Slope / Curve you're aiming at a quarter turn: 'yaw' spins it left/right about the vertical
   // (R on desktop, the 🔄 button on touch), 'tilt' spins it up/down (X, or the ↕️ button) — 0 normal, 1 on its
@@ -21570,8 +21701,8 @@
   function reorientTargetBlock(what) {
     const r = voxelRaycast(true, false);
     const t = r && r.hit ? blocks.get(key(r.hit.x, r.hit.y, r.hit.z)) : undefined;
-    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope, curve or fence to turn it'); return false; }
-    if (BLOCK_TYPES[t].fence && what === 'tilt') { showBriefMessage('Fences only turn left/right'); return false; }
+    if (t === undefined || !isShapedBlockEntry(BLOCK_TYPES[t])) { showBriefMessage('Aim at a step, slope, curve, fence or track to turn it'); return false; }
+    if ((BLOCK_TYPES[t].fence || BLOCK_TYPES[t].track) && what === 'tilt') { showBriefMessage(BLOCK_TYPES[t].track ? 'Track only turns left/right' : 'Fences only turn left/right'); return false; }
     const { x, y, z } = r.hit;
     if (!canEditAt(x, z)) return false; // view only — same rule as placing and mining
     const k = key(x, y, z);
@@ -21620,7 +21751,7 @@
     }
     heldMesh.visible = true;
     heldStepGroup.visible = false;
-    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) ? curveGeometryFor(BLOCK_TYPES[i]) : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) ? fenceGeometryFor(BLOCK_TYPES[i]) : heldGeom)); // the Slope shows as a wedge in your hand, a Curve as its quarter-round
+    heldMesh.geometry = (BLOCK_TYPES[i] && BLOCK_TYPES[i].track) ? trackGeometryFor(BLOCK_TYPES[i].track) : (BLOCK_TYPES[i] && BLOCK_TYPES[i].slope) ? slopeGeometry : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].curve) ? curveGeometryFor(BLOCK_TYPES[i]) : ((BLOCK_TYPES[i] && BLOCK_TYPES[i].fence) ? fenceGeometryFor(BLOCK_TYPES[i]) : heldGeom)); // the Slope shows as a wedge in your hand, a Curve as its quarter-round
     if (i === WATER_SLOT) {
       heldMesh.material = new THREE.MeshPhongMaterial({ map: TEX.water, transparent: true, opacity: 0.7, shininess: 0 });
     } else if (i === LIGHT_SLOT) {
@@ -21656,7 +21787,7 @@
     } else if (i === MOD_SLOT) {
       heldMesh.material = new THREE.MeshBasicMaterial({ color: 0x9fd6b0 });
     } else {
-      heldMesh.material = buildMaterialArrayForHand(i);
+      heldMesh.material = (BLOCK_TYPES[i] && BLOCK_TYPES[i].track) ? trackMaterial : buildMaterialArrayForHand(i);
     }
   }
   function updateModeTag() {
@@ -22792,9 +22923,11 @@
     if (onMoon || launchSeq) { moonAction(); actionHeld = false; return; } // the Moon — see ROCKET & MOON BASE
     if (rideNow) { actionHeld = false; return; } // on a ride: hold on till it's over
     if (yachtDriving && tryYachtAction()) { actionHeld = false; return; } // at the wheel: ✋ drops anchor
+    if (trainDriving) { stopDrivingTrain(); actionHeld = false; return; } // in the cab: ✋ gets out — see TRAINS & STATIONS
     if (furnSeat) { standUpFromSeat(); actionHeld = false; return; } // ✋ while sitting: get up — see FURNITURE INTERACTION
     if (tryBuyShopItem()) { actionHeld = false; return; } // aiming at a vehicle / weapon on display — see VEHICLE & EQUIPMENT SHOPS
     if (tryTractorAction()) { actionHeld = false; return; } // ✋ on your tractor: pick what it sows — see TRACTORS
+    if (tryTrainAction()) { actionHeld = false; return; } // ✋ on your train: its settings — see TRAINS & STATIONS
     if (tryLiftPanelAction()) { actionHeld = false; return; } // ✋ standing in a hotel lift: the floor panel — see HOTEL
     if (weaponEquipped()) { fireWeapon(); return; }
     if (bsGame && bsGame.started && !bsGame.won) {
@@ -23292,6 +23425,9 @@
       } else if (type && type.fence) {
         placedRot = fencePlacementRot(x, y, z, type.fence);
         if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
+      } else if (type && type.track) {
+        placedRot = trackPlacementRot(x, y, z, type.track); // joins up with the track beside it — see TRAINS & STATIONS
+        if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       }
       recordBlockEdit(x, y, z, selectedSlot, placedRot);
       if (selectedSlot === MUD_TYPE) objNote('mud'); // see OBJECTIVES
@@ -23304,7 +23440,7 @@
       // and placing grass underneath an existing block places it as dirt.
       const GRASS_T = 0, DIRT_T = 1;
       const bk = key(x, y - 1, z);
-      if (blocks.get(bk) === GRASS_T) {
+      if (blocks.get(bk) === GRASS_T && !(type && type.track)) { // (track just lies on the grass)
         blocks.set(bk, DIRT_T);
         recordBlockEdit(x, y - 1, z, DIRT_T, 0);
         handleLocalBlockChange(x, y - 1, z);
@@ -23789,6 +23925,7 @@
       return false;
     }
     const entry = BLOCK_TYPES[type];
+    if (entry && entry.track) return false; // rails are walked over like a path — see TRAINS & STATIONS
     if (entry && entry.fence) {
       // Full height of its own cell over its footprint — see fenceFootprintHit. Undo the rotation the same
       // way the Curve does below.
@@ -23826,7 +23963,7 @@
       const rot = stepRotations.get(k) || 0;
       const localX = (x - bx) - 0.5, localZ = (z - bz) - 0.5;
       const along = rot === 0 ? -localX : rot === 1 ? localZ : rot === 2 ? localX : -localZ; // -0.5 at the low edge .. +0.5 at the high edge
-      return (y - by) < (along + 0.5) - SLOPE_COLLISION_INSET;
+      return (y - by) < (along + 0.5) - slopeInsetNow; // see SLOPE_COLLISION_INSET
     }
     if (entry && entry.curve) {
       // A Curve fills its whole height but only part of its footprint: the quarter disc of radius 1 around its
@@ -23852,10 +23989,43 @@
   // do on flat ground — so stepping from the ground onto a ramp doesn't
   // lift or drop them.
   const SLOPE_COLLISION_INSET = 0.3;
+  // ...but ONLY for vehicles now. On foot it made every ramp a sawtooth: the lowered surface tops out 0.3 short
+  // of the full block it leads onto (and starts 0.3 below the ground it leaves), so walking up a ramp went flat,
+  // climb, STOP while a 0.3 ledge was lifted over, pop, flat — the jolting — and at a low frame rate the per-frame
+  // lift cap couldn't keep up at all, which is when a ramp just wouldn't let you up. Walking uses the true surface
+  // (no inset) so it joins the ground and the next block seamlessly; the ~0.3 the body's uphill edge then holds the
+  // centre above the slope is taken back off the CAMERA instead (see slopeEyeSink), so you still look like you're
+  // standing on it.
+  let slopeInsetNow = SLOPE_COLLISION_INSET;
+  let slopeEyeSink = 0; // how far the eye is lowered this frame on a ramp — see above
+  function walkSlopeSinkNow() { // centre's own height above the true surface under it, while standing on/next to a slope
+    const px = player.pos.x, py = player.pos.y, pz = player.pos.z, bx = Math.floor(px), bz = Math.floor(pz);
+    let onSlope = false, surf = null;
+    for (let by = Math.floor(py + 0.1); by >= Math.floor(py - 0.8); by--) {
+      const k = key(bx, by, bz), t = blocks.get(k);
+      if (t === undefined) continue;
+      const e = BLOCK_TYPES[t], rot = stepRotations.get(k) || 0;
+      if (e && e.slope && rot < 4) {
+        const lx = (px - bx) - 0.5, lz = (pz - bz) - 0.5;
+        const along = rot === 0 ? -lx : rot === 1 ? lz : rot === 2 ? lx : -lz;
+        surf = by + along + 0.5; onSlope = true;
+      } else if (!(e && (e.half || e.curve || e.fence))) surf = by + 1;
+      break;
+    }
+    if (surf === null) return 0;
+    if (!onSlope) { // centre over flat ground: only sink if a slope is right beside us (the body's front edge is on it)
+      let near = false;
+      for (const [ox, oz] of [[0.3,0],[-0.3,0],[0,0.3],[0,-0.3]]) { const k = key(Math.floor(px+ox), Math.floor(py + 0.1), Math.floor(pz+oz)), t = blocks.get(k); if (t !== undefined && BLOCK_TYPES[t] && BLOCK_TYPES[t].slope) { near = true; break; } }
+      if (!near) return 0;
+    }
+    return Math.max(0, Math.min(0.4, py - (surf - 0.05)));
+  }
   const SLOPE_MAX_MOVE_PER_FRAME = 0.12; // the most a slope lifts or lowers the player in one frame — see smoothLift in tryMove
   const STEP_HEIGHT = 0.55; // a touch more than the step block's own 0.5, so it clears comfortably
   function tryMove(newPos, wasGrounded, rideSlopes) { // rideSlopes: true for the ramp vehicles — lets them climb Slope blocks (even in flying mode) and at a speed a walking player never reaches
     const r = player.radius;
+    const onFoot = !rideSlopes && !ridingVehicle;
+    slopeInsetNow = onFoot ? 0 : SLOPE_COLLISION_INSET; // see SLOPE_COLLISION_INSET
     const test = (x,y,z) => {
       const pts = [
         [x-r,y+0.05,z-r],[x+r,y+0.05,z-r],[x-r,y+0.05,z+r],[x+r,y+0.05,z+r],
@@ -23896,10 +24066,17 @@
     // (SLOPE_MAX_MOVE_PER_FRAME each) — they stay flagged as on the ground
     // meanwhile, so next frame's call carries on where this one left off.
     let slopeMoved = false, slopeLifted = false;
-    const liftCap = rideSlopes ? VEH_SLOPE_MAX_MOVE : SLOPE_MAX_MOVE_PER_FRAME;
+    // On foot the cap follows how far you're moving this frame (a ramp rises as fast as you walk along it), so a
+    // low frame rate never leaves the lift falling behind the climb and stalling you against the slope.
+    const liftCap = rideSlopes ? VEH_SLOPE_MAX_MOVE : Math.max(SLOPE_MAX_MOVE_PER_FRAME, Math.hypot(newPos.x - x, newPos.z - z) * 1.2 + 0.02);
     const smoothLift = () => {
+      const bX = test(newPos.x, y, z), bZ = test(x, y, newPos.z);
       for (let lift = 0.03; lift <= STEP_HEIGHT + 1e-9; lift += 0.03) {
-        if (!test(newPos.x, y + lift, z) && !test(x, y + lift, newPos.z)) {
+        if (test(x, y + lift, z)) return false; // no headroom
+        // frees whichever direction was blocked (it used to need BOTH directions clear, so walking up a ramp at an
+        // angle beside a wall, or with the side of the ramp catching one axis, never lifted at all)
+        if (onFoot ? ((bX && !test(newPos.x, y + lift, z)) || (bZ && !test(x, y + lift, newPos.z)))
+                   : (!test(newPos.x, y + lift, z) && !test(x, y + lift, newPos.z))) {
           const applied = Math.min(lift, liftCap);
           y += applied;
           newPos.y += applied; // the vertical move below is resolved from newPos.y, worked out by the caller BEFORE this lift — without this it would put y straight back
@@ -23986,6 +24163,7 @@
     if (slopeMoved) { player.onGround = true; player.vel.y = 0; } // still riding the ground while a lift/drop plays out over several frames
     tryMoveSlopeLifted = slopeLifted;
     player.pos.set(x,y,z);
+    slopeInsetNow = SLOPE_COLLISION_INSET;
   }
   // A dedicated, much simpler collision resolver for swimming — same
   // "resolve X, then Y, then Z against solid ground, one axis at a
@@ -24143,23 +24321,37 @@
   // 📜 Progress (in the objective box) shows everything done so far with dates, what's left, and the overall %.
   // Reach 100% (every main objective and every side mission) for the Mogul's reward: a Golden Crown and a Golden
   // Jumper — wearable, and every other player sees them — plus fireworks. Saved on this device (mw_objectives).
+  // Kept PER WORLD (mw_objectives:<world id>): a new world starts the list from the very beginning. Only your coins,
+  // weapons and vehicles carry over between worlds (they're yours, not the world's). The old single, device-wide
+  // list (mw_objectives) is handed to the first existing world you open after this change — never a brand new one.
   const OBJ_KEY = 'mw_objectives';
-  let objState = null;
+  let objState = null, objStateWid = null;
+  const objKeyFor = wid => OBJ_KEY + ':' + wid;
+  function objFreshList() { try { const a = JSON.parse(localStorage.getItem('mw_obj_fresh_worlds') || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+  function objMarkFresh(wid) { try { const a = objFreshList(); if (a.indexOf(wid) < 0) { a.push(wid); localStorage.setItem('mw_obj_fresh_worlds', JSON.stringify(a.slice(-200))); } } catch (e) {} } // called when a world is created — see createWorldFromNameInput
   function objLoad() {
-    if (objState) return objState;
-    try { objState = JSON.parse(localStorage.getItem(OBJ_KEY)); } catch (e) { objState = null; }
+    const wid = currentWorldId && currentWorldId !== PUB_WORLD_ID ? currentWorldId : null;
+    if (objState && objStateWid === wid) return objState;
+    if (objState && objStateWid) objSave(); // leaving a world — flush its list first
+    objStateWid = wid; objState = null; objFieldCache = null; objSeedScan = null;
+    if (wid) {
+      try { objState = JSON.parse(localStorage.getItem(objKeyFor(wid))); } catch (e) { objState = null; }
+      if (!objState && objFreshList().indexOf(wid) < 0) { // the old device-wide list, adopted once by an existing world
+        try { const legacy = JSON.parse(localStorage.getItem(OBJ_KEY)); if (legacy && typeof legacy === 'object') { objState = legacy; localStorage.removeItem(OBJ_KEY); } } catch (e) {}
+      }
+    }
     if (!objState || typeof objState !== 'object') objState = {};
     objState.c = objState.c || {};
     if (objState.v !== 2) { objState = { v: 2, c: objState.c, done: {}, skip: {} }; } // the old single list — its counts (harvests, sales, rent...) carry over, the list itself starts again
-    objState.done = objState.done || {}; objState.skip = objState.skip || {};
+    objState.done = objState.done || {}; objState.skip = {}; // no skipping any more — anything skipped before is simply back on the list
     return objState;
   }
-  function objSave() { try { localStorage.setItem(OBJ_KEY, JSON.stringify(objState)); } catch (e) {} }
+  function objSave() { if (!objStateWid || !objState) return; try { localStorage.setItem(objKeyFor(objStateWid), JSON.stringify(objState)); } catch (e) {} }
   // count something that happened (a crop sown, a chest opened, income collected ...)
   function objNote(what, n) {
-    try { if (currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); st.c[what] = (st.c[what] || 0) + (n || 1); objSaveSoon(); objNextCheck = 0; } catch (e) {} // The Mill never counts — objectives are for your own worlds
+    try { if (!currentWorldId || currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); st.c[what] = (st.c[what] || 0) + (n || 1); objSaveSoon(); objNextCheck = 0; } catch (e) {} // The Mill never counts — objectives are for your own worlds
   }
-  function objMax(what, n) { if (currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); if (n > (st.c[what] || 0)) { st.c[what] = n; objSaveSoon(); } } // a "best so far" (e.g. most hotel rooms let at once)
+  function objMax(what, n) { if (!currentWorldId || currentWorldId === PUB_WORLD_ID) return; const st = objLoad(); if (n > (st.c[what] || 0)) { st.c[what] = n; objSaveSoon(); } } // a "best so far" (e.g. most hotel rooms let at once)
   let objSaveTimer = 0;
   function objSaveSoon() { if (!objSaveTimer) objSaveTimer = setTimeout(() => { objSaveTimer = 0; objSave(); }, 1500); }
   const objCount = what => (objLoad().c[what] || 0);
@@ -24392,7 +24584,7 @@
     { id: 'tailor', icon: '🧶', title: 'Tailor-made', reward: 400,
       text: () => 'Buy a Tailor and have her knit you a jumper.',
       tip: () => objBuyHow('tailor') + ' Sell her your wool (3 makes a jumper), then buy a <b>Wool Jumper</b> — you put it straight on.',
-      prog: () => objStep(objOwned('tailor'), wardrobe().some(g => g.slot === 'jumper' && g.style !== 'gold')) },
+      prog: () => objStep(objOwned('tailor'), objCount('jumper') > 0) },
     { id: 'slaughter', icon: '🔪', title: 'The Slaughterhouse', reward: 400,
       text: () => 'Buy a Slaughterhouse and take an animal to the butcher.',
       tip: () => objBuyHow('slaughter') + ' Lead a cow, pig, sheep or chicken there on the 🪢 Lead (Equipment), aim at the butcher and ✋.',
@@ -24460,6 +24652,7 @@
     { id: 's_fill', icon: '🧱', title: 'Fill it in', reward: 100, text: () => 'Fill a gap in one go by holding the build button.', tip: () => 'Build a frame (or find a hole in a floor or wall), aim inside it and <b>hold</b> 🧱 (or press H on a keyboard).', prog: () => [objCount('fill'), 1] },
     { id: 's_drain', icon: '🪣', title: 'Drain it', reward: 100, text: () => 'Drain a body of water with the drain tool.', tip: () => 'Pick <b>Drain</b> on the Action menu (U on a keyboard) and aim at water. Works best on a sealed pond or pool.', prog: () => [objCount('drain'), 1] },
     { id: 's_furn', icon: '🛋️', title: 'Make it home', reward: 150, text: () => 'Add a piece of furniture to a house you own.', tip: () => 'Buy furniture at a Carpenter, then place it inside your house — more furniture, more rent.', prog: () => [objCount('furn_house'), 1] },
+    { id: 's_tp', icon: '🌀', title: 'Beam me up', reward: 200, text: () => 'Buy a teleporter and place it.', tip: () => 'Buy one at an Equipment Shop, pick 🌀 Teleporter on the Equipment → weapons slot and fire it at the ground. Step on any pad to jump between them.', prog: () => [objCount('teleporter'), 1] },
     { id: 's_ride', icon: '🏍️', title: 'Take a ride', reward: 100, text: () => 'Ride a vehicle.', tip: () => 'Buy one at a Vehicle Shop and get on.', prog: () => [objCount('ride'), 1] },
     { id: 's_shoot', icon: '🔫', title: 'Fire away', reward: 100, text: () => 'Use a weapon.', tip: () => 'Buy one at an Equipment Shop (or ride a vehicle with a gun) and fire. Not allowed in The Mill.', prog: () => [objCount('shoot'), 1] },
     { id: 's_church', icon: '⛪', title: 'Build a church', reward: 300, text: () => 'Build a Church.', tip: () => objBuyHow('church'), prog: () => [objOwned('church'), 1] },
@@ -24592,12 +24785,6 @@
     objBox.addEventListener('click', e => {
       e.stopPropagation();
       if (e.target.closest('.orep')) { objOpen = false; objRender(); objShowReport(); return; }
-      if (e.target.closest('.oskip')) {
-        const st = objLoad(), o = OBJECTIVES[objCurrentIdx()]; if (!o) return;
-        objOpen = false; objRender();
-        askConfirm('Skip “' + o.title + '” for now? It stays on your list — do it later and it still counts.', 'Skip', () => { st.skip[o.id] = Date.now(); objSave(); objNextCheck = 0; objRender(); });
-        return;
-      }
       objToggle(false);
     });
     objRep.addEventListener('click', e => {
@@ -24678,9 +24865,9 @@
     const pulse = performance.now() < objPulseUntil, cls = (pulse ? 'pulse' : '') + (objOpen ? ' on' : '');
     if (objBtn.className !== cls) objBtn.className = cls;
     const pctAll = objPercent();
-    const sideLine = '<div class="op" style="margin-top:8px"><span>⭐ Side missions ' + SIDE_MISSIONS.filter(s => st.done[s.id]).length + ' / ' + SIDE_MISSIONS.length + '</span><span>Overall ' + pctAll + '%</span></div>';
+    const sideLine = '<div class="op" style="margin-top:4px"><span>⭐ Side missions ' + SIDE_MISSIONS.filter(s => st.done[s.id]).length + ' / ' + SIDE_MISSIONS.length + '</span><span>Overall ' + pctAll + '%</span></div>';
     if (!o) {
-      const skipped = OBJECTIVES.filter(x => !st.done[x.id] && st.skip[x.id]).length;
+      const skipped = 0;
       objSetHtml(objBtn, (st.mogul ? '👑 ' : '🏆 ') + pctAll + '%<div class="ob2"><div style="width:' + pctAll + '%"></div></div>');
       objSetHtml(objBox, '<div class="oh">🏆 <span>Main objectives finished</span></div>'
         + '<div class="ot">' + (st.mogul ? '👑 Mining World Mogul' : skipped ? skipped + ' skipped to go back to' : 'Side missions left') + '</div>'
@@ -24691,17 +24878,22 @@
       return;
     }
     const [h, n] = objProg(o), pct = Math.max(0, Math.min(100, h / n * 100));
-    objSetHtml(objBtn, '🎯 ' + (ci + 1) + '/' + OBJECTIVES.length + '<div class="ob2"><div style="width:' + pct.toFixed(0) + '%"></div></div>');
+    const mainDone = OBJECTIVES.filter(x => st.done[x.id]).length, mainPct = mainDone / OBJECTIVES.length * 100;
+    // the button's bar is how far through the whole list you are — it matches the "done / 41" beside it (it used to
+    // show the CURRENT objective's own progress, so it jumped back to empty every time one was finished)
+    objSetHtml(objBtn, '🎯 ' + mainDone + '/' + OBJECTIVES.length + '<div class="ob2"><div style="width:' + mainPct.toFixed(0) + '%"></div></div>');
     objBox.style.display = objOpen ? 'block' : 'none';
     if (!objOpen) return;
     const pr = o.money ? objFmt(Math.min(h, n)) + ' / ' + objFmt(n) : Math.min(Math.floor(h), n) + ' / ' + n;
     objSetHtml(objBox, '<div class="oh">🎯 <span>Objective ' + (ci + 1) + ' of ' + OBJECTIVES.length + '</span></div>'
       + '<div class="ot">' + o.icon + ' ' + o.title + '</div><div class="ox">' + o.text() + '</div>'
       + '<div class="obar"><div style="width:' + pct.toFixed(1) + '%"></div></div>'
-      + '<div class="op"><span>' + pr + '</span><span>' + (o.reward ? 'Bonus ' + objFmt(o.reward) : '') + '</span></div>'
+      + '<div class="op"><span>This objective: ' + pr + '</span><span>' + (o.reward ? 'Bonus ' + objFmt(o.reward) : '') + '</span></div>'
       + '<div class="otip">💡 ' + o.tip() + '</div>'
+      + '<div class="obar"><div style="width:' + mainPct.toFixed(1) + '%"></div></div>'
+      + '<div class="op"><span>🎯 Main objectives ' + mainDone + ' / ' + OBJECTIVES.length + ' done</span><span>' + Math.round(mainPct) + '%</span></div>'
       + sideLine
-      + '<div class="ofoot"><span>Tap or move to close</span><button class="orep">📜 Progress</button><button class="oskip">⏭ Skip</button></div>');
+      + '<div class="ofoot"><span>Tap or move to close</span><button class="orep">📜 Progress</button></div>');
   }
   // Things that are just "happening right now" — checked every tick, wherever you are.
   let objShelterAt = 0;
@@ -25462,6 +25654,7 @@
       if (isTractorCode(code)) { tractorSeen.add(k); continue; } // see TRACTORS
       if (code === FDRONE_CODE) { droneSeen.add(k); continue; } // see DRONES
       if (code === TP_CODE) { tpSeen.add(k); continue; } // see TELEPORTERS
+      if (code === TRAIN_CODE) continue; // see TRAINS & STATIONS (gathered from the live records below)
       if (code >= INCUBATOR_EMPTY) { updateIncubatorRecord(k, x, y, z, code); continue; }
       if (!groundHeightOnly.has(x + ',' + z)) { removeSeedFx(k); continue; } // not loaded — hide, keep growing
       const s = seedAt(k);
@@ -25498,15 +25691,17 @@
     // several frames, and a tractor that drove on in the meantime has a new key the snapshot never saw — so it was
     // dropped and re-made every second (the tractors blinking in and out).
     tractorSeen.clear(); droneSeen.clear(); tpSeen.clear();
+    const trainSeen = new Set();
     for (const [k, v] of seedEdits) {
       const code = Math.floor(v / SEED_VALUE_MUL);
-      if (isTractorCode(code)) tractorSeen.add(k); else if (code === FDRONE_CODE) droneSeen.add(k); else if (code === TP_CODE) tpSeen.add(k);
+      if (isTractorCode(code)) tractorSeen.add(k); else if (code === FDRONE_CODE) droneSeen.add(k); else if (code === TP_CODE) tpSeen.add(k); else if (code === TRAIN_CODE) trainSeen.add(k);
     }
     for (const k of [...seedFx.keys()]) if (!seedEdits.has(k)) removeSeedFx(k); // world changed / removed elsewhere
     snowTopPlanted(plantedCols); // see SNOW TOPS
     syncTractors(tractorSeen);
     syncFieldDrones(droneSeen);
     syncTeleporters(tpSeen);
+    try { syncTrains(trainSeen); } catch (e) { console.warn('[voxel] trains sync error (recovered):', e); } // see TRAINS & STATIONS
     for (const k of [...incubatorFx.keys()]) if (!seedEdits.has(k)) removeIncubatorFx(k);
     for (const k of [...hatchedLive.keys()]) if (!seedEdits.has(k)) despawnHatched(k);
   }
@@ -25848,6 +26043,7 @@
     { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day' },
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
     { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 56, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
+    { t: 'station',   name: 'Train Station',  emoji: '🚉', price: 8000, sx: 27, sz: 11, h: 7, note: 'platform with its own track — buy trains at the ticket machine; passengers pay to ride station to station' },
     { t: 'pub',       name: 'Pub',            emoji: '🍺', price: 20000, sx: 31, sz: 36, h: 7, note: 'Bar, kitchen, toilets, cellar, office + beer garden — hire a manager to run it' },
     { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
     { t: 'landmark',  name: 'Statue',         emoji: '🗿', price: 600,  sx: 7,  sz: 7, kind: 1 },
@@ -25913,14 +26109,15 @@
     return (d === 'south' || d === 'north' || d === 'east' || d === 'west') ? d : rolled;
   }
   // Buildings whose builders can put the door on any side. Church and farm have fixed layouts; landmarks have no door.
-  const DOOR_FACING_TYPES = new Set(['house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter', 'hotel', 'pub', 'lethouse', 'bakery', 'restaurant', 'mansion', 'themepark', 'stadium', 'rocket']);
+  const DOOR_FACING_TYPES = new Set(['station', 'house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter', 'hotel', 'pub', 'lethouse', 'bakery', 'restaurant', 'mansion', 'themepark', 'stadium', 'rocket']);
   function planPurchase(bt) {
     const r = voxelRaycast(true, true);
     if (!r || !r.hit || r.isWater || r.isLava) return null;
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     let dx = 0, dz = 0; // snap "away from me" to the nearest axis
     if (Math.abs(fx) > Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
-    const W = bt.sx, D = bt.sz, floor = r.hit.y;
+    let W = bt.sx, D = bt.sz; const floor = r.hit.y;
+    if (bt.t === 'station' && dx) { W = bt.sz; D = bt.sx; } // long and thin: its frame runs across your view whichever way you face (see shopFrame)
     let sx0, sz0;
     if (dx) { sx0 = dx > 0 ? r.hit.x : r.hit.x - W + 1; sz0 = r.hit.z - Math.floor(D / 2); }
     else { sz0 = dz > 0 ? r.hit.z : r.hit.z - D + 1; sx0 = r.hit.x - Math.floor(W / 2); }
@@ -25959,10 +26156,11 @@
     const bt = BUILDING_TYPES[propertyTypeIdx];
     const plan = bt.t === 'yacht' ? null : planPurchase(bt); // (a yacht has no plot to outline — see tryBuyYacht)
     if (!plan) { if (propertyGhost) propertyGhost.visible = false; if (propertyDoorGhost) propertyDoorGhost.visible = false; return; }
-    const H = bt.h || 6, gkey = bt.sx + 'x' + bt.sz + 'x' + H;
+    const gw = plan.site.sx1 - plan.site.sx0 + 1, gd = plan.site.sz1 - plan.site.sz0 + 1;
+    const H = bt.h || 6, gkey = gw + 'x' + gd + 'x' + H;
     if (!propertyGhost || propertyGhostKey !== gkey) {
       if (propertyGhost) { scene.remove(propertyGhost); propertyGhost.geometry.dispose(); propertyGhost.material.dispose(); }
-      propertyGhost = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bt.sx, H, bt.sz)), new THREE.LineBasicMaterial({ color: 0x46e07a, transparent: true, opacity: 0.9, depthTest: false }));
+      propertyGhost = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(gw, H, gd)), new THREE.LineBasicMaterial({ color: 0x46e07a, transparent: true, opacity: 0.9, depthTest: false }));
       propertyGhost.renderOrder = 998;
       propertyGhostKey = gkey;
       scene.add(propertyGhost);
@@ -26334,9 +26532,9 @@
     }
     // ---- The rooms, for the rent check ----
     for (let i = 1; i <= HOTEL_FLOORS; i++) {
-      const cells = new Set();
-      for (let u = 1; u <= 13; u++) for (let v = 1; v <= 8; v++) { const [x, z] = f.cell(u, v); cells.add(x + ',' + z); }
-      h.rooms.push({ n: i, slab: slab(i), cells });
+      const cells = new Set(), uv = [];
+      for (let u = 1; u <= 13; u++) for (let v = 1; v <= 8; v++) { const [x, z] = f.cell(u, v); cells.add(x + ',' + z); uv.push([u, v, x, z]); }
+      h.rooms.push({ n: i, slab: slab(i), cells, uv }); // uv: [u, v, x, z] — for the hotel manager (see AUTO-FURNISHING)
     }
     if (old) { h.rented = old.rented; h.checked = old.checked; hotelClearGuests(old); } // the new rooms get their own guests
     // The big lit name sign on top of the lift housing, facing the front.
@@ -26546,6 +26744,9 @@
       + '<div style="display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-size:12px;opacity:0.75;">Takings waiting</div><div style="font-size:20px;font-weight:700;">💰' + takings + '</div></div>'
       + '<button id="hotelCollect" ' + (takings > 0 ? '' : 'disabled ') + 'style="background:' + (takings > 0 ? '#c7901d' : '#555') + ';border:none;color:#fff;border-radius:6px;padding:9px 14px;font-weight:700;cursor:pointer;">Collect</button></div>'
       + '<div style="font-size:12px;opacity:0.8;margin-top:6px;">' + n + ' of ' + h.rooms.length + ' rooms let · tonight\u2019s guests will pay 💰' + nightly + ' at sunrise (in about ' + minsToDawn + ' min). 💰' + HOTEL_NIGHT_RATE + ' a night per guest — one per single bed, two per double.</div></div>'
+      + (hotelMgrHired()
+        ? '<div style="background:rgba(126,224,138,0.1);border:1px solid rgba(126,224,138,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;">🛎️ <b>Hotel manager</b> — furnishing every room in all your hotels here (paid at Carpenter prices). <button id="hotelMgrFire" style="margin-left:4px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer;">Let go</button></div>'
+        : '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:8px 10px;margin-bottom:10px;"><div style="margin-bottom:6px;">🛎️ <b>Hire a hotel manager</b> — they furnish every empty room in all your hotels in this world, and any you buy later, so every room gets let. Furniture is paid at Carpenter prices as it goes in (about 💰' + HOTEL_ROOM_NEEDS.reduce((a, n) => a + ((FURNITURE_TYPES[afIdx((HOTEL_NEED_PIECES[n.label] || [])[0])] || {}).cost || 0), 0) + ' a room).</div><button id="hotelMgrHire" ' + (coins >= HOTEL_MGR_COST ? '' : 'disabled ') + 'style="background:' + (coins >= HOTEL_MGR_COST ? '#2f7d46' : '#555') + ';border:none;color:#fff;border-radius:6px;padding:8px 12px;font-weight:600;cursor:pointer;">Hire · 💰' + HOTEL_MGR_COST.toLocaleString() + '</button></div>')
       + rows
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="hotelStatusOk" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const inp = document.getElementById('hotelNameInput');
@@ -26570,6 +26771,10 @@
       showHotelStatus(keeper);
     });
     document.getElementById('hotelStatusOk').addEventListener('click', () => { hotelStatusEl.style.display = 'none'; });
+    const mh = document.getElementById('hotelMgrHire');
+    if (mh) mh.addEventListener('click', () => { if (!trySpendCoins(HOTEL_MGR_COST, 'a hotel manager')) return; setHotelMgr(true); playCoin(); showSaveStatus('🛎️ Hotel manager hired — they’ll start furnishing the empty rooms now'); showHotelStatus(keeper); });
+    const mf = document.getElementById('hotelMgrFire');
+    if (mf) mf.addEventListener('click', () => { setHotelMgr(false); showSaveStatus('🛎️ The hotel manager has gone — the rooms they furnished stay furnished'); showHotelStatus(keeper); });
     document.exitPointerLock && document.exitPointerLock();
     hotelStatusEl.style.display = 'flex';
     if (!named && !isTouchDevice) setTimeout(() => inp.focus(), 30);
@@ -26725,6 +26930,7 @@
     for (const h of hotelEntries.values()) {
       if (h.worldId !== currentWorldId) continue;
       if (now >= h.checkAt) { h.checkAt = now + 3000; hotelRefreshRooms(h); } // visitors too — it's what decides which rooms have guests
+      try { hotelMgrTick(h, now); } catch (err) { console.warn('hotel manager error (recovered):', err); } // see AUTO-FURNISHING
       try { updateHotelGuests(h, dt); } catch (err) { console.warn('hotel guests error (recovered):', err); }
       if (!h.car || !h.car.parent) continue; // unloaded
       const inside = hotelPlayerInCar(h);
@@ -28793,6 +28999,224 @@
     el.style.display = 'flex';
   }
 
+  // ================= AUTO-FURNISHING =================
+  // Shared by the HOTEL MANAGER (furnishes every room in every hotel you own in this world, now and later) and the
+  // WORLD MANAGER's furnishing service (adds the pieces that raise a house's rent and a pub's trade). Pieces go on
+  // free floor squares — indoors, backed against a wall, never in a doorway or next to one, never in the lift —
+  // facing out into the room. They're ordinary furniture: saved with the world, and you can pick them up or move
+  // them like anything you placed yourself.
+  const afIdx = name => FURNITURE_TYPES.findIndex(t => t.name === name);
+  // Squares already taken by furniture on this floor (a 2x2 piece covers its anchor and +x/+z; a 2-long one is
+  // marked generously round its anchor).
+  function afOccupied(x0, x1, z0, z1, fy) {
+    const occ = new Set();
+    for (const fu of furniture.values()) {
+      if (fu.bx < x0 - 2 || fu.bx > x1 + 2 || fu.bz < z0 - 2 || fu.bz > z1 + 2) continue;
+      if (fu.by !== fy && !(fu.rot >= 4 && fu.by === fy + 1)) continue;
+      const t = FURNITURE_TYPES[fu.typeIdx] || {};
+      if (t.wallMount && fu.rot >= 4) continue; // hung on the wall — the floor under it is free
+      const fp = t.footprint || 1;
+      for (let i = 0; i < fp; i++) for (let j = 0; j < fp; j++) occ.add((fu.bx + i) + ',' + (fu.bz + j));
+      if (t.span === 2) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) occ.add((fu.bx + dx) + ',' + (fu.bz + dz));
+    }
+    return occ;
+  }
+  function afNearDoor(x, z, fy) {
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if (doors.has(key(x + dx, fy, z + dz)) || doors.has(key(x + dx, fy + 1, z + dz))) return true;
+    return false;
+  }
+  function afFree(x, z, fy, occ, indoors) {
+    if (occ.has(x + ',' + z)) return false;
+    if (!blocks.has(key(x, fy, z))) return false;                                  // something to stand on
+    if (blocks.has(key(x, fy + 1, z)) || blocks.has(key(x, fy + 2, z))) return false; // headroom
+    if (waterBlocks.has(key(x, fy + 1, z)) || lava.has(key(x, fy + 1, z))) return false;
+    if (hotelLiftCells.has(key(x, fy + 1, z))) return false;
+    if (afNearDoor(x, z, fy)) return false;
+    if (indoors) { let roof = false; for (let y = fy + 3; y <= fy + 7 && !roof; y++) roof = blocks.has(key(x, y, z)); if (!roof) return false; }
+    return true;
+  }
+  // The direction of a wall right beside (x, z) at head height, or null.
+  function afWall(x, z, fy) {
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (blocks.has(key(x + dx, fy + 1, z + dz)) && blocks.has(key(x + dx, fy + 2, z + dz))) return [dx, dz];
+    return null;
+  }
+  // Put one `name` on the first square of `cands` ([[x, z], ...]) that suits it. Returns true if placed.
+  // opts: { indoors (needs a roof), wall (must back onto a wall — default true) }
+  function afPlace(name, cands, fy, opts) {
+    const idx = afIdx(name); if (idx < 0) return false;
+    const t = FURNITURE_TYPES[idx], o = opts || {}, needWall = o.wall !== false;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const [x, z] of cands) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (z < z0) z0 = z; if (z > z1) z1 = z; }
+    const occ = afOccupied(x0, x1, z0, z1, fy), inSet = new Set(cands.map(c => c[0] + ',' + c[1]));
+    const fp = t.footprint || 1;
+    for (const [x, z] of cands) {
+      if (fp === 2) { // beds: all four squares free and inside, headboard against a wall
+        const sq = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
+        if (!sq.every(([a, b]) => inSet.has(a + ',' + b) && afFree(a, b, fy, occ, o.indoors))) continue;
+        let dir = null;
+        for (const [dx, dz, s1, s2] of [[-1, 0, [x - 1, z], [x - 1, z + 1]], [2, 0, [x + 2, z], [x + 2, z + 1]], [0, -1, [x, z - 1], [x + 1, z - 1]], [0, 2, [x, z + 2], [x + 1, z + 2]]]) {
+          if (blocks.has(key(s1[0], fy + 1, s1[1])) && blocks.has(key(s2[0], fy + 1, s2[1]))) { dir = [Math.sign(dx), Math.sign(dz)]; break; }
+        }
+        if (!dir) continue;
+        addFurniture(x, fy, z, furnRotFacing(name, dir[0], dir[1]), idx); // a bed's headboard is its "front" (local -Z)
+        return true;
+      }
+      if (!afFree(x, z, fy, occ, o.indoors)) continue;
+      const w = afWall(x, z, fy);
+      if (needWall && !w) continue;
+      const face = w ? [-w[0], -w[1]] : [0, 1];
+      addFurniture(x, fy, z, furnRotFacing(name, face[0], face[1]), idx);
+      return true;
+    }
+    return false;
+  }
+  // Charged at Carpenter prices (out of your coins) — false if you can't afford it.
+  function afAfford(name) { const t = FURNITURE_TYPES[afIdx(name)]; return t ? coins >= (t.cost || 0) : false; }
+  function afCharge(name) { const t = FURNITURE_TYPES[afIdx(name)]; const c = t ? (t.cost || 0) : 0; if (c > 0) { coins -= c; updateCoinsDisplay(); scheduleStatsSave(); } return c; }
+
+  // ---- HOTEL MANAGER ----
+  // Hired at any hotel's front desk (one hire covers every hotel in this world, including ones bought later).
+  // Whenever a hotel is loaded they go room by room putting in whatever's missing for it to be let — a double bed
+  // (two guests a night), a sofa, TV, fridge, oven and kitchen sink in the kitchen corner, and a toilet, sink and
+  // shower in the bathroom — paying Carpenter prices from your coins. Kept per world on this device.
+  const HOTEL_MGR_COST = 5000;
+  const HOTEL_NEED_PIECES = { 'a bed': ['Double Bed', 'Single Bed'], 'a sofa or armchair': ['2-Seater Couch', 'Armchair'], 'a TV': ['TV'], 'a fridge': ['Fridge'], 'an oven': ['Oven'],
+    'a kitchen sink': ['Kitchen Sink'], 'a toilet': ['Toilet'], 'a bathroom sink': ['Sink'], 'a shower or bath': ['Shower'] };
+  const HOTEL_NEED_ZONE = { 'a fridge': 'kitchen', 'an oven': 'kitchen', 'a kitchen sink': 'kitchen', 'a toilet': 'bath', 'a bathroom sink': 'bath', 'a shower or bath': 'bath' };
+  function hotelMgrKey() { return 'mw_hotel_manager_' + (currentWorldId || 'none'); }
+  function hotelMgrHired() { try { return localStorage.getItem(hotelMgrKey()) === '1'; } catch (e) { return false; } }
+  function setHotelMgr(on) { try { if (on) localStorage.setItem(hotelMgrKey(), '1'); else localStorage.removeItem(hotelMgrKey()); } catch (e) {} }
+  let hotelMgrBrokeAt = 0;
+  function hotelMgrTick(h, now) {
+    if (visitMode || !hotelMgrHired() || !h.car || !h.car.parent || !h.status) return;
+    if (now < (h.afAt || 0)) return;
+    h.afAt = now + 1200; // one piece at a time
+    for (let i = 0; i < h.rooms.length; i++) {
+      const miss = h.status[i]; if (!miss || !miss.length) continue;
+      const r = h.rooms[i]; if (!r.uv) continue;
+      for (const label of miss) {
+        const zone = HOTEL_NEED_ZONE[label] || 'living';
+        const inZone = r.uv.filter(c => (zone === 'kitchen' ? hotelInKitchen(c[0], c[1]) : zone === 'bath' ? hotelInBathroom(c[0], c[1]) : !hotelInKitchen(c[0], c[1]) && !hotelInBathroom(c[0], c[1]))).map(c => [c[2], c[3]]);
+        const all = r.uv.map(c => [c[2], c[3]]);
+        for (const name of HOTEL_NEED_PIECES[label] || []) {
+          if (!afAfford(name)) { if (now > hotelMgrBrokeAt) { hotelMgrBrokeAt = now + 60000; showSaveStatus('🛎️ Your hotel manager can’t afford a ' + name + ' (💰' + FURNITURE_TYPES[afIdx(name)].cost + ') — furnishing paused', true); } return; }
+          if (afPlace(name, inZone, r.slab) || afPlace(name, all, r.slab)) {
+            const c = afCharge(name);
+            hotelRefreshRooms(h);
+            if (!h.status[i].length) showSaveStatus('🛎️ Your hotel manager finished room ' + (i + 1) + ' at ' + hotelDisplayName(h) + ' — it’s let!');
+            else if (c) showBriefMessage('🛎️ ' + name + ' in room ' + (i + 1) + ' (−💰' + c + ')');
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // ---- THE WORLD MANAGER'S FURNISHING SERVICE ----
+  // Pay them more (WM_FURNISH_FEE of each round instead of WM_FEE) and they also furnish: every House to let gets
+  // pieces until it's earning the most extra rent it can (+💰10 a night a piece, up to +💰150), every Pub gets
+  // seats, tables, TVs, fires and fruit machines up to what still brings in more trade, and every Restaurant gets
+  // chairs and tables (dining room first, then the terrace) until it's seating the most diners it can. The pieces are included in
+  // their fee. Done while the building's loaded (you're within sight of it), a piece every couple of seconds.
+  const WM_FURNISH_FEE = 0.02;
+  const WM_HOUSE_PIECES = ['Armchair', 'Coffee Table', 'Bookcase', 'Chest of Drawers', 'Cabinet', 'Armchair', 'Wardrobe', 'Bookcase', 'Chest of Drawers', 'Cabinet', 'TV', 'Armchair', 'Wardrobe', 'Bookcase', 'Coffee Table'];
+  let wmFurnAt = 0;
+  function wmFurnishTick() {
+    if (visitMode) return;
+    const now = performance.now(); if (now < wmFurnAt) return; wmFurnAt = now + 2000;
+    const st = wmState(); if (!st.hired || !st.furnish) return;
+    // houses
+    for (const h of letHouses.values()) {
+      if (h.worldId !== currentWorldId || h.standIn || !h.boardKey || !furniture.has(h.boardKey)) continue;
+      let extra = 0;
+      for (const [fk, fu] of furniture) if (!h.owned.has(fk) && fu.bx >= h.bx0 && fu.bx <= h.bx1 && fu.bz >= h.bz0 && fu.bz <= h.bz1) extra++;
+      if (extra * LH_RENT_EXTRA >= LH_RENT_EXTRA_MAX) continue;
+      const cands = []; for (let x = h.bx0; x <= h.bx1; x++) for (let z = h.bz0; z <= h.bz1; z++) cands.push([x, z]);
+      const name = WM_HOUSE_PIECES[extra % WM_HOUSE_PIECES.length];
+      if (afPlace(name, cands, h.floor, { indoors: true }) || afPlace('Armchair', cands, h.floor, { indoors: true })) {
+        h.wmFurnFull = false;
+        showBriefMessage('🧑‍💼 Your world manager added a ' + name + ' to the house — rent now 💰' + letRent(h) + ' a night');
+        return;
+      }
+      if (!h.wmFurnFull) { h.wmFurnFull = true; } // nowhere left to put anything
+    }
+    // pubs
+    for (const p of pubEntries.values()) {
+      if (p.worldId !== currentWorldId || p.standIn || !p.f) continue;
+      const b = pubBoosters(p);
+      let want = null;
+      if (b.tvs < 3) want = 'TV'; else if (b.fires < 2) want = 'Open Log Fire'; else if (b.fruit < 4) want = 'Fruit Machine';
+      else if (b.seats * 4 + b.tables * 2 < 80) want = b.tables * 2 < b.seats ? 'Table' : 'Chair';
+      if (!want) continue;
+      const bar = [], garden = [];
+      for (let u = 1; u <= 17; u++) for (let v = 1; v <= 6; v++) bar.push(p.f.cell(u, v));
+      for (let u = 2; u <= 24; u++) for (let v = PUB_BD + 1; v <= PUB_D - 2; v++) garden.push(p.f.cell(u, v));
+      const indoorOnly = want === 'TV' || want === 'Fruit Machine' || want === 'Open Log Fire';
+      const ok = afPlace(want, bar, p.floor, { indoors: true }) || (!indoorOnly && afPlace(want, garden, p.floor, { wall: false }));
+      if (ok) { showBriefMessage('🧑‍💼 Your world manager added a ' + want + ' to ' + pubName(p) + ' — more trade tonight'); return; }
+    }
+    // restaurants
+    for (const r of restaurants.values()) {
+      if (r.worldId !== currentWorldId || r.standIn || !r.f || !r.sign || !r.sign.parent) continue;
+      const b = restBoosters(r);
+      if (b.seats * 3 + b.tables >= REST_COVERS_EXTRA_MAX) continue;
+      const want = b.tables * 3 < b.seats ? 'Table' : 'Chair';
+      const dining = [], terrace = [];
+      for (let u = 1; u <= 14; u++) for (let v = 6; v <= 14; v++) dining.push(r.f.cell(u, v));
+      for (let u = 1; u <= REST_W - 2; u++) for (let v = 1; v <= 3; v++) if (u < 7 || u > 11) terrace.push(r.f.cell(u, v)); // leave the way in clear
+      if (afPlace(want, dining, r.floor, { indoors: true }) || afPlace(want, terrace, r.floor, { wall: false })) {
+        showBriefMessage('🧑‍💼 Your world manager added a ' + want + ' to ' + restName(r) + ' — more diners tonight'); return;
+      }
+    }
+  }
+  const REST_COVERS_EXTRA_MAX = 60; // restCovers: 30 + min(60, seats x 3 + tables) — past 60 more furniture adds nothing
+
+  // ---- "AT ITS BEST" BADGES ----
+  // A gold ⭐ MAX badge floats over a building of yours when it's earning everything it can:
+  //   House — let, and furnished to the full +💰150 rent        Pub — manager in, and every trade booster maxed
+  //   Restaurant — head chef in, and seating the most diners    Hotel — every room furnished and let
+  // Only in your own world, only while the building's loaded, and only within BADGE_SHOW blocks of you.
+  const BADGE_SHOW = 120;
+  const bizBadges = new Map(); // ck -> sprite
+  let bizBadgeAt = 0;
+  function bizBadgesTick() {
+    const now = performance.now(); if (now < bizBadgeAt) return; bizBadgeAt = now + 1500;
+    const want = new Map(), add = (ck, maxed, x, y, z) => { if (maxed) want.set(ck, [x, y, z]); };
+    if (!visitMode && currentWorldId && currentWorldId !== PUB_WORLD_ID) {
+      const mid = (a, b) => (a + b) / 2 + 0.5;
+      for (const h of letHouses.values()) {
+        if (h.worldId !== currentWorldId || !h.boardKey || !furniture.has(h.boardKey)) continue;
+        add(h.ck, !!letState(h).family && letRent(h) >= LH_RENT + LH_RENT_EXTRA_MAX, mid(h.bx0, h.bx1), h.floor + 13, mid(h.bz0, h.bz1));
+      }
+      for (const p of pubEntries.values()) {
+        if (p.worldId !== currentWorldId || !p.sign || !p.sign.parent) continue;
+        const b = pubBoosters(p);
+        add(p.ck, !!pubState(p).mgr && b.seats * 4 + b.tables * 2 >= 80 && b.tvs >= 3 && b.fires >= 2 && b.fruit >= 4, mid(p.bx0, p.bx1), p.floor + 11, mid(p.bz0, p.bz1));
+      }
+      for (const r of restaurants.values()) {
+        if (r.worldId !== currentWorldId || !r.sign || !r.sign.parent) continue;
+        const b = restBoosters(r);
+        add(r.ck, !!restState(r).chef && b.seats * 3 + b.tables >= REST_COVERS_EXTRA_MAX, mid(r.bx0, r.bx1), r.floor + 10, mid(r.bz0, r.bz1));
+      }
+      for (const h of hotelEntries.values()) {
+        if (h.worldId !== currentWorldId || !h.car || !h.car.parent || !h.rooms || !h.rented || !h.levels) continue;
+        const c = h.car.position;
+        add(h.ck, h.rented.size >= h.rooms.length, c.x, h.levels[0] + HOTEL_TOP + 6, c.z);
+      }
+    }
+    for (const [ck, sp] of bizBadges) if (!want.has(ck)) { disposeTextLabel(sp); bizBadges.delete(ck); }
+    for (const [ck, [x, y, z]] of want) {
+      let sp = bizBadges.get(ck);
+      if (!sp) {
+        sp = makeTextLabel(); setTextLabel(sp, '⭐ MAX');
+        sp.material.color.setHex(0xffd65a); sp.scale.set(4.2, 0.84, 1);
+        scene.add(sp); bizBadges.set(ck, sp);
+      }
+      sp.position.set(x, y, z);
+      sp.visible = sp.position.distanceTo(player.pos) < BADGE_SHOW;
+    }
+  }
+
   // ================= WORLD MANAGER =================
   // Hired from the top of the Property menu. Every sunrise — after the hotel, pub, houses, bakery and restaurant
   // have settled their night — they go round the whole world: empty every till, safe and rent pot (from every
@@ -28819,6 +29243,7 @@
       else if (sp.t === 'restaurant' && sp.rest && sp.rest.safe > 0) { amt = Math.floor(sp.rest.safe); sp.rest.safe = 0; got.restaurants += amt; }
       else if (sp.t === 'themepark' && sp.park && sp.park.till > 0) { amt = Math.floor(sp.park.till); sp.park.till = 0; got.parks = (got.parks || 0) + amt; }
       else if (sp.t === 'stadium' && sp.stadium && sp.stadium.till > 0) { amt = Math.floor(sp.stadium.till); sp.stadium.till = 0; got.stadiums = (got.stadiums || 0) + amt; }
+      else if (sp.t === 'station' && sp.station && sp.station.till > 0) { amt = Math.floor(sp.station.till); sp.station.till = 0; got.stations = (got.stations || 0) + amt; }
       if (amt) touched.push(sp);
     }
     for (const sp of touched) recordStructureSpec(sp);
@@ -28835,11 +29260,11 @@
     }
     const collected = Object.values(got).reduce((a, c) => a + c, 0), gross = collected + sold;
     if (!gross) { st.last = { collected: 0, sold: 0, fee: 0, net: 0, got, soldItems: {} }; wmSave(st); return; }
-    const fee = Math.round(gross * WM_FEE), net = gross - fee;
+    const feeRate = st.furnish ? WM_FURNISH_FEE : WM_FEE, fee = Math.round(gross * feeRate), net = gross - fee;
     coins += net; updateCoinsDisplay(); scheduleStatsSave(); playCoin();
     { const K = { hotels: 'collect_hotel', pubs: 'collect_pub', houses: 'collect_let', bakeries: 'collect_bake', restaurants: 'collect_rest', parks: 'collect_park', stadiums: 'collect_stad' }; for (const k in got) if (got[k] > 0 && K[k]) objNote(K[k], got[k]); if (sold) objNote('sell', sold); } // see OBJECTIVES
     st.last = { collected, sold, fee, net, got, soldItems }; wmSave(st);
-    showSaveStatus('🧑‍💼 Your world manager brought in 💰' + gross + (sold ? ' (💰' + sold + ' from selling the harvest)' : '') + ' — 💰' + net + ' to you after their 1%');
+    showSaveStatus('🧑‍💼 Your world manager brought in 💰' + gross + (sold ? ' (💰' + sold + ' from selling the harvest)' : '') + ' — 💰' + net + ' to you after their ' + Math.round(feeRate * 100) + '%');
   }
   // What to hold back in the bag for the next night: for every open restaurant, what its diners would eat beyond
   // what's already in its pantry (the same sum its manager does — see restNightPassed); for every bakery, the wheat
@@ -28865,9 +29290,11 @@
   }
   let wmPrevDayTime = null;
   function updateWorldManager() {
-    if (visitMode) { wmPrevDayTime = dayTime; return; }
+    if (visitMode) { wmPrevDayTime = dayTime; try { bizBadgesTick(); } catch (err) {} return; } // (clears any badges left from your own world)
     if (wmPrevDayTime !== null && wmPrevDayTime > 0.9 && dayTime < 0.1) wmRound(); // runs after every business has settled this sunrise (it's later in the frame)
     wmPrevDayTime = dayTime;
+    try { wmFurnishTick(); } catch (err) { console.warn('world manager furnishing error (recovered):', err); } // see AUTO-FURNISHING
+    try { bizBadgesTick(); } catch (err) { console.warn('max badges error (recovered):', err); } // see "AT ITS BEST" BADGES
   }
   function openWorldManager() {
     if (visitMode) { showBriefMessage('🧑‍💼 Only the owner of a world can hire its manager'); return; }
@@ -28877,11 +29304,13 @@
       + '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">🧑‍💼 World manager</div>'
       + '<div style="opacity:0.8;margin-bottom:10px;">Every sunrise they go round your whole world: empty every till, safe and rent pot (hotels, pubs, houses, bakeries, restaurants) and sell your harvest at grocer prices. They keep 1% of whatever they bring in.</div>'
       + (st.hired
-        ? tog('wmSell', st.sell, 'Sell the harvest bag') + tog('wmKeep', st.keep, 'Keep back what my restaurant and bakery need for tomorrow (sell the rest)') + '<div style="margin-top:8px;">' + bizBtn('wmFire', 'Let them go', '#8a3a3a') + '</div>'
+        ? tog('wmSell', st.sell, 'Sell the harvest bag') + tog('wmKeep', st.keep, 'Keep back what my restaurant and bakery need for tomorrow (sell the rest)')
+          + tog('wmFurnish', st.furnish, '🛋️ Furnishing service — pay them ' + Math.round(WM_FURNISH_FEE * 100) + '% instead of ' + Math.round(WM_FEE * 100) + '% and they furnish your houses (up to +💰' + LH_RENT_EXTRA_MAX + ' rent a night each) pubs and restaurants (more customers) for free')
+          + '<div style="margin-top:8px;">' + bizBtn('wmFire', 'Let them go', '#8a3a3a') + '</div>'
         : bizBtn('wmHire', 'Hire a world manager — 💰' + WM_COST, '#2f7d46', coins < WM_COST))
       + '<div style="font-weight:600;margin:12px 0 4px;">Last round</div>'
       + (L && (L.collected || L.sold) ? bizRow('Hotels', '💰' + L.got.hotels) + bizRow('Pubs', '💰' + L.got.pubs) + bizRow('Houses (rent)', '💰' + L.got.houses) + bizRow('Bakeries', '💰' + L.got.bakeries) + bizRow('Restaurants', '💰' + L.got.restaurants) + bizRow('Theme parks', '💰' + (L.got.parks || 0)) + bizRow('Stadiums', '💰' + (L.got.stadiums || 0))
-            + bizRow('Harvest sold', '💰' + L.sold + (Object.keys(L.soldItems).length ? ' (' + Object.entries(L.soldItems).map(([k, v]) => v + ' ' + k).join(', ') + ')' : '')) + bizRow('Their 1%', '−💰' + L.fee) + bizRow('To you', '💰' + L.net, '#7ee08a')
+            + bizRow('Harvest sold', '💰' + L.sold + (Object.keys(L.soldItems).length ? ' (' + Object.entries(L.soldItems).map(([k, v]) => v + ' ' + k).join(', ') + ')' : '')) + bizRow('Their cut', '−💰' + L.fee) + bizRow('To you', '💰' + L.net, '#7ee08a')
             : '<div style="opacity:0.7;">' + (st.hired ? 'Their first round is at the next sunrise.' : 'Not hired.') + '</div>')
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="wmClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const $ = id => document.getElementById(id);
@@ -28889,6 +29318,7 @@
     if ($('wmFire')) $('wmFire').addEventListener('click', () => { st.hired = false; wmSave(st); showSaveStatus('🧑‍💼 The world manager has gone'); openWorldManager(); });
     if ($('wmSell')) $('wmSell').addEventListener('change', e => { st.sell = e.target.checked; wmSave(st); });
     if ($('wmKeep')) $('wmKeep').addEventListener('change', e => { st.keep = e.target.checked; wmSave(st); });
+    if ($('wmFurnish')) $('wmFurnish').addEventListener('change', e => { st.furnish = e.target.checked; wmSave(st); if (st.furnish) showSaveStatus('🛋️ Your world manager will furnish your houses, pubs and restaurants — they work while you’re near them'); });
     $('wmClose').addEventListener('click', () => { el.style.display = 'none'; });
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
@@ -29118,6 +29548,7 @@
   // train's speed, wheels clattering over the track joints, riders screaming over the first drop (when you're on), and
   // an air-brake hiss as it pulls into the station. It fades with distance from the train.
   let coasterAudio = null;
+  const COASTER_HEAR_RANGE = 30; // blocks from the train before it's silent (was 75 — it carried right across the map)
   const _coasterSndPos = new THREE.Vector3();
   function coasterAudioStart() {
     ensureAudio(); if (!audioCtx || coasterAudio) return;
@@ -29252,7 +29683,7 @@
       const riding = !!(rideNow && rideNow.kind === 'coaster' && rideNow.p === p);
       let vol = 0;
       if (riding) vol = 1;
-      else if (p.coasterRun || p._sndRun) { C.cars[0].getWorldPosition(_coasterSndPos); vol = Math.pow(Math.max(0, 1 - _coasterSndPos.distanceTo(player.pos) / 75), 1.6); }
+      else if ((p.coasterRun || p._sndRun) && !onMoon) { C.cars[0].getWorldPosition(_coasterSndPos); vol = Math.pow(Math.max(0, 1 - _coasterSndPos.distanceTo(player.pos) / COASTER_HEAR_RANGE), 2); } // only near the train
       if (vol > sndVol) { sndVol = vol; sndP = p; sndRiding = riding; }
     }
     coasterSoundTick(sndP, sndVol, sndRiding, dt);
@@ -31766,6 +32197,7 @@ float moonDetail(vec3 p, float d) {
         setTailorWool(tailorWool() - c.wool);
         const gmt = makeGarment(c.slot);
         addToWardrobe(gmt);
+        if (c.slot === 'jumper') objNote('jumper'); // see OBJECTIVES
         wearGarment(gmt.id);
         showSaveStatus(PRODUCE_EMOJI[c.name] + ' ' + garmentLabel(gmt) + ' — you\u2019re wearing it! (−💰' + c.price + ')'); playCoin();
         renderShopPanel();
@@ -32144,7 +32576,7 @@ float moonDetail(vec3 p, float d) {
       const t = blocks.get(key(fx, y, fz));
       if (t === undefined) continue;
       const e = BLOCK_TYPES[t];
-      if (e && e.fence) continue;
+      if (e && (e.fence || e.track)) continue;
       return y + 1;
     }
     return villageSurfaceY(x, z, Math.floor(fromY) - 1) + 1;
@@ -32274,6 +32706,672 @@ float moonDetail(vec3 p, float d) {
     setTextLabel(fx.label, (info.people ? t.emoji : ANIMAL_EMOJI[a]) + ' ' + t.name + ' · ' + fmtCountdown(t.hatchSec - elapsed));
     if (p >= 1) hatchAnimal(x, y, z, a, info.people);
   }
+  // ================= TRAINS & STATIONS =================
+  // TRACK: three block types (Rail Track / Corner / Slope — Terrain menu), placed and turned like a fence and saved
+  // like any block. Each piece has two ENDS — a side of its cell plus the height the rails reach there — and two
+  // pieces join when their ends face each other at the same height. A Slope rises one block across its one-block
+  // length, so a line climbs a hill one block at a time (a Slope block under it makes a neat embankment).
+  //
+  // STATIONS (Property menu): a ticket hall, a platform under a canopy and 27 blocks of their own track along the
+  // platform, running out to both ends of the plot — lay your own track on from either end to the next station.
+  // ✋ the Ticket Machine in the hall for everything: buy an engine and passenger carriages, put a train on the
+  // platform, collect the fares, hire a station master (he banks every fare for you, keeping 5%), name it.
+  //
+  // TRAINS: an engine plus up to TRAIN_MAX_CARS carriages, coupled nose to tail. The whole train is a chain of
+  // "bogies" (two per vehicle), each a cursor on the track (piece, which end it came in at, how far along). Every
+  // bogie moves the same distance along the same chain of pieces, so they stay coupled round curves and up
+  // hills without any physics. Auto-run: it pulls out, runs to the next station, brakes to a stop at the far end
+  // of the platform, waits, and carries on — reversing (push-pull) wherever the line ends, so a plain A–B line
+  // shuttles back and forth and a loop goes round. Or E at the engine to drive it yourself (forward / back).
+  // FARES: passengers board at one station (each carriage seats TRAIN_SEATS_PER_CAR, never all full) and pay when
+  // the train stops at a different one: TRAIN_FARE_BASE + 1 per TRAIN_FARE_PER blocks of track travelled, each.
+  // The money goes in that station's till (or straight to you, less the master's cut).
+  // While you're away: a train on auto keeps running for as long as the world is open, loaded or not (its track
+  // is read from your saved edits when the ground isn't loaded), and when you come back to the world each auto
+  // train is paid for the time it was closed at the rate it was last earning (capped at TRAIN_AWAY_MAX_MIN).
+  //
+  // Saved: each train is one seed record (like a tractor) at its lead bogie's cell, y + TRAIN_Y_OFF; the value
+  // holds carriages, auto, direction and where on that piece. Engines and carriages you've bought but not placed
+  // are stock on this device (loadShopOwned), like tractors. A station's till, master and track line are on its
+  // structure spec. Only the world's owner runs the trains; anyone else sees them where they last stopped.
+  const TRAIN_CODE = 703, TRAIN_Y_OFF = 9700000;
+  const TRAIN_ENGINE_PRICE = 6000, TRAIN_CAR_PRICE = 1500, TRAIN_MAX_CARS = 8;
+  const STATION_MASTER_COST = 2500, STATION_MASTER_CUT = 0.05;
+  const TRAIN_SEATS_PER_CAR = 16, TRAIN_FARE_BASE = 3, TRAIN_FARE_PER = 25;
+  const TRAIN_VMAX = 9, TRAIN_ACCEL = 2.0, TRAIN_BRAKE = 2.6, TRAIN_DWELL = 7, TRAIN_AWAY_MAX_MIN = 12 * 60;
+  const BOGIE_IN = 1.0, UNIT_PITCH = 1.65; // bogie spacing within a vehicle / vehicle to vehicle
+  const ST_W = 27, ST_D = 11, ST_TRACK_V = 9;
+  const TRAIN_CAB_EYE_DROP = 0.83; // driving: you stand on the cab floor (rail + 0.25), so the eye comes down to just over the boiler
+
+  // ---- track pieces ----
+  const TRACK_LOCAL_ENDS = { straight: [[1, 0, 0], [-1, 0, 0]], corner: [[1, 0, 0], [0, 1, 0]], slope: [[-1, 0, 1], [1, 0, 0]] }; // [dx, dz, rise]
+  function trackRotDir(dx, dz, rot) { let x = dx, z = dz; for (let i = 0; i < (rot & 3); i++) { const t = x; x = z; z = -t; } return [x, z]; } // same turn setBlockOrientation draws with
+  const _trackEndsCache = {};
+  function trackEnds(shape, rot) { // world-facing ends for a piece: [{dx, dz, rise}, {…}]
+    const ck = shape + rot;
+    return _trackEndsCache[ck] || (_trackEndsCache[ck] = TRACK_LOCAL_ENDS[shape].map(([dx, dz, rise]) => { const [x, z] = trackRotDir(dx, dz, rot); return { dx: x, dz: z, rise }; }));
+  }
+  function trackPieceLen(shape) { return shape === 'corner' ? Math.PI / 4 : shape === 'slope' ? Math.SQRT2 : 1; }
+  // Station platform track, for when its ground isn't loaded (it isn't one of your edits, it's part of the building).
+  let stationTrackCells = new Map(), stationTrackAt = 0, stationList = [];
+  function refreshStationTrack(force) {
+    const now = performance.now();
+    if (!force && now - stationTrackAt < 2000) return;
+    stationTrackAt = now;
+    const m = new Map(), list = [];
+    for (const [ck, sp] of structureSpecs) {
+      if (!sp || sp.t !== 'station' || !sp.station || !sp.station.line) continue;
+      const L = sp.station.line;
+      list.push({ ck, spec: sp, line: L });
+      const n = Math.max(Math.abs(L.x1 - L.x0), Math.abs(L.z1 - L.z0));
+      const sx = Math.sign(L.x1 - L.x0), sz = Math.sign(L.z1 - L.z0);
+      for (let i = 0; i <= n; i++) m.set(key(L.x0 + sx * i, L.y, L.z0 + sz * i), L.rot);
+    }
+    stationTrackCells = m; stationList = list;
+  }
+  function trackPieceAt(x, y, z) { // { shape, rot } | null
+    const k = key(x, y, z), t = blocks.get(k);
+    if (t !== undefined) { const e = BLOCK_TYPES[t]; return e && e.track ? { shape: e.track, rot: (stepRotations.get(k) || 0) & 3 } : null; }
+    const ed = blockEdits.get(k);
+    if (ed !== undefined) {
+      if (ed < 0 || columnLoaded(x, z)) return null;
+      const e = BLOCK_TYPES[ed]; return e && e.track ? { shape: e.track, rot: (stepRotEdits.get(k) || 0) & 3 } : null;
+    }
+    const sr = stationTrackCells.get(k);
+    return sr !== undefined ? { shape: 'straight', rot: sr } : null;
+  }
+  // The piece joined on through one end (rails at height h there) — { x, y, z, shape, rot, endIdx } | null
+  function trackNext(x, y, z, end) {
+    const nx = x + end.dx, nz = z + end.dz, h = y + end.rise;
+    for (const yy of [h, h - 1]) {
+      const p = trackPieceAt(nx, yy, nz); if (!p) continue;
+      const ends = trackEnds(p.shape, p.rot);
+      for (let i = 0; i < 2; i++) { const e = ends[i]; if (e.dx === -end.dx && e.dz === -end.dz && yy + e.rise === h) return { x: nx, y: yy, z: nz, shape: p.shape, rot: p.rot, endIdx: i }; }
+    }
+    return null;
+  }
+  // Placing: turned to join the track beside it; failing that, a Straight runs away from you, a Slope climbs away from
+  // you and a Corner opens away from you. R turns it a quarter.
+  function trackPlacementRot(x, y, z, shape) {
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    let best = 0, bestScore = -Infinity;
+    for (let r = 0; r < 4; r++) {
+      const ends = trackEnds(shape, r);
+      let joins = 0;
+      for (const e of ends) if (trackNext(x, y, z, e)) joins++;
+      let face;
+      if (shape === 'straight') face = Math.abs(ends[0].dx * fx + ends[0].dz * fz);
+      else if (shape === 'slope') face = ends[0].dx * fx + ends[0].dz * fz; // its high end (end 0) away from you
+      else face = (ends[0].dx + ends[1].dx) * fx + (ends[0].dz + ends[1].dz) * fz;
+      const score = joins * 1000 + face;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    return best;
+  }
+
+  // ---- cursors (one per bogie) ----
+  function cursorLocal(c, out) { // the point on the piece in its own frame: [lx, rise 0..1, lz]
+    const L = trackPieceLen(c.shape), s = c.from === 0 ? c.s : L - c.s, t = Math.max(0, Math.min(1, s / L));
+    if (c.shape === 'corner') { const a = -Math.PI / 2 - t * Math.PI / 2; out[0] = 0.5 + 0.5 * Math.cos(a); out[1] = 0; out[2] = 0.5 + 0.5 * Math.sin(a); }
+    else if (c.shape === 'slope') { out[0] = -0.5 + t; out[1] = 1 - t; out[2] = 0; }
+    else { out[0] = 0.5 - t; out[1] = 0; out[2] = 0; }
+    return out;
+  }
+  const _cl = [0, 0, 0];
+  function cursorWorld(c, v) {
+    cursorLocal(c, _cl);
+    const [wx, wz] = trackRotDir(_cl[0], _cl[2], c.rot);
+    return v.set(c.x + 0.5 + wx, c.y + _cl[1] + TRACK_RAIL_TOP, c.z + 0.5 + wz);
+  }
+  function cursorAdvance(c, ds) { // forwards only; returns how much of ds was left over at the end of the line
+    c.s += ds;
+    for (let guard = 0; guard < 64; guard++) {
+      const L = trackPieceLen(c.shape);
+      if (c.s <= L) return 0;
+      const nx = trackNext(c.x, c.y, c.z, trackEnds(c.shape, c.rot)[1 - c.from]);
+      if (!nx) { const over = c.s - L; c.s = L; return over; }
+      c.s -= L; c.x = nx.x; c.y = nx.y; c.z = nx.z; c.shape = nx.shape; c.rot = nx.rot; c.from = nx.endIdx;
+    }
+    return 0;
+  }
+  function cursorReverse(c) { c.from = 1 - c.from; c.s = trackPieceLen(c.shape) - c.s; }
+  const cursorClone = c => ({ x: c.x, y: c.y, z: c.z, shape: c.shape, rot: c.rot, from: c.from, s: c.s });
+  function cursorValid(c) { const p = trackPieceAt(c.x, c.y, c.z); return !!p && p.shape === c.shape && p.rot === c.rot; }
+  // Lays out every bogie behind a lead cursor; null if there isn't the track for the whole train.
+  function layBogies(head, cars) {
+    const out = [cursorClone(head)];
+    for (let u = 0; u <= cars; u++) for (const off of (u === 0 ? [BOGIE_IN] : [u * UNIT_PITCH, u * UNIT_PITCH + BOGIE_IN])) {
+      const c = cursorClone(head); cursorReverse(c);
+      if (cursorAdvance(c, off) > 1e-6) return null;
+      cursorReverse(c); out.push(c);
+    }
+    return out;
+  }
+  // Moves the whole train by ds along the track (negative = backwards); returns { moved, blocked }.
+  function trainMoveBy(tr, ds) {
+    if (!ds) return { moved: 0, blocked: false };
+    const B = tr.bogies, fwd = ds > 0, mag = Math.abs(ds);
+    if (!fwd) B.forEach(cursorReverse);
+    const lead = fwd ? B[0] : B[B.length - 1];
+    const probe = cursorClone(lead), over = cursorAdvance(probe, mag), moved = mag - over;
+    if (moved > 0) for (const b of B) cursorAdvance(b, moved);
+    if (!fwd) B.forEach(cursorReverse);
+    return { moved: fwd ? moved : -moved, blocked: over > 1e-6 };
+  }
+
+  // ---- models ----
+  function buildTrainUnit(isEngine) {
+    const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+    const P = c => new THREE.MeshPhongMaterial({ color: c, shininess: 30 });
+    const add = (geo, c, x, y, z, rx, rz) => { const m = new THREE.Mesh(geo, P(c)); m.position.set(x, y, z); if (rx) m.rotation.x = rx; if (rz) m.rotation.z = rz; body.add(m); return m; };
+    // under-frame, bogies and wheels (the wheels sit on the rails, which are at y 0 here)
+    add(new THREE.BoxGeometry(0.82, 0.12, 1.55), 0x1c1c1c, 0, 0.3, 0);
+    for (const bz of [-0.5, 0.5]) {
+      add(new THREE.BoxGeometry(0.66, 0.1, 0.5), 0x2a2a2a, 0, 0.17, bz);
+      for (const wz of [-0.15, 0.15]) for (const wx of [-0.25, 0.25]) add(new THREE.CylinderGeometry(0.11, 0.11, 0.06, 12), isEngine ? 0xa8231b : 0x333333, wx, 0.11, bz + wz, 0, Math.PI / 2);
+    }
+    for (const bz of [-0.8, 0.8]) for (const bx of [-0.28, 0.28]) add(new THREE.CylinderGeometry(0.04, 0.04, 0.1, 8), 0x999999, bx, 0.32, bz, Math.PI / 2); // buffers
+    if (isEngine) {
+      const green = 0x1d5a38, black = 0x1a1a1a, brass = 0xd2b062;
+      add(new THREE.CylinderGeometry(0.3, 0.3, 1.0, 16), green, 0, 0.68, 0.22, Math.PI / 2);    // boiler
+      add(new THREE.CylinderGeometry(0.31, 0.31, 0.04, 16), brass, 0, 0.68, -0.05, Math.PI / 2); // boiler bands
+      add(new THREE.CylinderGeometry(0.31, 0.31, 0.04, 16), brass, 0, 0.68, 0.45, Math.PI / 2);
+      add(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), black, 0, 0.68, 0.73, Math.PI / 2);   // smokebox door
+      add(new THREE.CylinderGeometry(0.08, 0.1, 0.3, 10), black, 0, 1.08, 0.55);                 // chimney
+      add(new THREE.CylinderGeometry(0.09, 0.09, 0.12, 10), brass, 0, 1.0, 0.15);                 // dome
+      add(new THREE.BoxGeometry(0.8, 0.55, 0.55), green, 0, 0.66, -0.5);                         // cab
+      add(new THREE.BoxGeometry(0.86, 0.06, 0.62), black, 0, 1.17, -0.5);                         // cab roof
+      for (const sx of [-0.41, 0.41]) add(new THREE.BoxGeometry(0.02, 0.2, 0.26), 0x9ad0ea, sx, 0.82, -0.5); // cab side windows
+      add(new THREE.BoxGeometry(0.84, 0.08, 0.1), 0xa8231b, 0, 0.32, 0.8);                         // buffer beams
+      add(new THREE.BoxGeometry(0.84, 0.08, 0.1), 0xa8231b, 0, 0.32, -0.8);
+      add(new THREE.SphereGeometry(0.05, 8, 6), 0xfff2b0, 0, 0.5, 0.8);                             // lamp
+    } else {
+      const maroon = 0x6e1f22, cream = 0xe9dcc0, roof = 0x4a4a4a, win = 0x2a3a48;
+      add(new THREE.BoxGeometry(0.86, 0.34, 1.6), maroon, 0, 0.53, 0);
+      add(new THREE.BoxGeometry(0.86, 0.3, 1.6), cream, 0, 0.85, 0);
+      add(new THREE.BoxGeometry(0.88, 0.1, 1.64), roof, 0, 1.05, 0);
+      add(new THREE.BoxGeometry(0.7, 0.06, 1.5), roof, 0, 1.12, 0);
+      for (const sx of [-0.432, 0.432]) for (const wz of [-0.55, -0.18, 0.18, 0.55]) add(new THREE.BoxGeometry(0.01, 0.2, 0.28), win, sx, 0.86, wz);
+    }
+    body.updateMatrixWorld(true);
+    bakeTractorPart(body, body.children.filter(o => o.isMesh));
+    if (!isEngine) { // passengers in the windows — shown while there are some aboard
+      const pax = new THREE.Group(), skin = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
+      let i = 0;
+      for (const sx of [-0.3, 0.3]) for (const wz of [-0.55, -0.18, 0.18, 0.55]) {
+        const h = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), new THREE.MeshLambertMaterial({ color: skin[(i++ * 7) % skin.length] }));
+        h.position.set(sx, 0.88, wz); pax.add(h);
+      }
+      pax.visible = false; g.add(pax); g.userData.pax = pax;
+    }
+    g.rotation.order = 'YXZ';
+    return g;
+  }
+
+  // ---- the trains ----
+  const trains = new Map(); // record key -> train
+  let trainDriving = null, trainAwayPaidFor = null, trainHintAt = 0;
+  function trainStock() { const o = loadShopOwned(); return { engines: o.trainEngines | 0, cars: o.trainCars | 0 }; }
+  function setTrainStock(engines, cars) { const o = loadShopOwned(); o.trainEngines = Math.max(0, engines | 0); o.trainCars = Math.max(0, cars | 0); saveShopOwned(); }
+  const trainKeyXYZ = k => { const p = k.split(',').map(Number); return [p[0], p[1] - TRAIN_Y_OFF, p[2]]; };
+  function trainEncode(tr) {
+    const h = tr.bogies[0];
+    return TRAIN_CODE * SEED_VALUE_MUL + tr.cars + 10 * (tr.auto ? 1 : 0) + 100 * (tr.dir > 0 ? 1 : 0) + 1000 * h.from + 10000 * Math.round(Math.min(1.5, h.s) * 100);
+  }
+  function trainDecode(v) {
+    const d = Math.round(v - TRAIN_CODE * SEED_VALUE_MUL);
+    return { cars: d % 10, auto: Math.floor(d / 10) % 10 === 1, dir: Math.floor(d / 100) % 10 === 1 ? 1 : -1, from: Math.floor(d / 1000) % 10 ? 1 : 0, s: Math.floor(d / 10000) / 100 };
+  }
+  function trainsRunHere() { return !visitMode && currentWorldId && currentWorldId !== PUB_WORLD_ID; }
+  function trainAwayStore() { try { return JSON.parse(localStorage.getItem('mw_trains_' + currentWorldId)) || {}; } catch (e) { return {}; } }
+  function trainAwaySave(st) { try { localStorage.setItem('mw_trains_' + currentWorldId, JSON.stringify(st)); } catch (e) {} }
+  function makeTrain(k, rec, bogies) {
+    const tr = { k, cars: rec.cars, auto: rec.auto, dir: rec.dir, v: 0, state: rec.auto ? 'dwell' : 'stopped', wait: 3, bogies, units: [], lastSt: null, departing: null, tripDist: 0, pax: 0,
+      stoppedFor: 0, savedAt: performance.now(), lastArriveAt: 0, derailMsgAt: 0, worldId: currentWorldId };
+    for (let u = 0; u <= tr.cars; u++) { const g = buildTrainUnit(u === 0); scene.add(g); tr.units.push(g); g.userData.train = tr; }
+    const st = trainStationAt(tr); if (st) { tr.lastSt = st.ck; tr.departing = st.ck; trainBoard(tr); }
+    trainPlaceModels(tr);
+    return tr;
+  }
+  function removeTrainFx(tr) { for (const g of tr.units) { scene.remove(g); disposeObject3D(g); } tr.units.length = 0; if (trainDriving === tr) stopDrivingTrain(true); }
+  // From the seed pass: every train record in the world. New ones are laid on their track; gone ones removed.
+  function syncTrains(seen) {
+    refreshStationTrack(true);
+    for (const [k, tr] of [...trains]) if (!seen.has(k) || tr.worldId !== currentWorldId) { removeTrainFx(tr); trains.delete(k); }
+    for (const k of seen) {
+      if (trains.has(k)) continue;
+      const v = seedEdits.get(k); if (v === undefined) continue;
+      const rec = trainDecode(v), [x, y, z] = trainKeyXYZ(k), p = trackPieceAt(x, y, z);
+      if (!p) continue; // its track isn't there (yet) — try again next pass
+      const bogies = layBogies({ x, y, z, shape: p.shape, rot: p.rot, from: rec.from, s: Math.min(rec.s, trackPieceLen(p.shape)) }, rec.cars);
+      if (!bogies) continue;
+      trains.set(k, makeTrain(k, rec, bogies));
+    }
+    if (trainsRunHere() && trainAwayPaidFor !== currentWorldId && trains.size) { trainAwayPaidFor = currentWorldId; trainPayAway(); }
+  }
+  function trainSave(tr) { // the record follows the lead bogie
+    if (!trainsRunHere()) return;
+    const h = tr.bogies[0], nk = key(h.x, h.y + TRAIN_Y_OFF, h.z), v = trainEncode(tr);
+    if (nk !== tr.k) { recordSeed(...trainKeyXYZ(tr.k).map((n, i) => i === 1 ? n + TRAIN_Y_OFF : n), -1); trains.delete(tr.k); tr.k = nk; trains.set(nk, tr); }
+    if (seedEdits.get(nk) !== v) recordSeed(h.x, h.y + TRAIN_Y_OFF, h.z, v);
+    tr.savedAt = performance.now();
+  }
+  const _tA = new THREE.Vector3(), _tB = new THREE.Vector3();
+  function trainPlaceModels(tr) {
+    const B = tr.bogies, near = Math.hypot(B[0].x - player.pos.x, B[0].z - player.pos.z) < 170;
+    for (let u = 0; u < tr.units.length; u++) {
+      const g = tr.units[u]; g.visible = near; if (!near) continue;
+      const fi = u === 0 ? 0 : 2 * u, ri = fi + 1;
+      cursorWorld(B[fi], _tA); cursorWorld(B[ri], _tB);
+      g.position.set((_tA.x + _tB.x) / 2, (_tA.y + _tB.y) / 2, (_tA.z + _tB.z) / 2);
+      const dx = _tA.x - _tB.x, dy = _tA.y - _tB.y, dz = _tA.z - _tB.z;
+      g.rotation.y = Math.atan2(dx, dz); g.rotation.x = -Math.atan2(dy, Math.hypot(dx, dz));
+      if (g.userData.pax) g.userData.pax.visible = tr.pax > 0;
+    }
+  }
+  // Which station's platform a point (or the train's middle) is on.
+  function stationAtPoint(px, py, pz) {
+    for (const st of stationList) {
+      const L = st.line;
+      if (Math.abs(py - (L.y + TRACK_RAIL_TOP)) > 0.8) continue;
+      const xa = Math.min(L.x0, L.x1) - 0.05, xb = Math.max(L.x0, L.x1) + 1.05, za = Math.min(L.z0, L.z1) - 0.05, zb = Math.max(L.z0, L.z1) + 1.05;
+      if (px >= xa && px <= xb && pz >= za && pz <= zb) return st;
+    }
+    return null;
+  }
+  function trainMiddle(tr, v) { cursorWorld(tr.bogies[0], _tA); cursorWorld(tr.bogies[tr.bogies.length - 1], _tB); return v.set((_tA.x + _tB.x) / 2, (_tA.y + _tB.y) / 2, (_tA.z + _tB.z) / 2); }
+  const _tM = new THREE.Vector3();
+  function trainStationAt(tr) { trainMiddle(tr, _tM); return stationAtPoint(_tM.x, _tM.y, _tM.z); }
+  const STATION_DEFAULT_NAMES = ['Millbrook', 'Ashford Junction', 'Kingsbridge', 'Elmswood', 'Hawthorn Halt', 'Riverside', 'Oakhurst', 'Stonegate', 'Fenwick Road', 'Briarley', 'Coldwater', 'Thornbury Parkway', 'Lindenfield', 'Maple Cross', 'Highcliffe', 'Wrenford'];
+  function stationName(sp) { // its own name, or one picked from where it stands (so two stations never both say "Station")
+    const n = sp && typeof sp.name === 'string' ? sp.name.trim() : '';
+    if (n) return n;
+    let h = 7; for (const ch of String((sp && sp.ck) || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return STATION_DEFAULT_NAMES[h % STATION_DEFAULT_NAMES.length];
+  }
+  function stationState(sp) { if (!sp.station) sp.station = { till: 0, master: false }; return sp.station; }
+  function trainBoard(tr) { tr.pax = tr.cars > 0 ? Math.round(tr.cars * TRAIN_SEATS_PER_CAR * (0.45 + Math.random() * 0.55)) : 0; tr.tripDist = 0; }
+  function stationCredit(sp, amount) { // -> what happened to it, for the message
+    const st = stationState(sp);
+    if (st.master) { const cut = Math.round(amount * STATION_MASTER_CUT), net = amount - cut; coins += net; updateCoinsDisplay(); scheduleStatsSave(); st.earned = (st.earned || 0) + net; specSave(sp.ck, sp); return 'banked by the station master (💰' + net + ' to you)'; }
+    st.till = Math.floor(st.till || 0) + amount; st.earned = (st.earned || 0) + amount;
+    specSave(sp.ck, sp);
+    return 'in the till (💰' + st.till + ')';
+  }
+  function trainArrive(tr, st) {
+    const now = performance.now(), fare = TRAIN_FARE_BASE + Math.floor(tr.tripDist / TRAIN_FARE_PER), total = tr.pax * fare;
+    const from = tr.lastSt && structureSpecs.get(tr.lastSt);
+    tr.lastSt = st.ck; tr.departing = st.ck;
+    if (total > 0) {
+      const where = stationCredit(st.spec, total);
+      if (trainDriving === tr || Math.hypot(player.pos.x - tr.bogies[0].x, player.pos.z - tr.bogies[0].z) < 120) { showSaveStatus('🚉 ' + stationName(st.spec) + (from ? ' (from ' + stationName(from) + ')' : '') + ': ' + tr.pax + ' passengers paid 💰' + fare + ' each — 💰' + total + ' ' + where); playCoin(); }
+      // what it's earning a minute, for the time the world is closed (see trainPayAway)
+      const store = trainAwayStore(), mins = tr.lastArriveAt ? (now - tr.lastArriveAt) / 60000 : 0, old = store[tr.k] || {};
+      const rate = mins > 0.05 && mins < 30 ? (old.rate ? old.rate * 0.6 + (total / mins) * 0.4 : total / mins) : (old.rate || 0);
+      for (const kk of Object.keys(store)) if (!trains.has(kk)) delete store[kk];
+      store[tr.k] = { rate: Math.round(rate), at: Date.now(), st: st.ck }; trainAwaySave(store);
+    } else if (trainDriving === tr) showBriefMessage('🚉 ' + stationName(st.spec) + (tr.cars ? '' : ' — add carriages to carry paying passengers'));
+    tr.lastArriveAt = now;
+    trainBoard(tr);
+    trainSave(tr);
+  }
+  function trainPayAway() { // the time the world was closed, at each auto train's last rate
+    const store = trainAwayStore(); let total = 0, n = 0;
+    for (const tr of trains.values()) {
+      const e = store[tr.k]; if (!tr.auto || !e || !(e.rate > 0)) continue;
+      const mins = Math.min(TRAIN_AWAY_MAX_MIN, (Date.now() - (e.at || Date.now())) / 60000);
+      if (mins < 2) continue;
+      const amt = Math.round(e.rate * mins), sp = structureSpecs.get(e.st) || (stationList[0] && stationList[0].spec);
+      if (!sp || amt <= 0) continue;
+      stationCredit(sp, amt); total += amt; n++;
+      e.at = Date.now();
+    }
+    trainAwaySave(store);
+    if (total > 0) setTimeout(() => showSaveStatus('🚆 While you were away your train' + (n > 1 ? 's' : '') + ' carried passengers worth 💰' + total.toLocaleString() + ' — see the stations’ tills'), 4000);
+  }
+  // ---- running ----
+  const _tL = new THREE.Vector3(), _tN = new THREE.Vector3();
+  function updateTrains(dt) {
+    if (!trains.size) return;
+    refreshStationTrack(false);
+    dt = Math.min(dt, 0.1);
+    const run = trainsRunHere(), now = performance.now();
+    for (const tr of trains.values()) {
+      if (tr.worldId !== currentWorldId) continue;
+      if (!run) { trainPlaceModels(tr); continue; }
+      // still on its rails? (track mined under it, or not loaded/rebuilt yet)
+      if (!tr.bogies.every(cursorValid)) {
+        tr.v = 0;
+        if (tr.state !== 'derailed') { tr.state = 'derailed'; if (now > tr.derailMsgAt && Math.hypot(player.pos.x - tr.bogies[0].x, player.pos.z - tr.bogies[0].z) < 60) { tr.derailMsgAt = now + 15000; showBriefMessage('🚂 The track under the train is broken — put it back and it’ll carry on'); } }
+        trainPlaceModels(tr); continue;
+      }
+      if (tr.state === 'derailed') { tr.state = tr.auto ? 'dwell' : 'stopped'; tr.wait = 2; }
+      let target = 0;
+      if (trainDriving === tr) {
+        let thr = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+        if (isTouchDevice || padStickActive) { if (Math.abs(moveState.y) > 0.15) thr = -moveState.y; }
+        if (thr) tr.v += thr * dt * (Math.sign(thr) !== Math.sign(tr.v) && Math.abs(tr.v) > 0.05 ? TRAIN_BRAKE * 1.6 : TRAIN_ACCEL);
+        else tr.v *= Math.pow(0.82, dt);
+        tr.v = Math.max(-5, Math.min(TRAIN_VMAX, tr.v));
+        if (Math.abs(tr.v) < 0.02 && !thr) tr.v = 0;
+      } else if (tr.auto) {
+        if (tr.state === 'dwell') { tr.wait -= dt; if (tr.wait <= 0) { tr.state = 'run'; trainHorn(tr); } }
+        if (tr.state === 'run') {
+          target = TRAIN_VMAX;
+          // brake for the next station: the lead bogie's on a platform we're not leaving — stop near its far end
+          const B = tr.bogies, lead = tr.dir > 0 ? B[0] : B[B.length - 1], next = tr.dir > 0 ? B[1] : B[B.length - 2];
+          cursorWorld(lead, _tL); cursorWorld(next, _tN);
+          const st = stationAtPoint(_tL.x, _tL.y, _tL.z);
+          if (st && st.ck === tr.departing) { /* still pulling out */ }
+          else {
+            if (tr.departing) tr.departing = null;
+            if (st) {
+              const L = st.line, alongX = L.x0 !== L.x1, mx = alongX ? _tL.x - _tN.x : _tL.z - _tN.z, sgn = mx >= 0 ? 1 : -1;
+              const a = alongX ? _tL.x : _tL.z, lo = alongX ? Math.min(L.x0, L.x1) : Math.min(L.z0, L.z1), hi = (alongX ? Math.max(L.x0, L.x1) : Math.max(L.z0, L.z1)) + 1;
+              const d = (sgn > 0 ? hi - a : a - lo) - 0.45;
+              target = Math.min(target, Math.sqrt(2 * TRAIN_BRAKE * Math.max(0, d)));
+              if (d < 0.08) { tr.v = 0; tr.state = 'dwell'; tr.wait = TRAIN_DWELL; trainArrive(tr, st); }
+            }
+          }
+        }
+        const want = tr.state === 'run' ? tr.dir * target : 0;
+        if (tr.v < want) tr.v = Math.min(want, tr.v + TRAIN_ACCEL * dt); else if (tr.v > want) tr.v = Math.max(want, tr.v - TRAIN_BRAKE * 1.4 * dt);
+      } else tr.v *= Math.pow(0.4, dt);
+      if (tr.v) {
+        const r = trainMoveBy(tr, tr.v * dt);
+        tr.tripDist += Math.abs(r.moved);
+        if (r.blocked) {
+          if (Math.abs(tr.v) > 2 && trainDriving === tr) playThud(140);
+          tr.v = 0;
+          if (tr.auto && trainDriving !== tr) { // the end of the line: wait, then back the other way
+            const st = trainStationAt(tr), fresh = st && st.ck !== tr.lastSt;
+            if (fresh) trainArrive(tr, st);
+            tr.dir = -tr.dir; tr.state = 'dwell'; tr.wait = fresh ? TRAIN_DWELL : 1.5; tr.departing = st ? st.ck : null;
+            trainSave(tr);
+          }
+        }
+      }
+      // stopped at a different station than the last one (driving it yourself, or manual): passengers swap
+      if (Math.abs(tr.v) < 0.05) {
+        tr.stoppedFor += dt;
+        if (tr.stoppedFor > 1.2 && (trainDriving === tr || !tr.auto)) { const st = trainStationAt(tr); if (st && st.ck !== tr.lastSt) trainArrive(tr, st); }
+      } else tr.stoppedFor = 0;
+      if (Math.abs(tr.v) > 0.05 && now - tr.savedAt > 20000) trainSave(tr);
+      trainPlaceModels(tr);
+    }
+    if (trainDriving) trainPinCab();
+    else if (now > trainHintAt && run) {
+      for (const tr of trains.values()) {
+        if (!tr.units[0] || !tr.units[0].visible) continue;
+        if (tr.units[0].position.distanceTo(player.pos) < 2.6) { trainHintAt = now + 25000; showBriefMessage('🚂 E to drive the train · ✋ on it for its settings (Drive is in there too)'); break; }
+      }
+    }
+  }
+  function trainHorn(tr) {
+    if (!audioCtx || Math.hypot(player.pos.x - tr.bogies[0].x, player.pos.z - tr.bogies[0].z) > 60) return;
+    try {
+      const t = audioCtx.currentTime, g = audioCtx.createGain(); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.09, t + 0.05); g.gain.setValueAtTime(0.09, t + 0.55); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+      for (const f of [440, 554]) { const o = audioCtx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1400; o.connect(lp).connect(g); o.start(t); o.stop(t + 0.85); }
+    } catch (e) {}
+  }
+  // ---- driving ----
+  function nearestTrainEngine(maxD) {
+    let best = null, bd = maxD;
+    for (const tr of trains.values()) { const g = tr.units[0]; if (!g || !g.visible) continue; const d = g.position.distanceTo(player.pos); if (d < bd) { bd = d; best = tr; } }
+    return best;
+  }
+  function startDrivingTrain(tr) {
+    if (!trainsRunHere()) { showBriefMessage('🚂 Only the owner of this world drives its trains'); return; }
+    trainDriving = tr; tr.wasAuto = tr.auto; tr.auto = false; tr.state = 'stopped'; tr.v = 0;
+    yaw = tr.units[0].rotation.y + Math.PI; pitch = -0.05;
+    showSaveStatus('🚂 Driving — forward / back for the throttle (back again to reverse). Stop at another station and passengers pay. E to get out.');
+  }
+  function stopDrivingTrain(silent) {
+    const tr = trainDriving; if (!tr) return;
+    trainDriving = null; tr.v = 0; tr.auto = !!tr.wasAuto; tr.state = tr.auto ? 'dwell' : 'stopped'; tr.wait = 3;
+    const g = tr.units[0];
+    if (g) { // step down beside the cab
+      const sx = Math.cos(g.rotation.y), sz = -Math.sin(g.rotation.y);
+      for (const side of [1, -1]) {
+        const px = g.position.x + sx * 1.3 * side, pz = g.position.z + sz * 1.3 * side, by = Math.floor(g.position.y);
+        if (!blocks.has(key(Math.floor(px), by, Math.floor(pz))) && !blocks.has(key(Math.floor(px), by + 1, Math.floor(pz)))) { player.pos.set(px, by + 0.05, pz); break; }
+      }
+      player.vel.set(0, 0, 0);
+    }
+    trainSave(tr);
+    if (!silent) showBriefMessage(tr.auto ? '🚂 Back on auto' : '🚂 Parked');
+  }
+  function trainPinCab() {
+    const tr = trainDriving, g = tr && tr.units[0]; if (!g) return;
+    const fx = Math.sin(g.rotation.y), fz = Math.cos(g.rotation.y);
+    player.pos.set(g.position.x - fx * 0.5, g.position.y + 0.25, g.position.z - fz * 0.5);
+    player.vel.set(0, 0, 0); player.onGround = true;
+  }
+  // ---- ✋ on a train: its settings ----
+  const _trainRay = new THREE.Raycaster();
+  function trainInSight() {
+    const groups = [];
+    for (const tr of trains.values()) for (const g of tr.units) if (g.visible && g.position.distanceToSquared(camera.position) < 81) groups.push(g);
+    if (!groups.length) return null;
+    _trainRay.setFromCamera({ x: 0, y: 0 }, camera); _trainRay.far = 8;
+    const hits = _trainRay.intersectObjects(groups, true);
+    if (!hits.length) return null;
+    let o = hits[0].object; while (o && !o.userData.train) o = o.parent;
+    return o ? o.userData.train : null;
+  }
+  function tryTrainAction() {
+    if (trainDriving) return false;
+    const tr = trainInSight(); if (!tr) return false;
+    if (!trainsRunHere()) { showBriefMessage('🚂 That’s ' + (visitMode ? 'the owner’s' : 'not your') + ' train'); return true; }
+    openTrainPanel(tr); return true;
+  }
+  function trainRelay(tr, cars) { // re-lays the train with a different number of carriages; false if there's no room
+    const b = layBogies(tr.bogies[0], cars); if (!b) return false;
+    removeTrainFx(tr); trains.delete(tr.k);
+    const nt = makeTrain(tr.k, { cars, auto: tr.auto, dir: tr.dir }, b);
+    nt.lastSt = tr.lastSt; nt.tripDist = tr.tripDist; nt.lastArriveAt = tr.lastArriveAt;
+    trains.set(tr.k, nt); trainSave(nt); return nt;
+  }
+  function openTrainPanel(tr) {
+    const el = bizPanel('trainPanel'), stock = trainStock(), last = tr.lastSt && structureSpecs.get(tr.lastSt);
+    el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(380px,92vw);color:#fff;font:13px system-ui,sans-serif;line-height:1.45;">'
+      + '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">🚂 Train — engine + ' + tr.cars + ' carriage' + (tr.cars === 1 ? '' : 's') + '</div>'
+      + '<div style="opacity:0.8;margin-bottom:10px;">' + (tr.state === 'derailed' ? '⚠ Off the rails — the track under it is broken.' : tr.auto ? 'On auto — runs station to station by itself.' : 'Parked — E at the engine to drive it.') + (last ? ' Last stop: ' + bizEsc(stationName(last)) + '.' : '') + (tr.pax ? ' ' + tr.pax + ' passengers aboard.' : '') + '</div>'
+      + bizRow('Seats', tr.cars * TRAIN_SEATS_PER_CAR) + bizRow('Carriages in stock', stock.cars)
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0;">'
+      + bizBtn('trAuto', tr.auto ? '⏸ Stop auto-run' : '▶ Auto-run', '#2f7d46')
+      + bizBtn('trAdd', '➕ Add carriage', '#3b6fb6', !(stock.cars > 0 && tr.cars < TRAIN_MAX_CARS))
+      + bizBtn('trRem', '➖ Take one off', '#7a5a2a', !(tr.cars > 0))
+      + bizBtn('trDrive', '🚂 Drive', '#5a4a9a')
+      + '</div>'
+      + '<div style="display:flex;justify-content:space-between;margin-top:6px;">' + bizBtn('trPick', '📦 Back into stock', '#8a3030') + '<button id="trClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
+    const $ = id => document.getElementById(id), close = () => { el.style.display = 'none'; };
+    $('trClose').addEventListener('click', close);
+    $('trAuto').addEventListener('click', () => { tr.auto = !tr.auto; tr.state = tr.auto ? 'dwell' : 'stopped'; tr.wait = 1.5; tr.departing = tr.lastSt; trainSave(tr); showBriefMessage(tr.auto ? '🚂 Auto-run on' : '🚂 Auto-run off — it’ll stop here'); close(); });
+    $('trAdd').addEventListener('click', () => { const s = trainStock(); if (s.cars <= 0) return; const nt = trainRelay(tr, tr.cars + 1); if (!nt) { showSaveStatus('⚠ Not enough straight track behind the train for another carriage', true); return; } setTrainStock(s.engines, s.cars - 1); playThud(300); openTrainPanel(nt); });
+    $('trRem').addEventListener('click', () => { if (tr.cars <= 0) return; const s = trainStock(); const nt = trainRelay(tr, tr.cars - 1); if (!nt) return; setTrainStock(s.engines, s.cars + 1); playThud(300); openTrainPanel(nt); });
+    $('trDrive').addEventListener('click', () => { close(); startDrivingTrain(tr); });
+    $('trPick').addEventListener('click', () => {
+      const s = trainStock(); setTrainStock(s.engines + 1, s.cars + tr.cars);
+      recordSeed(...trainKeyXYZ(tr.k).map((n, i) => i === 1 ? n + TRAIN_Y_OFF : n), -1); removeTrainFx(tr); trains.delete(tr.k);
+      showSaveStatus('📦 Train back in stock — put it on any platform from a station’s ticket machine'); close();
+    });
+    document.exitPointerLock && document.exitPointerLock();
+    el.style.display = 'flex';
+  }
+
+  // ---- the station building ----
+  var stations = new Map(); // ck -> { ck, spec, f, floor, bx0.., sign, people, peopleSig, worldId }
+  function maybeBuildStation(cx, cz, replay) {
+    if (!replay) return;
+    const K = bizKit(cx, cz, replay, ST_W, ST_D, 12); if (!K) return;
+    const { f, floor, put, furn, door, fix, prop } = K;
+    const B = { pave: BLOCK_ID('Polished Stone'), gravel: BLOCK_ID('Gravel'), edge: BLOCK_ID('Yellow Concrete'), brick: BLOCK_ID('Brick'), trim: BLOCK_ID('White Concrete'),
+      glass: BLOCK_ID('Glass'), roof: BLOCK_ID('Dark Grey Concrete'), post: BLOCK_ID('Black Concrete'), floorIn: BLOCK_ID('Dark Planks'), canopy: BLOCK_ID('Dark Grey Concrete') };
+    const HALL_U0 = 9, HALL_U1 = 17, HALL_V1 = 4, H = 4;
+    for (let u = 0; u < ST_W; u++) for (let v = 0; v < ST_D; v++) {
+      const [x, z] = f.cell(u, v);
+      const inHall = u >= HALL_U0 && u <= HALL_U1 && v <= HALL_V1;
+      put(u, v, floor, v >= ST_TRACK_V ? B.gravel : v === 8 ? B.edge : inHall ? B.floorIn : B.pave);
+      markVillageGround(x, z, floor);
+      if (inHall) {
+        const edge = u === HALL_U0 || u === HALL_U1 || v === 0 || v === HALL_V1;
+        if (edge) for (let y = floor + 1; y <= floor + H; y++) {
+          let t = (u === HALL_U0 || u === HALL_U1) && (v === 0 || v === HALL_V1) ? B.trim : B.brick;
+          if ((v === 0 || v === HALL_V1) && (y === floor + 2 || y === floor + 3) && (u === 11 || u === 15)) t = B.glass;
+          if (y === floor + H) t = B.trim;
+          put(u, v, y, t);
+        }
+        put(u, v, floor + H + 1, B.roof);
+      }
+    }
+    // the canopy over the platform, on black posts
+    for (let u = 1; u <= ST_W - 2; u++) for (let v = 5; v <= 8; v++) put(u, v, floor + 5, B.canopy);
+    for (const u of [2, 7, 19, 24]) for (let y = floor + 1; y <= floor + 4; y++) put(u, 5, y, B.post);
+    // the station's own track, all the way along, out to both ends of the plot
+    const trackT = typeIndexByName('Rail Track'), along = f.s, rot = along[0] !== 0 ? 0 : 1;
+    for (let u = 0; u < ST_W; u++) {
+      const [x, z] = f.cell(u, ST_TRACK_V), k = key(x, floor + 1, z);
+      blocks.set(k, trackT); if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+      trackVillageHeight(x, z, floor + 1);
+    }
+    door(13, 0, 'right', 1); door(13, HALL_V1, 'right', 1);
+    fix(10, 1, floor + 3, 'left'); fix(16, 1, floor + 3, 'right'); fix(4, 6, floor + 4, 'back'); fix(13, 6, floor + 4, 'back'); fix(22, 6, floor + 4, 'back');
+    const machineKey = furn(10, 2, 'Ticket Machine', 'front');
+    furn(16, 2, 'Office Safe', 'front');
+    for (const u of [4, 10, 16, 22]) { const bench = new THREE.Group(), wood = new THREE.MeshPhongMaterial({ color: 0x7a5230 }), iron = new THREE.MeshPhongMaterial({ color: 0x222222 });
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.42), wood); seat.position.y = 0.45; bench.add(seat);
+      const back = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.36, 0.06), wood); back.position.set(0, 0.72, -0.2); bench.add(back);
+      for (const lx of [-0.7, 0.7]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, 0.4), iron); leg.position.set(lx, 0.22, 0); bench.add(leg); }
+      prop(bench, u + 0.5, 6.0, floor + 1, 'back'); }
+    // name boards: one over the hall door, two hanging under the canopy facing the trains
+    const sign = new THREE.Group(); sign.userData.w = 7; prop(sign, 13.5, -0.07, floor + H + 0.6, 'front');
+    const boards = [];
+    for (const u of [6, 21]) { const b2 = new THREE.Group(); b2.userData.w = 3.2; prop(b2, u + 0.5, 8.3, floor + 4.2, 'back'); boards.push(b2); }
+    // the track line, in world cells — what the trains stop at (saved on the spec so it's known without the building)
+    const a = f.cell(0, ST_TRACK_V), b = f.cell(ST_W - 1, ST_TRACK_V);
+    const line = { x0: a[0], z0: a[1], x1: b[0], z1: b[1], y: floor + 1, rot };
+    const st = stationState(replay);
+    if (!st.line || st.line.x0 !== line.x0 || st.line.z0 !== line.z0 || st.line.x1 !== line.x1 || st.line.z1 !== line.z1 || st.line.y !== line.y || st.line.rot !== line.rot) {
+      st.line = line;
+      if (!visitMode) specSave(K.ck, replay);
+    }
+    const o = { ck: K.ck, spec: replay, f, floor, worldId: currentWorldId, sign, boards, machineKey, people: [], peopleSig: null, bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1 };
+    const old = stations.get(K.ck); if (old) bizClearPeople(old);
+    stations.set(K.ck, o);
+    stationSigns(o);
+    K.finish();
+    refreshStationTrack(true);
+  }
+  function stationSigns(o) { bizSetSign(o.sign, stationName(o.spec), '#1d3a5f', '#ffffff'); for (const b of o.boards) bizSetSign(b, stationName(o.spec), '#1d3a5f', '#ffffff'); }
+  function stationForFurniture(fk) {
+    const fu = furniture.get(fk); if (!fu) return null;
+    for (const o of stations.values()) if (o.worldId === currentWorldId && fu.bx >= o.bx0 && fu.bx <= o.bx1 && fu.bz >= o.bz0 && fu.bz <= o.bz1) return o;
+    return null;
+  }
+  function buildTicketMachine() {
+    const g = new THREE.Group();
+    const blue = new THREE.MeshPhongMaterial({ color: 0x2f5fa8, shininess: 40 }), dark = new THREE.MeshPhongMaterial({ color: 0x1a1d22, shininess: 30 });
+    const add = (geo, m, x, y, z) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); g.add(o); return o; };
+    add(new THREE.BoxGeometry(0.62, 1.55, 0.5), blue, 0, 0.775, 0);
+    add(new THREE.BoxGeometry(0.4, 0.3, 0.02), new THREE.MeshBasicMaterial({ color: 0x8fd3ff }), 0, 1.2, 0.26);
+    add(new THREE.BoxGeometry(0.3, 0.05, 0.08), dark, 0, 0.9, 0.27);
+    add(new THREE.BoxGeometry(0.2, 0.12, 0.04), dark, 0.12, 0.72, 0.26);
+    add(new THREE.BoxGeometry(0.62, 0.16, 0.52), new THREE.MeshPhongMaterial({ color: 0xffffff }), 0, 1.63, 0);
+    return g;
+  }
+  // A train on this station's platform, lead bogie near the far end, the rest trailing back along it.
+  function stationPutTrain(o, cars) {
+    const L = stationState(o.spec).line; if (!L) return 'This station’s track isn’t ready yet';
+    const sx = Math.sign(L.x1 - L.x0), sz = Math.sign(L.z1 - L.z0), n = Math.max(Math.abs(L.x1 - L.x0), Math.abs(L.z1 - L.z0));
+    const i = n - 2, x = L.x0 + sx * i, z = L.z0 + sz * i, p = trackPieceAt(x, L.y, z);
+    if (!p) return 'The platform track has been taken up';
+    const ends = trackEnds(p.shape, p.rot), from = (ends[0].dx === sx && ends[0].dz === sz) ? 1 : 0;
+    const head = { x, y: L.y, z, shape: p.shape, rot: p.rot, from, s: 0.5 };
+    for (const tr of trains.values()) { const at = tr.worldId === currentWorldId && trainStationAt(tr); if (at && at.ck === o.ck) return 'There\u2019s already a train at this platform'; }
+    const bogies = layBogies(head, cars); if (!bogies) return 'Not enough track for that many carriages';
+    const k = key(x, L.y + TRAIN_Y_OFF, z);
+    const tr = makeTrain(k, { cars, auto: true, dir: 1, from, s: 0.5 }, bogies);
+    trains.set(k, tr); trainSave(tr);
+    return null;
+  }
+  function openStationPanel(fk) {
+    const o = stationForFurniture(fk); if (!o) return;
+    if (visitMode) { showBriefMessage('🚉 "Tickets, please!"'); return; }
+    refreshStationTrack(true);
+    const st = stationState(o.spec), stock = trainStock(), el = bizPanel('stationPanel');
+    let pick = Math.min(stock.cars, TRAIN_MAX_CARS, 3);
+    const myTrains = [...trains.values()].filter(t => t.worldId === currentWorldId);
+    const others = stationList.filter(s => s.ck !== o.ck);
+    const dist = s => Math.round(Math.hypot(s.line.x0 - st.line.x0, s.line.z0 - st.line.z0));
+    el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(420px,94vw);max-height:88vh;overflow-y:auto;color:#fff;font:13px system-ui,sans-serif;line-height:1.4;">'
+      + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚉 ' + bizEsc(stationName(o.spec)) + '</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:12px;"><input id="stNameInput" maxlength="24" autocomplete="off" placeholder="Station name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:13px;">' + bizBtn('stRename', 'Rename', '#3b6fb6') + '</div>'
+      + (st.master
+        ? '<div style="background:rgba(47,125,70,0.15);border:1px solid rgba(126,224,138,0.35);border-radius:8px;padding:10px;margin-bottom:10px;"><div style="font-weight:600;">🧑‍✈️ Your station master banks every fare</div><div style="opacity:0.8;margin:4px 0 8px;">Straight into your coins as each train comes in, keeping ' + Math.round(STATION_MASTER_CUT * 100) + '%. Paid in so far: 💰' + Math.floor(st.earned || 0).toLocaleString() + '.</div>' + bizBtn('stFire', 'Let him go', '#7a3030') + '</div>'
+        : '<div style="background:rgba(210,176,98,0.12);border:1px solid rgba(210,176,98,0.4);border-radius:8px;padding:10px;margin-bottom:10px;"><div style="display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-size:12px;opacity:0.75;">Fares in the till</div><div style="font-size:20px;font-weight:700;">💰' + Math.floor(st.till || 0).toLocaleString() + '</div></div>' + bizBtn('stCollect', 'Collect', '#c7901d', !(st.till > 0)) + '</div>'
+          + '<div style="opacity:0.8;margin:8px 0 6px;">Hire a station master to bank the fares for you as the trains come in — 💰' + STATION_MASTER_COST.toLocaleString() + ', then he keeps ' + Math.round(STATION_MASTER_CUT * 100) + '% of them.</div>' + bizBtn('stHire', 'Hire a station master — 💰' + STATION_MASTER_COST.toLocaleString(), '#2f7d46') + '</div>')
+      + '<div style="font-weight:600;margin:4px 0;">Trains</div>'
+      + bizRow('Engines in stock', stock.engines) + bizRow('Passenger carriages in stock', stock.cars) + bizRow('Running in this world', myTrains.length)
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">' + bizBtn('stBuyEng', 'Buy an engine — 💰' + TRAIN_ENGINE_PRICE.toLocaleString(), '#3b6fb6') + bizBtn('stBuyCar', 'Buy a carriage — 💰' + TRAIN_CAR_PRICE.toLocaleString(), '#3b6fb6') + '</div>'
+      + '<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:10px;margin-bottom:10px;"><div style="font-weight:600;margin-bottom:6px;">Put a train on this platform</div>'
+      + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">' + bizBtn('stPickLess', '−', '#444') + '<span id="stPickN" style="min-width:110px;text-align:center;"></span>' + bizBtn('stPickMore', '+', '#444') + '</div>'
+      + bizBtn('stPut', '🚂 Put it on the platform', '#2f7d46', !(stock.engines > 0)) + (stock.engines > 0 ? '' : '<div style="opacity:0.7;margin-top:6px;">Buy an engine first.</div>') + '</div>'
+      + '<div style="font-weight:600;margin:4px 0;">Fares</div>'
+      + '<div style="opacity:0.8;">Each carriage seats ' + TRAIN_SEATS_PER_CAR + '. Passengers board here and pay when the train stops at another station: 💰' + TRAIN_FARE_BASE + ' plus 💰1 for every ' + TRAIN_FARE_PER + ' blocks of track — the further apart the stations, the more each ticket costs.</div>'
+      + (others.length ? '<div style="margin-top:6px;">' + others.map(s => bizRow('→ ' + bizEsc(stationName(s.spec)), '~' + dist(s) + ' blocks away')).join('') + '</div>' : '<div style="opacity:0.7;margin-top:6px;">This is your only station so far — build another and lay track between them.</div>')
+      + (st.earned ? '<div style="opacity:0.7;margin-top:6px;">Fares taken here so far: 💰' + Math.floor(st.earned).toLocaleString() + '</div>' : '')
+      + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="stClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
+    const $ = id => document.getElementById(id), close = () => { el.style.display = 'none'; };
+    const showPick = () => { $('stPickN').textContent = 'engine + ' + pick + ' carriage' + (pick === 1 ? '' : 's'); };
+    showPick();
+    $('stPickLess').addEventListener('click', () => { pick = Math.max(0, pick - 1); showPick(); });
+    $('stPickMore').addEventListener('click', () => { pick = Math.min(TRAIN_MAX_CARS, trainStock().cars, pick + 1); showPick(); });
+    const inp = $('stNameInput'); inp.value = o.spec.name || '';
+    const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) o.spec.name = c; else delete o.spec.name; specSave(o.ck, o.spec); stationSigns(o); playThud(500); openStationPanel(fk); };
+    $('stRename').addEventListener('click', rename);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') close(); e.stopPropagation(); });
+    if ($('stCollect')) $('stCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(o.ck, o.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('🚉 Collected 💰' + a.toLocaleString() + ' in fares'); openStationPanel(fk); });
+    if ($('stHire')) $('stHire').addEventListener('click', () => { if (!trySpendCoins(STATION_MASTER_COST, 'a station master')) return; st.master = true; o.peopleSig = null; specSave(o.ck, o.spec); playCoin(); showSaveStatus('🧑‍✈️ Station master hired — fares here now go straight to you'); openStationPanel(fk); });
+    if ($('stFire')) $('stFire').addEventListener('click', () => { st.master = false; o.peopleSig = null; specSave(o.ck, o.spec); showSaveStatus('🚉 The station master has gone — fares will wait in the till'); openStationPanel(fk); });
+    $('stBuyEng').addEventListener('click', () => { if (!trySpendCoins(TRAIN_ENGINE_PRICE, 'a steam engine')) return; const s = trainStock(); setTrainStock(s.engines + 1, s.cars); playCoin(); openStationPanel(fk); });
+    $('stBuyCar').addEventListener('click', () => { if (!trySpendCoins(TRAIN_CAR_PRICE, 'a passenger carriage')) return; const s = trainStock(); setTrainStock(s.engines, s.cars + 1); playCoin(); openStationPanel(fk); });
+    $('stPut').addEventListener('click', () => {
+      const s = trainStock(); if (s.engines <= 0) return;
+      const n = Math.min(pick, s.cars), why = stationPutTrain(o, n);
+      if (why) { showSaveStatus('⚠ ' + why, true); return; }
+      setTrainStock(s.engines - 1, s.cars - n); playThud(260); close();
+      showSaveStatus('🚂 Train on the platform, on auto-run — it sets off in a moment. ' + (others.length ? '' : 'Build another station and lay track to it for it to carry paying passengers.') + ' E at the engine to drive it, ✋ on it for its settings.');
+    });
+    $('stClose').addEventListener('click', close);
+    document.exitPointerLock && document.exitPointerLock();
+    el.style.display = 'flex';
+  }
+  function updateStations(dt) { // the clerk by the ticket machine, and the station master on the platform once hired
+    for (const o of stations.values()) {
+      if (o.worldId !== currentWorldId || structureSpecs.get(o.ck) !== o.spec) continue;
+      const cx = (o.bx0 + o.bx1) / 2 + 0.5, cz = (o.bz0 + o.bz1) / 2 + 0.5;
+      const show = o.sign && o.sign.parent && Math.hypot(player.pos.x - cx, player.pos.z - cz) < PUB_PEOPLE_SHOW + 10;
+      if (!show) { if (o.people.length) bizClearPeople(o); continue; }
+      const st = stationState(o.spec), plan = [{ role: 'staff', u: 10.5, v: 3.4, face: 'front' }];
+      if (st.master) plan.push({ role: 'master', u: 13.5, v: 7.2, face: 'back' });
+      const sig = plan.map(p => p.role).join('|');
+      if (sig !== o.peopleSig) {
+        bizClearPeople(o);
+        plan.forEach((p, i) => {
+          const m = pubFigure(false, p.role === 'master' ? 'mgr' : 'staff', o.ck + ':stn:' + i);
+          if (p.role === 'master') { const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.18, 0.1, 12), new THREE.MeshPhongMaterial({ color: 0x1d2a44 })); cap.position.y = 1.8; m.add(cap);
+            const peak = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.02, 0.12), new THREE.MeshPhongMaterial({ color: 0x111111 })); peak.position.set(0, 1.76, 0.15); m.add(peak); }
+          const [x, z] = o.f.pos(p.u, p.v); m.position.set(x, o.floor + 1, z);
+          const d = { front: [-o.f.d[0], -o.f.d[1]], back: [o.f.d[0], o.f.d[1]] }[p.face]; m.rotation.y = Math.atan2(d[0], d[1]);
+          o.people.push({ mesh: m, role: p.role, t: Math.random() * 5 });
+        });
+        o.peopleSig = sig;
+      }
+    }
+  }
+
   // ================= TRACTORS =================
   // Bought at a Vehicle Shop (💰TRACTOR_PRICE each — every one you place uses one up, so another means buying
   // again) and placed from the Vehicles menu, but ONLY onto a mud field (a connected patch of Mud with nothing
@@ -33574,7 +34672,7 @@ float moonDetail(vec3 p, float d) {
     startBackgroundMapScan(blocks, (k, t) => {
       if (count >= MAX_INSTANCES) return true;
       const type = BLOCK_TYPES[t];
-      if (!type || type.half || type.slope || type.curve || type.fence || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
+      if (!type || type.half || type.slope || type.curve || type.fence || type.track || type.transparent) return false; // snow is a flat slab at the top of the cell: it would float above a Slope's surface
       const c1 = k.indexOf(','), c2 = k.indexOf(',', c1+1); // faster than split(',').map(Number) at large block counts — see rebuildMeshes' own comment on this
       const x = +k.slice(0, c1), y = +k.slice(c1+1, c2), z = +k.slice(c2+1);
       // Excludes the football pitch — same reasoning and same bounds as
@@ -33991,7 +35089,46 @@ float moonDetail(vec3 p, float d) {
   const precipMat = new THREE.PointsMaterial({ color: 0xaeccff, size: 0.14, transparent: true, opacity: 0.55, depthWrite: false });
   const precipPoints = new THREE.Points(precipGeom, precipMat);
   precipPoints.visible = false;
+  precipPoints.frustumCulled = false; // its bounding sphere is worked out once from the starting positions, but the flakes are re-centred on the player every frame — high up (flying, mountains) it was culled away entirely
   scene.add(precipPoints);
+  // SNOWFALL: its own cloud of soft round flakes. Snow used to just recolour the rain points white and shrink
+  // them to 0.09 — tiny square specks, white against a pale winter sky and fog, so the HUD said "Snowing" while
+  // nothing could actually be seen falling. Real flakes now: a round soft sprite, bigger, denser and closer in.
+  const SNOW_COUNT = 1400, SNOW_BOX = 26;
+  const flakePositions = new Float32Array(SNOW_COUNT * 3);
+  for (let i = 0; i < SNOW_COUNT; i++) { flakePositions[i*3] = (Math.random()-0.5)*SNOW_BOX; flakePositions[i*3+1] = Math.random()*30 - 6; flakePositions[i*3+2] = (Math.random()-0.5)*SNOW_BOX; }
+  const flakeGeom = new THREE.BufferGeometry();
+  flakeGeom.setAttribute('position', new THREE.BufferAttribute(flakePositions, 3));
+  const snowFlakeTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 32; const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+    g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.45, 'rgba(255,255,255,0.9)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, 32, 32);
+    const t = new THREE.CanvasTexture(c); return t;
+  })();
+  const flakeMat = new THREE.PointsMaterial({ color: 0xffffff, map: snowFlakeTex, size: 0.26, transparent: true, opacity: 0.95, depthWrite: false, fog: false });
+  const flakePoints = new THREE.Points(flakeGeom, flakeMat);
+  flakePoints.visible = false; flakePoints.frustumCulled = false; flakePoints.renderOrder = 5;
+  scene.add(flakePoints);
+  // Positions are kept RELATIVE to the player (the cloud is moved to the player each frame), so walking or flying
+  // never leaves the snow behind — it just keeps falling around you.
+  function updateSnowfall(dt, on) {
+    flakePoints.visible = on;
+    if (!on) return;
+    flakePoints.position.set(player.pos.x, player.pos.y, player.pos.z);
+    const pos = flakeGeom.attributes.position, arr = pos.array, half = SNOW_BOX / 2;
+    const t = performance.now() * 0.001;
+    for (let i = 0; i < SNOW_COUNT; i++) {
+      const o = i * 3;
+      arr[o+1] -= dt * (1.6 + (i % 7) * 0.18);
+      arr[o] += Math.sin(t * 0.9 + i) * dt * 0.35;
+      arr[o+2] += Math.cos(t * 0.7 + i * 1.3) * dt * 0.25;
+      if (arr[o+1] < -6) { arr[o+1] = 18 + Math.random() * 6; arr[o] = (Math.random()-0.5)*SNOW_BOX; arr[o+2] = (Math.random()-0.5)*SNOW_BOX; }
+      if (arr[o] > half) arr[o] -= SNOW_BOX; else if (arr[o] < -half) arr[o] += SNOW_BOX;
+      if (arr[o+2] > half) arr[o+2] -= SNOW_BOX; else if (arr[o+2] < -half) arr[o+2] += SNOW_BOX;
+    }
+    pos.needsUpdate = true;
+  }
 
   // ================= STARS + CLOUDS =================
   // Stars: a fixed field of points scattered over the upper hemisphere of
@@ -34198,8 +35335,9 @@ float moonDetail(vec3 p, float d) {
     // now (not just during precip) since the ambient sounds below need
     // it for sunny weather too, not only rain/snow.
     const playerIndoors = !isExposedToSky(Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)) || yachtCoveredAt(player.pos.x, player.pos.y, player.pos.z) || onMoon; // (a yacht's saloon, lower deck and bridge are under cover too — see SUPERYACHT; and it never rains on the Moon)
-    precipPoints.visible = weatherState === 'precip' && !playerIndoors;
-    if (weatherState === 'precip' && !playerIndoors) {
+    precipPoints.visible = weatherState === 'precip' && !playerIndoors && !snowy;
+    updateSnowfall(dt, weatherState === 'precip' && !playerIndoors && snowy); // see SNOWFALL
+    if (weatherState === 'precip' && !playerIndoors && !snowy) {
       precipMat.color.setHex(snowy ? 0xffffff : 0xaeccff);
       precipMat.size = snowy ? 0.09 : 0.14;
       precipPoints.position.x = player.pos.x;
@@ -34240,6 +35378,11 @@ float moonDetail(vec3 p, float d) {
   // if the realtime connection fails for any reason, the rest of the
   // game carries on exactly as before — this is purely additive.
   let mpChannel = null, mpConnectedWorldId = null, mpLastBroadcast = 0;
+  // Realtime usage control (Supabase bills every broadcast message):
+  //  • mpOthersHere — nothing is broadcast unless at least one OTHER player is in this world
+  //  • mpLastPosSig — position only re-sent when it actually changes (plus a slow heartbeat)
+  //  • mpSleepingWorld — channel is closed when the game is hidden/idle and reopened on return
+  let mpOthersHere = false, mpLastPosSig = '', mpSleepingWorld = null, mpLastInput = Date.now();
   const otherPlayers = new Map(); // uid -> { group, chatSprite, targetPos, targetYaw, lastUpdate, chatHideAt, uid }
   let myDisplayName = null;
   function getMyDisplayName() {
@@ -34388,8 +35531,8 @@ float moonDetail(vec3 p, float d) {
     for (const uid of Array.from(otherPlayers.keys())) removeOtherPlayer(uid);
   }
   function disconnectMultiplayer() {
-    if (mpChannel && sbClient) {
-      try { sbClient.removeChannel(mpChannel); } catch(e) {}
+    if (mpChannel) {
+      try { mpChannel.close(); } catch(e) {}
     }
     mpChannel = null;
     mpConnectedWorldId = null;
@@ -34401,11 +35544,115 @@ float moonDetail(vec3 p, float d) {
   // still connected (so an avatar disappears if someone closes the game
   // outright, not just walks away), on top of the periodic position
   // broadcasts.
+  // Close the realtime channel while nobody is actually playing — tab hidden,
+  // or no input for 5 minutes (e.g. the game left open on a phone, or Taskmill
+  // moved to another page). Presence would otherwise keep this device "in the
+  // world", making everyone else keep broadcasting to it. Reopens on return.
+  function mpSleepCheck() {
+    if (!mpChannel) return;
+    if (document.visibilityState === 'hidden' || Date.now() - mpLastInput > 5 * 60 * 1000) {
+      const w = mpConnectedWorldId;
+      disconnectMultiplayer();
+      mpSleepingWorld = w;
+    }
+  }
+  function mpWake() {
+    mpLastInput = Date.now();
+    if (mpSleepingWorld && document.visibilityState !== 'hidden' && mpSleepingWorld === currentWorldId) {
+      mpSleepingWorld = null;
+      connectMultiplayer(currentWorldId);
+    }
+  }
+  ['keydown','pointerdown','touchstart','wheel'].forEach(ev => window.addEventListener(ev, mpWake, { passive: true, capture: true }));
+  window.addEventListener('mousemove', () => { mpLastInput = Date.now(); if (mpSleepingWorld) mpWake(); }, { passive: true });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') mpSleepCheck(); else mpWake(); });
+  setInterval(mpSleepCheck, 30000);
+  // ── Multiplayer relay (Cloudflare) ─────────────────────────────
+  // Multiplayer used to run on Supabase Realtime, which bills every message.
+  // It now goes through a small relay on TASKMILL's own Cloudflare Worker
+  // (/api/mp/<world>, one Durable Object per world). This stand-in behaves like
+  // the old Supabase channel — .on('broadcast'|'presence'), .send(), .track(),
+  // .presenceState(), .subscribe() — so none of the game's multiplayer features
+  // needed changing. Reconnects by itself if the connection drops.
+  function mpRelayChannel(worldId) {
+    const handlers = {}, syncCbs = [];
+    let ws = null, closed = false, subCb = null, state = {}, retry = 0, pingTimer = null;
+    const fire = (list, arg) => list.forEach(f => { try { f(arg); } catch (e) { console.warn('[voxel mp]', e); } });
+    const ch = {
+      on(type, filter, cb) {
+        if (type === 'broadcast') (handlers[filter.event] = handlers[filter.event] || []).push(cb);
+        else if (type === 'presence' && filter && filter.event === 'sync') syncCbs.push(cb);
+        return ch;
+      },
+      send(msg) {
+        if (msg && msg.type === 'broadcast' && ws && ws.readyState === 1) {
+          try { ws.send(JSON.stringify({ t: 'b', e: msg.event, p: msg.payload })); } catch (e) {}
+        }
+        return Promise.resolve('ok');
+      },
+      track(meta) {
+        if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify({ t: 'track', m: meta || {} })); } catch (e) {} }
+        return Promise.resolve('ok');
+      },
+      presenceState() { return state; },
+      subscribe(cb) { subCb = cb; open(); return ch; },
+      close() { closed = true; clearInterval(pingTimer); try { if (ws) ws.close(1000); } catch (e) {} ws = null; }
+    };
+    function retryLater() {
+      if (closed) return;
+      retry = Math.min(retry + 1, 5);
+      setTimeout(open, 1000 * Math.pow(2, retry)); // 2s, 4s … up to 32s
+    }
+    async function open() {
+      if (closed) return;
+      let tok = null;
+      try { tok = await voxelToken(); } catch (e) {}
+      if (closed) return;
+      if (!tok) { retryLater(); return; }
+      const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/mp/' + encodeURIComponent(worldId)
+        + '?uid=' + encodeURIComponent(playerUid) + '&k=' + (isStandalone ? 'sb' : 'fb') + '&t=' + encodeURIComponent(tok);
+      let sock;
+      try { sock = new WebSocket(url); } catch (e) { retryLater(); return; }
+      ws = sock;
+      sock.onopen = () => {
+        retry = 0;
+        clearInterval(pingTimer);
+        pingTimer = setInterval(() => { try { if (sock.readyState === 1) sock.send('ping'); } catch (e) {} }, 30000);
+        if (subCb) subCb('SUBSCRIBED');
+      };
+      sock.onmessage = (ev) => {
+        if (ev.data === 'pong') return;
+        let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+        if (d.t === 'b') fire(handlers[d.e] || [], { type: 'broadcast', event: d.e, payload: d.p });
+        else if (d.t === 'presence') { state = d.s || {}; fire(syncCbs); }
+      };
+      sock.onclose = () => {
+        clearInterval(pingTimer);
+        if (ws !== sock) return;
+        ws = null;
+        if (!closed) { state = {}; fire(syncCbs); retryLater(); } // drop everyone until we're back
+      };
+      sock.onerror = () => {};
+    }
+    return ch;
+  }
+
   function connectMultiplayer(worldId) {
+    mpSleepingWorld = null;
     disconnectMultiplayer();
-    if (!sbClient || !worldId || !playerUid) return;
+    if (!worldId || !playerUid) return;
     try {
-      const channel = sbClient.channel('world:' + worldId, { config: { broadcast: { self: false }, presence: { key: playerUid } } });
+      const channel = mpRelayChannel(worldId);
+      // Single choke point for all ~40 broadcast senders: with nobody else in
+      // the world there is no one to receive them, so don't send (each one is
+      // a billed Realtime message). Presence below flips this on as soon as
+      // another player joins.
+      mpOthersHere = false;
+      const _mpRawSend = channel.send.bind(channel);
+      channel.send = (msg) => {
+        if (msg && msg.type === 'broadcast' && !mpOthersHere) return Promise.resolve('ok');
+        return _mpRawSend(msg);
+      };
       channel.on('broadcast', { event: 'pos' }, ({ payload }) => {
         if (!payload || payload.uid === playerUid) return;
         const op = ensureOtherPlayer(payload.uid, payload.name, payload.colors);
@@ -34759,6 +36006,10 @@ float moonDetail(vec3 p, float d) {
           const state = channel.presenceState();
           const present = new Set(Object.keys(state));
           for (const uid of Array.from(otherPlayers.keys())) if (!present.has(uid)) removeOtherPlayer(uid);
+          const othersNow = Array.from(present).some(k => k !== playerUid);
+          // someone new arrived — send our position straight away so they see us
+          if (othersNow && !mpOthersHere) { mpLastPosSig = ''; mpLastBroadcast = 0; }
+          mpOthersHere = othersNow;
         } catch(e) {}
       });
       channel.subscribe((status) => {
@@ -34967,9 +36218,15 @@ float moonDetail(vec3 p, float d) {
   function updateMultiplayer(dt) {
     if (mpChannel && currentWorldId === mpConnectedWorldId) {
       const now = performance.now();
-      if (now - mpLastBroadcast > 150) {
-        mpLastBroadcast = now;
-        try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1, vc: ridingVehicle ? ridingVehicle.color : null, w: weaponEquipped() ? weaponTypeIdx : -1, pit: pitch, st: furnSeat ? [Math.round(furnSeat.x * 1000) / 1000, Math.round(furnSeat.y * 1000) / 1000, Math.round(furnSeat.z * 1000) / 1000, Math.round(furnSeat.yaw * 1000) / 1000] : 0 } }); } catch(e) {}
+      if (mpOthersHere && now - mpLastBroadcast > 150) {
+        const posPayload = { uid: playerUid, name: getMyDisplayName(), colors: getMyAvatarColors(), x: player.pos.x, y: player.pos.y, z: player.pos.z, yaw, vehicleType: ridingVehicle ? ridingVehicle.typeIdx : -1, vc: ridingVehicle ? ridingVehicle.color : null, w: weaponEquipped() ? weaponTypeIdx : -1, pit: pitch, st: furnSeat ? [Math.round(furnSeat.x * 1000) / 1000, Math.round(furnSeat.y * 1000) / 1000, Math.round(furnSeat.z * 1000) / 1000, Math.round(furnSeat.yaw * 1000) / 1000] : 0 };
+        // round so physics jitter while standing still doesn't count as movement
+        const sig = JSON.stringify(Object.assign({}, posPayload, { x: Math.round(posPayload.x*50), y: Math.round(posPayload.y*50), z: Math.round(posPayload.z*50), yaw: Math.round(posPayload.yaw*100), pit: Math.round((posPayload.pit||0)*100) }));
+        if (sig !== mpLastPosSig || now - mpLastBroadcast > 3000) {
+          mpLastBroadcast = now;
+          mpLastPosSig = sig;
+          try { mpChannel.send({ type: 'broadcast', event: 'pos', payload: posPayload }); } catch(e) {}
+        }
       }
     }
     const now2 = performance.now();
@@ -38081,6 +39338,7 @@ float moonDetail(vec3 p, float d) {
     updatePubs(dt); // pub trade, customers and staff — see PUB
     updateLetHouses(dt); // rent and tenants — see HOUSE TO LET
     updateBakeries(dt); // sails, baking, the baker — see MILL & BAKERY
+    try { updateTrains(dt); updateStations(dt); } catch (e) { console.warn('[voxel] trains error (recovered):', e); } // see TRAINS & STATIONS
     updateRestaurants(dt); // service, diners, waiters — see RESTAURANT
     updateMansions(dt); // the household — see MANSION
     updateChandeliers(); // hang them from their ceilings; their light level — see buildChandelierFurniture
@@ -38095,7 +39353,7 @@ float moonDetail(vec3 p, float d) {
     updateThieves(Math.min(dt, 0.1)); // robbers and crop-stealing animals — see CROP THIEVES
     updateTeleporters(dt); // stepping onto a teleporter pad, arriving somewhere not loaded yet — see TELEPORTERS
     stepSeedBatches(); // crops: near ones in full, far ones as boxes — see CROP BATCHES
-    if (!rebuildInProgress && !needsRebuild) { const _t = performance.now(); stepBoughtRedraw(); perfAdd('building redraw', _t); } // a re-built bought building's footprint, a few ms a frame — see queueBoughtRedraw
+    if (!rebuildInProgress && !needsRebuild) { stepResyncQueue(worldLoading ? 40 : 6); const _t = performance.now(); stepBoughtRedraw(); perfAdd('building redraw', _t); } // a re-built bought building's footprint, a few ms a frame — see queueBoughtRedraw
     if (actionHeld && (ridingVehicle || weaponEquipped())) doAction(); // held ✋ keeps firing; the gun's own cooldown sets the pace
     updateSeedAimLabel(); // "what's growing here / how long" tag over a crop you're aiming at
     updateCreatureNameTags(); // floating names over animals/Mods — see NAMING CREATURES
@@ -38510,8 +39768,13 @@ float moonDetail(vec3 p, float d) {
       document.getElementById('waterOverlay').style.display = eyeSubmerged ? 'block' : 'none';
       document.getElementById('lavaOverlay').style.display = eyeInLava ? 'block' : 'none'; // same underwater view, tinted red
 
-      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (furnSeat) pinSeat(); else if (poolPlay) pinPool(dt); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
-      camera.position.set(player.pos.x, player.pos.y + player.height*0.92, player.pos.z);
+      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (trainDriving) trainPinCab(); else if (furnSeat) pinSeat(); else if (poolPlay) pinPool(dt); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
+      { // on foot on a ramp: drop the eye back down to the real surface (see SLOPE_COLLISION_INSET)
+        const sinkT = (!ridingVehicle && !flying && player.onGround) ? walkSlopeSinkNow() : 0;
+        slopeEyeSink += (sinkT - slopeEyeSink) * Math.min(1, dt * 18);
+        if (slopeEyeSink < 0.002) slopeEyeSink = 0;
+      }
+      camera.position.set(player.pos.x, player.pos.y + player.height*0.92 - slopeEyeSink - (trainDriving ? TRAIN_CAB_EYE_DROP : 0), player.pos.z); // (in a train's cab: eye just over the boiler — see TRAINS & STATIONS)
       camera.rotation.order = 'YXZ';
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
@@ -39085,7 +40348,24 @@ float moonDetail(vec3 p, float d) {
     }
     return c;
   }
-  const blockSwatchCanvas = entry => entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : entry.fence ? fenceSwatchCanvas(entry) : swatchCanvas(entry);
+  function trackSwatchCanvas(entry) { // a little plan of the piece: sleepers and two rails
+    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const x = c.getContext('2d');
+    x.fillStyle = 'rgba(255,255,255,0.10)'; x.fillRect(0, 0, 34, 34);
+    x.fillStyle = '#7a7166'; x.strokeStyle = '#5e3f24'; x.lineCap = 'butt';
+    if (entry.track === 'corner') {
+      x.lineWidth = 4; for (let i = 0; i < 4; i++) { const a = Math.PI + (i + 0.5) * (Math.PI / 2) / 4; x.beginPath(); x.moveTo(34 + Math.cos(a) * 3, 34 + Math.sin(a) * 3); x.lineTo(34 + Math.cos(a) * 31, 34 + Math.sin(a) * 31); x.stroke(); }
+      x.strokeStyle = '#c9ced3'; x.lineWidth = 2.5;
+      for (const r of [8.5, 25.5]) { x.beginPath(); x.arc(34, 34, r, Math.PI, Math.PI * 1.5); x.stroke(); }
+    } else {
+      x.lineWidth = 4; for (const yy of [5, 13, 21, 29]) { x.beginPath(); x.moveTo(3, yy); x.lineTo(31, yy); x.stroke(); }
+      x.strokeStyle = '#c9ced3'; x.lineWidth = 2.5;
+      for (const xx of [8.5, 25.5]) { x.beginPath(); x.moveTo(xx, 1); x.lineTo(xx, 33); x.stroke(); }
+      if (entry.track === 'slope') { x.fillStyle = '#ffd34d'; x.beginPath(); x.moveTo(17, 4); x.lineTo(24, 14); x.lineTo(10, 14); x.closePath(); x.fill(); x.strokeStyle = '#3a2a10'; x.lineWidth = 1; x.stroke(); }
+    }
+    return c;
+  }
+  const blockSwatchCanvas = entry => entry.track ? trackSwatchCanvas(entry) : entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : entry.fence ? fenceSwatchCanvas(entry) : swatchCanvas(entry);
   // A simple teardrop instead of a flat texture square, for the same
   // "actually looks like the thing" reason as the step icon above.
   function waterDropCanvas() {
@@ -40148,7 +41428,7 @@ float moonDetail(vec3 p, float d) {
   // Purely a UI grouping — slot numbers, saves and selectSlot are untouched.
   var menuCategoriesReady; // var, not let: selectSlot can run before this section does, and checks it
   const MENU_CATEGORIES = [
-    { name: 'Terrain',    items: [0, 1, 2, 3, 4, HEDGE_TYPE, 5, WATER_SLOT, LAVA_SLOT] },
+    { name: 'Terrain',    items: [0, 1, 2, 3, 4, HEDGE_TYPE, 5, WATER_SLOT, LAVA_SLOT, TRACK_TYPE] },
     { name: 'Farming',    items: [SEED_SLOT, ANIMAL_SLOT, INCUBATOR_SLOT, MOD_SLOT, PEOPLE_INCUBATOR_SLOT] },
     { name: 'Buildings',  items: [6, 7, 10, 8, 9, SLOPE_TYPE, CURVE_TYPE, CURVE_IN_TYPE, FENCE_TYPE, FENCE_CORNER_TYPE, GATE_TYPE, GREY_SLAB_TYPE, BARS_TYPE, WALLPAPER_SLOT, DOOR_SLOT, LADDER_SLOT] },
     { name: 'Light',      items: [FIRE_SLOT, LIGHT_SLOT, STREETLIGHT_SLOT] },
@@ -40405,6 +41685,7 @@ float moonDetail(vec3 p, float d) {
     if (poolPlay) leavePoolPlay(true);
     if (furnSeat) standUpFromSeat();
     if (yachtDriving) tryYachtAction(); // drops anchor
+    if (trainDriving) stopDrivingTrain(true);
     if (ridingVehicle) exitVehicle();
     if (currentWorldId === PUB_WORLD_ID || !terrainStreamingActive) spawnDefault();
     else {
@@ -40875,7 +42156,7 @@ float moonDetail(vec3 p, float d) {
       await new Promise(res => {
         const tick = () => {
           if (pendingStructureReplays.length) processPendingStructureReplays();
-          const busy = needsRebuild || rebuildInProgress || !!streamJob || chunkGenQueue.length > 0
+          const busy = needsRebuild || rebuildInProgress || !!streamJob || chunkGenQueue.length > 0 || resyncPending()
             || pendingStructureReplays.some(sp => sp.bought && generatedChunks.has(sp.ck));
           if (!busy || performance.now() - t0 > 25000) res(); else setTimeout(tick, 100);
         };
@@ -40897,6 +42178,7 @@ float moonDetail(vec3 p, float d) {
       document.getElementById('chatVoiceMicBtn').style.display = 'flex';
       document.getElementById('chatLog').style.display = 'flex';
     } else {
+      mpSleepingWorld = null; // left the world on purpose — don't auto-rejoin it
       disconnectMultiplayer();
     }
   }
@@ -41030,6 +42312,7 @@ float moonDetail(vec3 p, float d) {
     window.scrollTo(0, 0); // some mobile browsers leave the page nudged up after the keyboard closes
     const name = (input.value || 'My World').trim().slice(0,40) || 'My World';
     currentWorldId = newWorldId();
+    objMarkFresh(currentWorldId); // its objectives start from the beginning — see OBJECTIVES
     currentWorldName = name;
     // Everything from here down used to only have beginPlaying() itself
     // guarded — but "last save: no save attempted yet this session" even

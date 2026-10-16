@@ -2535,8 +2535,9 @@
     // walk on or into (you walk over them like a path), and they turn a quarter at a time with R / the rotate
     // button like a fence (never tilt). A train runs along any line of them joined end to end.
     { name: 'Rail Track',        mats: TEX.planks, track: 'straight', cost: 20 },
-    { name: 'Rail Track Corner', mats: TEX.planks, track: 'corner',   cost: 20, isVariant: true },
+    { name: 'Rail Track Corner', mats: TEX.planks, track: 'corner',   cost: 60, isVariant: true }, // a wide 4x4 curve — see TRACK_LOCAL_ENDS
     { name: 'Rail Track Slope',  mats: TEX.planks, track: 'slope',    cost: 25, isVariant: true },
+    { name: 'Rail Track Corner (Left)', mats: TEX.planks, track: 'cornerL', cost: 60, isVariant: true }, // the Corner's mirror image — never in a menu: placing / R swaps between the two (see trackPlacementChoice)
   ];
   // Every hotbar slot after the block list (Water, Light, ...) is numbered
   // from BLOCK_TYPES.length, so adding block types moves each of them up. A
@@ -2550,8 +2551,8 @@
   // types, and layout 8 (the current one) the ten Gate types (five shut, five
   // open), and layout 9 the Hedge block, and layout 10 (the current one) the two Chrome Balustrade pieces. ADDING
   // ANOTHER BLOCK TYPE means bumping SLOT_LAYOUT and recording the old count here.
-  const SLOT_LAYOUT = 11; // 11: the three Rail Track pieces
-  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.findIndex(e => e.name === 'Iron Railing Corner') + 1, 8: BLOCK_TYPES.findIndex(e => e.name === 'Iron Gate (Open)') + 1, 9: BLOCK_TYPES.findIndex(e => e.name === 'Hedge') + 1, 10: BLOCK_TYPES.findIndex(e => e.name === 'Chrome Balustrade Corner') + 1, 11: BLOCK_TYPES.length };
+  const SLOT_LAYOUT = 12; // 11: the three Rail Track pieces; 12: the left-hand wide corner
+  const SLOT_LAYOUT_BLOCK_COUNTS = { 1: 60, 2: 61, 3: 65, 4: 67, 5: 75, 6: BLOCK_TYPES.findIndex(e => e.name === 'Stone Inverse Curve') + 1, 7: BLOCK_TYPES.findIndex(e => e.name === 'Iron Railing Corner') + 1, 8: BLOCK_TYPES.findIndex(e => e.name === 'Iron Gate (Open)') + 1, 9: BLOCK_TYPES.findIndex(e => e.name === 'Hedge') + 1, 10: BLOCK_TYPES.findIndex(e => e.name === 'Chrome Balustrade Corner') + 1, 11: BLOCK_TYPES.findIndex(e => e.name === 'Rail Track Slope') + 1, 12: BLOCK_TYPES.length };
   // Looked up by NAME. These used to be counted back from the END of the
   // list (BLOCK_TYPES.length - 9 and so on), which silently pointed every
   // one of them at the wrong block the moment anything was appended after
@@ -2616,7 +2617,7 @@
   const GATE_TYPE = GATE_TYPES[0];
   BLOCK_FAMILIES[GATE_TYPE] = GATE_TYPES;
   const TRACK_TYPES = ['Rail Track', 'Rail Track Corner', 'Rail Track Slope'].map(typeIndexByName);
-  const TRACK_TYPE = TRACK_TYPES[0], TRACK_CORNER_TYPE = TRACK_TYPES[1], TRACK_SLOPE_TYPE = TRACK_TYPES[2];
+  const TRACK_TYPE = TRACK_TYPES[0], TRACK_CORNER_TYPE = TRACK_TYPES[1], TRACK_SLOPE_TYPE = TRACK_TYPES[2], TRACK_CORNER_L_TYPE = typeIndexByName('Rail Track Corner (Left)');
   BLOCK_FAMILIES[TRACK_TYPE] = TRACK_TYPES;
   const GATE_TOGGLE = {}; // shut type <-> open type
   GATE_TYPES.forEach(t => { const o = typeIndexByName(BLOCK_TYPES[t].name + ' (Open)'); GATE_TOGGLE[t] = o; GATE_TOGGLE[o] = t; });
@@ -4313,6 +4314,7 @@
       case 'lethouse': maybeBuildLetHouse(cx, cz, spec); break;
       case 'bakery': maybeBuildBakery(cx, cz, spec); break;
       case 'station': maybeBuildStation(cx, cz, spec); break;
+      case 'airport': maybeBuildAirport(cx, cz, spec); break;
       case 'restaurant': maybeBuildRestaurant(cx, cz, spec); break;
       case 'mansion': maybeBuildMansion(cx, cz, spec); break;
       case 'themepark': maybeBuildThemePark(cx, cz, spec); break;
@@ -5857,7 +5859,7 @@
   // Straight runs along X, a Corner joins the +X edge to the +Z edge round the (+0.5,+0.5) corner, and a Slope runs
   // along X climbing from its +X end (floor of the cell) to its -X end (top of the cell) — the same way up as a
   // Slope block at rot 0, so a slope block fits neatly under it. Turned by stepRotations like a fence.
-  const TRACK_RAIL_TOP = 0.15;
+  const TRACK_RAIL_TOP = 0.15, TRACK_CURVE_R = 3.5; // (the wide Corner's radius: 4x4 cells — see trackGeometryFor)
   const trackGeometryCache = {};
   function trackGeometryFor(shape) {
     if (trackGeometryCache[shape]) return trackGeometryCache[shape];
@@ -5874,20 +5876,20 @@
       g.dispose();
     };
     const B = -0.5; // the cell's floor
-    if (shape === 'corner') {
-      const R = [0.25, 0.75], seg = 7, a0 = -Math.PI / 2, a1 = -Math.PI;
-      for (let i = 0; i < seg; i++) { // gravel bed in wedges round the curve
-        const a = a0 + (a1 - a0) * (i + 0.5) / seg, len = 2 * 0.5 * Math.sin(Math.abs(a1 - a0) / seg / 2) * 1.25;
-        const cx = 0.5 + 0.5 * Math.cos(a), cz = 0.5 + 0.5 * Math.sin(a), tx = -Math.sin(a), tz = Math.cos(a);
+    if (shape === 'corner' || shape === 'cornerL') {
+      // The wide curve: a quarter circle of radius TRACK_CURVE_R, from the -X edge of its own cell (where it's placed)
+      // round to the far edge of the cell 3 along and 3 across — a 4x4 square. 'cornerL' is its mirror image.
+      const sg = shape === 'cornerL' ? -1 : 1, Rc = TRACK_CURVE_R, ccx = -0.5, ccz = sg * Rc;
+      const a0 = -sg * Math.PI / 2, a1 = 0, seg = 28, at = t => a0 + (a1 - a0) * t;
+      const pt = (r, a) => [ccx + r * Math.cos(a), ccz + r * Math.sin(a)];
+      for (let i = 0; i < seg; i++) { // gravel bed
+        const a = at((i + 0.5) / seg), [cx, cz] = pt(Rc, a), len = 2 * Rc * Math.sin(Math.abs(a1 - a0) / seg / 2) * 1.12;
         box(cx, B + 0.015, cz, len, 0.03, 0.9, Math.atan2(-Math.cos(a), -Math.sin(a)), C.bed);
       }
-      for (let i = 0; i < 4; i++) { // sleepers point at the curve's centre
-        const a = a0 + (a1 - a0) * (i + 0.5) / 4, cx = 0.5 + 0.5 * Math.cos(a), cz = 0.5 + 0.5 * Math.sin(a);
-        box(cx, B + 0.055, cz, 0.9, 0.05, 0.14, Math.atan2(-Math.sin(a), Math.cos(a)), C.sleeper);
-      }
-      for (const r of R) for (let i = 0; i < seg; i++) {
-        const t0 = a0 + (a1 - a0) * i / seg, t1 = a0 + (a1 - a0) * (i + 1) / seg;
-        const x0 = 0.5 + r * Math.cos(t0), z0 = 0.5 + r * Math.sin(t0), x1 = 0.5 + r * Math.cos(t1), z1 = 0.5 + r * Math.sin(t1);
+      const nSl = 22;
+      for (let i = 0; i < nSl; i++) { const a = at((i + 0.5) / nSl), [cx, cz] = pt(Rc, a); box(cx, B + 0.055, cz, 0.9, 0.05, 0.14, Math.atan2(-Math.sin(a), Math.cos(a)), C.sleeper); }
+      for (const r of [Rc - 0.25, Rc + 0.25]) for (let i = 0; i < seg; i++) {
+        const [x0, z0] = pt(r, at(i / seg)), [x1, z1] = pt(r, at((i + 1) / seg));
         const dx = x1 - x0, dz = z1 - z0, len = Math.hypot(dx, dz) + 0.012;
         box((x0 + x1) / 2, B + TRACK_RAIL_TOP - 0.035, (z0 + z1) / 2, len, 0.07, 0.06, Math.atan2(-dz, dx), C.rail, C.railTop);
       }
@@ -10240,6 +10242,7 @@
     { name: 'Launch Console',         build: buildLaunchConsole,    swatch: 0x3a3d42, cost: 0, category: 'office' }, // a rocket launch site's only — ✋ to launch, see ROCKET & MOON BASE
     { name: 'Chandelier',             build: buildChandelierFurniture, swatch: 0xd2b062, cost: 600, category: 'room' }, // aim at the floor under where it should hang; ✋ it to dim — see buildChandelierFurniture
     { name: 'Ticket Machine',         build: buildTicketMachine,    swatch: 0x2f5fa8, cost: 0, category: 'office' }, // a Train Station's only — ✋ opens the station, see TRAINS & STATIONS
+    { name: 'Check-in Desk',          build: buildCheckinDesk,      swatch: 0x1f4e8c, cost: 0, category: 'office' }, // an Airport's only — ✋ opens the airport, see AIRPORTS & PLANES
   ];
   const SHOP_COUNTER_IDX = FURNITURE_TYPES.findIndex(t => t.name === 'Shop Counter');
   // Player-placed pieces whose front is modelled on local -Z, turned to face the player when placed — see doPlace.
@@ -10402,7 +10405,7 @@
     'Single Bed': [1.0, 1.9, 0.55, 0], 'Double Bed': [1.7, 1.9, 0.55, 0], 'Wardrobe': [1.16, 0.6, 1.96, 0], 'Chest of Drawers': [0.85, 0.48, 0.9, 0],
     'Toy Box': [0.74, 0.44, 0.5, 0], 'Open Log Fire': [0.8, 0.8, 0.35, 0], 'Full-Length Mirror': [0.86, 0.45, 1.8, -0.25],
     'Shop Counter': [2.9, 0.65, 1.0, 0], 'Street Light': [0.36, 0.36, 4.8, 0], 'Office Safe': [0.6, 0.6, 0.85, 0],
-    'Letting Board': [0.2, 0.2, 1.6, 0], 'Bread Rack': [0.98, 0.44, 1.85, 0], 'Garage Door': [4.0, 0.3, 3.0, 0], 'Fireplace': [1.7, 0.72, 1.15, 0.1], 'Bookcase': [0.98, 0.4, 2.2, 0.02], 'Grand Piano': [1.5, 1.7, 1.1, 0], 'Pool Table': [1.3, 2.05, 0.9, 0], 'Ticket Booth': [1.1, 1.0, 2.1, 0], 'Ride Gate': [0.4, 0.4, 1.0, 0], 'Launch Console': [1.0, 0.6, 1.1, 0], 'Washing Machine': [0.62, 0.6, 0.86, 0], 'Bakery Till': [1.0, 0.66, 1.0, 0], 'Ticket Machine': [0.62, 0.5, 1.7, 0], 'Flour Sacks': [0.8, 0.6, 0.8, 0], 'Pub Bar': [1.0, 0.82, 1.0, 0.04], 'Pub Bar Pumps': [1.0, 0.82, 1.0, 0.04], 'Bottle Fridge': [0.66, 0.66, 1.75, -0.01], 'Box Stack': [0.86, 0.84, 3.4, 0],
+    'Letting Board': [0.2, 0.2, 1.6, 0], 'Bread Rack': [0.98, 0.44, 1.85, 0], 'Garage Door': [4.0, 0.3, 3.0, 0], 'Fireplace': [1.7, 0.72, 1.15, 0.1], 'Bookcase': [0.98, 0.4, 2.2, 0.02], 'Grand Piano': [1.5, 1.7, 1.1, 0], 'Pool Table': [1.3, 2.05, 0.9, 0], 'Ticket Booth': [1.1, 1.0, 2.1, 0], 'Ride Gate': [0.4, 0.4, 1.0, 0], 'Launch Console': [1.0, 0.6, 1.1, 0], 'Washing Machine': [0.62, 0.6, 0.86, 0], 'Bakery Till': [1.0, 0.66, 1.0, 0], 'Ticket Machine': [0.62, 0.5, 1.7, 0], 'Check-in Desk': [1.0, 0.66, 1.1, 0], 'Flour Sacks': [0.8, 0.6, 0.8, 0], 'Pub Bar': [1.0, 0.82, 1.0, 0.04], 'Pub Bar Pumps': [1.0, 0.82, 1.0, 0.04], 'Bottle Fridge': [0.66, 0.66, 1.75, -0.01], 'Box Stack': [0.86, 0.84, 3.4, 0],
   };
   var furnBoxCells = new Map(); // "x,z" -> [box] — see isSolid
   function registerFurnBox(fk, f) {
@@ -10991,6 +10994,7 @@
     if (name === 'Office Safe') { if (!remote) { if (restForFurniture(fk)) openRestOffice(fk); else openPubOffice(fk); } return true; } // see PUB / RESTAURANT
     if (name === 'Bakery Till') { if (!remote) openBakePanel(fk); return true; } // see MILL & BAKERY
     if (name === 'Ticket Machine') { if (!remote) openStationPanel(fk); return true; } // see TRAINS & STATIONS
+    if (name === 'Check-in Desk') { if (!remote) openAirportPanel(fk); return true; } // see AIRPORTS & PLANES
     if (name === 'Letting Board') { if (!remote) openLetPanel(fk); return true; } // see HOUSE TO LET
     if (name === 'Ticket Booth') { if (!remote) { if (stadForFurniture(fk)) openStadiumOffice(fk); else openParkBooth(fk); } return true; } // see THEME PARK / FOOTBALL STADIUM
     if (name === 'Ride Gate') { if (!remote) startRide(fk); return true; }
@@ -11032,7 +11036,7 @@
     const f = furnGet(fk); if (!f) return;
     const t = FURNITURE_TYPES[f.typeIdx]; if (!t) return;
     const name = t.name, fx = furnFx.get(fk), g = f.group;
-    if (SEATS[name] || name === 'Single Bed' || name === 'Double Bed' || name === 'Street Light' || name === 'Office Safe' || name === 'Letting Board' || name === 'Bakery Till' || name === 'Ticket Machine' || name === 'Ticket Booth' || name === 'Ride Gate' || name === 'Launch Console' || name === 'Chandelier') return;
+    if (SEATS[name] || name === 'Single Bed' || name === 'Double Bed' || name === 'Street Light' || name === 'Office Safe' || name === 'Letting Board' || name === 'Bakery Till' || name === 'Ticket Machine' || name === 'Check-in Desk' || name === 'Ticket Booth' || name === 'Ride Gate' || name === 'Launch Console' || name === 'Chandelier') return;
     if (name === 'Fruit Machine' && !fx) return; // couldn't afford the spin
     const p = { k: fk };
     if (g.userData.doors) p.on = !!g.userData.doorsOpen;
@@ -21659,11 +21663,13 @@
       // hides the cursor entirely during normal play, so there's nothing
       // visible to aim a click at). A keyboard shortcut sidesteps that
       // regardless of input device.
-      if (trainDriving) stopDrivingTrain(); // see TRAINS & STATIONS
+      if (planeFlying) tryPlaneAction(); // (only gets out on the ground) — see AIRPORTS & PLANES
+      else if (trainDriving) stopDrivingTrain(); // see TRAINS & STATIONS
       else if (ridingVehicle) exitVehicle();
       else { const v = nearestVehicleToPlayer(3); if (v) enterVehicle(v); else { const tr = nearestTrainEngine(3); if (tr) startDrivingTrain(tr); } }
     }
     if (e.code === 'KeyT' && document.getElementById('chatOpenBtn').style.display !== 'none') openChatModal();
+    if (e.code === 'KeyV' && !e.repeat && planeFlying) togglePlaneView(); // see AIRPORTS & PLANES
     if (e.code === 'KeyV' && !e.repeat && yachtDriving) toggleYachtView(); // the yacht's driving view — see SUPERYACHT
     if (e.code === 'KeyG' && currentWorldId === PUB_WORLD_ID) {
       landscapeModeEnabled = !landscapeModeEnabled;
@@ -21707,6 +21713,12 @@
     if (!canEditAt(x, z)) return false; // view only — same rule as placing and mining
     const k = key(x, y, z);
     const cur = stepRotations.get(k) || 0;
+    if (BLOCK_TYPES[t].track === 'corner' || BLOCK_TYPES[t].track === 'cornerL') { // the wide curve: 4 turns one way round, then the 4 the other way
+      const idx = ((BLOCK_TYPES[t].track === 'cornerL' ? 4 : 0) + (cur & 3) + 1) % 8, nt = idx < 4 ? TRACK_CORNER_TYPE : TRACK_CORNER_L_TYPE, nr = idx & 3;
+      blocks.set(k, nt); if (nr) stepRotations.set(k, nr); else stepRotations.delete(k);
+      recordBlockEdit(x, y, z, nt, nr); handleLocalBlockChange(x, y, z); playThud(320);
+      return true;
+    }
     let yaw = cur & 3, tilt = (cur >> 2) & 3;
     if (what === 'tilt') tilt = (tilt + 1) & 3; else yaw = (yaw + 1) & 3;
     const v = yaw | (tilt << 2);
@@ -22690,6 +22702,7 @@
     { const gt = gameTriggerInSight(); if (gt) { mineHeld = false; showBriefMessage(gt.label + ' — press ✋ to start'); return; } } // game start blocks — see tryGameTriggerBlock
     if (tryMineTractor()) { mineHeld = false; return; } // mining your tractor picks it back up — see TRACTORS
     if (tryMineFieldDrone()) { mineHeld = false; return; } // likewise a field drone — see DRONES
+    if (planeFlying) { mineHeld = false; return; } // flying a plane — see AIRPORTS & PLANES
     if (tryMineTeleporter()) { mineHeld = false; return; } // and a teleporter — see TELEPORTERS
     // Furniture removal — instant, no timed dig the way blocks have,
     // since there's no "hardness" to a piece of furniture. Only wins
@@ -22924,10 +22937,12 @@
     if (rideNow) { actionHeld = false; return; } // on a ride: hold on till it's over
     if (yachtDriving && tryYachtAction()) { actionHeld = false; return; } // at the wheel: ✋ drops anchor
     if (trainDriving) { stopDrivingTrain(); actionHeld = false; return; } // in the cab: ✋ gets out — see TRAINS & STATIONS
+    if (planeFlying) { tryPlaneAction(); actionHeld = false; return; } // see AIRPORTS & PLANES
     if (furnSeat) { standUpFromSeat(); actionHeld = false; return; } // ✋ while sitting: get up — see FURNITURE INTERACTION
     if (tryBuyShopItem()) { actionHeld = false; return; } // aiming at a vehicle / weapon on display — see VEHICLE & EQUIPMENT SHOPS
     if (tryTractorAction()) { actionHeld = false; return; } // ✋ on your tractor: pick what it sows — see TRACTORS
     if (tryTrainAction()) { actionHeld = false; return; } // ✋ on your train: its settings — see TRAINS & STATIONS
+    if (tryPlaneAction()) { actionHeld = false; return; } // ✋ on a plane: fly her / hire a pilot — see AIRPORTS & PLANES
     if (tryLiftPanelAction()) { actionHeld = false; return; } // ✋ standing in a hotel lift: the floor panel — see HOTEL
     if (weaponEquipped()) { fireWeapon(); return; }
     if (bsGame && bsGame.started && !bsGame.won) {
@@ -23036,7 +23051,7 @@
     // Build only builds now: vehicle guns, weapons, Battleship moves, kicking
     // the football, gates, the lead, sowing seeds and filling incubators are
     // all on the action button — see ACTION.
-    if (ridingVehicle) return;
+    if (ridingVehicle || planeFlying) return;
     if (weaponEquipped()) { showBriefMessage('Press ✋ to fire'); return; }
     if (selectedSlot === WEAPON_SLOT) { showBriefMessage('⚔️ Buy weapons at an Equipment Shop'); return; } // selected but nothing owned — never fall through to block placing
     if (selectedSlot === PROPERTY_SLOT) { placingHeld = false; tryBuyBuilding(); return; } // see PROPERTY
@@ -23426,10 +23441,11 @@
         placedRot = fencePlacementRot(x, y, z, type.fence);
         if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       } else if (type && type.track) {
-        placedRot = trackPlacementRot(x, y, z, type.track); // joins up with the track beside it — see TRAINS & STATIONS
+        const ch = trackPlacementChoice(x, y, z, type.track); // joins up with the track beside it — see TRAINS & STATIONS
+        placedRot = ch.rot; if (ch.type !== selectedSlot) blocks.set(k, ch.type); // (a Corner may come out as its mirror twin)
         if (placedRot) stepRotations.set(k, placedRot); else stepRotations.delete(k);
       }
-      recordBlockEdit(x, y, z, selectedSlot, placedRot);
+      recordBlockEdit(x, y, z, blocks.get(k) !== undefined ? blocks.get(k) : selectedSlot, placedRot);
       if (selectedSlot === MUD_TYPE) objNote('mud'); // see OBJECTIVES
       if (replacingWater) recordWaterEdit(x, y, z, -1); // displaced water is also a real edit, or it would silently reappear once this chunk regenerates
       clearFlowState(k);
@@ -26043,6 +26059,7 @@
     { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day' },
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
     { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 56, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
+    { t: 'airport',   name: 'Airport',        emoji: '✈️', price: 60000, sx: 140, sz: 46, h: 17, note: 'runway, terminal, control tower and hangar — buy airliners at check-in, fly them yourself or hire pilots; passengers pay by the distance flown' },
     { t: 'station',   name: 'Train Station',  emoji: '🚉', price: 8000, sx: 27, sz: 11, h: 7, note: 'platform with its own track — buy trains at the ticket machine; passengers pay to ride station to station' },
     { t: 'pub',       name: 'Pub',            emoji: '🍺', price: 20000, sx: 31, sz: 36, h: 7, note: 'Bar, kitchen, toilets, cellar, office + beer garden — hire a manager to run it' },
     { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
@@ -26109,7 +26126,7 @@
     return (d === 'south' || d === 'north' || d === 'east' || d === 'west') ? d : rolled;
   }
   // Buildings whose builders can put the door on any side. Church and farm have fixed layouts; landmarks have no door.
-  const DOOR_FACING_TYPES = new Set(['station', 'house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter', 'hotel', 'pub', 'lethouse', 'bakery', 'restaurant', 'mansion', 'themepark', 'stadium', 'rocket']);
+  const DOOR_FACING_TYPES = new Set(['airport', 'station', 'house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter', 'hotel', 'pub', 'lethouse', 'bakery', 'restaurant', 'mansion', 'themepark', 'stadium', 'rocket']);
   function planPurchase(bt) {
     const r = voxelRaycast(true, true);
     if (!r || !r.hit || r.isWater || r.isLava) return null;
@@ -26117,7 +26134,7 @@
     let dx = 0, dz = 0; // snap "away from me" to the nearest axis
     if (Math.abs(fx) > Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
     let W = bt.sx, D = bt.sz; const floor = r.hit.y;
-    if (bt.t === 'station' && dx) { W = bt.sz; D = bt.sx; } // long and thin: its frame runs across your view whichever way you face (see shopFrame)
+    if ((bt.t === 'station' || bt.t === 'airport') && dx) { W = bt.sz; D = bt.sx; } // long and thin: its frame runs across your view whichever way you face (see shopFrame)
     let sx0, sz0;
     if (dx) { sx0 = dx > 0 ? r.hit.x : r.hit.x - W + 1; sz0 = r.hit.z - Math.floor(D / 2); }
     else { sz0 = dz > 0 ? r.hit.z : r.hit.z - D + 1; sx0 = r.hit.x - Math.floor(W / 2); }
@@ -26134,8 +26151,9 @@
       if (!canEditAt(x, z)) return fail('Not allowed here');
       const g = groundHeightOnly.get(x + ',' + z);
       if (g === undefined) return fail('Too far out — that ground isn\u2019t loaded');
-      if (g < floor - 6) return fail('Too steep — the ground drops away there');
-      if (g > floor + 14) return fail('Too steep — there\u2019s a hill in the way');
+      const slack = bt.t === 'airport' ? 2.5 : 1; // an airport's levelled flat whatever — only a real cliff or mountain stops it
+      if (g < floor - 6 * slack) return fail('Too steep — the ground drops away there');
+      if (g > floor + 14 * slack) return fail('Too steep — there\u2019s a hill in the way');
     }
     if (structureSpecs.has(ck) || villageRegistry.has(ck) || villageFootprintChunkKeys.has(ck) || lockedStructureChunks.has(ck)) return fail('There\u2019s already a building on this patch — try a bit further away');
     for (const tck of chunksTouchedByBox(site.sx0 - 2, site.sx1 + 2, site.sz0 - 2, site.sz1 + 2)) {
@@ -29243,6 +29261,7 @@
       else if (sp.t === 'restaurant' && sp.rest && sp.rest.safe > 0) { amt = Math.floor(sp.rest.safe); sp.rest.safe = 0; got.restaurants += amt; }
       else if (sp.t === 'themepark' && sp.park && sp.park.till > 0) { amt = Math.floor(sp.park.till); sp.park.till = 0; got.parks = (got.parks || 0) + amt; }
       else if (sp.t === 'stadium' && sp.stadium && sp.stadium.till > 0) { amt = Math.floor(sp.stadium.till); sp.stadium.till = 0; got.stadiums = (got.stadiums || 0) + amt; }
+      else if (sp.t === 'airport' && sp.airport && sp.airport.till > 0) { amt = Math.floor(sp.airport.till); sp.airport.till = 0; got.airports = (got.airports || 0) + amt; }
       else if (sp.t === 'station' && sp.station && sp.station.till > 0) { amt = Math.floor(sp.station.till); sp.station.till = 0; got.stations = (got.stations || 0) + amt; }
       if (amt) touched.push(sp);
     }
@@ -32744,14 +32763,18 @@ float moonDetail(vec3 p, float d) {
   const TRAIN_CAB_EYE_DROP = 0.83; // driving: you stand on the cab floor (rail + 0.25), so the eye comes down to just over the boiler
 
   // ---- track pieces ----
-  const TRACK_LOCAL_ENDS = { straight: [[1, 0, 0], [-1, 0, 0]], corner: [[1, 0, 0], [0, 1, 0]], slope: [[-1, 0, 1], [1, 0, 0]] }; // [dx, dz, rise]
+  // [ox, oz, dx, dz, rise]: the end is the (ox,oz) cell of the piece (its own cell is 0,0), facing (dx,dz). The wide
+  // Corner covers a 4x4 square: placed at one end, it comes out of the cell 3 along and 3 across.
+  const TRACK_LOCAL_ENDS = { straight: [[0, 0, 1, 0, 0], [0, 0, -1, 0, 0]], slope: [[0, 0, -1, 0, 1], [0, 0, 1, 0, 0]],
+    corner: [[0, 0, -1, 0, 0], [3, 3, 0, 1, 0]], cornerL: [[0, 0, -1, 0, 0], [3, -3, 0, -1, 0]] };
+  const TRACK_BIG = ['corner', 'cornerL'];
   function trackRotDir(dx, dz, rot) { let x = dx, z = dz; for (let i = 0; i < (rot & 3); i++) { const t = x; x = z; z = -t; } return [x, z]; } // same turn setBlockOrientation draws with
   const _trackEndsCache = {};
   function trackEnds(shape, rot) { // world-facing ends for a piece: [{dx, dz, rise}, {…}]
     const ck = shape + rot;
-    return _trackEndsCache[ck] || (_trackEndsCache[ck] = TRACK_LOCAL_ENDS[shape].map(([dx, dz, rise]) => { const [x, z] = trackRotDir(dx, dz, rot); return { dx: x, dz: z, rise }; }));
+    return _trackEndsCache[ck] || (_trackEndsCache[ck] = TRACK_LOCAL_ENDS[shape].map(([ox, oz, dx, dz, rise]) => { const [x, z] = trackRotDir(dx, dz, rot), [px, pz] = trackRotDir(ox, oz, rot); return { ox: px, oz: pz, dx: x, dz: z, rise }; }));
   }
-  function trackPieceLen(shape) { return shape === 'corner' ? Math.PI / 4 : shape === 'slope' ? Math.SQRT2 : 1; }
+  function trackPieceLen(shape) { return (shape === 'corner' || shape === 'cornerL') ? TRACK_CURVE_R * Math.PI / 2 : shape === 'slope' ? Math.SQRT2 : 1; }
   // Station platform track, for when its ground isn't loaded (it isn't one of your edits, it's part of the building).
   let stationTrackCells = new Map(), stationTrackAt = 0, stationList = [];
   function refreshStationTrack(force) {
@@ -32782,16 +32805,35 @@ float moonDetail(vec3 p, float d) {
   }
   // The piece joined on through one end (rails at height h there) — { x, y, z, shape, rot, endIdx } | null
   function trackNext(x, y, z, end) {
-    const nx = x + end.dx, nz = z + end.dz, h = y + end.rise;
-    for (const yy of [h, h - 1]) {
+    const nx = x + end.ox + end.dx, nz = z + end.oz + end.dz, h = y + end.rise;
+    for (const yy of [h, h - 1]) { // a piece standing in that cell, joined there by an end of its own cell
       const p = trackPieceAt(nx, yy, nz); if (!p) continue;
       const ends = trackEnds(p.shape, p.rot);
-      for (let i = 0; i < 2; i++) { const e = ends[i]; if (e.dx === -end.dx && e.dz === -end.dz && yy + e.rise === h) return { x: nx, y: yy, z: nz, shape: p.shape, rot: p.rot, endIdx: i }; }
+      for (let i = 0; i < 2; i++) { const e = ends[i]; if (!e.ox && !e.oz && e.dx === -end.dx && e.dz === -end.dz && yy + e.rise === h) return { x: nx, y: yy, z: nz, shape: p.shape, rot: p.rot, endIdx: i }; }
+    }
+    for (const shape of TRACK_BIG) for (let r = 0; r < 4; r++) { // the far end of a wide Corner placed 3 cells away
+      const e = trackEnds(shape, r)[1]; if (e.dx !== -end.dx || e.dz !== -end.dz) continue;
+      const ax = nx - e.ox, az = nz - e.oz, p = trackPieceAt(ax, h, az);
+      if (p && p.shape === shape && p.rot === r) return { x: ax, y: h, z: az, shape, rot: r, endIdx: 1 };
     }
     return null;
   }
   // Placing: turned to join the track beside it; failing that, a Straight runs away from you, a Slope climbs away from
   // you and a Corner opens away from you. R turns it a quarter.
+  // A Corner: whichever of the two wide curves (and which way round) joins on to the track there, turning the way
+  // you're looking. -> { type, rot }
+  function trackPlacementChoice(x, y, z, shape) {
+    if (shape !== 'corner' && shape !== 'cornerL') return { type: shape === 'slope' ? TRACK_SLOPE_TYPE : TRACK_TYPE, rot: trackPlacementRot(x, y, z, shape) };
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
+    let best = { type: TRACK_CORNER_TYPE, rot: 0 }, bestScore = -Infinity;
+    for (const sh of TRACK_BIG) for (let r = 0; r < 4; r++) {
+      const ends = trackEnds(sh, r), j0 = trackNext(x, y, z, ends[0]) ? 1 : 0, j1 = trackNext(x, y, z, ends[1]) ? 1 : 0;
+      const o = ends[1], ol = Math.hypot(o.ox, o.oz);
+      const score = (j0 + j1) * 1000 + (j0 ? 0 : -(ends[0].dx * fx + ends[0].dz * fz) * 50) + ((o.ox * fx + o.oz * fz) / ol) * 10;
+      if (score > bestScore) { bestScore = score; best = { type: sh === 'corner' ? TRACK_CORNER_TYPE : TRACK_CORNER_L_TYPE, rot: r }; }
+    }
+    return best;
+  }
   function trackPlacementRot(x, y, z, shape) {
     const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     let best = 0, bestScore = -Infinity;
@@ -32812,7 +32854,7 @@ float moonDetail(vec3 p, float d) {
   // ---- cursors (one per bogie) ----
   function cursorLocal(c, out) { // the point on the piece in its own frame: [lx, rise 0..1, lz]
     const L = trackPieceLen(c.shape), s = c.from === 0 ? c.s : L - c.s, t = Math.max(0, Math.min(1, s / L));
-    if (c.shape === 'corner') { const a = -Math.PI / 2 - t * Math.PI / 2; out[0] = 0.5 + 0.5 * Math.cos(a); out[1] = 0; out[2] = 0.5 + 0.5 * Math.sin(a); }
+    if (c.shape === 'corner' || c.shape === 'cornerL') { const sg = c.shape === 'cornerL' ? -1 : 1, a = -sg * Math.PI / 2 * (1 - t); out[0] = -0.5 + TRACK_CURVE_R * Math.cos(a); out[1] = 0; out[2] = sg * TRACK_CURVE_R + TRACK_CURVE_R * Math.sin(a); }
     else if (c.shape === 'slope') { out[0] = -0.5 + t; out[1] = 1 - t; out[2] = 0; }
     else { out[0] = 0.5 - t; out[1] = 0; out[2] = 0; }
     return out;
@@ -33304,6 +33346,7 @@ float moonDetail(vec3 p, float d) {
     let pick = Math.min(stock.cars, TRAIN_MAX_CARS, 3);
     const myTrains = [...trains.values()].filter(t => t.worldId === currentWorldId);
     const others = stationList.filter(s => s.ck !== o.ck);
+    for (const s of others) { try { s.connected = !!(st.line && s.line && stationsConnected(stationList.find(q => q.ck === o.ck) || { line: st.line }, s)); } catch (e) { s.connected = false; } }
     const dist = s => Math.round(Math.hypot(s.line.x0 - st.line.x0, s.line.z0 - st.line.z0));
     el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(420px,94vw);max-height:88vh;overflow-y:auto;color:#fff;font:13px system-ui,sans-serif;line-height:1.4;">'
       + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚉 ' + bizEsc(stationName(o.spec)) + '</div>'
@@ -33321,6 +33364,7 @@ float moonDetail(vec3 p, float d) {
       + '<div style="font-weight:600;margin:4px 0;">Fares</div>'
       + '<div style="opacity:0.8;">Each carriage seats ' + TRAIN_SEATS_PER_CAR + '. Passengers board here and pay when the train stops at another station: 💰' + TRAIN_FARE_BASE + ' plus 💰1 for every ' + TRAIN_FARE_PER + ' blocks of track — the further apart the stations, the more each ticket costs.</div>'
       + (others.length ? '<div style="margin-top:6px;">' + others.map(s => bizRow('→ ' + bizEsc(stationName(s.spec)), '~' + dist(s) + ' blocks away')).join('') + '</div>' : '<div style="opacity:0.7;margin-top:6px;">This is your only station so far — build another and lay track between them.</div>')
+      + crewPanelHtml(o, others)
       + (st.earned ? '<div style="opacity:0.7;margin-top:6px;">Fares taken here so far: 💰' + Math.floor(st.earned).toLocaleString() + '</div>' : '')
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="stClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const $ = id => document.getElementById(id), close = () => { el.style.display = 'none'; };
@@ -33345,10 +33389,308 @@ float moonDetail(vec3 p, float d) {
       showSaveStatus('🚂 Train on the platform, on auto-run — it sets off in a moment. ' + (others.length ? '' : 'Build another station and lay track to it for it to carry paying passengers.') + ' E at the engine to drive it, ✋ on it for its settings.');
     });
     $('stClose').addEventListener('click', close);
+    crewPanelWire(o, others, fk);
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
   }
+  // ---- THE WORKFORCE: a crew that surveys and lays the line between two of your stations ----
+  // From either station's ticket machine, once there are two. "Survey" plans a route (below), shows what it needs
+  // and the price — CREW_COST_MULT times what the same pieces cost to lay yourself — and "Hire the crew" sets them
+  // to work: they walk the route laying CREW_RATE pieces a second (you can watch them in their hard hats), and
+  // keep going while the world's open, near or not. The job's saved on the station's spec, so a reload picks it up.
+  //
+  // THE ROUTE (crewPlan): an A* search from either end of one platform to either end of the other over states
+  // (cell, height the rails are at, heading), with moves Straight, Slope up, Slope down and the wide Corner either
+  // way. Each move costs its length plus the earthworks under it — an embankment of gravel where the ground's
+  // lower than the line, a cutting where it's higher (both capped), a timber deck on stone piers over water — and
+  // slopes and curves cost a bit extra, so it comes out a smooth line that only climbs when it's cheaper than
+  // digging. It never goes through a building's plot or any column you've built in yourself (your builds, fields
+  // and your own track are left alone). The ground height comes from the terrain itself where it isn't loaded.
+  const CREW_COST_MULT = 2, CREW_RATE = 2.5, CREW_MAX_NODES = 700000;
+  // Up to CREW_BANK_MAX blocks of difference the crew bank it up or dig a cutting; beyond that they build a VIADUCT
+  // (a deck on stone piers every 4 blocks — over water too) up to CREW_VIADUCT_MAX high, or bore a TUNNEL (just a
+  // 3-high bore, the hill left on top) as deep as it needs. So a long line no longer gives up at the first valley,
+  // lake or hill: before, anything over 12 blocks of fill or 8 of digging was a dead end, and a 1,700-block route
+  // ran out of search long before it found its way round them.
+  const CREW_BANK_MAX = 5, CREW_VIADUCT_MAX = 48;
+  const CREW_DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  const crewDirIdx = (dx, dz) => CREW_DIRS.findIndex(d => d[0] === dx && d[1] === dz);
+  let crewGroundCache = null; // during a survey: "x,z" -> ground height (the terrain formula's not cheap)
+  function crewGround(x, z) {
+    const ck = x + ',' + z;
+    if (crewGroundCache) { const c = crewGroundCache.get(ck); if (c !== undefined) return c; }
+    const g0 = groundHeightOnly.get(ck), g = g0 !== undefined ? g0 : Math.round(rawTerrainHeight(x, z));
+    if (crewGroundCache) crewGroundCache.set(ck, g);
+    return g;
+  }
+  function crewWet(x, z, g) { if (g < SEA_LEVEL) return true; return columnLoaded(x, z) && waterBlocks.has(key(x, g + 1, z)); }
+  // the cells a wide Corner's curve passes over, from its own cell, for each way it can lie
+  const _crewArcCells = {};
+  function crewArcCells(shape, rot) {
+    const ck = shape + rot; if (_crewArcCells[ck]) return _crewArcCells[ck];
+    const out = new Map(), c = { shape, rot, from: 0, s: 0 }, L = trackPieceLen(shape), v = [0, 0, 0];
+    for (let s = 0; s <= L + 1e-6; s += 0.25) {
+      c.s = Math.min(s, L); cursorLocal(c, v);
+      for (const w of [-0.45, 0, 0.45]) { // the track's width either side of the centre line
+        const sg = shape === 'cornerL' ? -1 : 1, a = -sg * Math.PI / 2 * (1 - c.s / L);
+        const lx = v[0] + w * Math.cos(a), lz = v[2] + w * Math.sin(a), [wx, wz] = trackRotDir(lx, lz, rot);
+        const cx = Math.floor(wx + 0.5), cz = Math.floor(wz + 0.5); out.set(cx + ',' + cz, [cx, cz]);
+      }
+    }
+    return (_crewArcCells[ck] = [...out.values()]);
+  }
+  function crewBlockedFn(stA, stB) {
+    const boxes = [];
+    for (const sp of structureSpecs.values()) { const b = structureSpecBox(sp); if (b) boxes.push(b); }
+    const okCells = new Set();
+    for (const st of [stA, stB]) { const L = st.line; for (const [x, z] of [[L.x0, L.z0], [L.x1, L.z1]]) okCells.add(x + ',' + z); }
+    return (x, z) => {
+      if (okCells.has(x + ',' + z)) return false;
+      if (groundPins.has(x + ',' + z)) return true; // you've built here
+      for (const b of boxes) if (x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1) return true;
+      return false;
+    };
+  }
+  function crewEarth(blocked, x, z, y) { // what laying rails at height y on this column costs in earthworks (Infinity = can't)
+    if (blocked(x, z)) return Infinity;
+    const g = crewGround(x, z);
+    if (crewWet(x, z, g)) return y - 1 >= SEA_LEVEL ? 0.9 : Infinity; // a bridge
+    const fill = (y - 1) - g, cut = g - (y - 1);
+    if (fill > CREW_VIADUCT_MAX) return Infinity;
+    if (fill > CREW_BANK_MAX) return 0.9;            // a viaduct
+    if (cut > CREW_BANK_MAX) return 1.3;             // a tunnel
+    return fill > 0 ? fill * 0.2 : cut > 0 ? cut * 0.3 : 0;
+  }
+  function lineEnds(L) { // [{ x, z, out: heading index pointing away from the platform }] for both ends
+    const sx = Math.sign(L.x1 - L.x0), sz = Math.sign(L.z1 - L.z0);
+    return [{ x: L.x0, z: L.z0, out: crewDirIdx(-sx, -sz) }, { x: L.x1, z: L.z1, out: crewDirIdx(sx, sz) }];
+  }
+  function crewPlan(stA, stB) { // -> { pieces: [[x, y, z, type, rot]...], cost } | { error }
+    const it = crewPlanSteps(stA, stB); let r; while (!(r = it.next()).done) {} return r.value;
+  }
+  // The same search a slice at a time (the survey runs over a few frames so the game never freezes) — see crewPanelWire.
+  function* crewPlanSteps(stA, stB) {
+    crewGroundCache = new Map();
+    try { return yield* crewPlanInner(stA, stB); } finally { crewGroundCache = null; }
+  }
+  function* crewPlanInner(stA, stB) {
+    const LA = stA.line, LB = stB.line, blocked0 = crewBlockedFn(stA, stB), bc = new Map();
+    const blocked = (x, z) => { const k = x + ',' + z; let v = bc.get(k); if (v === undefined) { v = blocked0(x, z); bc.set(k, v); } return v; };
+    const goals = lineEnds(LB).map(e => ({ x: e.x, z: e.z, y: LB.y, h: (e.out + 2) % 4 }));
+    const x0 = Math.min(LA.x0, LA.x1, LB.x0, LB.x1) - 60, x1 = Math.max(LA.x0, LA.x1, LB.x0, LB.x1) + 60;
+    const z0 = Math.min(LA.z0, LA.z1, LB.z0, LB.z1) - 60, z1 = Math.max(LA.z0, LA.z1, LB.z0, LB.z1) + 60;
+    const yLo = Math.max(SEA_LEVEL + 1, Math.min(LA.y, LB.y) - 24), yHi = Math.min(WORLD_HEIGHT - 4, Math.max(LA.y, LB.y) + 24);
+    const hFn = (x, z, y) => { let best = Infinity; for (const g of goals) best = Math.min(best, Math.abs(g.x - x) + Math.abs(g.z - z) + Math.abs(g.y - y) * 1.5); return best * 2.6; }; // (weighted: a good line found fast beats the perfect one found slowly)
+    const sk = (x, z, y, h) => x + ',' + z + ',' + y + ',' + h;
+    const heap = [], best = new Map(), prev = new Map();
+    const push = (f, k) => { heap.push([f, k]); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+    const states = new Map(); // key -> [x, z, y, h]
+    for (const e of lineEnds(LA)) {
+      const d = CREW_DIRS[e.out], x = e.x + d[0], z = e.z + d[1], k = sk(x, z, LA.y, e.out);
+      best.set(k, 0); states.set(k, [x, z, LA.y, e.out]); push(hFn(x, z, LA.y), k);
+    }
+    let found = null, n = 0;
+    let sliceT = performance.now();
+    while (heap.length && n++ < CREW_MAX_NODES) {
+      if ((n & 511) === 0 && performance.now() - sliceT > 25) { yield n / CREW_MAX_NODES; sliceT = performance.now(); }
+      const [, k] = pop(), [x, z, y, h] = states.get(k), gk = best.get(k);
+      if (goals.some(g => g.x === x && g.z === z && g.y === y && g.h === h)) { found = k; break; }
+      const d = CREW_DIRS[h];
+      const tryMove = (nx, nz, ny, nh, cost, piece) => {
+        if (!(cost < Infinity) || nx < x0 || nx > x1 || nz < z0 || nz > z1 || ny < yLo || ny > yHi) return;
+        const nk = sk(nx, nz, ny, nh), ng = gk + cost;
+        if (best.has(nk) && best.get(nk) <= ng) return;
+        best.set(nk, ng); states.set(nk, [nx, nz, ny, nh]); prev.set(nk, [k, piece]); push(ng + hFn(nx, nz, ny), nk);
+      };
+      const sRot = d[0] !== 0 ? 0 : 1;
+      tryMove(x + d[0], z + d[1], y, h, 1 + crewEarth(blocked, x, z, y), [x, y, z, TRACK_TYPE, sRot]);
+      for (let r = 0; r < 4; r++) {
+        const hi = trackEnds('slope', r)[0]; // its high end
+        if (hi.dx === d[0] && hi.dz === d[1]) tryMove(x + d[0], z + d[1], y + 1, h, 2.6 + crewEarth(blocked, x, z, y), [x, y, z, TRACK_SLOPE_TYPE, r]);
+        if (hi.dx === -d[0] && hi.dz === -d[1]) tryMove(x + d[0], z + d[1], y - 1, h, 2.6 + crewEarth(blocked, x, z, y - 1), [x, y - 1, z, TRACK_SLOPE_TYPE, r]);
+      }
+      for (const shape of TRACK_BIG) for (let r = 0; r < 4; r++) {
+        const ends = trackEnds(shape, r); if (ends[0].dx !== -d[0] || ends[0].dz !== -d[1]) continue;
+        let c = 9; // a little dearer than the straights it replaces, so the line runs straight and only curves where it must
+        for (const [ox, oz] of crewArcCells(shape, r)) { c += crewEarth(blocked, x + ox, z + oz, y); if (!(c < Infinity)) break; }
+        const e1 = ends[1];
+        tryMove(x + e1.ox + e1.dx, z + e1.oz + e1.dz, y, crewDirIdx(e1.dx, e1.dz), c, [x, y, z, shape === 'corner' ? TRACK_CORNER_TYPE : TRACK_CORNER_L_TYPE, r]);
+      }
+    }
+    if (!found) return { error: n >= CREW_MAX_NODES ? 'The surveyors couldn’t find a way through — it’s too far, or too much is in the way' : 'There’s no way through — buildings, your own builds or the land are in the way' };
+
+    const pieces = [];
+    for (let k = found; prev.has(k); k = prev.get(k)[0]) pieces.push(prev.get(k)[1]);
+    pieces.reverse();
+    const cost = pieces.reduce((a, p) => a + (BLOCK_TYPES[p[3]].cost || 0), 0) * CREW_COST_MULT;
+    return { pieces, cost };
+  }
+  // ---- laying it ----
+  function crewSetCell(x, y, z, t, rot, changed) { // t = -1 to clear; loaded or not (your edits carry it either way)
+    const k = key(x, y, z), loaded = columnLoaded(x, z);
+    let wasWater = false;
+    if (t < 0) {
+      if (loaded && !blocks.has(k)) return;
+      if (loaded) { blocks.delete(k); stepRotations.delete(k); }
+      recordBlockEdit(x, y, z, -1, 0);
+    } else {
+      if (loaded) {
+        blocks.set(k, t); if (rot) stepRotations.set(k, rot); else stepRotations.delete(k);
+        if (waterBlocks.has(k)) { waterBlocks.delete(k); changed.water = true; wasWater = true; }
+        const ch = columnHeight.get(x + ',' + z); if (ch === undefined || y > ch) columnHeight.set(x + ',' + z, y);
+      }
+      recordBlockEdit(x, y, z, t, rot || 0);
+      if (loaded ? wasWater : (y <= SEA_LEVEL && crewWet(x, z, crewGround(x, z)))) recordWaterEdit(x, y, z, -1); // displaced water stays gone
+    }
+    if (loaded) changed.cells.push([x, y, z]);
+  }
+  function crewLayPiece(p) {
+    const [x, y, z, t, rot] = p, shape = BLOCK_TYPES[t].track, changed = { cells: [], water: false };
+    const cols = (shape === 'corner' || shape === 'cornerL') ? crewArcCells(shape, rot).map(([ox, oz]) => [x + ox, z + oz]) : [[x, z]];
+    const fillT = BLOCK_ID('Gravel'), deckT = BLOCK_ID('Dark Planks'), pierT = BLOCK_ID('Stone');
+    for (const [cx, cz] of cols) {
+      const g = crewGround(cx, cz), wet = crewWet(cx, cz, g);
+      const railY = y; // the cell the rails are in (a slope's lower cell)
+      const tunnel = g - (railY - 1) > CREW_BANK_MAX, top = tunnel ? railY + 2 : Math.max(g, railY + 3); // a tunnel's just a 3-high bore
+      for (let yy = railY; yy <= top; yy++) if (!(cx === x && cz === z && yy === y)) crewSetCell(cx, yy, cz, -1, 0, changed); // the cutting / bore, and headroom
+      if (wet || railY - 1 - g > CREW_BANK_MAX) { // bridge / viaduct: a deck, on piers
+        crewSetCell(cx, railY - 1, cz, deckT, 0, changed);
+        if (((cx + cz) & 3) === 0) for (let yy = railY - 2; yy > g; yy--) crewSetCell(cx, yy, cz, pierT, 0, changed);
+      } else for (let yy = g + 1; yy <= railY - 1; yy++) crewSetCell(cx, yy, cz, fillT, 0, changed); // the embankment
+    }
+    crewSetCell(x, y, z, t, rot, changed);
+    if (changed.cells.length) {
+      const seen = new Set();
+      for (const [cx, cy, cz] of changed.cells) for (const [dx, dy, dz] of [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+        const k = key(cx + dx, cy + dy, cz + dz); if (seen.has(k)) continue; seen.add(k);
+        const kk = key(cx + dx, cy + dy, cz + dz); if (instanceIndex.has(kk)) removeFullInstance(kk);
+        updateFullInstanceAt(cx + dx, cy + dy, cz + dz);
+      }
+      if (changed.water) scheduleWaterRebuild();
+    }
+  }
+  const crewRateFor = n => Math.max(CREW_RATE, Math.min(12, n / 120)); // a long line gets a bigger crew — none takes much over two minutes
+  const crewAcc = new Map();
+  const crewPeople = new Map(); // station ck -> [figures]
+  function crewClearPeople(ck) { for (const m of crewPeople.get(ck) || []) { scene.remove(m); disposeObject3D(m); } crewPeople.delete(ck); }
+  function updateCrews(dt) {
+    if (!trainsRunHere()) { for (const ck of [...crewPeople.keys()]) crewClearPeople(ck); return; }
+    for (const [ck, sp] of structureSpecs) {
+      const job = sp && sp.t === 'station' && sp.station && sp.station.build;
+      if (!job) { if (crewPeople.has(ck)) crewClearPeople(ck); continue; }
+      const acc = (crewAcc.get(ck) || 0) + dt * crewRateFor(job.pieces.length), steps = Math.floor(acc); crewAcc.set(ck, acc - steps);
+      if (!rebuildInProgress && !needsRebuild) for (let i = 0; i < steps && job.i < job.pieces.length; i++) {
+        try { crewLayPiece(job.pieces[job.i]); } catch (e) { console.warn('[voxel] crew piece failed (skipped)', e); }
+        job.i++;
+        if (job.i % 12 === 0) specSave(ck, sp);
+      }
+      if (job.i >= job.pieces.length) {
+        const to = structureSpecs.get(job.to);
+        delete sp.station.build; specSave(ck, sp); crewClearPeople(ck); refreshStationTrack(true);
+        showSaveStatus('🚧 The line from ' + stationName(sp) + ' to ' + (to ? stationName(to) : 'the other station') + ' is finished — trains can run between them now'); playCoin();
+        continue;
+      }
+      // the crew, at the rail head
+      const p = job.pieces[job.i], near = Math.hypot(player.pos.x - p[0], player.pos.z - p[2]) < 90;
+      let figs = crewPeople.get(ck);
+      if (!near) { if (figs) crewClearPeople(ck); continue; }
+      if (!figs) {
+        figs = [];
+        for (let i = 0; i < 3; i++) {
+          const m = pubFigure(false, 'staff', ck + ':crew:' + i);
+          const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.19, 0.12, 12), new THREE.MeshPhongMaterial({ color: 0xffc400 })); hat.position.y = 1.8; m.add(hat);
+          const vest = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.26), new THREE.MeshPhongMaterial({ color: 0xff7a00 })); vest.position.y = 1.18; m.add(vest);
+          figs.push(m);
+        }
+        crewPeople.set(ck, figs);
+      }
+      const t = performance.now() / 1000;
+      figs.forEach((m, i) => {
+        const q = job.pieces[Math.max(0, job.i - i * 2)] || p;
+        m.position.set(q[0] + 0.5 + (i - 1) * 0.6, q[1] + (BLOCK_TYPES[q[3]].track === 'slope' ? 0.5 : 0), q[2] + 0.5 + Math.sin(t + i) * 0.3);
+        m.rotation.y = t * 0.6 + i * 2;
+        const arms = m.userData.arms || []; if (arms[1]) arms[1].rotation.x = -0.5 - Math.abs(Math.sin(t * 3 + i)) * 0.9; // hammering
+      });
+    }
+  }
+  function crewJobBetween(a, b) { // the job laying track between these two stations, if any: { sp, job }
+    for (const ck of [a, b]) { const sp = structureSpecs.get(ck), job = sp && sp.station && sp.station.build; if (job && (job.to === a || job.to === b) && ck !== job.to) return { sp, job }; }
+    return null;
+  }
+  // Is there already track all the way between these two platforms?
+  function stationsConnected(stA, stB) {
+    refreshStationTrack(true);
+    const cellsB = new Set(); { const L = stB.line, n = Math.max(Math.abs(L.x1 - L.x0), Math.abs(L.z1 - L.z0)), sx = Math.sign(L.x1 - L.x0), sz = Math.sign(L.z1 - L.z0); for (let i = 0; i <= n; i++) cellsB.add((L.x0 + sx * i) + ',' + L.y + ',' + (L.z0 + sz * i)); }
+    const L = stA.line, p = trackPieceAt(L.x0, L.y, L.z0); if (!p) return false;
+    for (const from of [0, 1]) {
+      const c = { x: L.x0, y: L.y, z: L.z0, shape: p.shape, rot: p.rot, from, s: 0 };
+      for (let i = 0; i < 8000; i++) {
+        if (cellsB.has(c.x + ',' + c.y + ',' + c.z)) return true;
+        const len = trackPieceLen(c.shape) - c.s + 0.01;
+        if (cursorAdvance(c, len) > 1e-6) break;
+      }
+    }
+    return false;
+  }
+  function crewWorkTime(n) { const s = Math.ceil(n / crewRateFor(n)); return s < 90 ? s + ' seconds' : Math.round(s / 60) + ' minutes'; }
+  const crewSurveys = new Map(); // "ckA|ckB" -> plan
+  function crewPanelHtml(o, others) {
+    if (!others.length) return '';
+    let h = '<div style="font-weight:600;margin:10px 0 4px;">🚧 Track to your other stations</div>';
+    for (const s of others) {
+      const job = crewJobBetween(o.ck, s.ck), id = s.ck.replace(/[^a-zA-Z0-9]/g, '_');
+      h += '<div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 10px;margin-bottom:6px;"><div style="font-weight:600;">→ ' + bizEsc(stationName(s.spec)) + '</div>';
+      if (job) h += '<div style="opacity:0.85;margin-top:2px;">👷 The crew are at work — ' + Math.floor(job.job.i / job.job.pieces.length * 100) + '% laid (' + job.job.i + ' of ' + job.job.pieces.length + ' pieces)</div>';
+      else if (s.connected) h += '<div style="opacity:0.85;margin-top:2px;">✅ Joined by track</div>';
+      else {
+        const plan = crewSurveys.get(o.ck + '|' + s.ck);
+        if (!plan) h += '<div style="opacity:0.8;margin:2px 0 6px;">Not joined yet. Lay the track yourself, or have a crew survey a route and build it for you (twice the price of the pieces).</div>' + bizBtn('crewSurvey_' + id, '📐 Survey a route', '#3b6fb6');
+        else if (plan.error) h += '<div style="color:#ff9a8a;margin:2px 0 6px;">' + bizEsc(plan.error) + '</div>' + bizBtn('crewSurvey_' + id, '📐 Survey again', '#3b6fb6');
+        else {
+          const cnt = t => plan.pieces.filter(p => p[3] === t).length, curves = cnt(TRACK_CORNER_TYPE) + cnt(TRACK_CORNER_L_TYPE);
+          const own = plan.cost / CREW_COST_MULT;
+          h += '<div style="opacity:0.85;margin:2px 0 6px;">Route: ' + plan.pieces.length + ' pieces — ' + cnt(TRACK_TYPE) + ' straight, ' + curves + ' curve' + (curves === 1 ? '' : 's') + ', ' + cnt(TRACK_SLOPE_TYPE) + ' slope' + (cnt(TRACK_SLOPE_TYPE) === 1 ? '' : 's') + '. Embankments, cuttings and bridges included. About ' + crewWorkTime(plan.pieces.length) + '’s work. (💰' + own.toLocaleString() + ' if you laid it yourself.)</div>'
+            + bizBtn('crewHire_' + id, '👷 Hire the crew — 💰' + plan.cost.toLocaleString(), '#2f7d46', coins < plan.cost) + ' ' + bizBtn('crewSurvey_' + id, 'Survey again', '#444');
+        }
+      }
+      h += '</div>';
+    }
+    return h;
+  }
+  function crewPanelWire(o, others, fk) {
+    const $ = id => document.getElementById(id);
+    for (const s of others) {
+      const id = s.ck.replace(/[^a-zA-Z0-9]/g, '_');
+      const sv = $('crewSurvey_' + id);
+      if (sv) sv.addEventListener('click', () => {
+        sv.textContent = '📐 Surveying…'; sv.disabled = true;
+        const A = stationList.find(q => q.ck === o.ck), B = stationList.find(q => q.ck === s.ck);
+        if (!A || !B) { crewSurveys.set(o.ck + '|' + s.ck, { error: 'Station not ready yet' }); openStationPanel(fk); return; }
+        const it = crewPlanSteps(A, B);
+        const step = () => {
+          let r; try { r = it.next(); } catch (e) { console.warn('[voxel] survey failed', e); r = { done: true, value: { error: 'The survey went wrong — try again' } }; }
+          if (!r.done) { sv.textContent = '📐 Surveying… ' + Math.min(99, Math.round(r.value * 100 * 3)) + '%'; setTimeout(step, 16); return; }
+          crewSurveys.set(o.ck + '|' + s.ck, r.value);
+          if (document.getElementById('stationPanel').style.display === 'flex') openStationPanel(fk);
+        };
+        setTimeout(step, 16);
+      });
+      const hire = $('crewHire_' + id);
+      if (hire) hire.addEventListener('click', () => {
+        const plan = crewSurveys.get(o.ck + '|' + s.ck); if (!plan || !plan.pieces) return;
+        if (crewJobBetween(o.ck, s.ck)) return;
+        if (!trySpendCoins(plan.cost, 'a track-laying crew')) return;
+        stationState(o.spec).build = { to: s.ck, pieces: plan.pieces, i: 0 };
+        specSave(o.ck, o.spec); crewSurveys.delete(o.ck + '|' + s.ck); playCoin();
+        showSaveStatus('👷 The crew are on their way — ' + plan.pieces.length + ' pieces to lay from ' + stationName(o.spec) + ' to ' + stationName(s.spec) + '. They keep working whether you watch or not.');
+        openStationPanel(fk);
+      });
+    }
+  }
+
   function updateStations(dt) { // the clerk by the ticket machine, and the station master on the platform once hired
+    try { updateCrews(dt); } catch (e) { console.warn('[voxel] crew error (recovered):', e); } // see THE WORKFORCE
     for (const o of stations.values()) {
       if (o.worldId !== currentWorldId || structureSpecs.get(o.ck) !== o.spec) continue;
       const cx = (o.bx0 + o.bx1) / 2 + 0.5, cz = (o.bz0 + o.bz1) / 2 + 0.5;
@@ -33367,6 +33709,569 @@ float moonDetail(vec3 p, float d) {
           const d = { front: [-o.f.d[0], -o.f.d[1]], back: [o.f.d[0], o.f.d[1]] }[p.face]; m.rotation.y = Math.atan2(d[0], d[1]);
           o.people.push({ mesh: m, role: p.role, t: Math.random() * 5 });
         });
+        o.peopleSig = sig;
+      }
+    }
+  }
+
+  // ================= AIRPORTS & PLANES =================
+  // AIRPORT (Property menu): 140 x 46 — a 9-wide runway the length of the plot, an apron with two gates, a glass-
+  // fronted terminal (✋ the Check-in Desk for everything), a control tower and a hangar. Like the stations: buy a
+  // passenger jet (up to AP_GATES parked at each airport), name the airport, collect the fares from the till or hire
+  // an airport manager to bank them for you (keeping 5%).
+  //
+  // THE PLANE: ✋ it at its gate. "Fly to …" and you're the captain: it taxis out and lines up by itself, hold
+  // forward (W) to roll and it lifts off; in the air it turns and climbs towards wherever you LOOK (A / D also turn,
+  // forward / back is the throttle) — a chase camera, or V for the cockpit. The flight HUD at the top points to the
+  // destination with the distance and ETA, and a map bottom-left draws the route. Come back down to within
+  // AP_CAPTURE_DIST of the destination's runway and below AP_CAPTURE_ALT above it and AUTOLAND takes over: onto
+  // final, touchdown, roll-out and taxi to a gate. It never hits the ground (it pulls up), so it can't crash.
+  // Hire a PILOT for a plane (in its panel) and it flies on its own: airport to airport round all your airports,
+  // carrying passengers each way — while the world's open, near or far, and for the time it's closed too (at the
+  // rate it was last earning, capped, like the trains).
+  //
+  // FARES: AP_SEATS seats, never all full; each passenger pays AP_FARE_BASE + 1 per AP_FARE_PER blocks between the
+  // two airports when the plane parks at the other one. Into the arrival airport's till, or banked by its manager.
+  //
+  // Saved: on the airport specs — spec.airport = { till, mgr, geo (runway, gates — worked out when it's built),
+  // planes: [{ id, pilot, out }] } — a plane belongs to the airport it's parked at; while it's in the air it's still
+  // listed there with out = its destination, so a reload mid-flight just finds it parked at the destination.
+  const AP_W = 140, AP_D = 46, AP_GATES = 2, AP_PLANE_PRICE = 40000, AP_PILOT_COST = 8000, AP_MGR_COST = 5000, AP_MGR_CUT = 0.05;
+  const AP_SEATS = 60, AP_FARE_BASE = 10, AP_FARE_PER = 20, AP_DWELL = 25, AP_AWAY_MAX_MIN = 12 * 60;
+  const AP_V_MIN = 16, AP_V_MAX = 48, AP_V_ROTATE = 19, AP_TAXI_V = 7, AP_CAPTURE_DIST = 420, AP_CAPTURE_ALT = 75;
+  const AP_RWY_V = 33.5, AP_GATE_V = 20.5, AP_GATE_U = [62, 84], AP_THRESH_U = 8;
+  var airports = new Map(); // ck -> { ck, spec, f, floor, bx0.., sign, people, peopleSig, worldId }
+  const planes = new Map(); // id -> plane
+  let planeFlying = null, planeView = 'chase', planeHud = null, planeMap = null, planeMapAt = 0, apAwayPaidFor = null, apSyncAt = 0;
+  try { if (localStorage.getItem('voxelPlaneView') === 'cockpit') planeView = 'cockpit'; } catch (e) {}
+  function apState(sp) { if (!sp.airport) sp.airport = { till: 0, mgr: false, planes: [] }; if (!Array.isArray(sp.airport.planes)) sp.airport.planes = []; return sp.airport; }
+  const AP_DEFAULT_NAMES = ['Northgate International', 'Riverside Airfield', 'Highcliffe Airport', 'Kingsbridge Regional', 'Oakhurst Field', 'Fenwick International', 'Maple Cross Airport', 'Stonegate Aerodrome'];
+  function apName(sp) { const n = sp && typeof sp.name === 'string' ? sp.name.trim() : ''; if (n) return n; let h = 11; for (const ch of String((sp && sp.ck) || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return AP_DEFAULT_NAMES[h % AP_DEFAULT_NAMES.length]; }
+  function apList() { const out = []; for (const [ck, sp] of structureSpecs) if (sp && sp.t === 'airport' && sp.airport && sp.airport.geo) out.push({ ck, spec: sp, geo: sp.airport.geo }); return out; }
+  function apGroundAt(x, z) { const g = groundHeightOnly.get(Math.floor(x) + ',' + Math.floor(z)); return g !== undefined ? g : Math.round(rawTerrainHeight(Math.floor(x), Math.floor(z))); }
+
+  // ---- the building ----
+  function maybeBuildAirport(cx, cz, replay) {
+    if (!replay) return;
+    const K = bizKit(cx, cz, replay, AP_W, AP_D, 20); if (!K) return;
+    const { f, floor, put, furn, door, fix, prop } = K;
+    const B = { grass: BLOCK_ID('Grass'), tarmac: BLOCK_ID('Black Concrete'), rwy: BLOCK_ID('Dark Grey Concrete'), white: BLOCK_ID('White Concrete'), yellow: BLOCK_ID('Yellow Concrete'),
+      apron: BLOCK_ID('Polished Stone'), glass: BLOCK_ID('Glass'), wall: BLOCK_ID('White Concrete'), roof: BLOCK_ID('Dark Grey Concrete'), floorIn: BLOCK_ID('Polished Stone'), hangar: BLOCK_ID('Stone') };
+    const T0 = 46, T1 = 93, TV0 = 3, TV1 = 12, TH = 6; // terminal
+    const H0 = 8, H1 = 34, HV0 = 2, HV1 = 14, HH = 10;  // hangar
+    const C0 = 104, CV0 = 5, CH = 16;                  // control tower (3x3)
+    for (let u = 0; u < AP_W; u++) for (let v = 0; v < AP_D; v++) {
+      const [x, z] = f.cell(u, v);
+      let t = B.grass;
+      if (v <= 2) t = B.tarmac;                                         // the road in front
+      else if (v >= 14 && v <= 26) t = B.apron;                         // apron
+      else if (v >= 29 && v <= 37 && u >= 2 && u <= AP_W - 3) {         // runway
+        t = B.rwy;
+        if (v === 33 && u % 8 < 4 && u > 14 && u < AP_W - 15) t = B.white;                 // centreline dashes
+        if ((u >= 4 && u <= 9) || (u >= AP_W - 10 && u <= AP_W - 5)) if (v !== 33 && v % 2 === 1) t = B.white; // threshold piano keys
+        if (v === 29 || v === 37) t = B.white;                         // edge lines
+      } else if (v >= 27 && v <= 28 && u >= 56 && u <= 90) t = B.tarmac; // taxiway link
+      if (v >= 14 && v <= 26 && AP_GATE_U.some(g => Math.abs(u - g) <= 0) && v >= 16) t = B.yellow; // gate lead-in lines
+      if (u >= T0 && u <= T1 && v >= TV0 && v <= TV1) t = B.floorIn;
+      if (u >= H0 && u <= H1 && v >= HV0 && v <= HV1) t = B.apron;
+      put(u, v, floor, t);
+      markVillageGround(x, z, floor);
+      // terminal
+      if (u >= T0 && u <= T1 && v >= TV0 && v <= TV1) {
+        const edge = u === T0 || u === T1 || v === TV0 || v === TV1;
+        if (edge) for (let y = floor + 1; y <= floor + TH; y++) {
+          let bt = B.wall;
+          if ((v === TV0 || v === TV1) && y >= floor + 2 && y <= floor + TH - 1 && u % 4 !== 2 && (u < 66 || u > 73)) bt = B.glass; // glass fronts, white mullions — solid wall round the doors
+          if ((u === T0 || u === T1)) bt = B.wall;
+          put(u, v, y, bt);
+        }
+        put(u, v, floor + TH + 1, B.roof);
+      }
+      // hangar: three walls, open to the apron
+      if (u >= H0 && u <= H1 && v >= HV0 && v <= HV1) {
+        const back = v === HV0, side = u === H0 || u === H1;
+        if (back || side) for (let y = floor + 1; y <= floor + HH; y++) put(u, v, y, B.hangar);
+        put(u, v, floor + HH + 1, B.roof);
+      }
+      // control tower
+      if (u >= C0 && u <= C0 + 2 && v >= CV0 && v <= CV0 + 2) {
+        const mid = u === C0 + 1 && v === CV0 + 1;
+        for (let y = floor + 1; y <= floor + CH; y++) if (!mid || y > floor + CH - 3) put(u, v, y, y > floor + CH - 3 ? (mid ? -1 : B.glass) : B.wall);
+        put(u, v, floor + CH + 1, B.roof);
+      }
+    }
+    for (let u = C0 - 1; u <= C0 + 3; u++) for (let v = CV0 - 1; v <= CV0 + 3; v++) put(u, v, floor + CH - 3, B.wall); // the cab's floor, overhanging
+    for (let u = C0 - 1; u <= C0 + 3; u++) for (let v = CV0 - 1; v <= CV0 + 3; v++) if (u === C0 - 1 || u === C0 + 3 || v === CV0 - 1 || v === CV0 + 3) { put(u, v, floor + CH - 2, B.glass); put(u, v, floor + CH - 1, B.glass); put(u, v, floor + CH, B.wall); }
+    for (let u = C0 - 1; u <= C0 + 3; u++) for (let v = CV0 - 1; v <= CV0 + 3; v++) put(u, v, floor + CH + 1, B.roof);
+    door(69, TV0, 'right', 2); door(70, TV0, 'right', 2); door(69, TV1, 'right', 2); door(70, TV1, 'right', 2);
+    for (const u of [52, 60, 79, 87]) fix(u, TV0 + 1, floor + 5, 'back');
+    const deskKey = furn(56, 6, 'Check-in Desk', 'front');
+    furn(58, 6, 'Check-in Desk', 'front'); furn(60, 6, 'Check-in Desk', 'front');
+    furn(91, 5, 'Office Safe', 'front');
+    for (const u of [74, 76, 78, 80, 82]) furn(u, 10, 'Chair', 'front');
+    // runway edge lights and the windsock — one merged prop
+    { const g = new THREE.Group(), lamp = new THREE.MeshBasicMaterial({ color: 0xfff0a0 }), lampG = new THREE.MeshBasicMaterial({ color: 0x5aff7a }), lampR = new THREE.MeshBasicMaterial({ color: 0xff5050 });
+      const geo = new THREE.BoxGeometry(0.22, 0.25, 0.22);
+      for (let u = 2; u <= AP_W - 3; u += 8) for (const v of [28.6, 38.4]) { const [px, pz] = f.pos(u + 0.5, v); const m = new THREE.Mesh(geo, lamp); m.position.set(px, floor + 1.12, pz); g.add(m); }
+      for (let v = 29; v <= 37; v++) for (const [u, mat] of [[1.6, lampG], [AP_W - 1.6, lampR]]) { const [px, pz] = f.pos(u, v + 0.5); const m = new THREE.Mesh(geo, mat); m.position.set(px, floor + 1.12, pz); g.add(m); }
+      scene.add(g); K.reg.props.push(g); }
+    { const sock = new THREE.Group(), pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 5, 6), new THREE.MeshPhongMaterial({ color: 0xdddddd })); pole.position.y = 2.5; sock.add(pole);
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.15, 1.8, 10, 1, true), new THREE.MeshPhongMaterial({ color: 0xff6a00, side: THREE.DoubleSide })); cone.rotation.z = Math.PI / 2; cone.position.set(0.9, 4.8, 0); sock.add(cone);
+      prop(sock, 120.5, 40.5, floor + 1); }
+    const sign = new THREE.Group(); sign.userData.w = 14; prop(sign, 69.5, TV0 - 0.07, floor + TH - 0.2, 'front');
+    const boardSign = new THREE.Group(); boardSign.userData.w = 9; prop(boardSign, 69.5, TV1 + 0.07, floor + TH - 0.2, 'back');
+    // where everything is, in the world — saved, so planes can fly to it when it isn't loaded
+    const P = (u, v) => f.pos(u, v);
+    const t0 = P(AP_THRESH_U, AP_RWY_V), t1 = P(AP_W - AP_THRESH_U, AP_RWY_V), len = Math.hypot(t1[0] - t0[0], t1[1] - t0[1]);
+    const geo = { y: floor + 1, t0, t1, axis: [(t1[0] - t0[0]) / len, (t1[1] - t0[1]) / len], perp: [f.d[0], f.d[1]],
+      gates: AP_GATE_U.map(u => P(u + 0.5, AP_GATE_V)), gateRwy: AP_GATE_U.map(u => P(u + 0.5, AP_RWY_V)), apron: AP_GATE_U.map(u => P(u + 0.5, 27.5)) };
+    const st = apState(replay);
+    if (JSON.stringify(st.geo) !== JSON.stringify(geo)) { st.geo = geo; if (!visitMode) specSave(K.ck, replay); }
+    const o = { ck: K.ck, spec: replay, f, floor, worldId: currentWorldId, sign, boardSign, deskKey, people: [], peopleSig: null, bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1 };
+    const old = airports.get(K.ck); if (old) bizClearPeople(old);
+    airports.set(K.ck, o);
+    apSigns(o);
+    K.finish();
+  }
+  function apSigns(o) { bizSetSign(o.sign, apName(o.spec), '#0d2f5c', '#ffffff'); bizSetSign(o.boardSign, '✈ Departures — ' + apName(o.spec), '#111111', '#ffd34d'); }
+  function buildCheckinDesk() {
+    const g = new THREE.Group();
+    const top = new THREE.MeshPhongMaterial({ color: 0xe8e8e8, shininess: 50 }), body = new THREE.MeshPhongMaterial({ color: 0x1f4e8c, shininess: 20 }), dark = new THREE.MeshPhongMaterial({ color: 0x222428 });
+    const add = (geo, m, x, y, z) => { const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); g.add(o); return o; };
+    add(new THREE.BoxGeometry(0.98, 1.0, 0.6), body, 0, 0.5, 0);
+    add(new THREE.BoxGeometry(1.0, 0.06, 0.66), top, 0, 1.03, 0);
+    add(new THREE.BoxGeometry(0.34, 0.24, 0.03), dark, -0.2, 1.22, -0.12).rotation.x = 0.3;
+    add(new THREE.BoxGeometry(0.28, 0.18, 0.01), new THREE.MeshBasicMaterial({ color: 0x8fd3ff }), -0.2, 1.22, -0.104).rotation.x = 0.3;
+    add(new THREE.BoxGeometry(0.5, 0.1, 0.5), dark, 0.25, 0.05, 0.55); // the bag belt
+    add(new THREE.BoxGeometry(0.1, 0.9, 0.1), new THREE.MeshPhongMaterial({ color: 0xd2b062 }), 0.45, 1.5, 0.28);
+    add(new THREE.BoxGeometry(0.5, 0.26, 0.04), new THREE.MeshBasicMaterial({ color: 0x0d2f5c }), 0.45, 2.0, 0.28);
+    return g;
+  }
+  function apForFurniture(fk) {
+    const fu = furniture.get(fk); if (!fu) return null;
+    for (const o of airports.values()) if (o.worldId === currentWorldId && fu.bx >= o.bx0 && fu.bx <= o.bx1 && fu.bz >= o.bz0 && fu.bz <= o.bz1) return o;
+    return null;
+  }
+
+  // ---- the plane model: a twin-engined airliner, 14 long, nose along +Z, wheels at y 0 ----
+  function buildAirliner() {
+    const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
+    const P = c => new THREE.MeshPhongMaterial({ color: c, shininess: 40 });
+    const add = (geo, c, x, y, z, rx, ry, rz) => { const m = new THREE.Mesh(geo, P(c)); m.position.set(x, y, z); m.rotation.set(rx || 0, ry || 0, rz || 0); body.add(m); return m; };
+    const white = 0xf2f4f6, blue = 0x1f4e8c, grey = 0x9aa3ad, dark = 0x2a2e33, glass = 0x26323d;
+    add(new THREE.CylinderGeometry(1.1, 1.1, 10.5, 16), white, 0, 2.4, 0, Math.PI / 2);                  // fuselage
+    add(new THREE.SphereGeometry(1.1, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), white, 0, 2.4, 5.25, Math.PI / 2); // nose
+    add(new THREE.CylinderGeometry(1.1, 0.35, 3.4, 16), white, 0, 2.75, -6.9, Math.PI / 2 + 0.12);          // tail cone
+    add(new THREE.BoxGeometry(2.24, 0.28, 10.5), blue, 0, 2.15, 0);                                         // cheat line
+    add(new THREE.BoxGeometry(1.2, 0.32, 0.5), glass, 0, 2.95, 5.65, -0.45);                                // cockpit windows
+    for (let i = -4; i <= 4; i++) for (const sx of [-1.08, 1.08]) add(new THREE.BoxGeometry(0.04, 0.22, 0.32), glass, sx, 2.7, i * 1.05); // windows
+    for (const s of [-1, 1]) {
+      const w = add(new THREE.BoxGeometry(6.2, 0.22, 2.2), grey, s * 4.1, 1.8, 0.4, 0, s * 0.32, s * -0.05); // wings
+      add(new THREE.CylinderGeometry(0.42, 0.42, 1.7, 12), dark, s * 3.0, 1.25, 1.2, Math.PI / 2);          // engines
+      add(new THREE.BoxGeometry(2.4, 0.14, 1.1), grey, s * 1.6, 3.1, -6.6, 0, s * 0.25);                     // tailplane
+    }
+    add(new THREE.BoxGeometry(0.16, 3.2, 2.2), blue, 0, 4.4, -6.8, -0.35);                                   // fin
+    body.updateMatrixWorld(true);
+    bakeTractorPart(body, body.children.filter(o => o.isMesh));
+    const gear = new THREE.Group(), tyre = new THREE.MeshPhongMaterial({ color: 0x151515 }), strut = new THREE.MeshPhongMaterial({ color: 0xbbbbbb });
+    for (const [x, z] of [[0, 4.4], [-1.6, -0.4], [1.6, -0.4]]) {
+      const s = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.2, 6), strut); s.position.set(x, 0.95, z); gear.add(s);
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.3, 12), tyre); w.rotation.z = Math.PI / 2; w.position.set(x, 0.34, z); gear.add(w);
+    }
+    g.add(gear); g.userData.gear = gear;
+    const label = makeTextLabel(); label.position.set(0, 6.2, 0); g.add(label); g.userData.label = label;
+    g.rotation.order = 'YXZ';
+    return g;
+  }
+
+  // ---- planes in the world ----
+  function apGetAirport(ck) { const sp = structureSpecs.get(ck); return sp && sp.t === 'airport' && sp.airport && sp.airport.geo ? { ck, spec: sp, geo: sp.airport.geo } : null; }
+  function apFreeGate(ap, exceptId) { // index of a free stand at this airport, or -1
+    const used = new Set();
+    for (const p of planes.values()) if (p.at === ap.ck && p.id !== exceptId && p.gate >= 0 && (p.phase === 'parked' || p.phase === 'taxiIn')) used.add(p.gate);
+    for (let i = 0; i < AP_GATES; i++) if (!used.has(i)) return i;
+    return -1;
+  }
+  function apPlaceAtGate(p, ap, gi) {
+    const g = ap.geo; p.at = ap.ck; p.gate = gi < 0 ? 0 : gi;
+    const gp = g.gates[p.gate]; p.x = gp[0]; p.z = gp[1]; p.y = g.y; p.yaw = Math.atan2(g.axis[0], g.axis[1]); p.pitch = 0; p.roll = 0; p.v = 0; p.phase = 'parked';
+  }
+  function makePlane(rec, ap, gi) {
+    const p = { id: rec.id, pilot: !!rec.pilot, at: ap.ck, gate: 0, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, roll: 0, v: 0, vy: 0, phase: 'parked', wait: 6 + Math.random() * 6, to: null, from: null, path: null, pax: 0, mode: 'auto', group: null, worldId: currentWorldId };
+    apPlaceAtGate(p, ap, gi);
+    if (rec.out) { const dest = apGetAirport(rec.out); if (dest) { apPlaceAtGate(p, dest, apFreeGate(dest, p.id)); apMoveRecord(p, ap.ck, dest.ck); } } // it was in the air when the world closed: it's landed since
+    return p;
+  }
+  function apMoveRecord(p, fromCk, toCk) { // the plane's record goes with it to the airport it's parked at
+    const a = structureSpecs.get(fromCk), b = structureSpecs.get(toCk); if (!b) return;
+    let rec = null;
+    if (a && a.airport) { const i = (a.airport.planes || []).findIndex(r => r.id === p.id); if (i >= 0) { rec = a.airport.planes[i]; a.airport.planes.splice(i, 1); } }
+    rec = rec || { id: p.id };
+    delete rec.out; rec.pilot = !!p.pilot;
+    apState(b).planes.push(rec);
+    if (a && a !== b && !visitMode) specSave(fromCk, a);
+    if (!visitMode) specSave(toCk, b);
+  }
+  function apRecordOf(p) { const sp = structureSpecs.get(p.at); return sp && sp.airport && (sp.airport.planes || []).find(r => r.id === p.id); }
+  function syncPlanes(force) {
+    const now = performance.now(); if (!force && now - apSyncAt < 1500) return; apSyncAt = now;
+    const seen = new Set();
+    for (const ap of apList()) for (const rec of ap.spec.airport.planes || []) {
+      if (!rec || !rec.id) continue;
+      seen.add(rec.id);
+      if (!planes.has(rec.id)) planes.set(rec.id, makePlane(rec, ap, apFreeGate(ap, rec.id)));
+      else { const p = planes.get(rec.id); p.pilot = !!rec.pilot; }
+    }
+    for (const [id, p] of [...planes]) if (!seen.has(id) || p.worldId !== currentWorldId) { if (planeFlying === p) stopFlying(true); if (p.group) { scene.remove(p.group); disposeObject3D(p.group); } planes.delete(id); }
+    if (!visitMode && currentWorldId && apAwayPaidFor !== currentWorldId && planes.size) { apAwayPaidFor = currentWorldId; apPayAway(); }
+  }
+  function apCredit(sp, amount) {
+    const st = apState(sp);
+    if (st.mgr) { const net = amount - Math.round(amount * AP_MGR_CUT); coins += net; updateCoinsDisplay(); scheduleStatsSave(); st.earned = (st.earned || 0) + net; specSave(sp.ck, sp); return 'banked by the airport manager (💰' + net.toLocaleString() + ' to you)'; }
+    st.till = Math.floor(st.till || 0) + amount; st.earned = (st.earned || 0) + amount; specSave(sp.ck, sp);
+    return 'in the till (💰' + st.till.toLocaleString() + ')';
+  }
+  function apAwayStore() { try { return JSON.parse(localStorage.getItem('mw_planes_' + currentWorldId)) || {}; } catch (e) { return {}; } }
+  function apAwaySave(s) { try { localStorage.setItem('mw_planes_' + currentWorldId, JSON.stringify(s)); } catch (e) {} }
+  function apPayAway() {
+    const store = apAwayStore(); let total = 0;
+    for (const p of planes.values()) {
+      const e = store[p.id]; if (!p.pilot || !e || !(e.rate > 0)) continue;
+      const mins = Math.min(AP_AWAY_MAX_MIN, (Date.now() - (e.at || Date.now())) / 60000); if (mins < 2) continue;
+      const amt = Math.round(e.rate * mins), sp = structureSpecs.get(p.at); if (!sp || amt <= 0) continue;
+      apCredit(sp, amt); total += amt; e.at = Date.now();
+    }
+    apAwaySave(store);
+    if (total > 0) setTimeout(() => showSaveStatus('✈ While you were away your pilots flew passengers worth 💰' + total.toLocaleString() + ' — see the airports’ tills'), 5000);
+  }
+  function apDistance(a, b) { return Math.hypot((a.geo.t0[0] + a.geo.t1[0]) / 2 - (b.geo.t0[0] + b.geo.t1[0]) / 2, (a.geo.t0[1] + a.geo.t1[1]) / 2 - (b.geo.t0[1] + b.geo.t1[1]) / 2); }
+  function apArrive(p, ap) {
+    const from = p.from && apGetAirport(p.from), dist = from ? apDistance(from, ap) : 0, fare = AP_FARE_BASE + Math.floor(dist / AP_FARE_PER), total = p.pax * fare;
+    apMoveRecord(p, p.from || p.at, ap.ck);
+    p.at = ap.ck; p.to = null; p.from = null;
+    let msg = '';
+    if (total > 0) {
+      msg = p.pax + ' passengers paid 💰' + fare + ' each — 💰' + total.toLocaleString() + ' ' + apCredit(ap.spec, total);
+      const store = apAwayStore(), now = Date.now(), e = store[p.id] || {}, mins = e.lastArr ? (now - e.lastArr) / 60000 : 0;
+      const rate = mins > 0.1 && mins < 60 ? (e.rate ? e.rate * 0.6 + total / mins * 0.4 : total / mins) : (e.rate || 0);
+      store[p.id] = { rate: Math.round(rate), at: now, lastArr: now }; apAwaySave(store);
+    }
+    if (planeFlying === p || Math.hypot(player.pos.x - p.x, player.pos.z - p.z) < 200) { showSaveStatus('🛬 ' + apName(ap.spec) + (from ? ' (from ' + apName(from.spec) + ')' : '') + (msg ? ': ' + msg : '')); if (total) playCoin(); }
+    p.pax = 0;
+  }
+  // ---- flying ----
+  const apWrap = a => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+  function apTurnTo(p, targetYaw, rate, dt) { const d = apWrap(targetYaw - p.yaw), s = Math.max(-rate * dt, Math.min(rate * dt, d)); p.yaw = apWrap(p.yaw + s); p.roll += ((-s / dt) * 0.55 - p.roll) * Math.min(1, dt * 3); return d; }
+  function apMoveForward(p, dt) { p.x += Math.sin(p.yaw) * p.v * dt; p.z += Math.cos(p.yaw) * p.v * dt; }
+  // which way it lands: along its runway in the direction it's arriving from (from the end nearer where it is now)
+  function apLandingDir(p, ap) {
+    const g = ap.geo, mx = (g.t0[0] + g.t1[0]) / 2, mz = (g.t0[1] + g.t1[1]) / 2;
+    const s = ((mx - p.x) * g.axis[0] + (mz - p.z) * g.axis[1]) >= 0 ? 1 : -1; // landing heading = axis * s
+    const th = s > 0 ? g.t0 : g.t1;
+    return { s, th, ax: g.axis[0] * s, az: g.axis[1] * s };
+  }
+  function apFinal(p, ap, dt) { // approach and land (autopilot, and AUTOLAND when you're flying it). true once it's down.
+    const g = ap.geo, L = p.land || (p.land = apLandingDir(p, ap));
+    const relx = p.x - L.th[0], relz = p.z - L.th[1];
+    const along = -(relx * L.ax + relz * L.az), lat = relx * -L.az + relz * L.ax; // distance short of the threshold; sideways off the centreline
+    const hdgOff = Math.abs(apWrap(p.yaw - Math.atan2(L.ax, L.az)));
+    if (along < 1 && along > -6 && Math.abs(lat) < 7 && p.y < g.y + 6 && hdgOff < 0.5) { p.y = g.y; p.vy = 0; p.pitch = 0; p.roll = 0; p.yaw = Math.atan2(L.ax, L.az); p.phase = 'rollout'; return true; }
+    // Guidance: chase a point on the runway's extended centreline a little ahead of where it is (so it curves
+    // smoothly onto final from any angle), coming down a glide path. Too close and not lined up (or past the
+    // threshold): go round — back out along the centreline and try again.
+    if (!p.goAround && along < 30 && (Math.abs(lat) > 12 || hdgOff > 0.6 || along < -2)) p.goAround = true;
+    if (p.goAround && along > 230) p.goAround = false;
+    let ta, ty;
+    if (p.goAround) { ta = 320; ty = g.y + 30; }
+    else { const look = Math.max(25, Math.min(70, along * 0.45)); ta = Math.max(0, along - look); ty = g.y + 1 + Math.min(30, Math.max(0, along) * 0.15); }
+    const tx = L.th[0] - L.ax * ta, tz = L.th[1] - L.az * ta;
+    apTurnTo(p, Math.atan2(tx - p.x, tz - p.z), 0.8, dt);
+    p.v += (Math.max(AP_V_MIN + 2, Math.min(28, Math.max(0, along) * 0.08 + 18)) - p.v) * Math.min(1, dt * 0.8);
+    const wantVy = Math.max(-10, Math.min(8, (ty - p.y) * 1.2));
+    p.vy += (wantVy - p.vy) * Math.min(1, dt * 4);
+    apMoveForward(p, dt); p.y += p.vy * dt;
+    if (along > 40 || p.goAround) p.y = Math.max(p.y, apGroundAt(p.x, p.z) + 5); // keep clear of hills on the way in
+    p.pitch = Math.atan2(p.vy, Math.max(1, p.v));
+    return false;
+  }
+  function apTaxi(p, dt) { // follow p.path (world points) at taxi speed; true at the end
+    if (!p.path || !p.path.length) return true;
+    const [tx, tz] = p.path[0], dx = tx - p.x, dz = tz - p.z, d = Math.hypot(dx, dz);
+    if (d < 1) { p.path.shift(); return !p.path.length; }
+    const turn = apTurnTo(p, Math.atan2(dx, dz), 1.2, dt);
+    p.v = Math.abs(turn) > 0.5 ? 0.25 : Math.min(AP_TAXI_V, d * 1.5 + 1); // a big turn is made almost on the spot (or it can circle a point forever)
+    apMoveForward(p, dt); p.roll = 0; p.pitch = 0;
+    return false;
+  }
+  function apDepart(p, dest, mode) { // from the gate: taxi out to the end of the runway pointing towards the destination
+    const ap = apGetAirport(p.at); if (!ap) return false;
+    const g = ap.geo, toward = ((dest.geo.t0[0] - g.t0[0]) * g.axis[0] + (dest.geo.t0[1] - g.t0[1]) * g.axis[1]) >= 0 ? 1 : -1;
+    const startEnd = toward > 0 ? g.t0 : g.t1, gi = p.gate;
+    p.from = ap.ck; p.to = dest.ck; p.mode = mode; p.land = null;
+    p.path = [g.apron[gi], g.gateRwy[gi], startEnd, [startEnd[0] + g.axis[0] * toward * 2, startEnd[1] + g.axis[1] * toward * 2]];
+    p.dir = toward; p.phase = 'taxiOut'; p.gate = -1;
+    p.pax = Math.round(AP_SEATS * (0.5 + Math.random() * 0.5));
+    const rec = apRecordOf(p); if (rec) { rec.out = dest.ck; if (!visitMode) specSave(ap.ck, ap.spec); }
+    return true;
+  }
+  function apNextDest(p) { // the pilot's round: the next of your other airports, in a fixed order
+    const list = apList().filter(a => a.ck !== p.at).sort((a, b) => a.ck < b.ck ? -1 : 1);
+    if (!list.length) return null;
+    const i = list.findIndex(a => a.ck > (p.lastFrom || '')); return list[i >= 0 ? i : 0];
+  }
+  function updatePlanes(dt) {
+    syncPlanes(false);
+    if (!planes.size) { if (planeHud) planeHud.style.display = 'none'; if (planeMap) planeMap.style.display = 'none'; return; }
+    dt = Math.min(dt, 0.1);
+    const run = !visitMode && currentWorldId && currentWorldId !== PUB_WORLD_ID;
+    for (const p of planes.values()) {
+      if (p.worldId !== currentWorldId) continue;
+      if (run) { try { stepPlane(p, dt); } catch (e) { console.warn('[voxel] plane error (recovered):', e); } }
+      drawPlane(p);
+    }
+    updateFlightHud();
+  }
+  function stepPlane(p, dt) {
+    const mine = planeFlying === p;
+    if (p.phase === 'parked') {
+      if (mine || !p.pilot) return;
+      p.wait -= dt; if (p.wait > 0) return;
+      const dest = apNextDest(p); if (!dest) { p.wait = 10; return; }
+      p.lastFrom = p.at; apDepart(p, dest, 'auto'); return;
+    }
+    const dest = p.to && apGetAirport(p.to);
+    if (p.phase === 'taxiOut') { if (apTaxi(p, dt)) { const g0a = apGetAirport(p.from); if (g0a) p.yaw = Math.atan2(g0a.geo.axis[0] * p.dir, g0a.geo.axis[1] * p.dir); p.phase = mine ? 'ready' : 'roll'; p.v = 0; if (mine) showBriefMessage('✈ Lined up — hold forward (W) to take off'); } return; }
+    if (p.phase === 'ready') { if (mine && planeThrottle() > 0) p.phase = 'roll'; return; }
+    if (p.phase === 'roll') {
+      const thr = mine ? planeThrottle() : 1;
+      p.v = Math.max(0, p.v + (thr > 0 ? 5.5 : -6) * dt);
+      apMoveForward(p, dt);
+      if (p.v >= AP_V_ROTATE) { p.phase = 'climbout'; p.vy = 3; }
+      return;
+    }
+    if (p.phase === 'climbout' || p.phase === 'air') {
+      if (!dest) { p.phase = 'air'; }
+      const g0 = apGroundAt(p.x, p.z);
+      if (mine && p.phase === 'air') {
+        // flown by you: towards where you're looking; A / D turn the view too
+        const turnIn = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0) + ((isTouchDevice || padStickActive) && Math.abs(moveState.x) > 0.2 ? moveState.x : 0);
+        if (turnIn) yaw -= turnIn * 1.1 * dt;
+        apTurnTo(p, apWrap(yaw + Math.PI), 0.7, dt);
+        const thr = planeThrottle();
+        p.v = Math.max(AP_V_MIN, Math.min(AP_V_MAX, p.v + thr * 8 * dt));
+        const wantVy = Math.max(-14, Math.min(12, Math.sin(pitch) * p.v * 0.9));
+        p.vy += (wantVy - p.vy) * Math.min(1, dt * 2.5);
+      } else {
+        // autopilot: up to cruise, across, and down to the approach
+        const cruise = dest ? Math.max(dest.geo.y, apGroundAt(p.x, p.z)) + 55 : p.y;
+        let tx = p.x, tz = p.z;
+        if (dest) { const L = apLandingDir(p, dest); tx = L.th[0] - L.ax * 170; tz = L.th[1] - L.az * 170; }
+        const dist = Math.hypot(tx - p.x, tz - p.z);
+        if (p.phase === 'air' && dest) apTurnTo(p, Math.atan2(tx - p.x, tz - p.z), 0.45, dt);
+        p.v += ((dist < 300 ? 30 : 42) - p.v) * Math.min(1, dt * 0.5);
+        const ty = dist < 350 && dest ? dest.geo.y + 26 : cruise;
+        p.vy += (Math.max(-8, Math.min(9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
+      }
+      if (p.phase === 'climbout') { p.vy = Math.max(p.vy, 5); if (p.y > apGroundAt(p.x, p.z) + 14) { p.phase = 'air'; if (mine) showBriefMessage('✈ Airborne — look where you want to go; forward / back for the throttle'); } }
+      apMoveForward(p, dt); p.y += p.vy * dt;
+      if (p.y < g0 + 6 && p.phase === 'air') { p.y = Math.max(p.y, g0 + 3); p.vy = Math.max(p.vy, 6); } // never into the ground
+      p.pitch = Math.atan2(p.vy, Math.max(1, p.v));
+      if (p.phase === 'air') p.roll *= Math.pow(0.4, dt);
+      // close enough to the destination: down we go (AUTOLAND when it's you)
+      if (dest && p.phase === 'air') {
+        const L = apLandingDir(p, dest), d = Math.hypot(p.x - L.th[0], p.z - L.th[1]);
+        if ((!mine && d < 200) || (mine && d < AP_CAPTURE_DIST && p.y - dest.geo.y < AP_CAPTURE_ALT)) { p.phase = 'approach'; p.land = null; p.goAround = false; if (mine) showSaveStatus('🛬 Autoland engaged — bringing her in to ' + apName(dest.spec)); }
+      }
+      return;
+    }
+    if (p.phase === 'approach') { if (!dest) { p.phase = 'air'; return; } apFinal(p, dest, dt); return; }
+    if (p.phase === 'rollout') {
+      p.v = Math.max(AP_TAXI_V, p.v - 7 * dt); apMoveForward(p, dt);
+      const g = dest.geo, gi = Math.max(0, apFreeGate(dest, p.id));
+      if (p.v <= AP_TAXI_V + 0.01) { p.gate = gi; p.path = [g.gateRwy[gi], g.apron[gi], g.gates[gi], [g.gates[gi][0] + g.axis[0] * 2, g.gates[gi][1] + g.axis[1] * 2]]; p.phase = 'taxiIn'; } // (turns back for it if it's rolled past)
+      return;
+    }
+    if (p.phase === 'taxiIn') {
+      if (apTaxi(p, dt)) {
+        const gi = p.gate; apArrive(p, dest);
+        apPlaceAtGate(p, dest, gi); p.wait = AP_DWELL;
+        if (mine) stopFlying(false);
+      }
+    }
+  }
+  function drawPlane(p) {
+    const near = Math.hypot(p.x - player.pos.x, p.z - player.pos.z) < 600 || planeFlying === p;
+    if (!near) { if (p.group) p.group.visible = false; return; }
+    if (!p.group) { p.group = buildAirliner(); p.group.userData.plane = p; scene.add(p.group); }
+    const g = p.group; g.visible = true;
+    g.position.set(p.x, p.y, p.z); g.rotation.set(-p.pitch, p.yaw, p.roll);
+    g.userData.gear.visible = p.y - apGroundAt(p.x, p.z) < 8 || p.phase !== 'air';
+    const lbl = p.pilot ? '✈ ' + (p.phase === 'parked' ? 'Boarding' : 'Pilot flying') : '';
+    if (g.userData.lbl !== lbl) { g.userData.lbl = lbl; setTextLabel(g.userData.label, lbl || ' '); g.userData.label.visible = !!lbl; }
+  }
+  function planeThrottle() { let t = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0); if ((isTouchDevice || padStickActive) && Math.abs(moveState.y) > 0.15) t = -moveState.y; return t; }
+  function startFlying(p, dest) {
+    if (visitMode) { showBriefMessage('✈ Only the owner flies the planes'); return; }
+    if (!apDepart(p, dest, 'player')) return;
+    planeFlying = p; flying = true; player.vel.set(0, 0, 0);
+    yaw = apWrap(p.yaw + Math.PI); pitch = -0.1;
+    if (!planeFlying.sound && audioCtx) { try { planeFlying.sound = makeLoopingNoise(2, 'lowpass', 500, 0.6); } catch (e) {} }
+    showSaveStatus('✈ Flight to ' + apName(dest.spec) + ' — taxiing out. When she’s lined up, hold forward (W) to take off. V switches the view.');
+  }
+  function stopFlying(silent) {
+    const p = planeFlying; if (!p) return;
+    planeFlying = null; flying = false;
+    if (p.sound) { try { p.sound.gain.gain.value = 0; p.sound.src.stop(); } catch (e) {} p.sound = null; }
+    // step off by the nose, on the apron
+    const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw), px = p.x + fx * 9, pz = p.z + fz * 9;
+    player.pos.set(px, p.y + 0.05, pz); player.vel.set(0, 0, 0); pitch = 0;
+    if (!silent) showBriefMessage('✈ Welcome to ' + apName(structureSpecs.get(p.at)));
+  }
+  function planePin() { const p = planeFlying; if (!p) return; player.pos.set(p.x, p.y + 1.6, p.z); player.vel.set(0, 0, 0); player.onGround = true; }
+  const _pcLook = new THREE.Vector3(), _pcPos = new THREE.Vector3();
+  let planeCamPrimed = false;
+  function planeCamera(dt) { // runs after the normal camera — flying, the camera's yours to look (and so steer) with
+    const p = planeFlying; if (!p) { planeCamPrimed = false; return false; }
+    const lx = -Math.sin(yaw) * Math.cos(pitch), ly = Math.sin(pitch), lz = -Math.cos(yaw) * Math.cos(pitch);
+    if (planeView === 'cockpit') {
+      camera.position.set(p.x + Math.sin(p.yaw) * 5.6, p.y + 3.1, p.z + Math.cos(p.yaw) * 5.6);
+      camera.lookAt(camera.position.x + lx, camera.position.y + ly, camera.position.z + lz);
+    } else {
+      _pcLook.set(p.x - lx * 26, p.y + 2.5 - ly * 26 + 6, p.z - lz * 26);
+      if (!planeCamPrimed) { _pcPos.copy(_pcLook); planeCamPrimed = true; } else _pcPos.lerp(_pcLook, Math.min(1, dt * 6));
+      camera.position.copy(_pcPos); camera.lookAt(p.x + lx * 30, p.y + 3 + ly * 30, p.z + lz * 30);
+    }
+    if (p.sound) { try { p.sound.gain.gain.setTargetAtTime(Math.min(0.06, 0.012 + p.v / 900), audioCtx.currentTime, 0.2); p.sound.filter.frequency.setTargetAtTime(300 + p.v * 18, audioCtx.currentTime, 0.3); } catch (e) {} }
+    return true;
+  }
+  function togglePlaneView() { planeView = planeView === 'chase' ? 'cockpit' : 'chase'; try { localStorage.setItem('voxelPlaneView', planeView); } catch (e) {} showBriefMessage(planeView === 'chase' ? '🎥 Chase view' : '🎥 Cockpit'); }
+  // ---- the flight HUD: an arrow to the destination, distance, ETA, and the route on a little map ----
+  function updateFlightHud() {
+    const p = planeFlying, dest = p && p.to && apGetAirport(p.to);
+    if (!planeHud) {
+      planeHud = document.createElement('div');
+      planeHud.style.cssText = 'display:none;position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:12;background:rgba(10,20,35,0.72);border:1px solid rgba(255,255,255,0.25);border-radius:12px;padding:6px 14px 8px;color:#fff;font:13px system-ui,sans-serif;text-align:center;pointer-events:none;min-width:220px;';
+      planeHud.innerHTML = '<div id="fhArrow" style="font-size:30px;line-height:30px;color:#ffd34d;display:inline-block;">▲</div><div id="fhTo" style="font-weight:700;"></div><div id="fhInfo" style="opacity:0.85;font-size:12px;"></div>';
+      document.body.appendChild(planeHud);
+      planeMap = document.createElement('canvas'); planeMap.width = 170; planeMap.height = 170;
+      planeMap.style.cssText = 'display:none;position:fixed;left:12px;bottom:118px;z-index:12;width:170px;height:170px;border-radius:10px;background:rgba(10,20,35,0.72);border:1px solid rgba(255,255,255,0.25);pointer-events:none;';
+      document.body.appendChild(planeMap);
+    }
+    if (!p) { planeHud.style.display = 'none'; planeMap.style.display = 'none'; return; }
+    planeHud.style.display = 'block'; planeMap.style.display = 'block';
+    const $ = id => document.getElementById(id);
+    if (!dest) { $('fhTo').textContent = '✈ ' + apName(structureSpecs.get(p.at)); $('fhInfo').textContent = 'Parked'; return; }
+    const L = apLandingDir(p, dest), d = Math.hypot(L.th[0] - p.x, L.th[1] - p.z);
+    const bearing = Math.atan2(L.th[0] - p.x, L.th[1] - p.z), facing = p.phase === 'air' || p.phase === 'climbout' ? apWrap(yaw + Math.PI) : p.yaw;
+    $('fhArrow').style.transform = 'rotate(' + (-(apWrap(bearing - facing))).toFixed(3) + 'rad)';
+    const eta = p.v > 1 ? Math.round(d / p.v) : null, alt = Math.round(p.y - apGroundAt(p.x, p.z));
+    const phaseTxt = { taxiOut: 'Taxiing out', ready: 'Lined up — hold W to take off', roll: 'Take-off roll', climbout: 'Climbing out', air: 'Cruise', approach: 'Autoland — on approach', rollout: 'Landed — slowing', taxiIn: 'Taxiing to the gate' }[p.phase] || '';
+    $('fhTo').textContent = '✈ ' + apName(dest.spec) + ' — ' + Math.round(d).toLocaleString() + ' blocks';
+    $('fhInfo').textContent = phaseTxt + ' · ' + Math.round(p.v) + ' b/s · alt ' + alt + (eta !== null && p.phase === 'air' ? ' · ETA ' + Math.floor(eta / 60) + ':' + String(eta % 60).padStart(2, '0') : '') + (p.phase === 'air' && d < AP_CAPTURE_DIST * 1.6 ? ' · come down below ' + AP_CAPTURE_ALT + ' within ' + AP_CAPTURE_DIST + ' for autoland' : '');
+    const now = performance.now(); if (now - planeMapAt < 150) return; planeMapAt = now;
+    const from = p.from && apGetAirport(p.from), pts = [[p.x, p.z], [L.th[0], L.th[1]]]; if (from) pts.push([(from.geo.t0[0] + from.geo.t1[0]) / 2, (from.geo.t0[1] + from.geo.t1[1]) / 2]);
+    const others = apList(); for (const a of others) pts.push([(a.geo.t0[0] + a.geo.t1[0]) / 2, (a.geo.t0[1] + a.geo.t1[1]) / 2]);
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity; for (const [x, z] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    const span = Math.max(x1 - x0, z1 - z0, 200) * 1.15, mx = (x0 + x1) / 2, mz = (z0 + z1) / 2, S = 170 / span;
+    const toC = (x, z) => [85 + (x - mx) * S, 85 + (z - mz) * S];
+    const c = planeMap.getContext('2d'); c.clearRect(0, 0, 170, 170);
+    c.fillStyle = 'rgba(255,255,255,0.75)'; c.font = '10px system-ui'; c.textAlign = 'center';
+    for (const a of others) { const [ax, az] = toC((a.geo.t0[0] + a.geo.t1[0]) / 2, (a.geo.t0[1] + a.geo.t1[1]) / 2); c.fillStyle = a.ck === dest.ck ? '#ffd34d' : 'rgba(255,255,255,0.8)'; c.beginPath(); c.arc(ax, az, 4, 0, Math.PI * 2); c.fill(); c.fillText(apName(a.spec).split(' ')[0], ax, az - 7); }
+    if (from) { const [fx, fz] = toC(...pts[2]), [dx, dz] = toC(L.th[0], L.th[1]); c.strokeStyle = 'rgba(255,211,77,0.45)'; c.setLineDash([4, 4]); c.lineWidth = 1.5; c.beginPath(); c.moveTo(fx, fz); c.lineTo(dx, dz); c.stroke(); c.setLineDash([]); }
+    { const [px, pz] = toC(p.x, p.z), [dx, dz] = toC(L.th[0], L.th[1]); c.strokeStyle = '#ffd34d'; c.lineWidth = 2; c.beginPath(); c.moveTo(px, pz); c.lineTo(dx, dz); c.stroke();
+      c.save(); c.translate(px, pz); c.rotate(-p.yaw + Math.PI); c.fillStyle = '#7fd3ff'; c.beginPath(); c.moveTo(0, -7); c.lineTo(5, 6); c.lineTo(0, 3); c.lineTo(-5, 6); c.closePath(); c.fill(); c.restore(); }
+  }
+  // ---- ✋ on a plane ----
+  const _planeRay = new THREE.Raycaster();
+  function planeInSight() {
+    const groups = []; for (const p of planes.values()) if (p.group && p.group.visible && p.group.position.distanceToSquared(camera.position) < 900) groups.push(p.group);
+    if (!groups.length) return null;
+    _planeRay.setFromCamera({ x: 0, y: 0 }, camera); _planeRay.far = 30;
+    const hits = _planeRay.intersectObjects(groups, true); if (!hits.length) return null;
+    let o = hits[0].object; while (o && !o.userData.plane) o = o.parent; return o ? o.userData.plane : null;
+  }
+  function tryPlaneAction() {
+    if (planeFlying) { if (planeFlying.phase === 'taxiOut' || planeFlying.phase === 'ready') { const p = planeFlying; p.to = null; const ap = apGetAirport(p.from); p.from = null; const rec = apRecordOf(p); if (rec) { delete rec.out; specSave(p.at, structureSpecs.get(p.at)); } stopFlying(true); if (ap) apPlaceAtGate(p, ap, Math.max(0, apFreeGate(ap, p.id))); showBriefMessage('✈ Flight cancelled — back at the gate'); } else showBriefMessage('✈ You can’t get out mid-flight!'); return true; }
+    const p = planeInSight(); if (!p) return false;
+    if (visitMode || currentWorldId === PUB_WORLD_ID) { showBriefMessage('✈ That’s the owner’s plane'); return true; }
+    openPlanePanel(p); return true;
+  }
+  function openPlanePanel(p) {
+    const el = bizPanel('planePanel'), here = apGetAirport(p.at), dests = apList().filter(a => a.ck !== p.at);
+    const parked = p.phase === 'parked';
+    el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(400px,92vw);max-height:86vh;overflow-y:auto;color:#fff;font:13px system-ui,sans-serif;line-height:1.45;">'
+      + '<div style="font-size:16px;font-weight:700;margin-bottom:6px;">✈ Airliner — ' + AP_SEATS + ' seats</div>'
+      + '<div style="opacity:0.8;margin-bottom:10px;">' + (parked ? 'At ' + bizEsc(here ? apName(here.spec) : 'the gate') + '.' : 'Flying to ' + bizEsc(p.to ? apName(structureSpecs.get(p.to)) : '…') + '.') + (p.pilot ? ' 🧑‍✈️ Her pilot flies her round all your airports.' : ' No pilot — she only flies when you do.') + '</div>'
+      + (parked ? (dests.length ? '<div style="font-weight:600;margin-bottom:4px;">Fly her yourself</div>' + dests.map((a, i) => '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:4px 0;"><span>→ ' + bizEsc(apName(a.spec)) + ' <span style="opacity:0.65;">(' + Math.round(apDistance(here, a)).toLocaleString() + ' blocks, 💰' + (AP_FARE_BASE + Math.floor(apDistance(here, a) / AP_FARE_PER)) + ' a ticket)</span></span>' + bizBtn('plFly' + i, '✈ Fly', '#3b6fb6') + '</div>').join('') : '<div style="opacity:0.75;">Build a second airport to have somewhere to fly to.</div>') : '')
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px;">' + (p.pilot ? bizBtn('plFire', 'Let the pilot go', '#7a3030') : bizBtn('plHire', '🧑‍✈️ Hire a pilot — 💰' + AP_PILOT_COST.toLocaleString(), '#2f7d46', !dests.length))
+      + (parked ? bizBtn('plSell', 'Sell her — 💰' + (AP_PLANE_PRICE / 2).toLocaleString(), '#8a3030') : '') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="plClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
+    const $ = id => document.getElementById(id), close = () => { el.style.display = 'none'; };
+    $('plClose').addEventListener('click', close);
+    if (parked) dests.forEach((a, i) => $('plFly' + i).addEventListener('click', () => { close(); startFlying(p, a); }));
+    const setPilot = on => { p.pilot = on; const rec = apRecordOf(p); if (rec) { rec.pilot = on; specSave(p.at, structureSpecs.get(p.at)); } p.wait = 4; };
+    if ($('plHire')) $('plHire').addEventListener('click', () => { if (!trySpendCoins(AP_PILOT_COST, 'a pilot')) return; setPilot(true); playCoin(); showSaveStatus('🧑‍✈️ Pilot hired — she’ll start flying passengers round your airports'); openPlanePanel(p); });
+    if ($('plFire')) $('plFire').addEventListener('click', () => { setPilot(false); showSaveStatus('✈ The pilot has gone — she’ll stay at the gate after this flight'); openPlanePanel(p); });
+    if ($('plSell')) $('plSell').addEventListener('click', () => {
+      const sp = structureSpecs.get(p.at); if (!sp) return;
+      apState(sp).planes = apState(sp).planes.filter(r => r.id !== p.id); specSave(p.at, sp);
+      if (p.group) { scene.remove(p.group); disposeObject3D(p.group); } planes.delete(p.id);
+      coins += AP_PLANE_PRICE / 2; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); close(); showSaveStatus('✈ Sold for 💰' + (AP_PLANE_PRICE / 2).toLocaleString());
+    });
+    document.exitPointerLock && document.exitPointerLock();
+    el.style.display = 'flex';
+  }
+  // ---- the check-in desk ----
+  function openAirportPanel(fk) {
+    const o = apForFurniture(fk); if (!o) return;
+    if (visitMode) { showBriefMessage('✈ "Passports and boarding cards, please!"'); return; }
+    const st = apState(o.spec), el = bizPanel('airportPanel'), here = apGetAirport(o.ck), others = apList().filter(a => a.ck !== o.ck);
+    const parkedHere = [...planes.values()].filter(p => p.at === o.ck && p.phase === 'parked').length, based = (st.planes || []).length;
+    el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(420px,94vw);max-height:88vh;overflow-y:auto;color:#fff;font:13px system-ui,sans-serif;line-height:1.4;">'
+      + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">✈ ' + bizEsc(apName(o.spec)) + '</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:12px;"><input id="apNameInput" maxlength="28" autocomplete="off" placeholder="Airport name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:13px;">' + bizBtn('apRename', 'Rename', '#3b6fb6') + '</div>'
+      + (st.mgr
+        ? '<div style="background:rgba(47,125,70,0.15);border:1px solid rgba(126,224,138,0.35);border-radius:8px;padding:10px;margin-bottom:10px;"><div style="font-weight:600;">🧑‍💼 Your airport manager banks every fare</div><div style="opacity:0.8;margin:4px 0 8px;">Straight into your coins as each plane comes in, keeping ' + Math.round(AP_MGR_CUT * 100) + '%. Paid in so far: 💰' + Math.floor(st.earned || 0).toLocaleString() + '.</div>' + bizBtn('apFire', 'Let them go', '#7a3030') + '</div>'
+        : '<div style="background:rgba(210,176,98,0.12);border:1px solid rgba(210,176,98,0.4);border-radius:8px;padding:10px;margin-bottom:10px;"><div style="display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-size:12px;opacity:0.75;">Fares in the till</div><div style="font-size:20px;font-weight:700;">💰' + Math.floor(st.till || 0).toLocaleString() + '</div></div>' + bizBtn('apCollect', 'Collect', '#c7901d', !(st.till > 0)) + '</div>'
+          + '<div style="opacity:0.8;margin:8px 0 6px;">Hire an airport manager to bank the fares for you as the planes come in — 💰' + AP_MGR_COST.toLocaleString() + ', then they keep ' + Math.round(AP_MGR_CUT * 100) + '%.</div>' + bizBtn('apHire', 'Hire a manager — 💰' + AP_MGR_COST.toLocaleString(), '#2f7d46') + '</div>')
+      + '<div style="font-weight:600;margin:4px 0;">Planes</div>'
+      + bizRow('Based here', based + ' of ' + AP_GATES + ' gates') + bizRow('At the gates now', parkedHere) + bizRow('In your world', planes.size)
+      + '<div style="margin:8px 0;">' + bizBtn('apBuy', 'Buy an airliner — 💰' + AP_PLANE_PRICE.toLocaleString(), '#3b6fb6', based >= AP_GATES || apFreeGate(here || { ck: o.ck }, null) < 0) + '</div>'
+      + '<div style="opacity:0.8;">✋ a plane at its gate to fly her yourself or hire her a pilot. ' + AP_SEATS + ' seats; each passenger pays 💰' + AP_FARE_BASE + ' plus 💰1 for every ' + AP_FARE_PER + ' blocks between the airports.</div>'
+      + (others.length ? '<div style="margin-top:8px;">' + others.map(a => bizRow('→ ' + bizEsc(apName(a.spec)), Math.round(here ? apDistance(here, a) : 0).toLocaleString() + ' blocks · 💰' + (AP_FARE_BASE + Math.floor((here ? apDistance(here, a) : 0) / AP_FARE_PER)) + ' a ticket')).join('') + '</div>' : '<div style="opacity:0.7;margin-top:8px;">This is your only airport — build another for the planes to fly to.</div>')
+      + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="apClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
+    const $ = id => document.getElementById(id), close = () => { el.style.display = 'none'; };
+    const inp = $('apNameInput'); inp.value = o.spec.name || '';
+    const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 28); if (c) o.spec.name = c; else delete o.spec.name; specSave(o.ck, o.spec); apSigns(o); playThud(500); openAirportPanel(fk); };
+    $('apRename').addEventListener('click', rename);
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') close(); e.stopPropagation(); });
+    if ($('apCollect')) $('apCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(o.ck, o.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); showSaveStatus('✈ Collected 💰' + a.toLocaleString() + ' in fares'); openAirportPanel(fk); });
+    if ($('apHire')) $('apHire').addEventListener('click', () => { if (!trySpendCoins(AP_MGR_COST, 'an airport manager')) return; st.mgr = true; o.peopleSig = null; specSave(o.ck, o.spec); playCoin(); showSaveStatus('🧑‍💼 Airport manager hired — fares here now go straight to you'); openAirportPanel(fk); });
+    if ($('apFire')) $('apFire').addEventListener('click', () => { st.mgr = false; o.peopleSig = null; specSave(o.ck, o.spec); showSaveStatus('✈ The manager has gone — fares will wait in the till'); openAirportPanel(fk); });
+    $('apBuy').addEventListener('click', () => {
+      if (!here) { showSaveStatus('⚠ The airport isn’t finished yet', true); return; }
+      if ((st.planes || []).length >= AP_GATES) { showSaveStatus('⚠ Both gates here are taken', true); return; }
+      if (!trySpendCoins(AP_PLANE_PRICE, 'an airliner')) return;
+      const id = 'pl' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
+      st.planes.push({ id, pilot: false }); specSave(o.ck, o.spec); syncPlanes(true); playCoin();
+      showSaveStatus('✈ Your airliner is at the gate — ✋ her to fly or hire a pilot'); openAirportPanel(fk);
+    });
+    $('apClose').addEventListener('click', close);
+    document.exitPointerLock && document.exitPointerLock();
+    el.style.display = 'flex';
+  }
+  function updateAirports(dt) { // staff at the desks, and the manager once hired
+    for (const o of airports.values()) {
+      if (o.worldId !== currentWorldId || structureSpecs.get(o.ck) !== o.spec) continue;
+      const cx = (o.bx0 + o.bx1) / 2 + 0.5, cz = (o.bz0 + o.bz1) / 2 + 0.5;
+      const show = o.sign && o.sign.parent && Math.hypot(player.pos.x - cx, player.pos.z - cz) < 80;
+      if (!show) { if (o.people.length) bizClearPeople(o); continue; }
+      const st = apState(o.spec), plan = [{ k: 'staff', u: 56.5, v: 7.3 }, { k: 'staff', u: 58.5, v: 7.3 }, { k: 'staff', u: 60.5, v: 7.3 }];
+      if (st.mgr) plan.push({ k: 'mgr', u: 66.5, v: 8.5 });
+      const sig = plan.map(p => p.k).join('|');
+      if (sig !== o.peopleSig) {
+        bizClearPeople(o);
+        plan.forEach((p, i) => { const m = pubFigure(false, p.k, o.ck + ':ap:' + i); const [x, z] = o.f.pos(p.u, p.v); m.position.set(x, o.floor + 1, z); m.rotation.y = Math.atan2(-o.f.d[0], -o.f.d[1]); o.people.push({ mesh: m, role: p.k, t: 0 }); });
         o.peopleSig = sig;
       }
     }
@@ -39339,6 +40244,7 @@ float moonDetail(vec3 p, float d) {
     updateLetHouses(dt); // rent and tenants — see HOUSE TO LET
     updateBakeries(dt); // sails, baking, the baker — see MILL & BAKERY
     try { updateTrains(dt); updateStations(dt); } catch (e) { console.warn('[voxel] trains error (recovered):', e); } // see TRAINS & STATIONS
+    try { updatePlanes(dt); updateAirports(dt); } catch (e) { console.warn('[voxel] planes error (recovered):', e); } // see AIRPORTS & PLANES
     updateRestaurants(dt); // service, diners, waiters — see RESTAURANT
     updateMansions(dt); // the household — see MANSION
     updateChandeliers(); // hang them from their ceilings; their light level — see buildChandelierFurniture
@@ -39768,7 +40674,7 @@ float moonDetail(vec3 p, float d) {
       document.getElementById('waterOverlay').style.display = eyeSubmerged ? 'block' : 'none';
       document.getElementById('lavaOverlay').style.display = eyeInLava ? 'block' : 'none'; // same underwater view, tinted red
 
-      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (trainDriving) trainPinCab(); else if (furnSeat) pinSeat(); else if (poolPlay) pinPool(dt); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
+      if (rideNow) ridePin(); else if (yachtDriving) yachtPinHelm(); else if (trainDriving) trainPinCab(); else if (planeFlying) planePin(); else if (furnSeat) pinSeat(); else if (poolPlay) pinPool(dt); // stay in the seat (or on the ride, or at the wheel) whatever the physics did this frame
       { // on foot on a ramp: drop the eye back down to the real surface (see SLOPE_COLLISION_INSET)
         const sinkT = (!ridingVehicle && !flying && player.onGround) ? walkSlopeSinkNow() : 0;
         slopeEyeSink += (sinkT - slopeEyeSink) * Math.min(1, dt * 18);
@@ -39784,7 +40690,7 @@ float moonDetail(vec3 p, float d) {
       updateGolfCameraFocus(dt); // ditto again, near the golf course
       try { updateVehicleCameraFocus(dt); } catch (err) { console.warn('updateVehicleCameraFocus error (recovered):', err); ridingVehicle = null; vehicleCamBlend = 0; vehicleCamWasActive = false; document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none'; vehicleGunGroup.visible = false; const btnActRecoverEl = document.getElementById('btnAction'); if (btnActRecoverEl) btnActRecoverEl.textContent = '✋'; stopVehicleEngineSound(); removeRiderFromVehicle(); } // guarded: a bug here must never freeze the whole render loop the way an uncaught error in animate() otherwise would (see the comment on this function)
       moonCamera(); // on the Moon, or watching a launch — takes the camera over (see ROCKET & MOON BASE)
-      const yachtCamOn = yachtCamera(dt); // sailing the yacht, viewed from above — see SUPERYACHT
+      const yachtCamOn = yachtCamera(dt) || planeCamera(dt); // sailing the yacht, viewed from above — see SUPERYACHT; flying a plane — see AIRPORTS & PLANES
       updateVehicleEngineSound();
       // Single authoritative crosshair check, run after all four camera
       // modes above have settled for this frame — replaces relying on
@@ -40353,10 +41259,10 @@ float moonDetail(vec3 p, float d) {
     const x = c.getContext('2d');
     x.fillStyle = 'rgba(255,255,255,0.10)'; x.fillRect(0, 0, 34, 34);
     x.fillStyle = '#7a7166'; x.strokeStyle = '#5e3f24'; x.lineCap = 'butt';
-    if (entry.track === 'corner') {
-      x.lineWidth = 4; for (let i = 0; i < 4; i++) { const a = Math.PI + (i + 0.5) * (Math.PI / 2) / 4; x.beginPath(); x.moveTo(34 + Math.cos(a) * 3, 34 + Math.sin(a) * 3); x.lineTo(34 + Math.cos(a) * 31, 34 + Math.sin(a) * 31); x.stroke(); }
-      x.strokeStyle = '#c9ced3'; x.lineWidth = 2.5;
-      for (const r of [8.5, 25.5]) { x.beginPath(); x.arc(34, 34, r, Math.PI, Math.PI * 1.5); x.stroke(); }
+    if (entry.track === 'corner' || entry.track === 'cornerL') { // a wide sweep
+      x.lineWidth = 3; for (let i = 0; i < 6; i++) { const a = Math.PI + (i + 0.5) * (Math.PI / 2) / 6; x.beginPath(); x.moveTo(34 + Math.cos(a) * 18, 34 + Math.sin(a) * 18); x.lineTo(34 + Math.cos(a) * 32, 34 + Math.sin(a) * 32); x.stroke(); }
+      x.strokeStyle = '#c9ced3'; x.lineWidth = 2;
+      for (const r of [21, 29]) { x.beginPath(); x.arc(34, 34, r, Math.PI, Math.PI * 1.5); x.stroke(); }
     } else {
       x.lineWidth = 4; for (const yy of [5, 13, 21, 29]) { x.beginPath(); x.moveTo(3, yy); x.lineTo(31, yy); x.stroke(); }
       x.strokeStyle = '#c9ced3'; x.lineWidth = 2.5;
@@ -41686,6 +42592,8 @@ float moonDetail(vec3 p, float d) {
     if (furnSeat) standUpFromSeat();
     if (yachtDriving) tryYachtAction(); // drops anchor
     if (trainDriving) stopDrivingTrain(true);
+    if (planeFlying && (planeFlying.phase === 'air' || planeFlying.phase === 'climbout' || planeFlying.phase === 'approach')) { showBriefMessage('✈ Land her first!'); return; }
+    if (planeFlying) tryPlaneAction();
     if (ridingVehicle) exitVehicle();
     if (currentWorldId === PUB_WORLD_ID || !terrainStreamingActive) spawnDefault();
     else {

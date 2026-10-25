@@ -5793,7 +5793,7 @@
     const glassBefore = blocks.glassCells ? blocks.glassCells.size : 0;
     const t0 = performance.now();
     const backlog = chunkUnloadQueue.length > 6;
-    const budget = backlog ? STREAM_BUDGET_MS * 2.5 : STREAM_BUDGET_MS;
+    const budget = (backlog ? STREAM_BUDGET_MS * 2.5 : STREAM_BUDGET_MS) * (ridingVehicle && isSpeedboat(ridingVehicle) ? 2 : 1); // (on the Speedboat the world has to build faster to keep up)
     for (let guard = 0; guard < 400; guard++) {
       if (!streamJob) {
         // unloads first when they're piling up or there's nothing to generate; otherwise generation (the
@@ -7901,11 +7901,16 @@
   // snow overlay already is keeps continuous flight through watery areas
   // from re-triggering that full scan on nearly every frame.
   let waterRebuildTimer = null, waterRebuildDraining = false;
+  // Throttled, not debounced (any more): restarting the second-long wait on every call meant that while you kept moving
+  // — a speedboat streaming new sea in every moment — the wait never ran out, and the water ahead never got drawn until
+  // you stopped (the boat looked like it was riding on thin air). Now it starts at most a second after the first call
+  // (a fifth of a second on the boat or in the jet), and draws a few chunks a frame from then on.
+  const fastWaterWanted = () => !!(ridingVehicle && (isSpeedboat(ridingVehicle) || ridingVehicle.jet));
   function scheduleWaterRebuild() {
-    clearTimeout(waterRebuildTimer);
-    waterRebuildTimer = setTimeout(() => { waterRebuildDraining = true; }, 1000); // then a few ms a frame — see stepWaterRebuild
+    if (waterRebuildTimer || waterRebuildDraining) return; // (already on its way — the drain picks up whatever's been added since)
+    waterRebuildTimer = setTimeout(() => { waterRebuildTimer = null; waterRebuildDraining = true; }, fastWaterWanted() ? 200 : 1000); // then a few ms a frame — see stepWaterRebuild
   }
-  function stepWaterRebuild() { if (waterRebuildDraining && rebuildWaterGeometry(4)) waterRebuildDraining = false; }
+  function stepWaterRebuild() { if (waterRebuildDraining && rebuildWaterGeometry(fastWaterWanted() ? 8 : 4)) waterRebuildDraining = false; }
 
   // ================= FLAME TORCH FIXTURES =================
   // Raised again, since active-at-once count is now bounded separately
@@ -15137,15 +15142,52 @@
     group.userData.cranks = cranks;
     return group;
   }
+  // ---- VEHICLE BODIES: every part of a vehicle you're driving hits what's in its way ----
+  // You're the thing that collides with the world (a small box in the middle), so on its own a car's nose or a
+  // helicopter's tail would go straight into a wall until you reached it. So each move is checked first against the
+  // vehicle's whole outline — points all round its edges, at a few heights above what it can step up — and a move
+  // that would put any part of it into a block is cut back (sliding along a wall where it can, stopping where it
+  // can't). A 1-block step is still fine on the ground (it climbs those, as before). Its outline is measured once
+  // from the model itself.
+  function vehDims(v) {
+    if (v.dims) return v.dims;
+    const g = v.group, keepP = g.position.clone(), keepR = g.rotation.clone(), box = new THREE.Box3(), tmp = new THREE.Box3();
+    g.position.set(0, 0, 0); g.rotation.set(0, 0, 0); g.updateMatrixWorld(true);
+    for (const c of g.children) { if (c === riderMesh || c.isLight || (c.userData && c.userData.noShadow)) continue; tmp.setFromObject(c); if (!tmp.isEmpty()) box.union(tmp); }
+    g.position.copy(keepP); g.rotation.copy(keepR); g.updateMatrixWorld(true);
+    if (box.isEmpty()) box.set(new THREE.Vector3(-0.3, 0, -0.5), new THREE.Vector3(0.3, 1, 0.5));
+    const pts = [], sp = 0.55, x0 = box.min.x + 0.05, x1 = box.max.x - 0.05, z0 = box.min.z + 0.05, z1 = box.max.z - 0.05;
+    const nx = Math.max(1, Math.ceil((x1 - x0) / sp)), nz = Math.max(1, Math.ceil((z1 - z0) / sp));
+    for (let i = 0; i <= nx; i++) { const x = x0 + (x1 - x0) * i / nx; pts.push([x, z0], [x, z1]); }
+    for (let j = 1; j < nz; j++) { const z = z0 + (z1 - z0) * j / nz; pts.push([x0, z], [x1, z]); }
+    return (v.dims = { box, pts });
+  }
+  function vehBodyBlockedCount(v, x, y, z, h, flies) {
+    const D = vehDims(v), c = Math.cos(h), s = Math.sin(h), top = D.box.max.y - 0.1;
+    const hs = flies ? [D.box.min.y + 0.25, (D.box.min.y + top) / 2, top] : [1.1, Math.max(1.1, top)].filter((y2, i, a) => i === 0 || y2 > a[0] + 0.3);
+    let n = 0;
+    for (const [lx, lz] of D.pts) { const wx = x + lx * c + lz * s, wz = z - lx * s + lz * c; // (the model's local point turned by the heading — nose +Z)
+      for (const hy of hs) if (hy <= top + 0.15 && isSolid(wx, y + hy, wz)) { n++; break; } }
+    return n;
+  }
+  function vehClipMove(v, move) {
+    const t = VEHICLE_TYPES[v.typeIdx]; if (!t || v.road || v.sea || v.tk || v.jet || v.air || t.boat || (move.x === 0 && move.z === 0)) return move;
+    const flies = !!t.flies, h = v.fr ? v.fr.h : (v.group ? v.group.rotation.y : yaw + Math.PI), x = player.pos.x, y = player.pos.y, z = player.pos.z;
+    const now = vehBodyBlockedCount(v, x, y, z, h, flies); // (already touching something: only stop moves that push further in)
+    if (vehBodyBlockedCount(v, x + move.x, y, z + move.z, h, flies) <= now) return move;
+    if (vehBodyBlockedCount(v, x + move.x, y, z, h, flies) <= now) return new THREE.Vector3(move.x, move.y, 0); // (slide along it)
+    if (vehBodyBlockedCount(v, x, y, z + move.z, h, flies) <= now) return new THREE.Vector3(0, move.y, move.z);
+    return new THREE.Vector3(0, move.y, 0);
+  }
   // ---- STEERING: the e-bike, the e-scooter and the Moon Buggy steer like the real thing ----
   // Forward / back is the throttle and the brake; left / right turns the front wheel (the buggy turns its front AND
   // back wheels, the way the real rover did). Standing still, steering just turns the wheel — nothing moves; rolling,
   // it goes round in a curve, tighter the slower you're going (heading rate = speed · tan(steer) / wheelbase). Your
   // view turns with it, and you can still look around. Bumping into something stops you.
   const FR_SPEC = {
-    'E-Bike':           { L: 1.14, steer: 0.55, acc: 0.55, brake: 1.6, rev: 0.0, drag: 0.12 }, // (no reverse — you'd walk it back: it creeps)
-    'Electric Scooter': { L: 0.86, steer: 0.6,  acc: 0.7,  brake: 1.8, rev: 0.0, drag: 0.18 },
-    'Moon Buggy':       { L: 1.05, steer: 0.5,  acc: 0.45, brake: 1.4, rev: 0.35, drag: 0.15 },  // (L: half the wheelbase — both ends steer)
+    'E-Bike':           { L: 1.14, steer: 0.55, acc: 0.55, brake: 1.6, rev: 0.0, drag: 0.12, grip: 7.5, steerRate: 4 }, // (no reverse — you'd walk it back: it creeps)
+    'Electric Scooter': { L: 0.86, steer: 0.6,  acc: 0.7,  brake: 1.8, rev: 0.0, drag: 0.18, grip: 7, steerRate: 4.5 },
+    'Moon Buggy':       { L: 1.05, steer: 0.42, acc: 0.4, brake: 1.3, rev: 0.35, drag: 0.15, grip: 5.2, steerRate: 1.8, suspension: true }, // (L: half the wheelbase — both ends steer; a hand controller, so the wheels turn steadily, not in a flick; loose ground, so it slides wide if you turn hard and fast)
   };
   function frDrive(v, dt, vmax) { // returns this frame's step (a world-space vector), and keeps the heading / speed / wheel angle in v.fr
     const S = FR_SPEC[VEHICLE_TYPES[v.typeIdx].name];
@@ -15163,11 +15205,62 @@
       else F.v -= Math.sign(F.v) * Math.min(Math.abs(F.v), vmax * S.drag * dt + 0.2 * dt); // (rolling to a stop)
     }
     const maxSt = S.steer / (1 + Math.abs(F.v) * 0.25); // (less lock at speed — it'd flip you off)
-    F.steer += (Math.max(-maxSt, Math.min(maxSt, st * maxSt)) - F.steer) * Math.min(1, dt * 7);
-    if (!air) { const dh = -F.v * Math.tan(F.steer) / S.L * dt; F.h = angWrap(F.h + dh); yaw = angWrap(yaw + dh); } // (right turns right; your view comes round with it)
+    { const want = Math.max(-maxSt, Math.min(maxSt, st * maxSt)), d = want - F.steer, r = S.steerRate * dt; F.steer += Math.max(-r, Math.min(r, d)); } // (the wheels turn at the speed you can turn them, and come back straight the same way)
+    F.slip = 0;
+    if (!air) {
+      let rate = -F.v * Math.tan(F.steer) / S.L; // (where the wheels point)
+      const maxRate = S.grip / Math.max(0.5, Math.abs(F.v)); // (...but the tyres can only hold so much: v · ω is the sideways pull, and past the grip it slides wide)
+      if (Math.abs(rate) > maxRate) { F.slip = Math.min(1, (Math.abs(rate) - maxRate) / maxRate); rate = Math.sign(rate) * maxRate; F.v -= Math.sign(F.v) * Math.min(Math.abs(F.v), F.slip * 3 * dt); } // (scrubbing off speed as it goes)
+      const dh = rate * dt; F.h = angWrap(F.h + dh); F.rate = rate;
+      yaw = angWrap(yaw + dh); // (right turns right; your view comes round with it — from behind, the camera swings round after it, see updateVehicleCameraFocus)
+    }
+    tyreSoundUpdate(v, F, dt);
     const step = new THREE.Vector3(Math.sin(F.h) * F.v * dt, 0, Math.cos(F.h) * F.v * dt);
     F.lx = player.pos.x; F.lz = player.pos.z; F.want = step.length();
     return step;
+  }
+  // ---- tyre sounds (the e-bike, e-scooter and Moon Buggy): the tyres rolling over what's under them — a soft rumble on
+  // grass and dirt, a gritty crunch on sand, gravel and snow, a hum on stone and roads — louder with speed; a scrub as
+  // they're turned on the move (a hiss when they're sliding wide); and on the buggy, the whir of its steering motors.
+  let tyreVoice = null;
+  function tyreSurface() {
+    const t = blocks.get(key(Math.floor(player.pos.x), Math.floor(player.pos.y - 0.2), Math.floor(player.pos.z))), n = ((BLOCK_TYPES[t] || {}).name || '').toLowerCase();
+    if (/sand|gravel|snow|mud|clay/.test(n)) return 'crunch';
+    if (/grass|dirt|leaves|moss|hay|farm/.test(n) || t === undefined) return 'soft';
+    return 'hard';
+  }
+  function tyreSoundUpdate(v, F, dt) {
+    if (!audioCtx || !noiseBuffer()) return;
+    const A = audioCtx, now = A.currentTime;
+    if (!tyreVoice) {
+      const out = A.createGain(); out.gain.value = 0.0001; out.connect(A.destination);
+      const src = A.createBufferSource(); src.buffer = noiseBuffer(); src.loop = true;
+      const roll = A.createBiquadFilter(); roll.type = 'bandpass'; roll.Q.value = 0.8; const rollG = A.createGain(); rollG.gain.value = 0;
+      const scrub = A.createBiquadFilter(); scrub.type = 'bandpass'; scrub.frequency.value = 2400; scrub.Q.value = 1.1; const scrubG = A.createGain(); scrubG.gain.value = 0;
+      const grit = A.createGain(); grit.gain.value = 1; const gritL = A.createBufferSource(), gritLF = A.createBiquadFilter(), gritLG = A.createGain(); gritL.buffer = noiseBuffer(); gritL.loop = true; gritL.playbackRate.value = 0.004; gritLF.type = 'lowpass'; gritLF.frequency.value = 40; gritLG.gain.value = 0; gritL.connect(gritLF); gritLF.connect(gritLG); gritLG.connect(grit.gain); // (the crunch: a rough, random roughness — never a regular beat, which reads as a flat tyre)
+      src.connect(roll); roll.connect(rollG); rollG.connect(grit); grit.connect(out); src.connect(scrub); scrub.connect(scrubG); scrubG.connect(out);
+      const whir = A.createOscillator(), whirF = A.createBiquadFilter(), whirG = A.createGain(); whir.type = 'sawtooth'; whir.frequency.value = 210; whirF.type = 'lowpass'; whirF.frequency.value = 900; whirG.gain.value = 0; whir.connect(whirF); whirF.connect(whirG); whirG.connect(out);
+      src.start(); gritL.start(); whir.start();
+      tyreVoice = { out, src, roll, rollG, scrub, scrubG, gritL, gritLG, whir, whirG, lastSteer: F.steer, surfT: 0, surf: 'soft' };
+      tyreVoice.out.gain.setTargetAtTime(0.35, now, 0.2); // (under the engine, not over it)
+    }
+    const T = tyreVoice, sp = Math.abs(F.v), onGround = player.onGround && !moonHop;
+    if ((T.surfT -= dt) <= 0) { T.surfT = 0.2; T.surf = tyreSurface(); }
+    const S = { soft: { f: 260, g: 0.11, grit: 0.25 }, crunch: { f: 1300, g: 0.16, grit: 0.7 }, hard: { f: 520, g: 0.08, grit: 0.1 } }[T.surf];
+    const big = VEHICLE_TYPES[v.typeIdx].name === 'Moon Buggy' ? 1.4 : 0.8; // (the buggy's big mesh wheels are noisier than a bike's)
+    T.roll.frequency.setTargetAtTime(S.f + sp * 30, now, 0.15);
+    T.rollG.gain.setTargetAtTime(onGround ? Math.min(1, sp / 6) * S.g * big : 0, now, 0.1);
+    T.gritLG.gain.setTargetAtTime(onGround ? S.grit * Math.min(1, sp / 4) : 0, now, 0.1); T.gritL.playbackRate.setTargetAtTime(0.003 + sp * 0.0012, now, 0.2);
+    const turning = Math.abs(F.rate || 0) * sp; // (the sideways scrub of the tyres being turned on the move)
+    T.scrubG.gain.setTargetAtTime(onGround ? Math.min(0.14, turning * 0.012 * big + (F.slip || 0) * 0.16) * (T.surf === 'hard' ? 1.2 : 0.8) : 0, now, 0.08);
+    T.scrub.frequency.setTargetAtTime(T.surf === 'crunch' ? 1500 : T.surf === 'soft' ? 1900 : 2900, now, 0.2);
+    const dSt = Math.abs(F.steer - T.lastSteer) / Math.max(dt, 1e-4); T.lastSteer = F.steer; // (the steering motors whirring as the wheels turn — the buggy's)
+    T.whirG.gain.setTargetAtTime(VEHICLE_TYPES[v.typeIdx].name === 'Moon Buggy' ? Math.min(0.05, dSt * 0.04) : 0, now, 0.05); T.whir.frequency.setTargetAtTime(160 + dSt * 60, now, 0.05);
+  }
+  function tyreSoundStop() {
+    if (!tyreVoice || !audioCtx) { tyreVoice = null; return; }
+    const T = tyreVoice; tyreVoice = null; T.out.gain.setTargetAtTime(0.0001, audioCtx.currentTime, 0.08);
+    setTimeout(() => { for (const o of [T.src, T.gritL, T.whir]) try { o.stop(); } catch (e) {} try { T.out.disconnect(); } catch (e) {} }, 400);
   }
   // The e-bike's and e-scooter's moving parts while you ride: the wheels roll at the ground speed, the pedals turn
   // (pedal-assist cadence) and the whole thing leans into a turn the way a real one does.
@@ -15187,8 +15280,19 @@
     const target = sp > 1.5 ? Math.max(-0.42, Math.min(0.42, -Math.atan(sp * st.w / 9.8))) : 0; // a real bike's lean: tan(lean) = v·ω / g, into the turn
     st.lean += (target - st.lean) * Math.min(1, dt * 5);
     if (!ud.noLean) v.group.rotation.z = st.lean;
-    if (ud.noLean && moonHop) { st.hp = (st.hp || 0) + (Math.max(-0.35, Math.min(0.35, -player.vel.y * 0.05)) - (st.hp || 0)) * Math.min(1, dt * 4); v.group.rotation.x = st.hp; } // (the Moon Buggy's nose lifts on the way up and dips coming down)
-    else if (ud.noLean && st.hp) { st.hp *= Math.max(0, 1 - dt * 6); v.group.rotation.x = st.hp; }
+    else { // the Moon Buggy rides the ground under its four wheels (climbing a step it tips up, across a slope it leans), its body rolls out on the turns and squats as it pulls away; in a moon-gravity hop the nose follows the arc
+      const F = v.fr, h = v.group.rotation.y, c = Math.cos(h), sn = Math.sin(h), py = player.pos.y;
+      const gAt = (lx, lz) => { const wx = player.pos.x + lx * c + lz * sn, wz = player.pos.z - lx * sn + lz * c; for (let dy = 1.2; dy >= -1.6; dy -= 0.2) if (isSolid(wx, py + dy - 0.01, wz)) return Math.min(py + 1.2, Math.floor(py + dy - 0.01) + 1); return py - 1.6; };
+      let tp = 0, tr = 0;
+      if (player.onGround && !moonHop) { const fl = gAt(0.8, 0.95), fr = gAt(-0.8, 0.95), bl = gAt(0.8, -0.95), br = gAt(-0.8, -0.95);
+        tp = -Math.atan2((fl + fr) / 2 - (bl + br) / 2, 1.9); tr = Math.atan2((fl + bl) / 2 - (fr + br) / 2, 1.6);
+        tp = Math.max(-0.45, Math.min(0.45, tp)); tr = Math.max(-0.4, Math.min(0.4, tr)); }
+      const lat = F ? F.v * (F.rate || 0) : 0, acc = F ? ((F.v - (st.pv == null ? F.v : st.pv)) / dt) : 0; if (F) st.pv = F.v;
+      tr += Math.max(-0.07, Math.min(0.07, lat * 0.012)); tp += Math.max(-0.05, Math.min(0.05, -acc * 0.012));
+      if (moonHop) tp = Math.max(-0.35, Math.min(0.35, -player.vel.y * 0.05));
+      st.tp = (st.tp || 0) + (tp - (st.tp || 0)) * Math.min(1, dt * 6); st.tr = (st.tr || 0) + (tr - (st.tr || 0)) * Math.min(1, dt * 6);
+      v.group.rotation.x = st.tp; v.group.rotation.z = st.tr;
+    }
   }
   // Electric bicycle — a quicker, seated alternative to the scooter. Nose at +Z.
   function buildEBike() {
@@ -15636,6 +15740,7 @@
     // range sits right where small phone speakers reproduce bass
     // poorly, so the whole thing was quiet to the point of sounding
     // like nothing was playing at all even though it technically was.
+    if (type.name === 'Fighter Jet' && noiseBuffer()) { startJetEngineSound(); return; }
     let waveform = 'triangle', baseFreq = 170, detune = 8, filterFreq = 900; // default — Electric Scooter's own electric whine
     if (type.boat) { waveform = 'sawtooth'; baseFreq = 105; detune = 8; filterFreq = 950; } // Speedboat — twin outboards, a busy buzzing roar
     else if (type.name === 'Fighter Jet') { waveform = 'sawtooth'; baseFreq = 170; detune = 13; filterFreq = 2200; } // a jet's roaring whine
@@ -15657,7 +15762,34 @@
     osc1.start(); osc2.start();
     vehicleEngine = { osc1, osc2, gain, filter, baseFreq, detune };
   }
+  function startJetEngineSound() { // see startVehicleEngineSound
+    const A = audioCtx, master = A.createGain(); master.gain.value = 0.0001; master.connect(A.destination);
+    const src = A.createBufferSource(); src.buffer = noiseBuffer(); src.loop = true;
+    const lane = (type, f, q, g) => { const fl = A.createBiquadFilter(); fl.type = type; fl.frequency.value = f; fl.Q.value = q; const gn = A.createGain(); gn.gain.value = g; src.connect(fl); fl.connect(gn); gn.connect(master); return { fl, gn }; };
+    const roar = lane('lowpass', 700, 0.6, 0.5);       // the big broadband jet roar
+    const rumble = lane('lowpass', 140, 0.9, 0.5);     // the deep rumble under it
+    const hiss = lane('bandpass', 3200, 0.8, 0.05);    // the intake hiss
+    const burn = lane('highpass', 1800, 0.5, 0.0);     // the afterburner's tearing crackle
+    const wob = A.createOscillator(), wobG = A.createGain(); wob.frequency.value = 7; wobG.gain.value = 0; wob.connect(wobG); wobG.connect(burn.gn.gain); // (crackling — a fast flutter on the burner)
+    const whine = A.createOscillator(), whine2 = A.createOscillator(), wg = A.createGain(); whine.type = 'triangle'; whine2.type = 'sine'; whine.frequency.value = 900; whine2.frequency.value = 1350; wg.gain.value = 0.02;
+    const wf = A.createBiquadFilter(); wf.type = 'bandpass'; wf.frequency.value = 1500; wf.Q.value = 1.2; whine.connect(wf); whine2.connect(wf); wf.connect(wg); wg.connect(master); // the turbine's spool whine
+    src.start(); whine.start(); whine2.start(); wob.start();
+    vehicleEngine = { osc1: src, osc2: whine, more: [whine2, wob], gain: master, filter: roar.fl, baseFreq: 0, detune: 0, jet: { roar, rumble, hiss, burn, wobG, whine, whine2, wg, wf } };
+  }
+  function updateJetEngineSound(J) {
+    const E = vehicleEngine.jet, A = audioCtx, now = A.currentTime, th = Math.min(1, J.v / JET_V_MAX), ud = ridingVehicle.group && ridingVehicle.group.userData;
+    const spool = J.phase === 'stall' ? 0.05 : J.phase === 'parked' ? 0.18 : J.phase === 'taxi' || J.phase === 'line' ? 0.3 : J.phase === 'rollout' ? 0.25 + th * 0.4 : 0.35 + th * 0.65; // (idling on the ground, wound right up flying)
+    const b = ud && ud.burner ? ud.burner.material.opacity / 0.75 : 0;
+    vehicleEngine.gain.gain.setTargetAtTime(0.22 + spool * 0.2, now, 0.3);
+    E.roar.fl.frequency.setTargetAtTime(350 + spool * 1500 + b * 600, now, 0.3); E.roar.gn.gain.setTargetAtTime(0.25 + spool * 0.55, now, 0.3);
+    E.rumble.gn.gain.setTargetAtTime(0.35 + spool * 0.35 + b * 0.3, now, 0.3);
+    E.hiss.gn.gain.setTargetAtTime(0.03 + spool * 0.05, now, 0.3);
+    E.burn.gn.gain.setTargetAtTime(b * 0.12, now, 0.2); E.wobG.gain.setTargetAtTime(b * 0.06, now, 0.2);
+    E.whine.frequency.setTargetAtTime(700 + spool * 2100, now, 0.6); E.whine2.frequency.setTargetAtTime((700 + spool * 2100) * 1.5, now, 0.6); E.wf.frequency.setTargetAtTime(900 + spool * 2300, now, 0.6);
+    E.wg.gain.setTargetAtTime(0.015 + spool * 0.03, now, 0.4);
+  }
   function stopVehicleEngineSound() {
+    if (vehicleEngine && audioCtx && vehicleEngine.more) { const more = vehicleEngine.more; setTimeout(() => { for (const o of more) try { o.stop(); } catch (e) {} }, 400); }
     if (!vehicleEngine || !audioCtx) { vehicleEngine = null; return; }
     const now = audioCtx.currentTime;
     const g = vehicleEngine.gain, o1 = vehicleEngine.osc1, o2 = vehicleEngine.osc2;
@@ -15669,7 +15801,8 @@
   }
   function updateVehicleEngineSound() {
     if (!vehicleEngine || !ridingVehicle || !audioCtx) return;
- const speed = ridingVehicle.jet ? 1.5 + ridingVehicle.jet.v * 6.5 / JET_V_MAX : ridingVehicle.tk ? 2 + Math.abs(ridingVehicle.tk.v) * 6 / TK_V_MAX : ridingVehicle.air ? (ridingVehicle.air.burn ? 8 : 0.3) : ridingVehicle.sea ? Math.abs(ridingVehicle.sea.v) * 8 / SB_V_MAX : ridingVehicle.road ? Math.abs(ridingVehicle.road.v) * 8 / 15 : Math.sqrt(player.vel.x*player.vel.x + player.vel.y*player.vel.y + player.vel.z*player.vel.z); // (on the road the bike's own speed — see MOTORBIKE ON THE ROAD)
+    if (vehicleEngine.jet) { if (ridingVehicle.jet) updateJetEngineSound(ridingVehicle.jet); return; }
+ const speed = ridingVehicle.jet ? 1.5 + ridingVehicle.jet.v * 6.5 / JET_V_MAX : ridingVehicle.tk ? 2 + Math.abs(ridingVehicle.tk.v) * 6 / TK_V_MAX : ridingVehicle.air ? (ridingVehicle.air.burn ? 8 : 0.3) : ridingVehicle.sea ? Math.abs(ridingVehicle.sea.v) * 8 / SB_V_MAX : ridingVehicle.road ? Math.abs(ridingVehicle.road.v) * 8 / 15 : ridingVehicle.fr ? Math.abs(ridingVehicle.fr.v) : Math.sqrt(player.vel.x*player.vel.x + player.vel.y*player.vel.y + player.vel.z*player.vel.z); // (on the road the bike's own speed — see MOTORBIKE ON THE ROAD)
     const t = Math.min(1, speed / 8); // normalised against a reasonable top speed — exact value doesn't need to be precise, just enough range to hear the engine "rev"
     const now = audioCtx.currentTime;
     vehicleEngine.gain.gain.setTargetAtTime(0.12 + t * 0.16, now, 0.15); // raised from 0.05+0.09 — same reasoning as the frequency change above, this was too quiet to reliably notice
@@ -15789,6 +15922,7 @@
   }
   function enterVehicle(v) {
     if (ridingVehicle || !v) return;
+    if (chute) chuteEnd(true); // (off the parachute — see FIGHTER JET)
     // The Mill is a no-fly zone — a social space meant for people to
     // walk around and play the minigames in, not somewhere a helicopter
     // (with its gun) or any other flying vehicle should be tearing
@@ -15818,6 +15952,7 @@
   function exitVehicle() {
     if (!ridingVehicle) return;
     const v = ridingVehicle;
+    if (v.jet && (v.jet.phase === 'fly' || v.jet.phase === 'stall' || v.jet.phase === 'approach' || v.jet.phase === 'final' || (v.jet.phase === 'climb' && v.jet.y > v.jet.climbTo - 22)) && !playerDead) { jetEject(v); return; } // (in the air: the ejector seat)
     if (v.jet && v.jet.phase !== 'parked' && !playerDead) { showBriefMessage(v.jet.phase === 'taxi' || v.jet.phase === 'line' ? '✈ Wait till she’s stopped' : '✈ Land her first — fly near an airport and she lands herself'); return; } // see FIGHTER JET
     if (v.jet) { v.group.updateMatrixWorld(true); const out = v.group.localToWorld(new THREE.Vector3(-2.4, 0, 2.2)); player.pos.set(out.x, out.y + 0.05, out.z); } // (down the side, by the cockpit)
     flying = vehiclePrevFlying;
@@ -15826,8 +15961,8 @@
     v.sea = null; sbCamRy = null; if (sbHud) sbHud.style.display = 'none'; // see SPEEDBOAT ON THE WATER
     if (v.air && v.group && v.group.userData.flame) { v.group.userData.flame.visible = false; v.group.userData.flameLight.intensity = 0; } v.air = null; if (balHud) balHud.style.display = 'none'; // see HOT AIR BALLOON FLIGHT
     if (v.tk) { v.tk = null; tkMgButton(false); if (tkHud) tkHud.style.display = 'none'; } // see TANK DRIVING
-    if (v.jet) { v.jet = null; if (jetHud) jetHud.style.display = 'none'; } // see FIGHTER JET
-    v._ride = null; v.fr = null; // (the e-bike's/e-scooter's wheel-and-lean state — see rideAnimate; its steering — see STEERING)
+    if (v.jet) { v.jet = null; if (jetHud) jetHud.style.display = 'none'; jetFarAirports(false); } // see FIGHTER JET
+    v._ride = null; v.fr = null; v.dims = null; tyreSoundStop(); // (the e-bike's/e-scooter's wheel-and-lean state — see rideAnimate; its steering — see STEERING)
     moonHop = false;
     setHeadlights(v.group, false);
     resetVehAir();
@@ -15942,7 +16077,7 @@
   // the caller can broadcast it for everyone else to see too.
   function ejectFromVehicleDestroyed() {
     if (!ridingVehicle) return null;
-    const v = ridingVehicle;
+    const v = ridingVehicle; tyreSoundStop(); v.fr = null; v._ride = null;
     const wreckPos = v.group.position.clone();
     const wreckYaw = v.group.rotation.y;
     const typeIdx = v.typeIdx;
@@ -18735,16 +18870,50 @@
       broadcastAndRunBlast({ k: 'boom', id, x: impact.x, y: impact.y, z: impact.z, r: TANK_BLAST_RADIUS, dmg: TANK_BLAST_DAMAGE, by: playerUid, byName: getMyDisplayName() });
     });
   }
+  // The Fighter Jet's missiles: one off each wing in turn, a rocket motor's roar as it goes, a smoke trail, and an
+  // explosive warhead where it hits (the weapons' shared blast — breaks blocks, hurts what's there).
+  const JET_MISSILE_COOLDOWN = 1100, JET_MISSILE_RANGE = 260, JET_MISSILE_SPEED = 95, JET_MISSILE_R = 7, JET_MISSILE_DMG = 6;
+  let lastJetMissileT = -1e9, jetMissileSide = 1;
+  function fireJetMissile() {
+    const now = performance.now(), v = ridingVehicle, J = v.jet;
+    if (now - lastJetMissileT < JET_MISSILE_COOLDOWN) return;
+    if (!J || J.phase === 'parked' || J.phase === 'taxi' || J.phase === 'line') { showBriefMessage('✈ Missiles are for the air'); return; }
+    if (playerDead) return;
+    lastJetMissileT = now; ensureAudio();
+    const winner = weaponResolveHit(JET_MISSILE_RANGE);
+    const origin = camera.getWorldPosition(new THREE.Vector3()), dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+    const impact = origin.clone().addScaledVector(dir, winner ? Math.max(4, winner.dist - 0.3) : JET_MISSILE_RANGE);
+    v.group.updateMatrixWorld(true); jetMissileSide = -jetMissileSide;
+    const muzzle = v.group.localToWorld(new THREE.Vector3(jetMissileSide * 2.7, 1.25, 0.6));
+    // the launch: the motor lighting (a deep whump), then its roar tearing away from you
+    playRocketLaunch(1); playNoiseBurst(1.6, 'bandpass', 500, 2600, 0.9, 0.9, 0.7); playNoiseBurst(0.9, 'lowpass', 2200, 400, 0.7, 0.7, 0.6);
+    showExplosionAt(muzzle, [0xffffff, 0xd8d8d8, 0xffb347]);
+    const id = newWeaponFxId();
+    sendWeaponMsg('weaponFx', { k: 'rocket', a: vecArr(muzzle), b: vecArr(impact), speed: JET_MISSILE_SPEED });
+    spawnRocketVisual(muzzle, impact, JET_MISSILE_SPEED, () => {
+      broadcastAndRunBlast({ k: 'boom', id, x: impact.x, y: impact.y, z: impact.z, r: JET_MISSILE_R, dmg: JET_MISSILE_DMG, by: playerUid, byName: getMyDisplayName() });
+    });
+  }
+  function showLaserBolt(from, to) { // the Moon Buggy's laser: a hot red beam with a white core, a flash where it lands; it fades in a moment
+    const dv = to.clone().sub(from), L = dv.length(); if (L < 0.05) return; dv.normalize();
+    const mk = (r, color, op) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, L, 8, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false })); m.position.copy(from).addScaledVector(dv, L / 2); m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dv); scene.add(m); return m; };
+    const outer = mk(0.1, 0xff3a2a, 0.6), inner = mk(0.035, 0xffffff, 0.95);
+    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6), new THREE.MeshBasicMaterial({ color: 0xff8a6a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })); tip.position.copy(to); scene.add(tip);
+    const t0 = performance.now(), DUR = 200;
+    (function fade() { const k = (performance.now() - t0) / DUR; if (k >= 1) { [outer, inner, tip].forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }); return; } outer.material.opacity = 0.6 * (1 - k); inner.material.opacity = 0.95 * (1 - k); tip.material.opacity = 0.9 * (1 - k); tip.scale.setScalar(1 + k * 1.5); requestAnimationFrame(fade); })();
+  }
   function fireVehicleGun(bullets) { // bullets: the Tank's roof machine gun (otherwise a tank fires shells)
     if (!ridingVehicle) return;
     if (currentWorldId === PUB_WORLD_ID) return;
     objNote('shoot'); // see OBJECTIVES // the Mill is a no-shooting zone — a social space, not somewhere combat (in any vehicle) belongs; enterVehicle already keeps flying vehicles out entirely, but ground vehicles (the Scooter) can still be parked/ridden in there, so this stays as a belt-and-braces check
     if ((VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank && !bullets) { fireTankShell(); return; } // shells, not bullets — see fireTankShell
+    if (ridingVehicle.jet) { fireJetMissile(); return; } // the Fighter Jet: missiles off the wings — see fireJetMissile
     const now = performance.now();
     if (now - lastVehicleFireTime < VEHICLE_FIRE_COOLDOWN) return;
     lastVehicleFireTime = now;
     ensureAudio();
-    playVehicleGunshot();
+    const buggyLaser = (VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).name === 'Moon Buggy'; // the Moon Buggy fires a laser from its camera mast instead of bullets
+    if (buggyLaser) playLaserZap(1); else playVehicleGunshot();
     const MAX_RANGE = 80; // generous range for every vehicle — helicopters/flying cars need it to reach anything at altitude, and it doesn't hurt a ground vehicle to have the same range
     const blockHit = vehicleGunBlockRaycast(MAX_RANGE);
     const entityHit = vehicleGunEntityRaycast(MAX_RANGE);
@@ -18755,6 +18924,7 @@
     const dir = new THREE.Vector3();
     camera.getWorldDirection(dir);
     const endPoint = winner ? winner.point : origin.clone().addScaledVector(dir, MAX_RANGE);
+    if (buggyLaser) showLaserBolt(getVehicleMuzzleWorldPos(), endPoint); else
     showTracer(getVehicleMuzzleWorldPos(), endPoint); // visual start point only — see getVehicleMuzzleWorldPos's own comment on why this differs from `origin` above
     if (!winner) return;
     if (winner.kind === 'water') {
@@ -18801,6 +18971,7 @@
   // movement block); this only moves the camera and the vehicle mesh
   // itself to visually follow along.
   function updateVehicleCameraFocus(dt) {
+    farViewUpdate(fastWaterWanted()); // (the top layer of the world, further out than it's built — see FAR VIEW)
     if (!ridingVehicle) {
       const near = nearestVehicleToPlayer(3);
       const otherSceneActive = tennisCamWasActive || footballCamWasActive || golfCamWasActive;
@@ -18833,9 +19004,10 @@
     if (crosshairEl) crosshairEl.style.display = ridingVehicle ? 'block' : 'none';
     heldMesh.visible = false; heldStepGroup.visible = false; workHeldRoot.visible = false;
     const ridingTank = !!(VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).tank;
-    vehicleGunGroup.visible = !ridingTank; // the action button fires this vehicle's gun — see doAction. The Tank has its own barrel instead.
+    const vtName = (VEHICLE_TYPES[ridingVehicle.typeIdx] || {}).name;
+    vehicleGunGroup.visible = !ridingTank && vtName !== 'Fighter Jet' && vtName !== 'Moon Buggy'; // the action button fires this vehicle's gun — see doAction. The Tank has its own barrel instead (and the jet its missiles, the buggy its laser).
     const btnActEl = document.getElementById('btnAction');
-    if (btnActEl) btnActEl.textContent = ridingTank ? '💥' : '🔫'; // the action button IS the fire button while riding — see doAction
+    if (btnActEl) btnActEl.textContent = ridingTank ? '💥' : vtName === 'Fighter Jet' ? '🚀' : vtName === 'Moon Buggy' ? '⚡' : '🔫'; // the action button IS the fire button while riding — see doAction
     const v = ridingVehicle;
     v.group.position.set(player.pos.x, player.pos.y, player.pos.z);
     v.group.rotation.order = 'YXZ'; // yaw first, then tilt about the vehicle's OWN side axis — the default XYZ order would tilt about the world X axis whatever way it's facing
@@ -18883,7 +19055,8 @@
     let desired;
     if (isBike) {
       // Sat on it: your eyes where the rider's are, over the bars. From behind: up and back, along the way the bike's going.
-      const hb = bikeR ? bikeR.h : v.fr ? v.fr.h : yaw + Math.PI;
+      if (v.fr) { if (v.fr.camH == null) v.fr.camH = v.fr.h; v.fr.camH = angWrap(v.fr.camH + angWrap(v.fr.h - v.fr.camH) * Math.min(1, dt * 3.2)); } // (the view from behind swings round after it, the way a following camera would)
+      const hb = bikeR ? bikeR.h : v.fr ? v.fr.camH : yaw + Math.PI;
       const rs = rvSpec(v);
       if (vehicleFirstPerson && rs.turretEye && v.group.userData.turret) { v.group.updateMatrixWorld(true); desired = v.group.userData.turret.localToWorld(new THREE.Vector3(rs.eye[0], rs.eye[1], rs.eye[2])); } // (head out of the commander's hatch)
       else if (vehicleFirstPerson) { v.group.updateMatrixWorld(true); desired = v.group.localToWorld(new THREE.Vector3(rs.eye[0], VEHICLE_TYPES[v.typeIdx].riderY + rs.eye[1], rs.eye[2])); }
@@ -25001,8 +25174,8 @@
     btnJump.addEventListener('touchstart', e => {
       e.preventDefault();
       if (golfChargeEligible()) { golfFireShot(); return; } // a discrete press takes the shot at whatever power's been built up with build — see golfChargeEligible's own comment for why this isn't hold-and-release anymore
-      if (flying) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
-      else { touchJumpQueued = true; touchJumpHeld = true; }
+      if (flying && !(ridingVehicle && ridingVehicle.jet)) { flying = false; player.vel.set(0,0,0); updateModeTag(); }
+      else { touchJumpQueued = true; touchJumpHeld = true; } // (in the Fighter Jet: hold to climb — see FIGHTER JET)
     });
     btnJump.addEventListener('touchend', e => { e.preventDefault(); touchJumpHeld = false; });
     document.getElementById('btnRotate').addEventListener('touchstart', e => { e.preventDefault(); ensureAudio(); rotateTargetBlock(); });
@@ -25058,11 +25231,15 @@
     }
     return null;
   }
+  const iceCells = new Map(); // winter ice (see WINTER ICE): "x,z" -> the ice's top y (for the rain grid)
+  const iceSolid = new Map(); // ...and "x,y,z" of the frozen top water cell -> the ice's top y (walked on — see below)
   function isSolid(x,y,z) {
     const bx=Math.floor(x), by=Math.floor(y), bz=Math.floor(z);
     const k = key(bx,by,bz);
     const type = blocks.get(k);
     if (type === undefined) {
+      if (iceSolid.size) { const it = iceSolid.get(k); if (it !== undefined && y < it) return true; } // winter ice over shallow water — see WINTER ICE
+      if (roadCellInfo.size) { const ri = roadCellInfo.get(bx + ',' + bz); if (ri && ri.hi === ri.lo && y >= ri.lo - 1 && y < ri.lo + ROAD_TOP) return true; } // a flat road piece: its deck is solid (a road laid over a gap still holds you up), and its surface is the road's own, a little above the ground it's laid on
       if (roadRampCells.size) { const h = rdRampSurfAt(x, y, z); if (h !== null && y < h && y >= h - 1.2) return true; } // a road ramp — see roadRampCells
       if (hotelEntries && hotelEntries.size && hotelSolidAt(x, y, z, k)) return true; // lift doors / the lift car's floor — see HOTEL
       if (furnBoxCells && furnBoxCells.size && furnBoxSolidAt(x, y, z, bx, bz)) return true; // furniture — see FURNITURE INTERACTION & COLLISION
@@ -39467,10 +39644,37 @@ float moonDetail(vec3 p, float d) {
       if (o.worldId !== currentWorldId || !o.group) continue;
       const dx = o.x - player.pos.x, dz = o.z - player.pos.z; if (Math.abs(dx) > 30 || Math.abs(dz) > 30 || Math.abs(o.y - player.pos.y) > 3) continue;
       const ahead = dx * fx + dz * fz, lat = Math.abs(-dx * fz + dz * fx);
-      if (ahead > 0 && lat < 2.3) want = Math.min(want, bikeStopV(ahead - (6.9 + rvSpec(ridingVehicle).half))); // (stops a block or so short of its back end)
+      if (ahead > 0 && lat < 2.3 && !(R.ot && R.ot.bus === o && R.ovl > 0.25)) want = Math.min(want, bikeStopV(ahead - (6.9 + rvSpec(ridingVehicle).half))); // (stops a block or so short of its back end — unless it's going round it, see bikeOvertake)
       if (J && J.kind !== 'sideIn' && J.dist < 20 && o.curPiece === J.p.k && (Math.abs(o.v) > 0.2 || o.state === 'stop')) want = Math.min(want, bikeStopV(J.dist - 1.5));
     }
     return want;
+  }
+  // Overtaking: come up behind a slower bus with your foot down and you pull out into the other lane, go past, and pull
+  // back in once you're well clear of its front — but only on an open road: never near a junction, and only when nothing's
+  // coming the other way (if something appears before you're past, you drop back in behind it).
+  function bikeOvertake(R, J, thr, dt) {
+    if (R.ovl == null) R.ovl = 0;
+    const f = [Math.sin(R.h), Math.cos(R.h)], rt = rdRight(f), shift = -2 * busSide() * ROAD_LANE, half = rvSpec(ridingVehicle).half, ovs = R.ovl * R.ovl * (3 - 2 * R.ovl);
+    let lead = null, oncoming = false;
+    for (const o of buses.values()) {
+      if (o.worldId !== currentWorldId || !o.group || Math.abs(o.y - player.pos.y) > 3) continue;
+      const dx = o.x - player.pos.x, dz = o.z - player.pos.z; if (Math.abs(dx) > 90 || Math.abs(dz) > 90) continue;
+      const ahead = dx * f[0] + dz * f[1], laneLat = dx * rt[0] + dz * rt[1] + shift * ovs; // (sideways from where your own lane is)
+      if (Math.abs(laneLat) < 1.6 && ahead > -14 && ahead < 26 && (!lead || ahead < lead.ahead)) lead = { o, ahead };
+      if (Math.abs(laneLat - shift) < 1.6 && ahead > -6 && ahead < 75) oncoming = true; // (anything in the other lane ahead of you)
+    }
+    const openRoad = R.seg.kind === 'road' && !(J && J.dist < 40) && !R.utWant;
+    if (!R.ot) {
+      if (lead && lead.ahead > 0 && thr > 0.5 && openRoad && !oncoming && Math.abs(lead.o.v || 0) < Math.min(R.v + 0.5, rvSpec(ridingVehicle).vmax - 2) && R.v > 2) {
+        R.ot = { bus: lead.o }; showBriefMessage('↗ Overtaking');
+      }
+    } else {
+      const o = R.ot.bus, dx = o.x - player.pos.x, dz = o.z - player.pos.z, ahead = dx * f[0] + dz * f[1];
+      const passed = ahead < -(5.7 + half + 2.5), gone = !buses.has(o.id) && ![...buses.values()].includes(o);
+      if (passed || gone || R.seg.kind !== 'road') R.ot = null; // (well past it: back in)
+      else if ((oncoming || (J && J.dist < 18)) && ahead > 5.7 + half + 1) R.ot = null; // (something's coming, or a junction, and you've not drawn alongside yet: drop back in behind — once alongside you carry on past)
+    }
+    const tgt = R.ot ? 1 : 0; R.ovl += Math.max(-dt * 1.1, Math.min(dt * 1.1, tgt - R.ovl));
   }
   function bikeCrash(fx, fz, what) { // thrown off — same as being hit by a bus
     try { exitVehicle(); } catch (e) {}
@@ -39518,6 +39722,7 @@ float moonDetail(vec3 p, float d) {
       if (fullR && !R.utPrev && R.seg.kind === 'road' && R.seg.p.ends.length <= 2 && R.v > -0.3) R.utWant = true;
     }
     R.utPrev = fullR;
+    bikeOvertake(R, J, thr, dt);
     let cap = Math.min(bikeTrafficCap(R, J), rvTerrainCap(R.h)); // (and never faster than the world's being built ahead — see rvTerrainCap)
     // slow for the bends: a turn at the junction ahead, a corner piece, and turning round at a dead end
     if (J) { const pick = bikePickExit(J.exits, R.choice); if (pick && pick.turn !== 'S') cap = Math.min(cap, bikeTurnV(7, J.dist - 1)); }
@@ -39556,7 +39761,8 @@ float moonDetail(vec3 p, float d) {
     const turnRate = dt > 0 ? angWrap(R.h - prevH) / dt : 0;
     R.lean += ((sp.lean ? Math.max(-0.35, Math.min(0.35, -turnRate * Math.abs(R.v) * 0.05)) : Math.max(-0.04, Math.min(0.04, turnRate * Math.abs(R.v) * 0.006))) - R.lean) * Math.min(1, dt * 6); // a bike leans in; a car's body rolls out a touch
     const k = Math.pow(0.04, dt); R.ox *= k; R.oz *= k;
-    const x = q[0] + R.ox, y = q[1], z = q[2] + R.oz, fx = Math.sin(R.h), fz = Math.cos(R.h);
+    const ovs = R.ovl ? R.ovl * R.ovl * (3 - 2 * R.ovl) : 0, ort = rdRight([Math.sin(R.h), Math.cos(R.h)]), osh = -2 * busSide() * ROAD_LANE * ovs; // (out in the other lane while overtaking)
+    const x = q[0] + R.ox + ort[0] * osh, y = q[1], z = q[2] + R.oz + ort[1] * osh, fx = Math.sin(R.h), fz = Math.cos(R.h);
     // a bus right there: crash into it if you're going at it, otherwise just stop short
     for (const o of buses.values()) {
       if (o.worldId !== currentWorldId || !o.group || Math.abs(o.x - x) > 8 || Math.abs(o.z - z) > 8) continue;
@@ -39578,6 +39784,75 @@ float moonDetail(vec3 p, float d) {
   // (RV_SPEC: sat at the helm, or from behind and above).
   const SB_V_MAX = 19, SB_ACC = 6, SB_REV = 4, SB_TURN = 1.35, SB_HULL = [[0, 2.8], [0, -2.5], [0.95, -0.3], [-0.95, -0.3], [0.6, 1.7], [-0.6, 1.7], [0.95, -2.4], [-0.95, -2.4]];
   let sbCamRy = null, sbLockAt = 0, sbBumpMsgAt = 0;
+  // ---- FAR VIEW: the top layer only, a long way out ----
+  // The world is built in full (every block, the sea's every layer) only a little way round you — fine on foot, but the
+  // Speedboat (or the jet) gets to where it isn't built, or its water isn't drawn yet, and there's nothing there but
+  // sky. So while you're on the boat or in the jet, everything out to FAR_R chunks that isn't fully built yet is drawn
+  // as just its top layer: the ground's surface (grass, sand, snow, or the seabed under the sea) in 4-block steps, from
+  // the very same height formula the world's built from, and the sea's surface on top of it with the real water's own
+  // look and at its real height (lower in the shallows, as the real one is). As each chunk is built for real, its top-
+  // layer stand-in goes — the full blocks take over close to you, the top layer carries on further out.
+  const FAR_R = 5, FAR_CELL = 4;
+  let farLand = null, farWater = null, farAt = 0, farSig = '';
+  const farCache = new Map(); // chunk -> { land: {pos, col, nrm}, water: {pos, nrm}, wet }
+  const farColor = (h) => h < SEA_LEVEL ? (t => [0.78 + (0.3 - 0.78) * t, 0.71 + (0.34 - 0.71) * t, 0.52 + (0.33 - 0.52) * t])(Math.min(1, (SEA_LEVEL - h) / 18)) : h <= SEA_LEVEL + 1 ? /* (the seabed: sand in the shallows, shading smoothly darker the deeper it is) */ [0.85, 0.78, 0.55] : h >= SNOW_TOP_HEIGHT ? [0.93, 0.95, 0.97] : [0.36, 0.62, 0.24];
+  function farBuildChunk(cx, cz) {
+    const N = CHUNK_SIZE / FAR_CELL, x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE, H = [];
+    for (let i = -1; i <= N; i++) { H.push([]); for (let j = -1; j <= N; j++) H[i + 1].push(Math.round(rawTerrainHeight(x0 + i * FAR_CELL + FAR_CELL / 2, z0 + j * FAR_CELL + FAR_CELL / 2))); }
+    const lp = [], lc = [], ln = [], wp = [], wn = []; let wet = false, allDeep = true;
+    const quad = (P, C, Nn, a, b2, c2, d, col, n) => { for (const v of [a, b2, c2, a, c2, d]) { P.push(v[0], v[1], v[2]); if (C) C.push(col[0], col[1], col[2]); Nn.push(n[0], n[1], n[2]); } };
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const h = H[i + 1][j + 1], top = h + 1, xa = x0 + i * FAR_CELL, za = z0 + j * FAR_CELL, xb = xa + FAR_CELL, zb = za + FAR_CELL, col = farColor(h);
+      quad(lp, lc, ln, [xa, top, za], [xa, top, zb], [xb, top, zb], [xb, top, za], col, [0, 1, 0]);
+      // the step down to a lower neighbour (so a slope or a cliff isn't a see-through gap)
+      for (const [di, dj, A, B] of [[1, 0, [xb, 0, za], [xb, 0, zb]], [0, 1, [xb, 0, zb], [xa, 0, zb]], [-1, 0, [xa, 0, zb], [xa, 0, za]], [0, -1, [xa, 0, za], [xb, 0, za]]]) {
+        const hn = H[i + 1 + di][j + 1 + dj] + 1; if (hn >= top || h < SEA_LEVEL - 1) continue; // (no steps on the seabed — under the water it reads as one smooth floor)
+        const dc = [col[0] * 0.7, col[1] * 0.7, col[2] * 0.7]; quad(lp, lc, ln, [A[0], top, A[2]], [A[0], hn, A[2]], [B[0], hn, B[2]], [B[0], top, B[2]], dc, [di, 0, dj]);
+      }
+      if (h < SEA_LEVEL) { wet = true; const depth = SEA_LEVEL - h, wy = SEA_LEVEL + (depth <= 3 ? depth * 0.25 : 1); if (depth <= 3) allDeep = false;
+        quad(wp, null, wn, [xa, wy, za], [xa, wy, zb], [xb, wy, zb], [xb, wy, za], null, [0, 1, 0]); } else allDeep = false;
+    }
+    const e = { land: { pos: new Float32Array(lp), col: new Float32Array(lc), nrm: new Float32Array(ln) }, water: { pos: new Float32Array(wp), nrm: new Float32Array(wn) }, wet };
+    if (wet && allDeep) { const y = SEA_LEVEL + 1, xb = x0 + CHUNK_SIZE, zb = z0 + CHUNK_SIZE; e.water = { pos: new Float32Array([x0, y, z0, x0, y, zb, xb, y, zb, x0, y, z0, xb, y, zb, xb, y, z0]), nrm: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0]) }; } // (open sea: one flat sheet)
+    farCache.set(cx + '_' + cz, e); if (farCache.size > 600) farCache.clear();
+    return e;
+  }
+  function farMerge(mesh, parts, withCol) {
+    let n = 0; for (const p of parts) n += p.pos.length;
+    const pos = new Float32Array(n), nrm = new Float32Array(n), col = withCol ? new Float32Array(n) : null; let o = 0;
+    for (const p of parts) { pos.set(p.pos, o); nrm.set(p.nrm, o); if (col) col.set(p.col, o); o += p.pos.length; }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3)); if (col) g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    mesh.geometry.dispose(); mesh.geometry = g;
+  }
+  function farViewUpdate(on) {
+    if (!on) { if (farLand) { farLand.visible = false; farWater.visible = false; } return; }
+    if (!farLand) {
+      farLand = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })); // (shaded in its own colours — tops light, steps darker — and dimmed with the daylight below, rather than lit: it's only ever seen from a distance) farLand.frustumCulled = false; scene.add(farLand);
+      const fs = waterMat.fragmentShader.replace('uniform float uGlow;', 'uniform float uGlow;\n      uniform vec3 uFogCol;')
+        .replace('gl_FragColor = vec4(color, clamp(alpha, 0.0, 0.85));', 'float fd = smoothstep(110.0, 170.0, length(vWorldPos.xz - cameraPosition.xz)); gl_FragColor = vec4(mix(color, uFogCol, fd), clamp(alpha, 0.0, 0.85) * (1.0 - fd));'); // (the real water's look — just fading out right at the far edge)
+      farWater = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.ShaderMaterial({ uniforms: Object.assign({}, waterMat.uniforms, { uFogCol: { value: scene.fog ? scene.fog.color : new THREE.Color(0x9fc4e8) } }), vertexShader: waterMat.vertexShader, fragmentShader: fs, transparent: true, depthWrite: false }));
+      farWater.frustumCulled = false; scene.add(farWater);
+    }
+    farLand.visible = farWater.visible = true;
+    const now = performance.now(); if (now - farAt < 200) return; farAt = now;
+    if (scene.fog) farWater.material.uniforms.uFogCol.value = scene.fog.color;
+    { const sn = Math.sin(dayTime * Math.PI * 2), k = 0.28 + 0.72 * Math.max(0, Math.min(1, (sn + 0.1) / 0.5)); farLand.material.color.setRGB(k, k, k); } // (darker at dusk, dark at night)
+    const pcx = Math.floor(player.pos.x / CHUNK_SIZE), pcz = Math.floor(player.pos.z / CHUNK_SIZE), landParts = [], waterParts = [], sig = [];
+    let built = 0;
+    const order = []; for (let dx = -FAR_R; dx <= FAR_R; dx++) for (let dz = -FAR_R; dz <= FAR_R; dz++) if (dx * dx + dz * dz <= FAR_R * FAR_R + 1) order.push([dx, dz, dx * dx + dz * dz]);
+    order.sort((a, b) => a[2] - b[2]);
+    const t0 = performance.now();
+    for (const [dx, dz] of order) {
+      const cx = pcx + dx, cz = pcz + dz, ck = cx + '_' + cz, real = generatedChunks.has(ck);
+      let e = farCache.get(ck);
+      if (!e) { if (performance.now() - t0 > 5) { sig.push('?' + ck); continue; } e = farBuildChunk(cx, cz); built++; } // (a few a go — the rest next time)
+      const waterDrawn = real && (waterChunkCache.has(ck) || !e.wet);
+      if (!real) { landParts.push(e.land); sig.push('L' + ck); }
+      if (e.wet && !waterDrawn && e.water.pos.length) { waterParts.push(e.water); sig.push('W' + ck); }
+    }
+    const sg = sig.join('|'); if (sg === farSig && !built) return; farSig = sg;
+    farMerge(farLand, landParts, true); farMerge(farWater, waterParts, false);
+  }
   function isSpeedboat(v) { const t = v && VEHICLE_TYPES[v.typeIdx]; return !!(t && t.name === 'Speedboat'); }
   function sbWaterTop(x, z, refY) { // the water surface in this column near refY, or null
     const fx = Math.floor(x), fz = Math.floor(z), top = Math.floor(refY) + 1;
@@ -39825,6 +40100,7 @@ float moonDetail(vec3 p, float d) {
   // from the airport you left, the first airport you come within JET_CAPTURE of, it takes over again and lands: onto
   // final, touchdown, roll-out to a stop on the runway. Then get out, or hold W to take off again. It can't be left
   // anywhere but an airport. ✋ fires its guns (the vehicle gun). Same two views as the others: the cockpit, or behind.
+  const JET_SPACE_Y = SEA_LEVEL + 300; // (where the air runs out — see the stall)
   const JET_V_MIN = 13, JET_V_MAX = 24, JET_CAPTURE = 170, JET_ARM = 230, JET_TAXI_V = 6, JET_ROTATE_V = 20, JET_RWY_R = 3.0;
   let jetHud = null, jetHudHtml = '';
   function isJet(v) { const t = v && VEHICLE_TYPES[v.typeIdx]; return !!(t && t.name === 'Fighter Jet'); }
@@ -39846,7 +40122,7 @@ float moonDetail(vec3 p, float d) {
     if (!v.jet) {
       const ap = apAt(player.pos.x, player.pos.z);
       v.jet = { phase: 'parked', x: player.pos.x, y: ap ? ap.geo.y : player.pos.y, z: player.pos.z, h: yaw + Math.PI, pitch: 0, roll: 0, v: 0, vy: 0, ap: ap ? ap.ck : null, from: ap ? ap.ck : null, armed: false };
-      showSaveStatus('✈ Fighter Jet — hold ' + (isTouchDevice ? 'the stick up' : 'W') + ' to taxi out and take off. In the air it flies where you look (' + (isTouchDevice ? 'stick left / right turns, up / down the throttle' : 'A / D turn, W / S the throttle') + '); come near any airport and it lands itself. ✋ fires the guns. ' + (isTouchDevice ? '🎥' : 'V') + ' changes the view.');
+      showSaveStatus('✈ Fighter Jet — hold ' + (isTouchDevice ? 'the stick up' : 'W') + ' to taxi out and take off. In the air: ' + (isTouchDevice ? 'stick left / right turns, forward dives, back climbs; the up / down slider is your speed' : 'A / D turn, W dives, S climbs; Space faster, Shift slower') + '. Come near any airport and it lands itself. 🚀 fires missiles. ' + (isTouchDevice ? '🎥' : 'V') + ' changes the view.');
     }
     const J = v.jet;
     let thr = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0), steer = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
@@ -39873,37 +40149,47 @@ float moonDetail(vec3 p, float d) {
       if (J.v >= JET_ROTATE_V) { J.phase = 'climb'; J.climbTo = J.y + 26; }
     } else if (J.phase === 'climb') { // straight out and up, then it's yours
       J.pitch += (0.28 - J.pitch) * Math.min(1, dt * 2);
-      if (J.y >= J.climbTo) { J.phase = 'fly'; showSaveStatus('✈ Airborne — she’s yours. Fly where you look; come near any airport and she lands herself.'); }
+      if (J.y >= J.climbTo) { J.phase = 'fly'; J.vSet = J.v; showSaveStatus('✈ Airborne — she’s yours. ' + (isTouchDevice ? 'Stick left / right to turn, forward to dive, back to climb; the up / down slider is your speed.' : 'A / D turn, W dives, S climbs; Space faster, Shift slower.') + ' Come near any airport and she lands herself.'); }
     } else if (J.phase === 'fly') {
-      // throttle; heading and climb follow where you look (A / D turn as well); it banks into the turn
-      const vt = thr > 0 ? JET_V_MAX : thr < 0 ? JET_V_MIN : null; if (vt !== null) J.v += (vt - J.v) * Math.min(1, dt * 0.6);
-      { const tc = rvTerrainCap(J.h); if (J.v > tc) J.v = Math.max(JET_V_MIN, Math.min(J.v, tc + 6)); } // (the ground ahead has to have loaded)
-      if (steer) yaw = angWrap(yaw - steer * 0.75 * dt); // (stick / A-D bank it round — right turns right — and your view turns with it)
-      const wantH = yaw + Math.PI; turnRate = turnTo(wantH, 0.85);
-      let wantP = Math.max(-0.45, Math.min(0.45, pitch * 0.9));
-      const agl = J.y - groundHere(), ahead = [J.x + Math.sin(J.h) * 14, J.z + Math.cos(J.h) * 14], aglAhead = Math.min(J.y - (jetSurf(ahead[0], ahead[1]) + 1), J.y - (jetSurf(J.x + Math.sin(J.h) * 30, J.z + Math.cos(J.h) * 30) + 1));
-      let blocked = false; for (const d of [4, 9, 15]) { const px = J.x + Math.sin(J.h) * d, pz = J.z + Math.cos(J.h) * d; if (isSolid(px, J.y + 1.2, pz) || isSolid(px, J.y - 0.5, pz)) { blocked = true; break; } }
-      if (agl < 10 || aglAhead < 10 || blocked) wantP = Math.max(wantP, 0.35); // (never into the ground, or anything on it)
-      if (J.y > groundHere() + 130) wantP = Math.min(wantP, 0);
-      J.pitch += (wantP - J.pitch) * Math.min(1, dt * 2.2);
+      // You fly it with the stick: left / right banks it round, forward pushes the nose down, back pulls it up (let go
+      // and it levels out). The fly slider (or Space / Shift) is the throttle: push it up to go faster, pull it down to
+      // slow. Diving gains speed and climbing loses it. Nothing stops you flying into the ground — that's a crash.
+      const speedIn = Math.max(-1, Math.min(1, (keys['Space'] || touchJumpHeld ? 1 : 0) - (keys['ShiftLeft'] || keys['ShiftRight'] ? 1 : 0) + (Math.abs(flyState.y) > 0.15 ? -flyState.y : 0)));
+      if (J.vSet == null) J.vSet = J.v;
+      J.vSet = Math.max(JET_V_MIN, Math.min(JET_V_MAX, J.vSet + speedIn * 7 * dt)); J.speedIn = speedIn;
+      const thin = Math.max(0, Math.min(1, (J.y - (JET_SPACE_Y - 60)) / 60)); // (the air thins out towards space: less push, less bite on the controls)
+      J.v += (J.vSet * (1 - thin * 0.5) - J.v) * Math.min(1, dt * 0.5) - 9.8 * Math.sin(J.pitch) * 0.35 * dt;
+      J.v = Math.max(8, Math.min(32, J.v));
+      { const tc = rvTerrainCap(J.h); if (J.v > tc + 6) J.v = Math.max(JET_V_MIN, J.v - Math.min(J.v - tc - 6, 6 * dt)); } // (the ground ahead has to have loaded — eases off, not a sudden brake)
+      if (steer) { const st = -steer * 0.8 * (1 - thin * 0.6) * dt; J.h = angWrap(J.h + st); turnRate = st / Math.max(dt, 1e-4); } // (right turns right)
+      const wantP = -thr * 0.7 * (1 - thin * 0.5); // (stick forward: nose down; back: nose up; let go: level)
+      { const dP = wantP - J.pitch, maxR = 0.6 * dt; J.pitch += Math.max(-maxR, Math.min(maxR, dP * Math.min(1, dt * 2))); }
+      if (J.y >= JET_SPACE_Y) { J.phase = 'stall'; J.vSet = JET_V_MIN; playNoiseBurst(0.6, 'lowpass', 600, 120, 0.6, 1, 0.7); showSaveStatus('🌌 You’ve reached space — no air for the engine or the wings. She’s stalled and falling… she’ll restart once she’s back in the air.'); }
       const from = J.from && apList().find(a => a.ck === J.from);
       if (!J.armed && (!from || Math.hypot(J.x - jetRunway(from).mid[0], J.z - jetRunway(from).mid[1]) > JET_ARM)) J.armed = true;
       if (J.armed) for (const ap of apList()) { const rw = jetRunway(ap); if (Math.hypot(J.x - rw.mid[0], J.z - rw.mid[1]) < JET_CAPTURE) { // in range of an airport: it takes over and lands
           const d0 = Math.hypot(rw.t0[0] - J.x, rw.t0[1] - J.z), d1 = Math.hypot(rw.t1[0] - J.x, rw.t1[1] - J.z), td = d0 < d1 ? rw.t0 : rw.t1, far = d0 < d1 ? rw.t1 : rw.t0, L = [far[0] - td[0], far[1] - td[1]], ll = Math.hypot(L[0], L[1]) || 1;
           J.td = td; J.far = far; J.dir = [L[0] / ll, L[1] / ll]; J.fap = [td[0] - J.dir[0] * 110, td[1] - J.dir[1] * 110]; J.ap = ap.ck; J.gy = ap.geo.y; J.phase = 'approach';
           showSaveStatus('✈ ' + apName(ap.spec) + ' — she’s taking you in to land.'); break; } }
+    } else if (J.phase === 'stall') { // up in space: the engine's out and the wings don't bite — she noses over and falls back down, then relights
+      J.pitch += (-1.1 - J.pitch) * Math.min(1, dt * 0.6); J.roll += Math.sin(performance.now() / 300) * dt * 0.4;
+      J.v = Math.max(5, Math.min(34, J.v - 9.8 * Math.sin(J.pitch) * 0.5 * dt - (J.pitch > -0.3 ? 3 * dt : 0)));
+      if (J.y < JET_SPACE_Y - 70 && J.pitch < -0.5) { J.phase = 'fly'; J.vSet = 20; showSaveStatus('🔥 Back in the air — the engine’s relit. She’s yours again: pull back to level out.'); }
     } else if (J.phase === 'approach') { // round onto the extended centre line, a good way out
       J.v += (16 - J.v) * Math.min(1, dt * 0.5);
       const dx = J.fap[0] - J.x, dz = J.fap[1] - J.z, d = Math.hypot(dx, dz); turnRate = turnTo(jetHdg(dx, dz), 0.6);
-      const ty = J.gy + 22; J.pitch += (Math.max(-0.2, Math.min(0.2, (ty - J.y) * 0.03)) - J.pitch) * Math.min(1, dt * 1.5);
+      const ty = Math.max(J.gy + 22, jetObstacleTop(J, 45) + 9); J.pitch += (Math.max(-0.2, Math.min(0.25, (ty - J.y) * 0.03)) - J.pitch) * Math.min(1, dt * 1.5); // (well clear of the hills, trees and buildings on the way in)
       if (J.y - groundHere() < 8) J.pitch = Math.max(J.pitch, 0.25);
-      if (d < 14 || (((J.x - J.td[0]) * J.dir[0] + (J.z - J.td[1]) * J.dir[1]) > -100 && Math.abs(-(J.x - J.td[0]) * J.dir[1] + (J.z - J.td[1]) * J.dir[0]) < 25 && Math.cos(J.h - jetHdg(J.dir[0], J.dir[1])) > 0.6)) J.phase = 'final'; // (at the approach point — or already lined up well enough on the way in)
+      const alongA = (J.x - J.td[0]) * J.dir[0] + (J.z - J.td[1]) * J.dir[1];
+      if (d < 14 || (alongA > -100 && alongA < -35 && Math.abs(-(J.x - J.td[0]) * J.dir[1] + (J.z - J.td[1]) * J.dir[0]) < 25 && Math.cos(J.h - jetHdg(J.dir[0], J.dir[1])) > 0.6)) J.phase = 'final'; // (at the approach point — or already lined up well enough on the way in)
     } else if (J.phase === 'final') { // down the glide path to the runway
       J.v += (14 - J.v) * Math.min(1, dt * 0.6);
       const along = (J.x - J.td[0]) * J.dir[0] + (J.z - J.td[1]) * J.dir[1], lat = -(J.x - J.td[0]) * J.dir[1] + (J.z - J.td[1]) * J.dir[0];
       const look = Math.max(18, Math.min(45, -along * 0.5 + 18)), aim = [J.td[0] + J.dir[0] * (along + look), J.td[1] + J.dir[1] * (along + look)]; // (a point on the centre line a little way ahead of the plane — smooths it onto the line without weaving)
       turnRate = turnTo(jetHdg(aim[0] - J.x, aim[1] - J.z), 0.7);
-      const ty = J.gy + Math.max(0, -along) * 0.2; J.pitch = Math.max(-0.25, Math.min(0.1, Math.atan2(ty - J.y, Math.max(6, J.v))));
+      let ty = J.gy + Math.max(0, -along) * 0.2; if (along < -6) ty = Math.max(ty, jetObstacleTop(J, Math.min(40, -along)) + 3.5); // (down the glide path — but never lower than 3½ over anything in the way; over the runway it just lands)
+      J.pitch += (Math.max(-0.32, Math.min(0.25, Math.atan2(ty - J.y, Math.max(6, J.v)))) - J.pitch) * Math.min(1, dt * 2); // (down the glide path, easing onto it)
+      if (J.y - ty > 30 && along > -60) { J.phase = 'approach'; J.fap = [J.td[0] - J.dir[0] * 150, J.td[1] - J.dir[1] * 150]; showBriefMessage('✈ Too high — going round'); } // (much too high to make it: round again)
       if (along > -2 && J.y < J.gy + 1.2) { J.y = J.gy; J.pitch = 0; J.phase = 'rollout'; playThud(130); showBriefMessage('✈ Touchdown'); }
       if (along > 60) { J.phase = 'approach'; J.fap = [J.td[0] - J.dir[0] * 140, J.td[1] - J.dir[1] * 140]; } // (overshot: round again)
       void lat;
@@ -39914,24 +40200,164 @@ float moonDetail(vec3 p, float d) {
       if (J.v <= 0.05) { J.v = 0; J.phase = 'parked'; J.holdW = true; const ap = apList().find(a => a.ck === J.ap); showSaveStatus('✈ Down safely at ' + (ap ? apName(ap.spec) : 'the airport') + '. Get out here, or hold W to take off again.'); }
     }
     // move
-    const air = J.phase === 'climb' || J.phase === 'fly' || J.phase === 'approach' || J.phase === 'final';
+    const air = J.phase === 'climb' || J.phase === 'fly' || J.phase === 'stall' || J.phase === 'approach' || J.phase === 'final';
     const cp = Math.cos(J.pitch), sp = Math.sin(J.pitch);
     J.x += Math.sin(J.h) * J.v * cp * dt; J.z += Math.cos(J.h) * J.v * cp * dt;
     if (air) J.y += J.v * sp * dt; else J.y = J.ap ? (apList().find(a => a.ck === J.ap) || { geo: { y: J.y } }).geo.y : J.y;
-    J.roll += ((air ? Math.max(-0.9, Math.min(0.9, -turnRate * 0.9)) : 0) - J.roll) * Math.min(1, dt * 3);
+    if (J.phase !== 'stall') J.roll += ((air ? Math.max(-0.9, Math.min(0.9, -turnRate * 0.9)) : 0) - J.roll) * Math.min(1, dt * 3);
     player.pos.set(J.x, J.y, J.z); player.vel.set(0, 0, 0); player.onGround = !air; if (!flying) flying = true; resetVehAir();
     // the gear, the afterburner
     const ud = v.group && v.group.userData;
     if (ud && ud.gear) ud.gear.visible = !(J.phase === 'fly' || J.phase === 'approach' || (J.phase === 'climb' && J.y > (J.climbTo - 20)));
-    if (ud && ud.burner) { const on = (J.phase === 'roll' || J.phase === 'climb' || (J.phase === 'fly' && thr > 0)); ud.burner.material.opacity += ((on ? 0.75 : 0) - ud.burner.material.opacity) * Math.min(1, dt * 6); ud.burner.scale.setScalar(0.85 + Math.random() * 0.25); }
+    if (ud && ud.burner) { const on = (J.phase === 'roll' || J.phase === 'climb' || (J.phase === 'fly' && (J.speedIn > 0.2 || J.vSet > JET_V_MAX - 1.5))); ud.burner.material.opacity += ((on ? 0.75 : 0) - ud.burner.material.opacity) * Math.min(1, dt * 6); ud.burner.scale.setScalar(0.85 + Math.random() * 0.25); }
+    jetFarAirports(true); // (the far-off airports marked — see jetFarAirports)
+    // any part of it hitting anything — a building, a tree, a hillside, the water — and it's down
+    if (air && J.phase !== 'climb' || (J.phase === 'climb' && J.y > (J.climbTo - 22))) { const hit = jetBodyHit(J); if (hit) { jetCrash(v, hit); return; } }
+    // the cockpit view: you look straight out over the nose as it flies and turns; drag to look round, and let go —
+    // it drifts back to straight ahead
+    { // (both views now — in the view from behind, it sits behind the tail and follows it round)
+      if (J.camYaw == null) { J.offY = 0; J.offP = 0; }
+      else { const dy = angWrap(yaw - J.camYaw), dp2 = pitch - J.camPitch; if (Math.abs(dy) > 1e-5 || Math.abs(dp2) > 1e-5) { J.offY = angWrap(J.offY + dy); J.offP += dp2; J.lookT = performance.now(); } }
+      if (performance.now() - (J.lookT || 0) > 650) { const kk = Math.min(1, dt * 1.5); J.offY -= J.offY * kk; J.offP -= J.offP * kk; }
+      J.offP = Math.max(-1.3, Math.min(1.3, J.offP));
+      yaw = angWrap(J.h - Math.PI + J.offY); pitch = Math.max(-1.5, Math.min(1.5, (vehicleFirstPerson ? J.pitch - 0.06 : -0.3 + J.pitch * 0.5) + J.offP)); J.camYaw = yaw; J.camPitch = pitch;
+    }
     jetHudUpdate(J);
+  }
+  // The jet's outline: nose, canopy, belly, the wing tips and the wing roots, the tail and the top of the fin (local,
+  // nose +Z, matching buildFighterJet). Any of them in a solid block or in water is a crash.
+  // Airports from a distance: the world's only drawn a little way round you (and the haze hides the rest), so from the
+  // jet you'd only see an airport once you were nearly on it. While you're flying, every airport you're not close to is
+  // marked by its runways (drawn through the haze) and a tall beacon of light you can steer for.
+  const jetFarMarks = new Map(); // airport ck -> its marker
+  function jetFarAirports(show) {
+    const list = show ? apList() : [], seen = new Set(), t = performance.now() / 1000;
+    for (const ap of list) {
+      seen.add(ap.ck); let m = jetFarMarks.get(ap.ck);
+      const nR = ap.geo.runways || 1;
+      if (!m || m.nR !== nR) {
+        if (m) { scene.remove(m.g); disposeObject3D(m.g); }
+        const g = new THREE.Group(), tar = new THREE.MeshBasicMaterial({ color: 0x4a4d52, fog: false }), white = new THREE.MeshBasicMaterial({ color: 0xf2f2ee, fog: false });
+        for (let r = 0; r < nR; r++) { const rw = apRwy(ap, r), dx = rw.t1[0] - rw.t0[0], dz = rw.t1[1] - rw.t0[1], L = Math.hypot(dx, dz) + 16, a = Math.atan2(dx, dz), mx = (rw.t0[0] + rw.t1[0]) / 2, mz = (rw.t0[1] + rw.t1[1]) / 2;
+          const strip = new THREE.Mesh(new THREE.BoxGeometry(9, 0.1, L), tar); strip.position.set(mx, rw.y + 0.2, mz); strip.rotation.y = a; g.add(strip);
+          for (let k = -L / 2 + 6; k < L / 2 - 4; k += 9) { const d = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 4), white); d.position.set(mx + Math.sin(a) * k, rw.y + 0.25, mz + Math.cos(a) * k); d.rotation.y = a; g.add(d); } }
+        const rw0 = jetRunway(ap), beam = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 160, 10, 1, true), new THREE.MeshBasicMaterial({ color: 0x7dffb0, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
+        beam.position.set(rw0.mid[0], ap.geo.y + 80, rw0.mid[1]); g.add(beam);
+        g.traverse(o => { o.userData.noShadow = true; o.castShadow = false; o.receiveShadow = false; });
+        scene.add(g); m = { g, nR, beam }; jetFarMarks.set(ap.ck, m);
+      }
+      const mid = jetRunway(ap).mid, d = Math.hypot(mid[0] - player.pos.x, mid[1] - player.pos.z);
+      m.g.visible = d > 60; m.beam.material.opacity = 0.22 + 0.15 * Math.sin(t * 3); // (close in, the real airport's there)
+    }
+    for (const [ck, m] of [...jetFarMarks]) if (!seen.has(ck)) { scene.remove(m.g); disposeObject3D(m.g); jetFarMarks.delete(ck); }
+  }
+  function jetObstacleTop(J, dmax) { // the highest thing (ground, water, trees, buildings) along the way ahead, a wing-span wide
+    const fx = Math.sin(J.h), fz = Math.cos(J.h); let top = -Infinity;
+    for (let d = 0; d <= dmax; d += 3) for (const o of [-5.5, 0, 5.5]) {
+      const x = J.x + fx * d + fz * o, z = J.z + fz * d - fx * o; let t = jetSurf(x, z);
+      for (let y = Math.floor(J.y + 4); y >= t; y--) if (isSolid(x, y + 0.5, z)) { t = y + 1; break; }
+      if (t > top) top = t;
+    }
+    return top;
+  }
+  const JET_BODY_PTS = [[0, 1.75, 7.6], [0, 3.05, 2.8], [0, 0.8, 1.2], [5.1, 1.6, -2.4], [-5.1, 1.6, -2.4], [2.6, 1.6, -0.6], [-2.6, 1.6, -0.6], [0, 1.75, -7.0], [0, 4.2, -6.4], [2.8, 1.7, -6.6], [-2.8, 1.7, -6.6]];
+  function jetBodyHit(J) {
+    const e = new THREE.Euler(-J.pitch, J.h, J.roll, 'YXZ'), q = new THREE.Vector3();
+    for (const p of JET_BODY_PTS) {
+      q.set(p[0], p[1], p[2]).applyEuler(e); const x = J.x + q.x, y = J.y + q.y, z = J.z + q.z;
+      if (isSolid(x, y, z)) return { x, y, z, what: 'something' };
+      if (waterBlocks.has(key(Math.floor(x), Math.floor(y), Math.floor(z)))) return { x, y, z, what: 'the water', water: true };
+    }
+    return null;
+  }
+  const JET_CRASH_LIVES = 3;
+  function jetCrash(v, hit) { // it's hit something: a fireball, the wreck burns where it comes down, and you're thrown out (high up: on the seat's parachute)
+    jetFarAirports(false);
+    const J = v.jet, high = J.y - jetSurf(J.x, J.z) > 14, fwd = [Math.sin(J.h), Math.cos(J.h)], jv = J.v;
+    v.jet = null; if (jetHud) jetHud.style.display = 'none';
+    ensureAudio(); playBoom(1);
+    const p = new THREE.Vector3(hit.x, hit.y, hit.z);
+    showExplosionAt(p, [0xff6a1a, 0xffb347, 0x3a3a3a, 0x5a5a5a]); showExplosionAt(p.clone().add(new THREE.Vector3(0, 1.5, 0)), [0xff8a2a, 0x2a2a2a]);
+    if (!hit.water) broadcastAndRunBlast({ k: 'boom', id: newWeaponFxId(), x: p.x, y: p.y, z: p.z, r: 5, dmg: 4, by: playerUid, byName: getMyDisplayName() });
+    else { showWaterSplash(p); playWaterSplash(); }
+    // the wreck: down onto whatever's under where it hit
+    let gy = Math.floor(J.y); for (let y = Math.floor(J.y); y > Math.floor(J.y) - 80; y--) { if (isSolid(J.x, y + 0.5, J.z) || waterBlocks.has(key(Math.floor(J.x), y, Math.floor(J.z)))) { gy = y + 1; break; } }
+    v.group.rotation.set(0, J.h, 0); v.group.position.set(J.x, gy, J.z);
+    const wreck = ejectFromVehicleDestroyed(); // (takes you out of it and leaves it burning — see spawnVehicleWreck)
+    if (wreck) { if (mpChannel && currentWorldId === mpConnectedWorldId) { try { mpChannel.send({ type: 'broadcast', event: 'vehicleWreck', payload: wreck }); } catch (e) {} } }
+    player.pos.set(J.x - fwd[0] * 3, J.y + 2.5, J.z - fwd[1] * 3);
+    if (high) { chuteStart(-fwd[0] * Math.min(6, jv * 0.2), -fwd[1] * Math.min(6, jv * 0.2)); showBriefMessage('💥 You crashed into ' + hit.what + ' — the seat fired you out!'); }
+    else showBriefMessage('💥 You crashed into ' + hit.what + '!');
+    if (livesActive()) damageMe(JET_CRASH_LIVES, 'a crash');
+  }
+  // ---- eject: out of the jet in the air (✋ Exit while flying) — the seat fires you up and clear, the parachute opens,
+  // and you float down (steer with the stick / WASD). The jet flies on empty, noses over and crashes.
+  function jetEject(v) {
+    jetFarAirports(false);
+    const J = v.jet, fwd = [Math.sin(J.h), Math.cos(J.h)];
+    v.jet = null; if (jetHud) jetHud.style.display = 'none';
+    flying = false; ridingVehicle = null; resetVehAir(); stopVehicleEngineSound(); removeRiderFromVehicle(); setHeadlights(v.group, false);
+    document.getElementById('vehicleExitBtn').style.display = 'none'; document.getElementById('vehicleViewToggleBtn').style.display = 'none';
+    const i = vehicles.indexOf(v); if (i >= 0) vehicles.splice(i, 1);
+    ensureAudio(); playRocketLaunch(1); playThud(90);
+    player.pos.set(J.x, J.y + 2.6, J.z); chuteStart(fwd[0] * J.v * 0.25, fwd[1] * J.v * 0.25, 15);
+    showBriefMessage('🪂 Ejected! The parachute opens in a moment — steer as you come down.');
+    // the empty jet carries on, the nose drops, and it comes down
+    const g = v.group, st = { x: J.x, y: J.y, z: J.z, h: J.h, p: J.pitch, r: J.roll, vx: fwd[0] * J.v, vz: fwd[1] * J.v, vy: Math.sin(J.pitch) * J.v, t0: performance.now(), last: performance.now() };
+    if (g.userData.burner) g.userData.burner.material.opacity = 0;
+    (function fall() {
+      const now = performance.now(), dt = Math.min(0.05, (now - st.last) / 1000); st.last = now;
+      st.vy -= 9.8 * 0.7 * dt; st.p = Math.max(-1.2, st.p - 0.35 * dt); st.r += 0.4 * dt;
+      st.x += st.vx * dt; st.y += st.vy * dt; st.z += st.vz * dt;
+      g.position.set(st.x, st.y, st.z); g.rotation.set(-st.p, st.h, st.r, 'YXZ');
+      const hit = jetBodyHit({ x: st.x, y: st.y, z: st.z, h: st.h, pitch: st.p, roll: st.r });
+      if (hit || now - st.t0 > 40000 || st.y < -20) {
+        const pt = hit ? new THREE.Vector3(hit.x, hit.y, hit.z) : g.position.clone();
+        playBoom(weaponSoundVol(pt.x, pt.y, pt.z)); showExplosionAt(pt, [0xff6a1a, 0xffb347, 0x3a3a3a, 0x5a5a5a]);
+        if (hit && !hit.water) broadcastAndRunBlast({ k: 'boom', id: newWeaponFxId(), x: pt.x, y: pt.y, z: pt.z, r: 5, dmg: 4, by: playerUid, byName: getMyDisplayName() });
+        if (hit && hit.water) { showWaterSplash(pt); scene.remove(g); disposeObject3D(g); return; }
+        g.rotation.set(0, st.h, 0); spawnVehicleWreck(g, new THREE.Vector3(st.x, Math.floor(pt.y), st.z)); return;
+      }
+      requestAnimationFrame(fall);
+    })();
+  }
+  // ---- the parachute: a striped canopy over you on its lines; it slows the fall right down, and comes off when you land
+  let chute = null;
+  function chuteStart(vx, vz, vy) {
+    if (chute) chuteEnd(true);
+    const g = new THREE.Group();
+    const cols = [0xd83a2e, 0xf2f2ee];
+    for (let i = 0; i < 12; i++) { const geo = new THREE.SphereGeometry(3.2, 3, 6, i / 12 * Math.PI * 2, Math.PI * 2 / 12, 0, Math.PI * 0.42); const m = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({ color: cols[i % 2], side: THREE.DoubleSide, shininess: 20 })); m.scale.y = 0.55; g.add(m); }
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, top = [Math.cos(a) * 2.95, 0.4, Math.sin(a) * 2.95]; tube3(g, top, [Math.cos(a) * 0.18, -4.0, Math.sin(a) * 0.18], 0.012, lineMat, 3); }
+    g.scale.setScalar(0.15); scene.add(g);
+    chute = { g, t0: performance.now(), open: false, landT: 0 };
+    player.vel.set(vx || 0, vy == null ? 4 : vy, vz || 0); player.onGround = false; if (flying) flying = false;
+    chute.vx = vx || 0; chute.vz = vz || 0;
+  }
+  function chuteEnd(now) {
+    if (!chute) return; const g = chute.g; chute = null;
+    if (now) { scene.remove(g); disposeObject3D(g); return; }
+    const t0 = performance.now(); (function fold() { const e = (performance.now() - t0) / 1000; g.scale.y = Math.max(0.02, 1 - e * 1.2); g.position.y -= 0.05; g.rotation.z = e * 0.9; if (e > 1.1) { scene.remove(g); disposeObject3D(g); return; } requestAnimationFrame(fold); })();
+  }
+  function chuteStep(dt) { // from the walking physics, every frame you're on the parachute
+    const C = chute; C.age = (C.age || 0) + dt; const e = C.age;
+    if (!C.open && e > 1.0 && player.vel.y < 2) { C.open = true; playNoiseBurst(0.35, 'lowpass', 900, 300, 0.6, 1, 0.8); }
+    if (C.open) { const s = Math.min(1, C.g.scale.x + dt * 2.2); C.g.scale.setScalar(s); if (player.vel.y < -3.2) player.vel.y = Math.min(-3.2, player.vel.y + 40 * dt); } // (the canopy's drag: down to a gentle 3 or so a second)
+    C.vx *= Math.pow(0.5, dt); C.vz *= Math.pow(0.5, dt); // (the seat's throw dies away)
+    C.g.position.set(player.pos.x, player.pos.y + 1.6 + 4.0 * C.g.scale.x, player.pos.z); C.g.rotation.y += dt * 0.15;
+    if (player.onGround && e > 0.5) { chuteEnd(false); showBriefMessage('🪂 Down safely'); }
+    return [C.vx * dt, C.vz * dt];
   }
   function jetHudUpdate(J) {
     if (!jetHud) { jetHud = document.createElement('div'); jetHud.style.cssText = 'display:none;position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:12;background:rgba(15,20,30,0.72);border:1px solid rgba(255,255,255,0.25);border-radius:12px;padding:6px 14px;color:#fff;font:13px system-ui,sans-serif;text-align:center;pointer-events:none;'; document.body.appendChild(jetHud); }
     if (!J) { if (jetHud.style.display !== 'none') jetHud.style.display = 'none'; jetHudHtml = ''; return; }
-    const label = { parked: 'Parked — hold ' + (isTouchDevice ? 'the stick up' : 'W') + ' to take off', taxi: 'Taxiing', line: 'Lining up', roll: 'Take-off roll', climb: 'Climbing out', fly: 'Flying', approach: 'Coming in to land', final: 'On final', rollout: 'Braking' }[J.phase] || '';
-    let near = ''; if (J.phase === 'fly') { let best = null, bd = Infinity; for (const ap of apList()) { const m = jetRunway(ap).mid, d = Math.hypot(m[0] - J.x, m[1] - J.z); if (d < bd) { bd = d; best = { ap, m }; } }
-      if (best) { const rel = Math.atan2(best.m[0] - J.x, best.m[1] - J.z) - (yaw + Math.PI), deg = Math.round(-rel * 180 / Math.PI / 15) * 15; near = '<div style="font-size:12px;opacity:0.85;">🛬 <span style="display:inline-block;transform:rotate(' + deg + 'deg);">⬆</span> ' + bizEsc(apName(best.ap.spec)) + ' · ' + Math.round(bd) + (J.armed ? '' : ' (leave the area first)') + '</div>'; } }
+    const label = { parked: 'Parked — hold ' + (isTouchDevice ? 'the stick up' : 'W') + ' to take off', taxi: 'Taxiing', line: 'Lining up', roll: 'Take-off roll', climb: 'Climbing out', fly: 'Flying · speed set ' + Math.round((J.vSet || J.v) * 2.237) + ' mph' + (J.y > JET_SPACE_Y - 60 ? ' · ⚠ the air’s getting thin' : ''), stall: '🌌 Stalled in space — falling', approach: 'Coming in to land', final: 'On final', rollout: 'Braking' }[J.phase] || '';
+    let near = ''; if (J.phase === 'fly' || J.phase === 'climb') { // the two nearest airports: which way, and how far
+      const list = apList().map(ap => { const m = jetRunway(ap).mid; return { ap, m, d: Math.hypot(m[0] - J.x, m[1] - J.z) }; }).sort((a, b) => a.d - b.d).slice(0, 2);
+      list.forEach((b, i) => { const rel = Math.atan2(b.m[0] - J.x, b.m[1] - J.z) - J.h, deg = Math.round(-rel * 180 / Math.PI / 15) * 15, home = !J.armed && b.ap.ck === J.from;
+        near += '<div style="font-size:12px;opacity:' + (i ? 0.75 : 0.9) + ';">🛬 <span style="display:inline-block;transform:rotate(' + deg + 'deg);">⬆</span> ' + bizEsc(apName(b.ap.spec)) + ' · ' + Math.round(b.d) + (home ? ' (leave the area first)' : '') + '</div>'; });
+      if (!list.length) near = '<div style="font-size:12px;opacity:0.8;">No airports built yet</div>'; }
     const html = '<div style="font-weight:700;">✈ ' + Math.round(J.v * 2.237) + ' mph · ' + Math.max(0, Math.round(J.y - jetSurf(J.x, J.z) - 1)) + ' up</div><div style="font-size:12px;opacity:0.9;">' + label + '</div>' + near;
     if (html !== jetHudHtml) { jetHudHtml = html; jetHud.innerHTML = html; }
     if (jetHud.style.display !== 'block') jetHud.style.display = 'block';
@@ -41931,11 +42357,92 @@ float moonDetail(vec3 p, float d) {
       arr[o+1] -= dt * (1.6 + (i % 7) * 0.18);
       arr[o] += Math.sin(t * 0.9 + i) * dt * 0.35;
       arr[o+2] += Math.cos(t * 0.7 + i * 1.3) * dt * 0.25;
-      if (arr[o+1] < -6) { arr[o+1] = 18 + Math.random() * 6; arr[o] = (Math.random()-0.5)*SNOW_BOX; arr[o+2] = (Math.random()-0.5)*SNOW_BOX; }
+      const gi = surfAt(player.pos.x + arr[o], player.pos.z + arr[o+2]), hitY = gi >= 0 ? surfGrid.top[gi] - player.pos.y : -1e9; // (relative to you, like the flakes)
+      if (arr[o+1] < hitY) { if (surfGrid.kind[gi] === 1 && (i % 3) === 0) addMelt(player.pos.x + arr[o], surfGrid.top[gi], player.pos.z + arr[o+2]); arr[o+1] = Math.max(18, hitY + 16) + Math.random() * 6; arr[o] = (Math.random()-0.5)*SNOW_BOX; arr[o+2] = (Math.random()-0.5)*SNOW_BOX; }
+      else if (arr[o+1] < -6) { arr[o+1] = 18 + Math.random() * 6; arr[o] = (Math.random()-0.5)*SNOW_BOX; arr[o+2] = (Math.random()-0.5)*SNOW_BOX; }
       if (arr[o] > half) arr[o] -= SNOW_BOX; else if (arr[o] < -half) arr[o] += SNOW_BOX;
       if (arr[o+2] > half) arr[o+2] -= SNOW_BOX; else if (arr[o+2] < -half) arr[o+2] += SNOW_BOX;
     }
     pos.needsUpdate = true;
+  }
+
+  // ================= RAIN & SNOW MEET THE WORLD =================
+  // The rain and snow used to fall straight through everything, the sea included — you could stand on the seabed and
+  // watch it rain round you. Now each drop and flake stops where it meets the ground, a tree or the water. Where it
+  // lands on water: a raindrop makes a little ring that spreads and fades; a snowflake sits on the surface a few
+  // seconds, shrinking as it melts. Under the water there's no rain or snow at all.
+  const SURF_N = 41, SURF_H = 20; // a grid of "where's the top here" round you, refreshed a few times a second
+  const surfGrid = { top: new Float32Array(SURF_N * SURF_N), kind: new Uint8Array(SURF_N * SURF_N), x0: 0, z0: 0, at: 0 }; // kind: 0 ground, 1 water, 2 ice
+  function surfColumn(x, z) { // -> [top y, kind]
+    const h = columnHeight.get(x + ',' + z); if (h === undefined) return [-1e9, 0];
+    const ik = iceCells.size ? iceCells.get(x + ',' + z) : undefined; if (ik !== undefined) return [ik, 2];
+    if (h < SEA_LEVEL && waterBlocks.has(key(x, SEA_LEVEL, z))) { const f = waterBlocks.get(key(x, SEA_LEVEL, z)); return [SEA_LEVEL + (typeof f === 'number' && f > 0 && f <= 1 ? f : 1), 1]; }
+    let wt = null; for (let y = h + 1; y <= h + 8; y++) { if (waterBlocks.has(key(x, y, z))) wt = y; else if (wt !== null) break; }
+    if (wt !== null) { const f = waterBlocks.get(key(x, wt, z)); return [wt + (typeof f === 'number' && f > 0 && f <= 1 ? f : 1), 1]; }
+    return [h + 1, 0];
+  }
+  function surfGridUpdate() {
+    const now = performance.now(); if (now - surfGrid.at < 300 && Math.abs(Math.floor(player.pos.x) - SURF_H - surfGrid.x0) < 2 && Math.abs(Math.floor(player.pos.z) - SURF_H - surfGrid.z0) < 2) return;
+    surfGrid.at = now; surfGrid.x0 = Math.floor(player.pos.x) - SURF_H; surfGrid.z0 = Math.floor(player.pos.z) - SURF_H;
+    for (let i = 0; i < SURF_N; i++) for (let j = 0; j < SURF_N; j++) { const c = surfColumn(surfGrid.x0 + i, surfGrid.z0 + j); surfGrid.top[i * SURF_N + j] = c[0]; surfGrid.kind[i * SURF_N + j] = c[1]; }
+  }
+  function surfAt(wx, wz) { const i = Math.floor(wx) - surfGrid.x0, j = Math.floor(wz) - surfGrid.z0; if (i < 0 || j < 0 || i >= SURF_N || j >= SURF_N) return -1; return i * SURF_N + j; }
+  // splashes: rings on the water, growing and fading
+  const SPLASH_MAX = 400, splashPos = new Float32Array(SPLASH_MAX * 3), splashAge = new Float32Array(SPLASH_MAX).fill(1); let splashNext = 0;
+  const splashGeom = new THREE.BufferGeometry(); splashGeom.setAttribute('position', new THREE.BufferAttribute(splashPos, 3)); splashGeom.setAttribute('age', new THREE.BufferAttribute(splashAge, 1));
+  const splashMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, uniforms: { uScale: { value: 300 } },
+    vertexShader: 'attribute float age; varying float vAge; uniform float uScale; void main() { vAge = age; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = age >= 1.0 ? 0.0 : uScale * (0.1 + age * 0.6) / -mv.z; gl_Position = projectionMatrix * mv; }',
+    fragmentShader: 'varying float vAge; void main() { float d = length(gl_PointCoord - 0.5) * 2.0; float ring = smoothstep(0.6, 0.78, d) * (1.0 - smoothstep(0.84, 1.0, d)); float ring2 = smoothstep(0.3, 0.42, d) * (1.0 - smoothstep(0.48, 0.6, d)) * 0.6; float drop = (1.0 - smoothstep(0.0, 0.3, d)) * (1.0 - smoothstep(0.0, 0.2, vAge)); float a = (ring + ring2 + drop) * (1.0 - vAge); if (a < 0.02) discard; gl_FragColor = vec4(0.9, 0.96, 1.0, a); }' });
+  const splashPoints = new THREE.Points(splashGeom, splashMat); splashPoints.frustumCulled = false; splashPoints.renderOrder = 6; scene.add(splashPoints);
+  function addSplash(x, y, z) { const i = splashNext; splashNext = (splashNext + 1) % SPLASH_MAX; splashPos[i * 3] = x; splashPos[i * 3 + 1] = y + 0.03; splashPos[i * 3 + 2] = z; splashAge[i] = 0; }
+  // melting flakes: snow resting on the water, shrinking away
+  const MELT_MAX = 300, meltPos = new Float32Array(MELT_MAX * 3), meltLife = new Float32Array(MELT_MAX); let meltNext = 0;
+  const meltGeom = new THREE.BufferGeometry(); meltGeom.setAttribute('position', new THREE.BufferAttribute(meltPos, 3)); meltGeom.setAttribute('life', new THREE.BufferAttribute(meltLife, 1));
+  const meltMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, uniforms: { uScale: { value: 300 }, uMap: { value: null } },
+    vertexShader: 'attribute float life; varying float vLife; uniform float uScale; void main() { vLife = life; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = life <= 0.0 ? 0.0 : uScale * 0.26 * (0.25 + 0.75 * life) / -mv.z; gl_Position = projectionMatrix * mv; }',
+    fragmentShader: 'varying float vLife; uniform sampler2D uMap; void main() { vec4 c = texture2D(uMap, gl_PointCoord); float a = c.a * min(1.0, vLife * 1.6) * 0.95; if (a < 0.02) discard; gl_FragColor = vec4(1.0, 1.0, 1.0, a); }' });
+  const meltPoints = new THREE.Points(meltGeom, meltMat); meltPoints.frustumCulled = false; meltPoints.renderOrder = 6; scene.add(meltPoints);
+  function addMelt(x, y, z) { const i = meltNext; meltNext = (meltNext + 1) % MELT_MAX; meltPos[i * 3] = x; meltPos[i * 3 + 1] = y + 0.04; meltPos[i * 3 + 2] = z; meltLife[i] = 1; }
+  function updateSplashMelt(dt) {
+    const sc = renderer.domElement.height / (2 * Math.tan(camera.fov * Math.PI / 360)); splashMat.uniforms.uScale.value = sc; meltMat.uniforms.uScale.value = sc;
+    if (!meltMat.uniforms.uMap.value) meltMat.uniforms.uMap.value = snowFlakeTex;
+    let any = false; for (let i = 0; i < SPLASH_MAX; i++) if (splashAge[i] < 1) { splashAge[i] = Math.min(1, splashAge[i] + dt / 0.6); any = true; }
+    if (any) splashGeom.attributes.age.needsUpdate = true; splashPoints.visible = any;
+    any = false; for (let i = 0; i < MELT_MAX; i++) if (meltLife[i] > 0) { meltLife[i] = Math.max(0, meltLife[i] - dt / 3.2); any = true; }
+    if (any) meltGeom.attributes.life.needsUpdate = true; meltPoints.visible = any;
+    if (any || splashPoints.visible) { splashGeom.attributes.position.needsUpdate = true; meltGeom.attributes.position.needsUpdate = true; }
+  }
+  // ---- WINTER ICE: shallow water freezes over ----
+  // In winter, water one or two blocks deep — ponds, puddles, the shallow edges of lakes and the sea — freezes into a
+  // sheet of ice you can walk on (deeper water stays open). It's worked out round you every few seconds as you go, and
+  // thaws again when winter's over. Nothing about the water itself changes; the ice just sits on top of it.
+  let iceMesh = null, iceAt = 0, iceSig = '';
+  const iceMat = new THREE.MeshLambertMaterial({ color: 0xd6ecf7, map: (() => { const c = document.createElement('canvas'); c.width = c.height = 32; const x = c.getContext('2d'); x.fillStyle = '#e4f3fb'; x.fillRect(0, 0, 32, 32); x.strokeStyle = 'rgba(160,200,225,0.8)'; x.lineWidth = 1; for (let i = 0; i < 5; i++) { x.beginPath(); let px = Math.random() * 32, py = Math.random() * 32; x.moveTo(px, py); for (let k = 0; k < 4; k++) { px += (Math.random() - 0.5) * 14; py += (Math.random() - 0.5) * 14; x.lineTo(px, py); } x.stroke(); } x.fillStyle = 'rgba(255,255,255,0.5)'; for (let i = 0; i < 18; i++) x.fillRect(Math.random() * 32, Math.random() * 32, 1, 1); const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.NearestFilter; return t; })() });
+  function iceUpdate(winter) {
+    if (!winter) { if (iceCells.size || iceSolid.size) { iceCells.clear(); iceSolid.clear(); iceSig = ''; if (iceMesh) { iceMesh.geometry.dispose(); iceMesh.geometry = new THREE.BufferGeometry(); } } return; }
+    const now = performance.now(); if (now - iceAt < 3000) return; iceAt = now;
+    const R = 56, px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z), cells = [];
+    const newCells = new Map(), newSolid = new Map();
+    for (let x = px - R; x <= px + R; x++) for (let z = pz - R; z <= pz + R; z++) {
+      const h = columnHeight.get(x + ',' + z); if (h === undefined) continue;
+      // the top water cell in this column, and how deep the water is under it
+      let top = null;
+      if (h < SEA_LEVEL && SEA_LEVEL - h <= 2 && waterBlocks.has(key(x, SEA_LEVEL, z))) top = SEA_LEVEL;
+      else if (h >= SEA_LEVEL - 1) { for (let y = h + 1; y <= h + 3; y++) { if (waterBlocks.has(key(x, y, z))) top = y; else if (top !== null) break; } }
+      if (top === null) continue;
+      let depth = 0; for (let y = top; y > top - 3; y--) { if (waterBlocks.has(key(x, y, z))) depth++; else break; }
+      if (depth > 2 || blocks.has(key(x, top, z))) continue; // (deep water stays open)
+      if (waterBlocks.has(key(x, top + 1, z))) continue; // (flowing down into it from above — not still)
+      const f = waterBlocks.get(key(x, top, z)), ty = top + (typeof f === 'number' && f > 0 && f <= 1 ? f : 1) + 0.02;
+      newCells.set(x + ',' + z, ty); newSolid.set(key(x, top, z), ty); cells.push([x, ty, z]);
+    }
+    const sig = cells.length + ':' + px + ',' + pz; if (sig === iceSig) return; iceSig = sig;
+    iceCells.clear(); for (const [k, v] of newCells) iceCells.set(k, v); iceSolid.clear(); for (const [k, v] of newSolid) iceSolid.set(k, v);
+    const pos = new Float32Array(cells.length * 18), uv = new Float32Array(cells.length * 12), nrm = new Float32Array(cells.length * 18);
+    cells.forEach(([x, y, z], i) => { pos.set([x, y, z, x, y, z + 1, x + 1, y, z + 1, x, y, z, x + 1, y, z + 1, x + 1, y, z], i * 18); uv.set([0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0], i * 12); for (let k = 0; k < 6; k++) nrm.set([0, 1, 0], i * 18 + k * 3); });
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    if (!iceMesh) { iceMesh = new THREE.Mesh(new THREE.BufferGeometry(), iceMat); iceMesh.frustumCulled = false; iceMesh.receiveShadow = true; scene.add(iceMesh); }
+    iceMesh.geometry.dispose(); iceMesh.geometry = g;
   }
 
   // ================= STARS + CLOUDS =================
@@ -42145,9 +42652,13 @@ float moonDetail(vec3 p, float d) {
     // now (not just during precip) since the ambient sounds below need
     // it for sunny weather too, not only rain/snow.
     const playerIndoors = !isExposedToSky(Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)) || yachtCoveredAt(player.pos.x, player.pos.y, player.pos.z) || onMoon || !!aboard || !!planeFlying || !!trainDriving || !!ferryDriving || !!busDriving; // (inside a plane or a carriage, or in the train's cab, it's under cover — see ABOARD) // (a yacht's saloon, lower deck and bridge are under cover too — see SUPERYACHT; and it never rains on the Moon)
-    precipPoints.visible = weatherState === 'precip' && !playerIndoors && !snowy;
-    updateSnowfall(dt, weatherState === 'precip' && !playerIndoors && snowy); // see SNOWFALL
-    if (weatherState === 'precip' && !playerIndoors && !snowy) {
+    const camP = camera.getWorldPosition(new THREE.Vector3()), underWater = waterBlocks.has(key(Math.floor(camP.x), Math.floor(camP.y), Math.floor(camP.z))) && !iceSolid.has(key(Math.floor(camP.x), Math.floor(camP.y), Math.floor(camP.z))); // (looking out from under the water: no rain or snow down here)
+    if (weatherState === 'precip' && !playerIndoors && !underWater) surfGridUpdate();
+    precipPoints.visible = weatherState === 'precip' && !playerIndoors && !snowy && !underWater;
+    updateSnowfall(dt, weatherState === 'precip' && !playerIndoors && snowy && !underWater); // see SNOWFALL
+    updateSplashMelt(dt);
+    iceUpdate(snowy && !onMoon); // (shallow water freezes in winter — see WINTER ICE)
+    if (weatherState === 'precip' && !playerIndoors && !snowy && !underWater) {
       precipMat.color.setHex(snowy ? 0xffffff : 0xaeccff);
       precipMat.size = snowy ? 0.09 : 0.14;
       precipPoints.position.x = player.pos.x;
@@ -42158,7 +42669,10 @@ float moonDetail(vec3 p, float d) {
       for (let i=0;i<pos.count;i++) {
         let y = pos.getY(i) - dt*fallSpeed;
         let x = pos.getX(i) + (snowy ? Math.sin(i+dayTime*30)*dt*0.4 : 0);
-        if (y < player.pos.y - 5) { y = player.pos.y + 20 + Math.random()*10; x = (Math.random()-0.5)*40; }
+        const gi = surfAt(player.pos.x + x, player.pos.z + pos.getZ(i)); // (where this drop meets the ground, a treetop or the water — see RAIN & SNOW MEET THE WORLD)
+        const hitY = gi >= 0 ? surfGrid.top[gi] : -1e9;
+        if (y < hitY) { if (surfGrid.kind[gi] === 1) addSplash(player.pos.x + x, hitY, player.pos.z + pos.getZ(i)); y = Math.max(player.pos.y + 20, hitY + 18) + Math.random()*10; x = (Math.random()-0.5)*40; }
+        else if (y < player.pos.y - 5) { y = player.pos.y + 20 + Math.random()*10; x = (Math.random()-0.5)*40; }
         pos.setY(i, y); pos.setX(i, x);
       }
       pos.needsUpdate = true;
@@ -46282,6 +46796,7 @@ float moonDetail(vec3 p, float d) {
       windIntensity = flying ? Math.min(1, move.length()) : 0;
       move.multiplyScalar(speed*dt);
       if (ridingVehicle && FR_SPEC[VEHICLE_TYPES[ridingVehicle.typeIdx].name] && !ridingVehicle.road) move = frDrive(ridingVehicle, dt, speed); // the e-bike, e-scooter and Moon Buggy really steer — see STEERING
+      if (ridingVehicle) move = vehClipMove(ridingVehicle, move); // the whole vehicle bumps into things, not just you in the middle of it — see VEHICLE BODIES
 
       const vehPrevX = player.pos.x, vehPrevY = player.pos.y, vehPrevZ = player.pos.z; // start-of-frame position, for measuring how fast a vehicle is climbing a ramp (see the launch check below)
       tryMoveSlopeLifted = false;
@@ -46471,6 +46986,7 @@ float moonDetail(vec3 p, float d) {
           if (moonHop && (player.onGround || !ridingMoonBuggy())) moonHop = false; // (landed)
           player.vel.y += GRAVITY * alienGravMult() * (moonHop ? MOON_HOP_G : 1) * dt; // (low-gravity zones and Gravity Crystals — see ALIEN PLANET; the Moon Buggy's hop)
           if (!golfChargingNow && (keys['Space'] || touchJumpQueued) && player.onGround) { const mh = ridingMoonBuggy(); player.vel.y = mh ? MOON_HOP_VEL : JUMP_VEL; player.onGround = false; playJump(); if (mh) { moonHop = true; showSaveStatus('🌕 Moon gravity!'); } }
+          if (chute && !ridingVehicle) { const d = chuteStep(dt); move.x += d[0]; move.z += d[1]; } // (floating down under the parachute — see FIGHTER JET)
           touchJumpQueued = false;
         }
         const wasGrounded = player.onGround;

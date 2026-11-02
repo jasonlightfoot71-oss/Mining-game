@@ -649,7 +649,7 @@
 <body>
 
 <div id="worldSelect">
-  <h1>⛏️ Mining World <span id="buildTag" style="font-size:11px;font-weight:400;opacity:0.55;text-shadow:none;vertical-align:middle;">build 2026-11-01q</span></h1>
+  <h1>⛏️ Mining World <span id="buildTag" style="font-size:11px;font-weight:400;opacity:0.55;text-shadow:none;vertical-align:middle;">build 2026-11-01s</span></h1>
   <div id="standaloneNotice" style="display:none;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:8px 10px;font-size:12px;opacity:0.85;margin:0 auto 10px;max-width:700px;">📱 Playing standalone — your worlds, coins, and rank are saved to this device/browser only, not a TASKMILL account.</div>
   <div id="worldQuadrants">
     <div class="titleQuadrant" id="quadMill">
@@ -9092,13 +9092,13 @@
       const dy = player.pos.y - d.group.position.y;
       const dz = player.pos.z - d.group.position.z;
       const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-      const target = dist < DOOR_OPEN_DISTANCE ? 1 : 0;
+      const target = dist < DOOR_OPEN_DISTANCE || (d.heldUntil && d.heldUntil > performance.now()) ? 1 : 0; // (heldUntil: staff walking through — see restWaiterStep)
       // First time this door is ever evaluated (world just loaded, or the
       // door was just placed), just adopt whatever target the player's
       // current distance implies — no sound, since nothing actually swung.
       if (d.lastTarget === undefined) d.lastTarget = target;
       if (target !== d.lastTarget) {
-        if (target === 1) playDoorOpen(); else playDoorClose();
+        if (dist < 14) { if (target === 1) playDoorOpen(); else playDoorClose(); }
         d.lastTarget = target;
       }
       if (d.angle === target) return;
@@ -11808,6 +11808,7 @@
     }
     if (name === 'Grand Piano') { // a little tune — anyone nearby hears it
       if (fx) return true;
+      for (const rr of restaurants.values()) if (rr.pianoKey === fk && rr.people.some(p => p.role === 'pianist')) { say('🎹 Shh — the pianist’s playing'); return true; } // (not over the top of the restaurant's music)
       furnFx.set(fk, { fk, f, kind: 'piano', t: 0, parts: [], note: 0 });
       say('🎹 ♪'); return true;
     }
@@ -12212,8 +12213,15 @@
   // entry can now live under several different map keys at once.
   const villageHouseFootprints = new Map(); // "cx_cz" (an ACTUAL chunk) -> [{x0,x1,z0,z1,gy,baseSurfaceType,subFillType,trim,doorSide,__ck}, ...]
   const villageFootprintChunkKeys = new Map(); // village ck -> ["cx_cz", ...] every actual chunk key it registered into, for teardown
+  // Flowers and mushrooms drawn on the ground before a building went up there (they're drawn by a slow background scan
+  // — see FLOWERS AND MUSHROOMS) are cleared off its whole plot the moment it registers, rather than sitting on its
+  // floor until the scan next comes round.
+  function overlaysClearBox(x0, x1, z0, z1) {
+    try { for (const m of [ovByBlock, ovPending]) for (const [k, a] of [...m]) { const c1 = k.indexOf(','), c2 = k.lastIndexOf(','), x = +k.slice(0, c1), z = +k.slice(c2 + 1); if (x < x0 || x > x1 || z < z0 || z > z1) continue; for (let i = 0; i < a.length; i += 2) { a[i].setMatrixAt(a[i + 1], OV_GONE); a[i].instanceMatrix.needsUpdate = true; } m.delete(k); } } catch (e) {}
+  }
   function registerBuildingFootprint(entry, ck) {
     entry.__ck = ck;
+    if (entry.standalone) overlaysClearBox(entry.x0, entry.x1, entry.z0, entry.z1);
     const pad = 20; // covers the 10-block clearing pad plus the escape stair's own further reach, with margin
     const ccx0 = Math.floor((entry.x0 - pad) / CHUNK_SIZE), ccx1 = Math.floor((entry.x1 + pad) / CHUNK_SIZE);
     const ccz0 = Math.floor((entry.z0 - pad) / CHUNK_SIZE), ccz1 = Math.floor((entry.z1 + pad) / CHUNK_SIZE);
@@ -29120,7 +29128,7 @@
     { t: 'mason',     name: 'Stone Mason',    emoji: '🪨', price: 2500, sx: 23, sz: 23, h: 9, note: 'buys the stone your Bulldozer digs out' }, // see STONE MASON
     { t: 'farm',      name: 'Farm',           emoji: '🚜', price: 2500, sx: 29, sz: 20, note: 'mud fields, cows and sheep' },
     { t: 'church',    name: 'Church',         emoji: '⛪', price: 4000, sx: 19, sz: 25 },
-    { t: 'hotel',     name: 'Hotel',          emoji: '🏨', price: 10000, sx: 19, sz: 21, h: 52, note: '10 floors + rooftop pool — furnish the rooms to rent them out' },
+    { t: 'hotel',     name: 'Hotel',          emoji: '🏨', price: 50000, sx: 19, sz: 21, h: 52, note: '10 floors + rooftop pool — furnish the rooms to rent them out' },
     { t: 'bakery',    name: 'Mill & Bakery',  emoji: '🥖', price: 9000, sx: 25, sz: 23, h: 13, note: 'turns your wheat into bread, eggs and milk into cakes' },
     { t: 'restaurant', name: 'Restaurant',    emoji: '🍽️', price: 18000, sx: 27, sz: 40, h: 7, note: 'cooks your crops and meat into meals — hire a head chef, who grows the veg in its kitchen garden' },
     { t: 'rocket',    name: 'Rocket & Moon Base', emoji: '🚀', price: 10000000, sx: 36, sz: 36, h: 36, note: 'launch to the Moon — low gravity, a moon base, moon rock worth 💰1,000–10,000 a sample' },
@@ -29130,11 +29138,11 @@
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
     { t: 'arena',     name: 'Arena',          emoji: '🎯', price: 1000000, sx: 120, sz: 120, h: 22, note: 'a massive indestructible metal battle arena — three levels, maze, containers, towers and catwalks; fight other players or bots' }, // see ARENA
     { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 56, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
-    { t: 'airport',   name: 'Airport',        emoji: '✈️', price: 60000, sx: 140, sz: 56, h: 17, note: 'runway, terminal, control tower and hangar — buy airliners at check-in, fly them yourself or hire pilots; passengers pay by the distance flown' },
-    { t: 'ferryport', name: 'Ferry Port',     emoji: '⛴️', price: 30000, sx: 60, sz: 44, h: 8, note: 'on a shore, sea or lake — a terminal, a quay and two piers with four berths; buy a ferry at the Ferry Desk, steer it yourself or let it sail; passengers pay by the distance sailed' },
-    { t: 'busstation', name: 'Bus Station',   emoji: '🚌', price: 20000, sx: 36, sz: 48, h: 8, note: 'a ticket hall, a road across the front (open both ends) and a turning loop — buy a bus at the Bus Desk, lay roads (or have a crew lay them) to other bus stations, put bus stops along them; passengers pay by the distance' },
+    { t: 'airport',   name: 'Airport',        emoji: '✈️', price: 50000, sx: 140, sz: 56, h: 17, note: 'runway, terminal, control tower and hangar — buy airliners at check-in, fly them yourself or hire pilots; passengers pay by the distance flown' },
+    { t: 'ferryport', name: 'Ferry Port',     emoji: '⛴️', price: 25000, sx: 60, sz: 44, h: 8, note: 'on a shore, sea or lake — a terminal, a quay and two piers with four berths; buy a ferry at the Ferry Desk, steer it yourself or let it sail; passengers pay by the distance sailed' },
+    { t: 'busstation', name: 'Bus Station',   emoji: '🚌', price: 25000, sx: 36, sz: 48, h: 8, note: 'a ticket hall, a road across the front (open both ends) and a turning loop — buy a bus at the Bus Desk, lay roads (or have a crew lay them) to other bus stations, put bus stops along them; passengers pay by the distance' },
     { t: 'busstop',   name: 'Bus Stop',       emoji: '🚏', price: 500, sx: 3, sz: 3, h: 3, note: 'a shelter on the kerb of one of your roads — aim at the verge beside a straight; buses on that road call there, and you can catch them' },
-    { t: 'station',   name: 'Train Station',  emoji: '🚉', price: 8000, sx: 27, sz: 11, h: 7, note: 'platform with its own track — buy trains at the ticket machine; passengers pay to ride station to station' },
+    { t: 'station',   name: 'Train Station',  emoji: '🚉', price: 25000, sx: 27, sz: 11, h: 7, note: 'platform with its own track — buy trains at the ticket machine; passengers pay to ride station to station' },
     { t: 'pub',       name: 'Pub',            emoji: '🍺', price: 20000, sx: 31, sz: 36, h: 7, note: 'Bar, kitchen, toilets, cellar, office + beer garden — hire a manager to run it' },
     { t: 'landmark',  name: 'Well',           emoji: '🪣', price: 400,  sx: 7,  sz: 7, kind: 0 },
     { t: 'landmark',  name: 'Statue',         emoji: '🗿', price: 600,  sx: 7,  sz: 7, kind: 1 },
@@ -29580,7 +29588,7 @@
     const g = new THREE.Group();
     const steel = new THREE.MeshLambertMaterial({ color: 0xa9b1b8 }), dark = new THREE.MeshLambertMaterial({ color: 0x34363a });
     const brass = new THREE.MeshLambertMaterial({ color: 0xd2b062 });
-    const floorM = new THREE.Mesh(new THREE.BoxGeometry(2.98, 0.14, 2.98), dark); floorM.position.y = -0.07; g.add(floorM);
+    const floorM = new THREE.Mesh(new THREE.BoxGeometry(2.98, 0.14, 2.98), dark); floorM.position.y = -0.055; g.add(floorM); // (its top 1.5cm proud of the floor — level with it, the two flickered through each other)
     const back = new THREE.Mesh(new THREE.BoxGeometry(2.98, 2.9, 0.06), steel); back.position.set(0, 1.45, -1.46); g.add(back);
     for (const sx of [-1, 1]) { const w = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.9, 2.98), steel); w.position.set(sx * 1.46, 1.45, 0); g.add(w); }
     const ceil = new THREE.Mesh(new THREE.BoxGeometry(2.98, 0.08, 2.98), steel); ceil.position.y = 2.92; g.add(ceil);
@@ -29704,10 +29712,10 @@
     // Reception: French doors, the sign, lights, the desk and receptionist, somewhere to sit.
     f.shell.gy = floor; f.shell.h = 4;
     placeShellDoor(f.shell, doorSide, reg, 4);
-    placeShellSign(f.shell, doorSide, 'Hotel', reg);
+    hotelDoorSign(f.shell, doorSide, hotelDisplayName({ spec: replay }), reg); // the name you gave it, over the door (see hotelSetSign)
     for (const [u, nx, nz] of [[0, f.s[0], f.s[1]], [W - 1, -f.s[0], -f.s[1]]]) {
       if (fixtures.size >= MAX_LIGHTS) break;
-      const [x, z] = f.cell(u, 8); const fk = addFixture(x, floor + 3, z, nx, 0, nz); // v=8 is a mullion, not glass if (fk) reg.fixtureKeys.push(fk);
+      const [x, z] = f.cell(u, 8); const fk = addFixture(x, floor + 3, z, nx, 0, nz); if (fk) reg.fixtureKeys.push(fk); // v=8 is a mullion, not glass
     }
     const backSide = HOUSE_BACK_SIDE[doorSide];
     { const [x, z] = f.cell(mid, 6); addFurnitureTracked(x, floor, z, HOUSE_SIDE_ROT[backSide], SHOP_COUNTER_IDX, reg); }
@@ -29802,7 +29810,7 @@
     {
       const g = new THREE.Group(); const [px, pz] = f.pos(7.5, 13.2);
       g.position.set(px, floor + HOTEL_TOP + 1, pz); g.rotation.y = Math.atan2(-f.d[0], -f.d[1]);
-      scene.add(g); reg.props.push(g); h.sign = g;
+      scene.add(g); reg.props.push(g); h.sign = g; h.doorSignAt = { shell: f.shell, doorSide, reg };
       hotelSetSign(h);
     }
     hotelEntries.set(ck, h);
@@ -29917,7 +29925,18 @@
 
   // ---- The roof sign ----
   function hotelDisplayName(h) { const n = h && h.spec && typeof h.spec.name === 'string' ? h.spec.name.trim() : ''; return n || 'Hotel'; }
+  // The sign over the reception doors: the hotel's name (it said "Hotel" whatever you called it). Redone on a rename.
+  function hotelDoorSign(shell, doorSide, text, reg) {
+    let bx, bz, nx, nz;
+    if (doorSide === 'south') { bx = shell.midX; bz = shell.z1; nx = 0; nz = 1; } else if (doorSide === 'north') { bx = shell.midX; bz = shell.z0; nx = 0; nz = -1; }
+    else if (doorSide === 'east') { bx = shell.x1; bz = shell.midZ; nx = 1; nz = 0; } else { bx = shell.x0; bz = shell.midZ; nx = -1; nz = 0; }
+    const fk = faceKeyFor(bx, shell.gy + 3, bz, nx, 0, nz);
+    if (signs.has(fk)) { removeSign(fk); if (reg) { const i = reg.signKeys.indexOf(fk); if (i >= 0) reg.signKeys.splice(i, 1); } } // (an old one — "Hotel", or the last name)
+    const sk = addSign(bx, shell.gy + 3, bz, nx, 0, nz, 3, text);
+    if (sk && reg) reg.signKeys.push(sk);
+  }
   function hotelSetSign(h) {
+    if (h.doorSignAt) try { hotelDoorSign(h.doorSignAt.shell, h.doorSignAt.doorSide, hotelDisplayName(h), h.doorSignAt.reg); } catch (e) {}
     const g = h.sign; if (!g) return;
     while (g.children.length) { const c = g.children.pop(); disposeObject3D(c); }
     const text = hotelDisplayName(h).toUpperCase();
@@ -32011,7 +32030,8 @@
   // ================= RESTAURANT =================
   // Bought from the Property menu (23 x 23): a white-rendered restaurant with a front terrace.
   //   terrace (v0-4): tables with parasols behind a low hedge
-  //   dining room (u1-14, v6-14): six candlelit tables for four, a drinks fridge, an open pass into the kitchen
+  //   dining room (u1-14, v6-14): table sets to the left of the door as you walk in, each under its own chandelier
+  //     (see REST_SETS), a pianist at a grand piano between the toilet doors, a drinks fridge, an open pass into the kitchen
   //   kitchen (u1-14, v16-21): ovens, sinks, fridges, prep islands, the pass counter
   //   right wing (u16-21): gents and ladies (cubicles), the walk-in pantry, the office with the safe
   // How it pays: hire a head chef at the office safe (✋), stock the pantry from your bag, and every sunrise the
@@ -32174,17 +32194,13 @@
     for (const u of [3, 7, 12]) fix(u, V0, floor + 4, 'back');
     fix(11, 15, floor + 3, 'back'); fix(19, 10, floor + 3, 'front'); fix(19, 10, floor + 3, 'back'); fix(19, 15, floor + 3, 'back'); fix(22, 19, floor + 3, 'left'); fix(0, 18, floor + 3, 'right'); // office (x2), pantry
     // dining room: six tables for four, a cloth and a candle on each
-    const tablesAt = []; // (the dining room starts empty — the world manager furnishes it when you ask; see THE WORLD MANAGER'S FURNISHING SERVICE)
-    for (const [u, v] of tablesAt) {
-      furn(u, v, 'Table', 'front');
-      furn(u - 1, v, 'Chair', 'right'); furn(u + 1, v, 'Chair', 'left'); furn(u, v - 1, 'Chair', 'back'); furn(u, v + 1, 'Chair', 'front');
-      const deco = new THREE.Group();
-      const cloth = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.03, 0.96), new THREE.MeshLambertMaterial({ color: 0xf6f4ee })); cloth.position.y = 0.815; deco.add(cloth);
-      const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.12, 8), new THREE.MeshLambertMaterial({ color: 0xfff6e0 })); candle.position.y = 0.89; deco.add(candle);
-      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 5), new THREE.MeshBasicMaterial({ color: 0xffc35a })); flame.position.y = 0.97; deco.add(flame);
-      prop(deco, u + 0.5, v + 0.5, floor + 1);
-    }
+    const tablesAt = []; // (the tables have set places now — see REST_SETS)
     furn(1, 6, 'Bottle Fridge', 'right'); furn(1, 14, 'Drinks Cabinet', 'right');
+    // the grand piano, against the wall halfway between the GENTS and LADIES doors, keyboard facing the room (the pianist: see updateRestPeople)
+    let pianoKey = null;
+    { const cs = [[13, 9], [14, 9], [13, 10], [14, 10]].map(c => f.cell(c[0], c[1])), pi = K.idxOf('Grand Piano');
+      for (const [x, z] of cs) { const k = key(x, floor, z), fu = furniture.get(k); if (fu && !(FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name === 'Grand Piano')) removeFurniture(k); } // (whatever an older layout left there)
+      if (pi >= 0) pianoKey = addFurnitureTracked(Math.min(...cs.map(c => c[0])), floor, Math.min(...cs.map(c => c[1])), furnRotFacing('Grand Piano', dirW.left[0], dirW.left[1]), pi, K.reg); }
     // kitchen (u5-14 x v16-21): the wood-fired pizza oven in the back corner, ovens, sinks and cabinets along the back
     // wall, fridges by the office door, two prep islands; the walk-in pantry through the door at u4
     { const [px, pz] = f.pos(6.0, 21.0); const po = buildPizzaOven(); po.position.set(px, floor + 1, pz); po.rotation.y = Math.atan2(-f.d[0], -f.d[1]); scene.add(po); K.reg.props.push(po); autoSolidProp(po, po, floor + 1); r_pizza = po; }
@@ -32250,7 +32266,7 @@
       fix(11, V1, floor + 3, 'back'); // a lamp over the back door
     }
     const sign = new THREE.Group(); sign.userData.w = 9; prop(sign, 11.5, V0 - 0.07, floor + 4.75, 'front');
-    const r = { ck: K.ck, beds, hasGarden, spec: replay, f, floor, worldId: currentWorldId, sign, chairKey, pizza: r_pizza, people: [], peopleSig: null, tablesAt,
+    const r = { ck: K.ck, beds, hasGarden, spec: replay, f, floor, worldId: currentWorldId, sign, chairKey, pizza: r_pizza, people: [], peopleSig: null, tablesAt, pianoKey, frontDoor: K.reg.doorKeys[0] || null,
       bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1, owned: new Set(K.reg.furnitureKeys) };
     { const a = f.cell(0, V0), b = f.cell(REST_W - 1, V1); r.ib = [Math.min(a[0], b[0]), Math.max(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[1], b[1])]; }
     const old = restaurants.get(K.ck); if (old) bizClearPeople(old);
@@ -32261,6 +32277,82 @@
     K.finish();
   }
 
+  // ---- the dining room's tables ----
+  // TABLE SETS: a table with a chair on each side, never touching a wall or another set, all to the left of the door as
+  // you walk in — with room to walk round each (a free row across the middle, a free column down the middle and along
+  // the wall). Each has a cloth and a candle, and a chandelier hanging over it from the ceiling, that come and go with
+  // its table. A new restaurant comes with two; the world manager adds the other two. [u, v] = the table.
+  const REST_SETS = [[3, 8], [7, 8], [3, 12], [7, 12]];
+  function restSetCells(r, u, v) { return [[u, v], [u - 1, v], [u + 1, v], [u, v - 1], [u, v + 1]].map(([a, b]) => r.f.cell(a, b)); }
+  function restSetFree(r, u, v) { return restSetCells(r, u, v).every(([x, z]) => !afOccupied(x, x, z, z, r.floor).has(x + ',' + z) && !afSolidAt(x, z, r.floor)); }
+  function restHasTable(r, u, v) { const [x, z] = r.f.cell(u, v), fu = furniture.get(key(x, r.floor, z)); return !!(fu && FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name === 'Table'); }
+  function restAddSet(r, u, v) { // -> true if it went in
+    if (!restSetFree(r, u, v)) return false;
+    const f = r.f, ti = FURNITURE_TYPES.findIndex(t => t.name === 'Table'), ci = FURNITURE_TYPES.findIndex(t => t.name === 'Chair');
+    const [tx, tz] = f.cell(u, v); addFurniture(tx, r.floor, tz, furnRotFacing('Table', -f.d[0], -f.d[1]), ti);
+    for (const [du, dv, fx, fz] of [[-1, 0, f.s[0], f.s[1]], [1, 0, -f.s[0], -f.s[1]], [0, -1, f.d[0], f.d[1]], [0, 1, -f.d[0], -f.d[1]]]) { // each chair faces the table
+      const [x, z] = f.cell(u + du, v + dv); addFurniture(x, r.floor, z, furnRotFacing('Chair', fx, fz), ci);
+    }
+    return true;
+  }
+  // A chair for the free sides of the terrace's own tables (what the world manager adds once the dining room's full).
+  function restAddTerraceChair(r) {
+    const f = r.f, ci = FURNITURE_TYPES.findIndex(t => t.name === 'Chair');
+    for (const u of [3, 14, 18]) for (const [v, fx, fz] of [[1, f.d[0], f.d[1]], [3, -f.d[0], -f.d[1]]]) {
+      const [x, z] = f.cell(u, v);
+      if (afOccupied(x, x, z, z, r.floor).has(x + ',' + z) || afSolidAt(x, z, r.floor)) continue;
+      addFurniture(x, r.floor, z, furnRotFacing('Chair', fx, fz), ci); return true;
+    }
+    return false;
+  }
+  // Once, for each restaurant: anything loose in the dining room (the world manager used to drop chairs and tables in
+  // wherever there was a free square, so they ended up jammed together) is cleared and re-laid as proper sets — as many
+  // as it comes to, two at the least — and whatever's left over goes back in your pocket at what it cost. Waits a few
+  // seconds for the world's own furniture to have arrived.
+  function restTidyDining(r, now) {
+    if (r.spec.diningV === 1 || visitMode || r.standIn) return;
+    if (!r.bornAt) { r.bornAt = now; return; }
+    if (now - r.bornAt < 4000) return;
+    const COST = name => { const t = FURNITURE_TYPES.find(q => q.name === name); return t ? (t.cost || 0) : 0; };
+    let tables = 0, seats = 0, spent = 0;
+    for (let u = 1; u <= 14; u++) for (let v = 6; v <= 14; v++) {
+      const [x, z] = r.f.cell(u, v), k = key(x, r.floor, z), fu = furniture.get(k); if (!fu || r.owned.has(k)) continue;
+      const n = FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name;
+      if (n === 'Table') tables++; else if (n === 'Chair' || n === 'Armchair') seats++; else if (n === '2-Seater Couch') seats += 2; else continue;
+      spent += COST(n); removeFurniture(k);
+    }
+    const want = Math.max(2, Math.min(REST_SETS.length, Math.max(tables, Math.ceil(seats / 4))));
+    let laid = 0;
+    for (const [u, v] of REST_SETS.slice(0, want)) if (restAddSet(r, u, v)) laid++;
+    r.spec.diningV = 1; specSave(r.ck, r.spec);
+    const back = spent - laid * (COST('Table') + 4 * COST('Chair'));
+    if (tables + seats > 0) { if (back > 0) { coins += back; updateCoinsDisplay(); scheduleStatsSave(); } showSaveStatus('🍽️ ' + restName(r) + ': the dining room’s been re-laid with ' + laid + ' spaced-out tables' + (back > 0 ? ' — 💰' + back.toLocaleString() + ' back for the spare furniture' : '')); }
+  }
+  function restDiningDecor(r) { // the cloths and chandeliers follow the tables; drawn only when the tables are (see updateContentsLod)
+    const reg = villageRegistry.get(r.ck); if (!reg) return;
+    r.decor = r.decor || new Map();
+    const show = reg.contentsShown !== false;
+    for (const [u, v] of REST_SETS) {
+      const k = u + ',' + v, have = r.decor.get(k), table = restHasTable(r, u, v);
+      if (table && !have) {
+        const [px, pz] = r.f.pos(u + 0.5, v + 0.5);
+        const deco = new THREE.Group(); deco.userData.noSolid = true;
+        const cloth = new THREE.Mesh(new THREE.BoxGeometry(0.96, 0.03, 0.96), new THREE.MeshLambertMaterial({ color: 0xf6f4ee })); cloth.position.y = 0.815; deco.add(cloth);
+        const candle = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.12, 8), new THREE.MeshLambertMaterial({ color: 0xfff6e0 })); candle.position.y = 0.89; deco.add(candle);
+        const flame = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 5), new THREE.MeshBasicMaterial({ color: 0xffc35a })); flame.position.y = 0.97; deco.add(flame);
+        deco.position.set(px, r.floor + 1, pz); scene.add(deco); reg.props.push(deco);
+        const chand = buildChandelier(), light = chand.children.find(c => c.isPooledLight); // hung from the ceiling (the underside of the roof: see the build)
+        try { mergeFurniturePieces(chand); } catch (e) {}
+        chand.position.set(px, r.floor + 5, pz); chand.userData.noSolid = true; scene.add(chand); reg.props.push(chand);
+        r.decor.set(k, { deco, chand, light });
+      } else if (!table && have) {
+        for (const o of [have.deco, have.chand]) { scene.remove(o); disposeObject3D(o); const i = reg.props.indexOf(o); if (i >= 0) reg.props.splice(i, 1); }
+        r.decor.delete(k);
+      }
+    }
+    const dimLevel = FIXTURE_DIM_LEVELS[FIXTURE_DIM_DEFAULT].m; // (lights start dim)
+    for (const d of r.decor.values()) { d.deco.visible = show; d.chand.visible = show; if (d.light) d.light.intensity = show ? 1.5 * dimLevel : 0; }
+  }
   // A wood-fired pizza oven: a brick dome on a stone base, the arched mouth (front, +z) glowing with the fire inside,
   // a flue up the back, logs stacked in the base, a pizza peel leaning on it and a pizza on the hearth. 2 x 2.
   function buildPizzaOven() {
@@ -32458,8 +32550,59 @@
     const g = new THREE.Group();
     const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.11, 0.02, 14), new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60 })); g.add(plate);
     const cols = [[0x8a4a2a, 0xe8c070, 0x3a8a3a], [0xd9a441, 0xc0392b, 0x2f8f4a], [0x6a3a1a, 0xf0e0b0, 0xe07a2a]][kind % 3];
-    cols.forEach((c, i) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), new THREE.MeshLambertMaterial({ color: c })); m.scale.y = 0.5; m.position.set(-0.05 + i * 0.05, 0.025, (i % 2) * 0.03 - 0.015); g.add(m); });
+    g.userData.food = cols.map((c, i) => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), new THREE.MeshLambertMaterial({ color: c })); m.scale.y = 0.5; m.position.set(-0.05 + i * 0.05, 0.025, (i % 2) * 0.03 - 0.015); g.add(m); return m; });
     return g;
+  }
+  function plateFood(g, on) { for (const m of g.userData.food || []) m.visible = on; }
+  // ---- service: the waiters take a full plate from the pass to whoever's waiting, and bring the empties back ----
+  // A diner goes wait (no plate) -> eat (a waiter's brought it) -> done (an empty plate) -> gap (a waiter's taken it) -> wait…
+  function restRouteToSeat(r, m, d) { // -> a route to a free square beside this diner's chair ([] = already there), or null
+    const [sx, sz] = d.seatCell, cur = [Math.floor(m.position.x), Math.floor(m.position.z)], bx = -Math.round(d.front[0]), bz = -Math.round(d.front[1]);
+    for (const [dx, dz] of [[bx, bz], [bz, bx], [-bz, -bx], [bx + bz, bz + bx], [bx - bz, bz - bx], [1, 1], [1, -1], [-1, 1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const c = [sx + dx, sz + dz]; if (!r.walk.has(c[0] + ',' + c[1])) continue;
+      if (c[0] === cur[0] && c[1] === cur[1]) return [];
+      const rt = hotelRoute(r.walk, cur, c); if (rt.length) return rt;
+    }
+    return null;
+  }
+  function restWaiterStep(r, pe, dt, now) {
+    const m = pe.mesh, arms = m.userData.arms || [], legs = m.userData.legs || [];
+    const carry = what => { pe.carry = what; pe.tray.visible = !!what; plateFood(pe.tray, what === 'full'); };
+    const holdArm = () => { if (arms[1]) arms[1].rotation.x = pe.carry ? -1.2 : 0; };
+    if (pe.route.length) { // walking
+      const [tx, tz] = pe.route[0];
+      const dx = tx + 0.5 - m.position.x, dz = tz + 0.5 - m.position.z, d = Math.hypot(dx, dz);
+      if (d < 0.05) { pe.route.shift(); return; }
+      const step = Math.min(d, 1.8 * dt); m.position.x += dx / d * step; m.position.z += dz / d * step; m.rotation.y = Math.atan2(dx, dz);
+      const swing = Math.sin(now * 0.01) * 0.45; for (const l of legs) l.rotation.x = swing * (l.position.x < 0 ? 1 : -1);
+      if (arms[0]) arms[0].rotation.x = -swing * 0.6; holdArm();
+      const fd = r.frontDoor && doors.get(r.frontDoor); if (fd && Math.hypot(fd.group.position.x - m.position.x, fd.group.position.z - m.position.z) < 2) fd.heldUntil = now + 500; // the door opens for them
+      return;
+    }
+    stillLimbs(m);
+    if (pe.phase === 'toSeat') { const d = pe.d; m.rotation.y = Math.atan2(d.mesh.position.x - m.position.x, d.mesh.position.z - m.position.z); pe.phase = 'atSeat'; pe.wait = 0.9; }
+    if (pe.phase === 'atSeat') { // leaning over the table
+      if (arms[1]) arms[1].rotation.x = -1.35;
+      pe.wait -= dt; if (pe.wait > 0) return;
+      const d = pe.d;
+      if (d.meal === 'wait') { d.plate.visible = true; plateFood(d.plate, true); d.meal = 'eat'; d.mealT = 70 + Math.random() * 50; carry(null); } // served
+      else { d.plate.visible = false; d.meal = 'gap'; d.mealT = 15 + Math.random() * 15; carry('empty'); } // cleared
+      d.claimed = false; pe.d = null;
+      const cur = [Math.floor(m.position.x), Math.floor(m.position.z)], h = [Math.floor(pe.home[0]), Math.floor(pe.home[1])];
+      pe.route = cur[0] === h[0] && cur[1] === h[1] ? [] : hotelRoute(r.walk, cur, h); pe.phase = 'toPass';
+      if (!pe.route.length) { m.position.x = pe.home[0]; m.position.z = pe.home[1]; }
+      return;
+    }
+    if (pe.phase === 'toPass') { m.rotation.y = pe.homeRy; carry(null); pe.phase = 'pass'; pe.wait = 0.5 + Math.random() * 0.7; } // the empty goes on the pass
+    holdArm();
+    pe.wait = (pe.wait || 0) - dt; if (pe.wait > 0) return;
+    // at the pass: whoever's been waiting longest — a plate to take out, or an empty to fetch
+    let job = null;
+    for (const d of r.people) if (d.role === 'diner' && !d.claimed && d.mealT <= 0 && (d.meal === 'wait' || d.meal === 'done') && (!job || d.readyAt < job.readyAt)) job = d;
+    if (!job) { pe.wait = 0.7; return; }
+    const rt = restRouteToSeat(r, m, job); if (!rt) { job.mealT = 4; pe.wait = 0.7; return; } // (nowhere to stand: try again in a moment)
+    job.claimed = true; pe.d = job; pe.route = rt; pe.phase = 'toSeat';
+    if (job.meal === 'wait') carry('full');
   }
   function updateRestPeople(r, dt, now) {
     const st = restState(r);
@@ -32470,6 +32613,7 @@
     if (!r.peopleSig || now >= (r.checkAt || 0)) {
       r.checkAt = now + 5000;
       const want = Math.min(20, Math.round(restCovers(r).covers / 2.5));
+      const hSeat = (x, z) => ((Math.floor(x) * 73856093) ^ (Math.floor(z) * 19349663)) >>> 0;
       const seats = [];
       for (const fu of furniture.values()) {
         if (fu.bx < r.bx0 || fu.bx > r.bx1 || fu.bz < r.bz0 || fu.bz > r.bz1 || fu.rot >= 4) continue;
@@ -32478,13 +32622,14 @@
         const inside = fu.bx >= r.ib[0] && fu.bx <= r.ib[1] && fu.bz >= r.ib[2] && fu.bz <= r.ib[3];
         if (!inside && !day) continue; // the terrace empties at night
         const th = fu.group.rotation.y, w = furnLocalToWorld(fu, 0, 0, -0.04);
-        seats.push({ x: w.x, y: fu.group.position.y, z: w.z, ry: th + Math.PI, front: [-Math.sin(th), -Math.cos(th)] });
+        seats.push({ inside, x: w.x, y: fu.group.position.y, z: w.z, ry: th + Math.PI, front: [-Math.sin(th), -Math.cos(th)] });
       }
-      seats.sort((a, b) => (a.x - b.x) || (a.z - b.z));
+      seats.sort((a, b) => (b.inside - a.inside) || (hSeat(a.x, a.z) - hSeat(b.x, b.z))); // the dining room fills first, spread round the tables
       const plan = st.chef ? seats.slice(0, want).map(s => ({ role: 'diner', ...s })) : [];
       if (st.chef) {
         for (const [u, v] of [[6.0, 19.3], [8.5, 20.2]]) { const [x, z] = f.pos(u, v); plan.push({ role: 'chef', x, y: r.floor + 1, z, ry: Math.atan2(f.d[0], f.d[1]) }); } // at the pizza oven and the ovens
-        for (let i = 0; i < 2; i++) { const [x, z] = f.pos(6.5 + i * 2, 14.4); plan.push({ role: 'waiter', x, y: r.floor + 1, z, ry: Math.atan2(-f.d[0], -f.d[1]), i }); }
+        for (let i = 0; i < (want > 10 ? 3 : 2); i++) { const [x, z] = f.pos(5.5 + i * 2, 14.5); plan.push({ role: 'waiter', x, y: r.floor + 1, z, ry: Math.atan2(f.d[0], f.d[1]), i }); } // at the pass, facing it
+        if (r.pianoKey && furniture.has(r.pianoKey)) { const [x, z] = f.pos(12.95, 10); plan.push({ role: 'pianist', x, y: r.floor + 1.1, z, ry: Math.atan2(f.s[0], f.s[1]) }); } // on the stool, at the keys
       }
       if (st.chef && day && r.hasGarden) { const [x, z] = f.pos(10.6, 29.6); plan.push({ role: 'chef', x, y: r.floor + 1, z, ry: Math.atan2(-f.s[0], -f.s[1]) }); } // one of the chefs out in the garden by day, tending the beds
       if (st.mgr) { const [x, z] = f.pos(18.5, 20.6); plan.push({ role: 'mgr', x, y: r.floor + 1, z, ry: Math.atan2(-f.d[0], -f.d[1]) }); } // at his desk, facing the office door side
@@ -32493,46 +32638,95 @@
         bizClearPeople(r);
         plan.forEach((q, i) => {
           if (q.role === 'mgr') { r.people.push(deskStaffAt('mgr', r.ck + ':rest:mgr', q.x, q.y, q.z, q.ry)); return; }
-          const m = pubFigure(q.role === 'diner', q.role === 'diner' ? 'customer' : q.role === 'waiter' ? 'staff' : 'chef', r.ck + ':' + q.role + ':' + Math.round(q.x * 2) + ',' + Math.round(q.z * 2));
+          const m = pubFigure(q.role === 'diner' || q.role === 'pianist', q.role === 'diner' ? 'customer' : q.role === 'waiter' || q.role === 'pianist' ? 'staff' : 'chef', r.ck + ':' + q.role + ':' + Math.round(q.x * 2) + ',' + Math.round(q.z * 2));
           m.position.set(q.x, q.y, q.z); m.rotation.y = q.ry;
           const pe = { mesh: m, role: q.role, t: Math.random() * 6, extra: [], route: [], home: [q.x, q.z] };
-          if (q.role === 'diner') { const p = buildPlate(i); p.position.set(q.x + q.front[0] * 0.42, q.y + 0.84, q.z + q.front[1] * 0.42); scene.add(p); pe.extra.push(p); }
+          if (q.role === 'diner') { // on the table in front of them — part-way through the evening when you walk in
+            const p = buildPlate(i); p.position.set(q.x + q.front[0] * 0.62, q.y + 0.84, q.z + q.front[1] * 0.62); scene.add(p); pe.extra.push(p);
+            pe.plate = p; pe.front = q.front; pe.seatCell = [Math.floor(q.x), Math.floor(q.z)]; pe.readyAt = now;
+            const roll = Math.random(); pe.meal = roll < 0.6 ? 'eat' : roll < 0.75 ? 'done' : 'wait'; pe.mealT = pe.meal === 'eat' ? 8 + Math.random() * 40 : Math.random() * 8;
+            p.visible = pe.meal !== 'wait'; plateFood(p, pe.meal === 'eat');
+          }
+          if (q.role === 'waiter') { pe.phase = 'pass'; pe.homeRy = q.ry; pe.wait = Math.random() * 2; pe.tray = buildPlate(i + 1); pe.tray.position.set(0.2, 1.0, 0.34); pe.tray.visible = false; m.add(pe.tray); }
+          if (q.role === 'pianist') pe.baseRy = q.ry;
           r.people.push(pe);
         });
         r.peopleSig = sig;
       }
     }
-    // waiters walk the dining room (round the tables — routes over the free squares, like the hotel guests')
+    // waiters get round the tables over the free squares (like the hotel guests' routes) — the dining room, and by day out through the front door to the terrace
     if (!r.walk || now >= (r.walkAt || 0)) {
-      r.walk = new Set(); r.walkList = [];
-      for (let u = 1; u <= 14; u++) for (let v = 6; v <= 14; v++) { const [x, z] = f.cell(u, v); if (!isSolid(x + 0.5, r.floor + 1.1, z + 0.5) && !isSolid(x + 0.5, r.floor + 2.4, z + 0.5)) { r.walk.add(x + ',' + z); r.walkList.push([x, z]); } }
+      r.walk = new Set();
+      const add = (u, v) => { const [x, z] = f.cell(u, v); if (!isSolid(x + 0.5, r.floor + 1.1, z + 0.5) && !isSolid(x + 0.5, r.floor + 2.4, z + 0.5)) r.walk.add(x + ',' + z); };
+      for (let u = 1; u <= 14; u++) for (let v = 6; v <= 14; v++) add(u, v);
+      add(9, 5); for (let u = 1; u <= REST_W - 2; u++) for (let v = 1; v <= 4; v++) add(u, v);
       r.walkAt = now + 4000;
     }
+    const inRoom = r.ib && player.pos.x >= r.ib[0] && player.pos.x <= r.ib[1] + 1 && player.pos.z >= r.ib[2] && player.pos.z <= r.ib[3] + 1; // (you can see the whole room from anywhere in it)
     for (const pe of r.people) {
       const m = pe.mesh, arms = m.userData.arms || [], legs = m.userData.legs || [];
-      if (!animNear(m.position.x, m.position.z)) { if (!pe.still) { stillLimbs(m); pe.still = true; } continue; } // see ANIMATE_NEAR
+      if (!inRoom && !animNear(m.position.x, m.position.z)) { if (!pe.still) { stillLimbs(m); pe.still = true; } continue; } // see ANIMATE_NEAR
       pe.still = false; pe.t += dt;
-      if (pe.role === 'diner') { const k = pe.t % 5; if (arms[1]) arms[1].rotation.x = k < 1 ? -1.3 * Math.sin(k * Math.PI) : -0.35; if (arms[0]) arms[0].rotation.x = -0.35; }
-      else if (pe.role === 'chef') { if (arms[1]) arms[1].rotation.x = -0.8 - Math.abs(Math.sin(pe.t * 3)) * 0.4; }
-      else if (pe.role === 'waiter') {
-        if (!pe.route.length) {
-          pe.wait = (pe.wait || 0) - dt; stillLimbs(m); if (arms[1]) arms[1].rotation.x = -1.2; // a plate held up
-          if (pe.wait > 0 || !r.walkList.length) continue;
-          const cur = [Math.floor(m.position.x), Math.floor(m.position.z)];
-          const dest = (pe.toPass = !pe.toPass) ? [Math.floor(pe.home[0]), Math.floor(pe.home[1])] : r.walkList[Math.floor(Math.random() * r.walkList.length)];
-          pe.route = r.walk.has(cur[0] + ',' + cur[1]) ? hotelRoute(r.walk, cur, dest) : [dest];
-          pe.wait = 2 + Math.random() * 3;
-          continue;
-        }
-        const [tx, tz] = pe.route[0];
-        const dx = tx + 0.5 - m.position.x, dz = tz + 0.5 - m.position.z, d = Math.hypot(dx, dz);
-        if (d < 0.05) { pe.route.shift(); continue; }
-        const step = Math.min(d, 1.1 * dt); m.position.x += dx / d * step; m.position.z += dz / d * step; m.rotation.y = Math.atan2(dx, dz);
-        const swing = Math.sin(now * 0.01) * 0.45; for (const l of legs) l.rotation.x = swing * (l.position.x < 0 ? 1 : -1);
-        if (arms[1]) arms[1].rotation.x = -1.2;
+      if (pe.role === 'diner') {
+        const k = pe.t % 5, eating = pe.meal === 'eat';
+        if (arms[1]) arms[1].rotation.x = eating && k < 1 ? -1.3 * Math.sin(k * Math.PI) : -0.35; if (arms[0]) arms[0].rotation.x = -0.35;
+        if (!pe.claimed && pe.mealT > 0) { pe.mealT -= dt; if (pe.mealT <= 0) { pe.readyAt = now;
+          if (pe.meal === 'eat') { pe.meal = 'done'; plateFood(pe.plate, false); pe.mealT = 4 + Math.random() * 6; } // finished: a clean plate, waiting to be cleared
+          else if (pe.meal === 'gap') { pe.meal = 'wait'; pe.mealT = 0; } } } // ready for the next course
       }
+      else if (pe.role === 'pianist') { // hands moving over the keys, swaying a little (the music: REST_PIANO_TUNES)
+        if (arms[0]) arms[0].rotation.x = -1.75 + Math.sin(pe.t * 5.1) * 0.1;
+        if (arms[1]) arms[1].rotation.x = -1.75 + Math.sin(pe.t * 4.3 + 1) * 0.1;
+        m.rotation.y = pe.baseRy + Math.sin(pe.t * 0.7) * 0.05;
+      }
+      else if (pe.role === 'chef') { if (arms[1]) arms[1].rotation.x = -0.8 - Math.abs(Math.sin(pe.t * 3)) * 0.4; }
+      else if (pe.role === 'waiter') restWaiterStep(r, pe, dt, now);
     }
   }
+  // ---- the pianist's music: three real tunes, one after another and round again, heard round the restaurant and fading
+  // as you walk away. Separate files in a piano/ folder next to voxel.html (like music.mp3 and the jukebox — so this
+  // page stays small). Only while a pianist's playing (the restaurant's open: see updateRestPeople) and you're in
+  // earshot; walk off and it pauses, come back and the tune carries on. The game's own tune and any jukebox song take turns with it.
+  const REST_PIANO_TUNES = ['piano/happy-hour-jazz.mp3', 'piano/dinner-for-two.mp3', 'piano/dinner-at-two.mp3'], REST_PIANO_VOL = 0.5, REST_PIANO_RANGE = 28;
+  let pianoEl = null, pianoGain = null, pianoIdx = 0, pianoTry = 0, pianoFails = 0, pianoHeard = false;
+  function pianoLoad(i) { pianoIdx = i % REST_PIANO_TUNES.length; pianoTry = 0; pianoEl.src = REST_PIANO_TUNES[pianoIdx]; }
+  function pianoEnsure() {
+    if (pianoEl) return;
+    pianoEl = new Audio(); pianoEl.crossOrigin = 'anonymous'; pianoEl.preload = 'auto';
+    pianoEl.addEventListener('ended', () => { pianoFails = 0; pianoLoad(pianoIdx + 1); if (pianoHeard) pianoEl.play().catch(() => {}); }); // on to the next tune
+    pianoEl.addEventListener('playing', () => { pianoFails = 0; });
+    pianoEl.addEventListener('error', () => { // not in piano/: try it loose beside voxel.html, then move on to the next tune
+      if (!pianoEl.getAttribute('src')) return;
+      if (pianoTry === 0) { pianoTry = 1; pianoEl.src = REST_PIANO_TUNES[pianoIdx].replace(/^.*\//, ''); }
+      else { if (++pianoFails >= REST_PIANO_TUNES.length) { console.warn('[voxel] the piano tunes could not be loaded — are they in piano/ next to voxel.html?'); pianoEl.removeAttribute('src'); return; } pianoLoad(pianoIdx + 1); }
+      if (pianoHeard) pianoEl.play().catch(() => {});
+    });
+    pianoLoad(0);
+  }
+  function pianoSetVol(v) {
+    if (!pianoGain && typeof audioCtx !== 'undefined' && audioCtx && audioCtx.state === 'running') {
+      try { const src = audioCtx.createMediaElementSource(pianoEl); pianoGain = audioCtx.createGain(); src.connect(pianoGain); pianoGain.connect(audioCtx.destination); } catch (e) { pianoGain = null; }
+    }
+    if (pianoGain) { pianoGain.gain.value = v; pianoEl.volume = 1; } else pianoEl.volume = Math.min(1, v);
+  }
+  function pianoAudible() { return pianoHeard; } // (the game's own tune waits — see MUSIC)
+  setInterval(() => { try {
+    let v = 0;
+    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeBusy === 'function' && jukeBusy())) {
+      for (const r of restaurants.values()) {
+        if (r.worldId !== currentWorldId || !r.people.some(q => q.role === 'pianist')) continue;
+        const fu = r.pianoKey && furniture.get(r.pianoKey); if (!fu) continue;
+        v = Math.max(v, 1 - fu.group.position.distanceTo(player.pos) / REST_PIANO_RANGE);
+      }
+    }
+    pianoHeard = v > 0;
+    if (!pianoHeard) { if (pianoEl && !pianoEl.paused) pianoEl.pause(); return; }
+    pianoEnsure();
+    if (!pianoEl.getAttribute('src')) return; // (the files aren't on the site)
+    if (typeof musicEl !== 'undefined' && musicEl && !musicEl.paused) musicEl.pause();
+    pianoSetVol(REST_PIANO_VOL * v);
+    if (pianoEl.paused) pianoEl.play().catch(() => {}); // (not allowed yet — no tap/click so far: tried again shortly)
+  } catch (e) {} }, 400);
   let restPrevDayTime = null;
   function updateRestaurants(dt) {
     if (!restaurants.size) return;
@@ -32541,6 +32735,7 @@
     const now = performance.now();
     for (const r of restaurants.values()) {
       if (r.worldId !== currentWorldId) { if (r.people.length) bizClearPeople(r); continue; }
+      try { restTidyDining(r, now); if (now >= (r.decorAt || 0)) { r.decorAt = now + 500; restDiningDecor(r); } } catch (err) { console.warn('restaurant dining room error (recovered):', err); }
       try { updateRestPeople(r, dt, now); } catch (err) { console.warn('restaurant people error (recovered):', err); }
       try { restGardenTick(r, now); } catch (err) { console.warn('restaurant garden error (recovered):', err); }
       if (r.pizza && r.pizza.userData.fire && !r.spec.pizzaOut && animNear(r.pizza.position.x, r.pizza.position.z)) { // the fire flickers
@@ -33144,7 +33339,7 @@
   // Pay them more (WM_FURNISH_FEE of each round instead of WM_FEE) and they also furnish: every House to let gets
   // pieces until it's earning the most extra rent it can (+💰10 a night a piece, up to +💰150), every Pub gets
   // seats, tables, TVs, fires and fruit machines up to what still brings in more trade, and every Restaurant gets
-  // chairs and tables (dining room first, then the terrace) until it's seating the most diners it can. The pieces are included in
+  // table sets (the dining room's set places — see REST_SETS) then terrace chairs until it's seating the most diners it can. The pieces are included in
   // their fee. Done while the building's loaded (you're within sight of it), a piece every couple of seconds.
   const WM_FURNISH_FEE = 0.02;
   // A house's pieces, in order, each in its own room (rooms in the house's frame: [u0, u1, v0, v1]) — only ever
@@ -33199,16 +33394,39 @@
       if (r.worldId !== currentWorldId || r.standIn || !r.f || !r.sign || !r.sign.parent) continue;
       const b = restBoosters(r);
       if (b.seats * 3 + b.tables >= REST_COVERS_EXTRA_MAX) continue;
-      const want = b.tables * 3 < b.seats ? 'Table' : 'Chair';
-      const dining = [], terrace = [];
-      for (let u = 1; u <= 14; u++) for (let v = 6; v <= 14; v++) dining.push(r.f.cell(u, v));
-      for (let u = 1; u <= REST_W - 2; u++) for (let v = 1; v <= 3; v++) if (u < 7 || u > 11) terrace.push(r.f.cell(u, v)); // leave the way in clear
-      if (afPlace(want, dining, r.floor, { indoors: true }) || afPlace(want, terrace, r.floor, { wall: false })) {
-        showBriefMessage('🧑‍💼 Your world manager added a ' + want + ' to ' + restName(r) + ' — more diners tonight'); return;
-      }
+      // whole table sets, at their set places (see REST_SETS), then chairs for the spare sides of the terrace's tables
+      let put = null;
+      if (r.spec.diningV === 1) for (const [u, v] of REST_SETS) if (!restHasTable(r, u, v) && restAddSet(r, u, v)) { put = 'table and chairs'; break; }
+      if (!put && r.spec.diningV === 1 && restAddTerraceChair(r)) put = 'chair on the terrace';
+      if (put) { showBriefMessage('🧑‍💼 Your world manager added a ' + put + ' to ' + restName(r) + ' — more diners tonight'); return; }
     }
   }
   const REST_COVERS_EXTRA_MAX = 60; // restCovers: 30 + min(60, seats x 3 + tables) — past 60 more furniture adds nothing
+
+  // ---- NO TREES INSIDE ----
+  // A tree generated beside a building after it went up (its chunk streamed in later) can push leaves through into the
+  // rooms — they'd only go after a reload. While you're in (or right by) one of your enclosed buildings, any leaves
+  // inside its plot that you didn't put there yourself are cleared. (Not the house, theme park or mansion — their
+  // gardens have real trees.)
+  const LEAF_SWEEP_TYPES = new Set(['hotel', 'pub', 'carpenter', 'mason', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'bakery', 'restaurant', 'haunted', 'station', 'airport', 'busstation', 'ferryport', 'arena', 'stadium']);
+  setInterval(() => { try {
+    if (visitMode || !currentWorldId || !structureSpecsActive()) return;
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    for (const sp of structureSpecs.values()) {
+      if (!sp || !sp.bought || !sp.site || !LEAF_SWEEP_TYPES.has(sp.t) || !villageRegistry.has(sp.ck)) continue;
+      const s = sp.site; if (px < s.sx0 - 3 || px > s.sx1 + 3 || pz < s.sz0 - 3 || pz > s.sz1 + 3) continue;
+      const bt = BUILDING_TYPES.find(b => b.t === sp.t), top = s.floor + Math.min(60, (bt && bt.h) || 12);
+      let n = 0;
+      for (let x = s.sx0; x <= s.sx1; x++) for (let z = s.sz0; z <= s.sz1; z++) for (let y = s.floor + 1; y <= top; y++) {
+        const k = key(x, y, z), t = blocks.get(k); if (t === undefined) continue;
+        const e = BLOCK_TYPES[t]; if (!e || !/Leaves$/.test(e.name) || blockEdits.has(k)) continue;
+        blocks.delete(k); n++;
+      }
+      if (n) resyncChunksInRange(s.sx0, s.sx1, s.sz0, s.sz1);
+      overlaysClearBox(s.sx0, s.sx1, s.sz0, s.sz1); // (and any flowers drawn on its floor)
+      break;
+    }
+  } catch (e) {} }, 3000);
 
   // ---- "AT ITS BEST" BADGES ----
   // A gold ⭐ MAX badge floats over a building of yours when it's earning everything it can:
@@ -38489,6 +38707,7 @@ float moonDetail(vec3 p, float d) {
     const may = (inGame || !!demoState) && !document.hidden && vol > 0;
     if (!may) { if (musicEl && !musicEl.paused) musicEl.pause(); return; }
     if (typeof jukeBusy === 'function' && jukeBusy()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // a jukebox song's playing: the game's tune waits till it's finished (see THE JUKEBOX)
+    if (typeof pianoAudible === 'function' && pianoAudible()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // …or you're in earshot of a restaurant's pianist (see RESTAURANT)
     if (musicOn) { if (musicEl.paused) { musicApplyVol(); musicEl.play().catch(() => {}); } return; } // back from the menu / another tab
     if (musicNextAt && now >= musicNextAt) {
       musicEnsure(); musicApplyVol();
@@ -40322,6 +40541,7 @@ float moonDetail(vec3 p, float d) {
   // to see out of, a door each side at both ends and a gangway through to the next carriage. The engine: a big
   // tank engine whose cab is open above the boiler, so the driver can see where he's going.
   const CAR_FLOOR = 0.62, CAR_SEAT_ROWS = [-1.8, -0.9, 0, 0.9, 1.8], CAR_SEAT_X = [-0.8, 0.8];
+  const TRAIN_DOOR_Z = [-2.6, 2.6], TRAIN_DOOR_X_SHUT = 1.27, TRAIN_DOOR_X_OPEN = 1.33;
   const TRAIN_CAB_LOCAL = [0.75, 0.95, -2.0]; // where the driver stands: to one side of the footplate, looking out past the boiler
   function trainUnitSeats() { const out = []; for (const z of CAR_SEAT_ROWS) for (const x of CAR_SEAT_X) out.push({ x, z }); return out; }
   function buildTrainUnit(isEngine) {
@@ -40370,9 +40590,29 @@ float moonDetail(vec3 p, float d) {
       add(2.7, 0.12, 6.1, roof, 0, CAR_FLOOR + 2.0, 0);
       add(2.0, 0.12, 5.9, roof, 0, CAR_FLOOR + 2.12, 0);
       for (const s of trainUnitSeats()) { add(0.6, 0.12, 0.5, seatC, s.x, CAR_FLOOR + 0.45, s.z); add(0.6, 0.6, 0.1, seatC, s.x, CAR_FLOOR + 0.75, s.z - 0.25); add(0.06, 0.45, 0.06, dark, s.x, CAR_FLOOR + 0.22, s.z); }
+      // inside each doorway: yellow grab poles either side and a yellow strip on the floor (as on the buses)
+      for (const sx of [-1, 1]) for (const dz of TRAIN_DOOR_Z) { for (const e of [-1, 1]) add(0.05, 1.5, 0.05, 0xf2c200, sx * 1.14, CAR_FLOOR + 0.75, dz + e * 0.3); add(0.42, 0.012, 0.66, 0xf2c200, sx * 1.02, CAR_FLOOR + 0.006, dz); }
     }
     body.updateMatrixWorld(true);
     bakeTractorPart(body, body.children.filter(o => o.isMesh));
+    if (!isEngine) { // the doors: one sliding door to each doorway — four to a carriage — that slide back along the outside of the carriage when she stops at a platform (see trainDoorsStep)
+      const glass = new THREE.MeshPhongMaterial({ color: 0x9cc8dc, transparent: true, opacity: 0.35, shininess: 90, depthWrite: false, side: THREE.DoubleSide });
+      const lampMat = { '-1': new THREE.MeshBasicMaterial({ color: 0x661111 }), '1': new THREE.MeshBasicMaterial({ color: 0x661111 }) };
+      const panelC = new THREE.MeshPhongMaterial({ color: 0x6e1f22 }), frameC = new THREE.MeshPhongMaterial({ color: 0xe9dcc0 }), barC = new THREE.MeshPhongMaterial({ color: 0xc9ced3 });
+      g.userData.doors = []; g.userData.doorLampMat = lampMat;
+      for (const side of [-1, 1]) for (const z of TRAIN_DOOR_Z) {
+        const leaf = new THREE.Group(), W = 0.68, part = (w, h, d, m, x, y, zz) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, zz); leaf.add(o); };
+        part(0.04, 0.78, W, panelC, 0, 0.39, 0);                                                // the lower panel
+        part(0.04, 0.06, W, frameC, 0, 1.5, 0); part(0.04, 0.06, W, frameC, 0, 0.8, 0);        // the window's frame: top and bottom…
+        for (const e of [-1, 1]) part(0.04, 0.66, 0.05, frameC, 0, 1.15, e * (W / 2 - 0.025)); // …and sides
+        part(0.06, 0.34, 0.035, barC, side * 0.03, 0.72, -Math.sign(z) * (W / 2 - 0.08));      // the handle
+        leaf.updateMatrixWorld(true); bakeTractorPart(leaf, leaf.children.filter(o => o.isMesh));
+        const pane = new THREE.Mesh(new THREE.PlaneGeometry(W - 0.1, 0.66), glass); pane.rotation.y = Math.PI / 2; pane.position.y = 1.15; leaf.add(pane);
+        leaf.position.set(side * TRAIN_DOOR_X_SHUT, CAR_FLOOR, z); g.add(leaf);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.2), lampMat[side]); lamp.position.set(side * 1.17, CAR_FLOOR + 1.66, z); g.add(lamp);
+        g.userData.doors.push({ leaf, side, z, shutZ: z, openZ: z - Math.sign(z) * 0.7, ok: false, isOpen: false });
+      }
+    }
     if (!isEngine) g.userData.seatFigs = trainUnitSeats().map((s, i) => { const f = buildSeatedPassenger(i * 7 + 3); f.position.set(s.x, CAR_FLOOR, s.z); f.visible = false; g.add(f); return f; });
     g.rotation.order = 'YXZ';
     return g;
@@ -40455,6 +40695,48 @@ float moonDetail(vec3 p, float d) {
       if (g.userData.rearEngine) { g.rotation.y += Math.PI; g.rotation.x = -g.rotation.x; } // faces backwards
       if (u > 0) showSeatFigs(g, trainCarPax(tr, u), tr.uid + u, (aboard && aboard.kind === 'train' && aboard.tr === tr && aboard.u === u && aboard.seat !== null) ? aboard.seat : -1, Math.hypot(g.position.x - player.pos.x, g.position.z - player.pos.z) < 45); // see ABOARD
     }
+    if (near) trainDoorsStep(tr);
+  }
+  // ---- the carriage doors ----
+  // Shut while she's moving. Once she's stopped, the doors alongside a platform slide open — only on the platform's
+  // side, and only on carriages actually at it (a long train's tail hangs out past the end of the platform, and those
+  // doors stay shut). Stopped out on the line, away from any station, they all open. Green lamp over an open door.
+  const _tdV = new THREE.Vector3();
+  function stationPlatformAt(st, x, z) { // is this spot on a platform beside this track? (each track has one on its hall side; a track with another behind it has that one's island too)
+    const L = st.line, d = st.spec && st.spec.station && st.spec.station.dvec; if (!d) return true;
+    const alongX = L.x0 !== L.x1, a = alongX ? x : z, lo = alongX ? Math.min(L.x0, L.x1) : Math.min(L.z0, L.z1), hi = (alongX ? Math.max(L.x0, L.x1) : Math.max(L.z0, L.z1)) + 1;
+    if (a < lo || a > hi) return false;
+    const rel = (x - (L.x0 + 0.5)) * d[0] + (z - (L.z0 + 0.5)) * d[1];
+    return rel < 0 ? rel > -3.5 : rel < 3.5 && st.p < stationPlatCount(st.spec) - 1;
+  }
+  function trainDoorsWork(tr) { // which doors open at this stop (worked out once a stop)
+    const at = trainStationAt(tr); let any = false;
+    for (let u = 1; u <= tr.cars; u++) { const g = tr.units[u], ds = g && g.userData.doors; if (!ds) continue;
+      for (const dr of ds) { if (at) { vLocalToWorld(g, dr.side * 1.9, 0, dr.z, _tdV); dr.ok = stationPlatformAt(at, _tdV.x, _tdV.z); } else dr.ok = true; if (dr.ok) any = true; } }
+    if (!any) for (let u = 1; u <= tr.cars; u++) { const ds = tr.units[u] && tr.units[u].userData.doors; if (ds) for (const dr of ds) dr.ok = true; } // (nothing lined up: never leave anyone shut in)
+  }
+  function trainDoorsStep(tr) {
+    const stopped = Math.abs(tr.v) < 0.05 && tr.state !== 'derailed' && ((tr.stoppedFor || 0) > 0.35 || !trainsRunHere());
+    if (stopped && !tr.doorStop) { tr.doorStop = true; trainDoorsWork(tr); }
+    else if (!stopped) tr.doorStop = false;
+    const now = performance.now(), k = Math.min(1, (now - (tr.doorT || now)) / 1000 * 4); tr.doorT = now;
+    let changed = false;
+    for (let u = 1; u <= tr.cars; u++) { const g = tr.units[u], ds = g && g.userData.doors; if (!ds) continue;
+      const lit = { '-1': false, '1': false };
+      for (const dr of ds) {
+        const open = stopped && dr.ok, l = dr.leaf;
+        if (open !== dr.isOpen) { dr.isOpen = open; changed = true; }
+        if (open) lit[dr.side] = true;
+        l.position.z += ((open ? dr.openZ : dr.shutZ) - l.position.z) * k; l.position.x += (dr.side * (open ? TRAIN_DOOR_X_OPEN : TRAIN_DOOR_X_SHUT) - l.position.x) * Math.min(1, k * 2);
+      }
+      const lm = g.userData.doorLampMat; for (const sd of ['-1', '1']) { if (g.userData['lit' + sd] !== lit[sd]) { g.userData['lit' + sd] = lit[sd]; lm[sd].color.setHex(lit[sd] ? 0x22ff66 : 0x661111); } }
+    }
+    if (changed) trainDoorHiss(tr);
+  }
+  function trainDoorHiss(tr) { // a puff of air, as the bus's doors
+    if (!audioCtx || !tr.units[1]) return;
+    if (!(aboard && aboard.tr === tr) && tr.units[1].position.distanceTo(player.pos) > 25) return;
+    try { const n = makeLoopingNoise(1, 'highpass', 2200, 0.6), t = audioCtx.currentTime; n.gain.gain.setValueAtTime(0.0001, t); n.gain.gain.exponentialRampToValueAtTime(0.05, t + 0.05); n.gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6); setTimeout(() => { try { n.src ? n.src.stop() : n.source && n.source.stop(); } catch (e) {} try { n.gain.disconnect(); } catch (e) {} }, 800); } catch (e) {}
   }
   // Which station's platform a point (or the train's middle) is on.
   function stationAtPoint(px, py, pz) { // -> { ck, spec, line, p } — the platform it's at
@@ -40492,14 +40774,7 @@ float moonDetail(vec3 p, float d) {
     return 'in the till (💰' + st.till + ')';
   }
   function trainArrive(tr, st) {
-    // your stop: off onto the platform. Booked to somewhere: there (matched by the train itself — its key follows the
-    // lead bogie, so it changes as she runs). Walked aboard without a ticket: the next station along.
-    const mineRide = trainRideDest && (trainRideDest.tr === tr || trainRideDest.k === tr.k);
-    if (aboard && aboard.kind === 'train' && aboard.tr === tr && (mineRide ? trainRideDest.dest === st.ck : (aboard.boardSt !== undefined && aboard.boardSt !== st.ck))) {
-      trainRideDest = null; const g = tr.units[aboard.u] || tr.units[1]; let sp = null;
-      if (g) for (const side of [1, -1]) { vLocalToWorld(g, side * 2.05, 0.1, 2.6, _abV); sp = safeTrainExit(tr, _abV.x, _abV.y, _abV.z); if (sp) break; }
-      if (sp) leaveAboard(sp.x, sp.y, sp.z); else leaveAboard(); setTimeout(() => showBriefMessage('🚉 Welcome to ' + stationName(st.spec)), 50);
-    }
+    // (You getting off at your stop: see trainPutOffCheck — it runs from the ride itself, so it can't be missed.)
     const now = performance.now(), fare = TRAIN_FARE_BASE + Math.floor(tr.tripDist / TRAIN_FARE_PER), total = tr.pax * fare;
     const from = tr.lastSt && structureSpecs.get(tr.lastSt);
     tr.lastSt = st.ck; tr.departing = st.ck;
@@ -40742,6 +41017,35 @@ float moonDetail(vec3 p, float d) {
     tr.dir = tr.cabRear ? -1 : 1; // (it carries on the way you were driving)
     trainSave(tr);
     if (!silent) showBriefMessage(tr.auto ? '🚂 Back on auto' : '🚂 Parked');
+  }
+  // Your stop: put off onto the platform. Booked to somewhere: there (matched by the train itself — its key follows the
+  // lead bogie, so it changes as she runs). Walked aboard without a ticket: the next station along. Checked every frame
+  // of the ride against where she's actually standing, rather than only at the moment she pulled in — however she got
+  // there (braked at the platform, ran to the buffers, you were riding a train someone stopped by hand) you get off.
+  function trainPutOffCheck(a) { // -> true if you've just been put off
+    const tr = a.tr, now = performance.now();
+    if (a.putOffAt) { if (now < a.putOffAt) return false; trainPutOff(a); return true; }
+    if (Math.abs(tr.v) >= 0.05 || (tr.stoppedFor || 0) < 0.4 || trainDriving === tr || tr.state === 'derailed') return false;
+    const st = trainStationAt(tr); if (!st) return false;
+    const mineRide = trainRideDest && (trainRideDest.tr === tr || trainRideDest.k === tr.k);
+    if (mineRide ? trainRideDest.dest === st.ck : (a.boardSt !== undefined && a.boardSt !== st.ck)) { a.putOffAt = now + 900; a.putOffSt = st; } // (a moment for the doors to open)
+    return false;
+  }
+  // Onto the platform itself, level with your carriage — or the nearest bit of platform if your carriage has stopped
+  // out past the end of it, which a long train's back carriages do. (It used to look right beside your carriage, so at
+  // the back of a long train you'd land out on the line, or stay stuck on board if there was no ground there.)
+  function trainPutOff(a) {
+    const tr = a.tr, st = a.putOffSt, L = st.line, d = st.spec.station && st.spec.station.dvec, g = tr.units[a.u] || tr.units[1]; let sp = null;
+    trainRideDest = null;
+    if (L && d) {
+      const alongX = L.x0 !== L.x1, lo = (alongX ? Math.min(L.x0, L.x1) : Math.min(L.z0, L.z1)) + 1.5, hi = (alongX ? Math.max(L.x0, L.x1) : Math.max(L.z0, L.z1)) - 0.5;
+      const cl = v => Math.max(lo, Math.min(hi, v));
+      sp = safeTrainExit(tr, (alongX ? cl(player.pos.x) : L.x0 + 0.5) - d[0] * 2, L.y, (alongX ? L.z0 + 0.5 : cl(player.pos.z)) - d[1] * 2);
+    }
+    if (!sp && g) for (const side of [1, -1]) { vLocalToWorld(g, side * 2.05, 0.1, 2.6, _abV); sp = safeTrainExit(tr, _abV.x, _abV.y, _abV.z); if (sp) break; }
+    if (!sp && g) { vLocalToWorld(g, 2.05, 0.1, 2.6, _abV); sp = { x: _abV.x, y: _abV.y, z: _abV.z }; } // (never left on board)
+    if (sp) leaveAboard(sp.x, sp.y, sp.z); else leaveAboard();
+    setTimeout(() => showBriefMessage('🚉 Welcome to ' + stationName(st.spec)), 50);
   }
   // Where you step off a train: the nearest spot (within a few blocks) with ground under your feet and room to
   // stand — never inside a bank, a cutting wall or the train itself. null if there's nowhere (very unlikely).
@@ -44508,6 +44812,20 @@ float moonDetail(vec3 p, float d) {
   const BUS_FLOOR = 0.62;
   function busSeats() { const out = []; for (let i = 0; i < 7; i++) for (const x of [-0.95, -0.5, 0.5, 0.95]) out.push({ x, z: -4.5 + i * 0.95 }); return out; }
   const busKerb = () => busSide() < 0 ? 1 : -1; // local x of the kerb side (the doors): heading +z, left is +x
+  // The driver, in the seat: a passenger's build in uniform and cap, hands on a steering wheel.
+  function buildBusDriver() {
+    const g = new THREE.Group(), box = (w, h, d, c, x, y, z, rx) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), paxMat(c)); m.position.set(x, y, z); if (rx) m.rotation.x = rx; g.add(m); return m; };
+    const UNIFORM = 0x1f3350, CAP = 0x14233a, SKIN = 0xe0ac69;
+    box(0.42, 0.5, 0.24, UNIFORM, 0, 0.78, 0);                                    // body
+    box(0.1, 0.3, 0.02, 0xdfe6ee, 0, 0.86, 0.125); box(0.05, 0.26, 0.022, 0xa8231b, 0, 0.84, 0.13); // shirt front and tie
+    box(0.26, 0.28, 0.26, SKIN, 0, 1.18, 0);                                      // head
+    box(0.3, 0.07, 0.3, CAP, 0, 1.35, 0); box(0.28, 0.025, 0.12, 0x0c1420, 0, 1.325, 0.19); // cap and peak
+    box(0.4, 0.14, 0.44, 0x2c3e50, 0, 0.5, 0.12);                                 // legs
+    for (const sx of [-1, 1]) { box(0.1, 0.1, 0.42, UNIFORM, sx * 0.24, 0.86, 0.2, -0.25); box(0.09, 0.09, 0.09, SKIN, sx * 0.17, 0.92, 0.44); } // arms out to the wheel, and hands
+    const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.022, 6, 18), paxMat(0x151515)); wheel.position.set(0, 0.95, 0.47); wheel.rotation.x = -0.35; g.add(wheel);
+    const hub = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.03, 0.03), paxMat(0x151515)); hub.position.copy(wheel.position); hub.rotation.x = -0.35; g.add(hub);
+    return alienizeFigure(g, 77); // (an alien, on the alien planet — see ALIEN PLANET)
+  }
   function buildBus(destText) {
     const g = new THREE.Group(), body = new THREE.Group(); g.add(body);
     const add = (w, h, d, c, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshPhongMaterial({ color: c })); m.position.set(x, y, z); body.add(m); return m; };
@@ -44561,6 +44879,7 @@ float moonDetail(vec3 p, float d) {
       const bw = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 1.1), glass); bw.position.set(0, 2.1, -5.5); g.add(bw); }
     { const disp = new THREE.Group(); disp.userData.w = 2.1; bizSetSign(disp, destText || 'Not in service', '#111111', '#ffb52e'); if (disp.children[0]) disp.children[0].position.z = 0.06; disp.position.set(0, 2.92, 5.53); g.add(disp); g.userData.disp = disp; }
     g.userData.seatFigs = busSeats().map((s, i) => { const f = buildSeatedPassenger(i * 13 + 5); f.position.set(s.x, BUS_FLOOR, s.z); f.visible = false; g.add(f); return f; });
+    g.userData.driver = buildBusDriver(); g.userData.driver.position.set(-k * 0.75, BUS_FLOOR, 4.37); g.userData.driver.visible = false; g.add(g.userData.driver); // (shown in busDraw — not when it's you driving)
     g.userData.kerb = k;
     return g;
   }
@@ -44698,6 +45017,7 @@ float moonDetail(vec3 p, float d) {
       for (const l of g.userData.doorLeaves || []) { const want = open ? l.userData.open : l.userData.shut; l.position.z += (want - l.position.z) * k2; l.position.x = l.userData.k * (open ? 1.33 : 1.275); }
       if (g.userData.doorsOpen !== open) { g.userData.doorsOpen = open; for (const lm of g.userData.doorLamps || []) lm.material.color.setHex(open ? 0x22ff66 : 0x661111); } }
     showSeatFigs(g, b.pax, hashStr(b.id), (aboard && aboard.kind === 'bus' && aboard.b === b && aboard.seat !== null) ? aboard.seat : -1, busDriving !== b && Math.hypot(b.x - player.pos.x, b.z - player.pos.z) < 40);
+    if (g.userData.driver) g.userData.driver.visible = busDriving !== b && (b.auto || (aboard && aboard.kind === 'bus' && aboard.b === b)) && Math.hypot(b.x - player.pos.x, b.z - player.pos.z) < 60; // (at the wheel — unless that's you)
   }
   function busBoxesTouch(ax, az, ah, bx, bz, bh, m) { // do two buses' footprints overlap (with a margin)? — separating axes
     const H = [1.3 + m, 5.55 + m], A = [[Math.cos(ah), -Math.sin(ah)], [Math.sin(ah), Math.cos(ah)]], B = [[Math.cos(bh), -Math.sin(bh)], [Math.sin(bh), Math.cos(bh)]], d = [bx - ax, bz - az];
@@ -46354,7 +46674,7 @@ float moonDetail(vec3 p, float d) {
       for (let u = 1; u <= tr.cars; u++) { // the carriages (not the engines)
         const g = tr.units[u]; if (!g || !g.visible || g.position.distanceToSquared(player.pos) > 30) continue;
         const l = vWorldToLocal(g, player.pos, _abV), az = Math.abs(l.z);
-        if (az > 2.25 && az < 2.95 && Math.abs(l.x) > 0.9 && Math.abs(l.x) < 1.9 && l.y > -1.5 && l.y < 0.8) { const at0 = trainStationAt(tr); boardAt({ kind: 'train', tr, u, lx: Math.sign(l.x) * 0.85, lz: l.z, seat: null, boardSt: at0 ? at0.ck : null }); return; }
+        if (az > 2.25 && az < 2.95 && Math.abs(l.x) > 0.9 && Math.abs(l.x) < 1.9 && l.y > -1.5 && l.y < 0.8 && trainDoorOpenAt(g, Math.sign(l.x), l.z)) { const at0 = trainStationAt(tr); boardAt({ kind: 'train', tr, u, lx: Math.sign(l.x) * 0.85, lz: l.z, seat: null, boardSt: at0 ? at0.ck : null }); return; }
       }
     }
     for (const p of planes.values()) {
@@ -46363,11 +46683,13 @@ float moonDetail(vec3 p, float d) {
       if (l.x > -5.8 && l.x < -1.6 && Math.abs(l.z - PLANE_DOOR_Z) < 1.0 && l.y < PLANE_FLOOR + 1) { boardAt({ kind: 'plane', p, lx: -0.9, lz: PLANE_DOOR_Z, seat: null }); return; }
     }
   }
+  function trainDoorOpenAt(g, side, z) { const ds = g.userData.doors; return !!(ds && ds.some(dr => dr.side === side && Math.sign(dr.z) === Math.sign(z) && dr.isOpen)); }
   function aboardSeatList(a) { return a.kind === 'train' ? trainUnitSeats() : a.kind === 'ferry' ? fySeats() : a.kind === 'bus' ? busSeats() : planeSeats(); }
   function aboardStep(dt) { // after the physics: walk about inside, then pin there
     const a = aboard; if (!a) return;
     const g = aboardGroup(a);
     if (!g || !g.parent || (a.kind === 'train' && !trains.has(a.tr.k)) || (a.kind === 'plane' && !planes.has(a.p.id)) || (a.kind === 'ferry' && !ferries.has(a.f.id)) || (a.kind === 'bus' && !buses.has(a.b.id))) { leaveAboard(); return; }
+    if (a.kind === 'train' && trainPutOffCheck(a)) return;
     const floorY = a.kind === 'train' ? CAR_FLOOR : a.kind === 'ferry' ? FY_FLOOR : a.kind === 'bus' ? BUS_FLOOR : PLANE_FLOOR;
     { const ry = g.rotation.y; if (a.camRy !== undefined && a.camG === g) yaw += angWrap(ry - a.camRy); a.camRy = ry; a.camG = g; } // your view turns with the carriage / plane as it goes round a bend
     if (a.seat === null) {
@@ -46383,8 +46705,8 @@ float moonDetail(vec3 p, float d) {
       if (a.kind === 'train') {
         const vest = z => Math.abs(z) >= 2.25;
         if (vest(nz) && Math.abs(nx) > 1.0) { // out of a door
-          if (aboardStopped(a)) { const side = Math.sign(nx); vLocalToWorld(g, side * 2.05, 0.1, nz, _abV); const sp = safeTrainExit(a.tr, _abV.x, _abV.y, _abV.z) || safeTrainExit(a.tr, ...vLocalToWorld(g, -side * 2.05, 0.1, nz, new THREE.Vector3()).toArray()); if (sp) leaveAboard(sp.x, sp.y, sp.z); else leaveAboard(_abV.x, _abV.y, _abV.z); showBriefMessage('🚉 Off the train'); return; }
-          nx = Math.sign(nx) * 1.0; if (performance.now() > aboardHintAt - 55000) showBriefMessage('🚃 The doors are shut while she’s moving');
+          if (aboardStopped(a) && trainDoorOpenAt(g, Math.sign(nx), nz)) { const side = Math.sign(nx); vLocalToWorld(g, side * 2.05, 0.1, nz, _abV); const sp = safeTrainExit(a.tr, _abV.x, _abV.y, _abV.z) || safeTrainExit(a.tr, ...vLocalToWorld(g, -side * 2.05, 0.1, nz, new THREE.Vector3()).toArray()); trainRideDest = null; if (sp) leaveAboard(sp.x, sp.y, sp.z); else leaveAboard(_abV.x, _abV.y, _abV.z); showBriefMessage('🚉 Off the train'); return; }
+          nx = Math.sign(nx) * 1.0; if (performance.now() > aboardHintAt - 55000) showBriefMessage(aboardStopped(a) ? '🚃 That door’s shut — try the other side, or a carriage at the platform (green lamps)' : '🚃 The doors are shut while she’s moving');
         }
         if (!vest(nz) && Math.abs(nx) > 0.2) { if (vest(a.lz)) nz = Math.sign(a.lz) * 2.25; else nx = Math.sign(nx) * 0.2; }
         if (nz > 2.95) { if (a.u > 1) { a.u--; nz -= UNIT_PITCH; } else nz = 2.95; }        // through the gangway to the carriage in front

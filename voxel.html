@@ -388,14 +388,14 @@
     width: 60px; height: 60px; font-size: 24px;
   }
   #btnAction { right: 29px; bottom: 48px; background: rgba(40,90,60,0.55); }
-  /* Only shown while a Step / Slope / Curve is the selected block (see updateRotateButton) — sits just above
-     the build and jump buttons, out of the way of both. */
+  /* Only shown while a Step / Slope / Curve is the selected block (see updateRotateButton) — sits above
+     the build and jump buttons and to the left of the 🏠 home button, clear of all three. */
   #btnRotate {
-    right: 168px; bottom: 278px;
+    right: 232px; bottom: 278px;
     width: 46px; height: 46px; font-size: 20px;
   }
   #btnTilt {
-    right: 116px; bottom: 278px;
+    right: 180px; bottom: 278px;
     width: 46px; height: 46px; font-size: 20px;
   }
 
@@ -4752,11 +4752,29 @@
       syncChunkInstances(+parts[0], +parts[1]);
     }
   }
+  // Once, for each building: the stone that digging near it wrongly put back over its levelled ground (see belowNaturalCrust) is
+  // cleared out of the world's saved edits, so it's gone for good. Only plain Stone, only above the floor, only where that bug could have put it.
+  function structureClearRegrownRock(spec) {
+    if (!spec.bought || !spec.site || spec.rockCleared || visitMode || typeof blockEdits === 'undefined') return;
+    const s = spec.site; let n = 0;
+    for (const tck of chunksTouchedByBox(s.sx0, s.sx1, s.sz0, s.sz1)) {
+      const m = blockEdits.byChunk.get(tck); if (!m) continue;
+      for (const [k, t] of [...m]) {
+        if (t !== STONE_BLOCK_TYPE) continue;
+        const c1 = k.indexOf(','), c2 = k.indexOf(',', c1 + 1), x = +k.slice(0, c1), y = +k.slice(c1 + 1, c2), z = +k.slice(c2 + 1);
+        if (x < s.sx0 || x > s.sx1 || z < s.sz0 || z > s.sz1 || y <= s.floor) continue;
+        const gh = groundHeightOnly.get(x + ',' + z); if (gh === undefined || y >= gh - CHUNK_FILL_DEPTH_CAP + 1) continue;
+        blockEdits.delete(k); stepRotEdits.delete(k); blocks.delete(k); n++;
+      }
+    }
+    spec.rockCleared = 1; try { recordStructureSpec(spec); } catch (e) {}
+    if (n) console.info('[voxel] ' + spec.t + ': cleared ' + n + ' regrown stone block(s) from over its floor');
+  }
   function replayStructureSpec(spec) {
     console.info('[voxel] replaying ' + spec.t + ' in chunk ' + spec.ck + (visitMode ? ' (from host)' : ''));
     const parts = spec.ck.split('_');
     const cx = +parts[0], cz = +parts[1];
-    try { replayStructureSwitch(spec, cx, cz); }
+    try { replayStructureSwitch(spec, cx, cz); structureClearRegrownRock(spec); }
     finally {
       // Always redraw the area it touched, even if a builder threw part-way — otherwise the blocks it had
       // already placed stay in the map (solid) but never get drawn.
@@ -5025,6 +5043,7 @@
   function fillGeneratedRock(x, y, z) {
     const k = key(x, y, z);
     if (blocks.has(k) || waterBlocks.has(k) || blockEdits.get(k) === -1) return false;
+    { const vg = villageGroundHeight.get(x + ',' + z); if (vg !== undefined && y > vg) return false; } // never above a building's levelled floor — that ground's gone for good
     blocks.set(k, STONE_BLOCK_TYPE);
     recordBlockEdit(x, y, z, STONE_BLOCK_TYPE, 0);
     handleLocalBlockChange(x, y, z);
@@ -5041,6 +5060,9 @@
     if (y < DEEP_MINE_FLOOR) return false; // stays out of the world's existing reserved floor near BEDROCK_Y
     const gh = groundHeightOnly.get(x + ',' + z);
     if (gh === undefined) return false; // neighbouring column never generated — safest to leave alone rather than guess
+    // (groundHeightOnly stays at the natural height even where a building levelled the ground much lower: without this, digging near
+    // one treated the empty air over its floor as "deep rock" and filled it back in with stone, saved — the old ground coming back.)
+    { const vg = villageGroundHeight.get(x + ',' + z); if (vg !== undefined && y > vg) return false; }
     return y < gh - CHUNK_FILL_DEPTH_CAP + 1; // one below the lowest block generateChunkTerrain's fillFrom would ever place here
   }
   // The 8 offsets of a full 3x3 ring minus its centre, reused for whichever
@@ -9795,7 +9817,26 @@
     jukeNow = null;
   }
   function jukeBusy() { return !!jukeNow && performance.now() < jukeNow.until; } // a song's playing — the game's own tune waits (see MUSIC)
-  function jukeVolAt(pos) { return pos ? Math.max(0, 1 - pos.distanceTo(player.pos) / 28) : 1; }
+  // SOUND OUT OF A BUILDING: the jukebox, a piano and a concert play at full volume inside their building and lose 5% for
+  // every block you are outside it (so nothing at 20 blocks). The building's walls where it has a garden or grounds
+  // round it (restaurant, mansion, pub), the plot otherwise; a few blocks round the piece if it's not in a building at all.
+  const SOUND_LOSS_PER_BLOCK = 0.05;
+  function soundLevelBox(b) { const px = player.pos.x, pz = player.pos.z, dx = Math.max(b[0] - px, 0, px - (b[1] + 1)), dz = Math.max(b[2] - pz, 0, pz - (b[3] + 1)); return Math.max(0, 1 - Math.hypot(dx, dz) * SOUND_LOSS_PER_BLOCK); }
+  function soundBoxOfSpec(sp) {
+    const fromUV = (o, u0, v0, u1, v1) => { const a = o.f.cell(u0, v0), c = o.f.cell(u1, v1); return [Math.min(a[0], c[0]), Math.max(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[1], c[1])]; };
+    const s = sp.site, r = sp.t === 'restaurant' && restaurants.get(sp.ck), m = sp.t === 'mansion' && mansions.get(sp.ck), pb = sp.t === 'pub' && pubEntries.get(sp.ck);
+    if (r && r.ib) return r.ib; if (m && m.f) return fromUV(m, 7, 20, 37, 40); if (pb && pb.f) return fromUV(pb, 0, 9, 26, 31);
+    return [s.sx0, s.sx1, s.sz0, s.sz1];
+  }
+  function soundLevelFurn(fk) { // -> 0..1 for something playing on this piece of furniture
+    const fu = furniture.get(fk); if (!fu) return 0;
+    if (!fu.soundBox) {
+      for (const sp of structureSpecs.values()) if (sp && sp.site && fu.bx >= sp.site.sx0 && fu.bx <= sp.site.sx1 && fu.bz >= sp.site.sz0 && fu.bz <= sp.site.sz1) { fu.soundBox = soundBoxOfSpec(sp); break; }
+      if (!fu.soundBox) { const R = currentWorldId === PUB_WORLD_ID ? 22 : 5; fu.soundBox = [fu.bx - R, fu.bx + R, fu.bz - R, fu.bz + R]; }
+    }
+    return soundLevelBox(fu.soundBox);
+  }
+  function jukeHeard() { return jukeBusy() && !!jukeNow && soundLevelFurn(jukeNow.fk) > 0; } // (a song you can't hear holds nothing else up)
   // play entry idx of jukeList() on the jukebox fk (at pos)
   function jukePlayIdx(fk, idx, pos) {
     const list = jukeList(), e = list[idx]; if (!e) return null;
@@ -9809,7 +9850,7 @@
     let gain = null, analyser = null;
     try { if (audioCtx && audioCtx.state === 'running') { const src = audioCtx.createMediaElementSource(el); /* (only through a running context — a suspended one would hold the song silent) */ gain = audioCtx.createGain(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.3; src.connect(analyser); analyser.connect(gain); /* (the analyser: so the dancers can find the beat — see THE DANCERS) */ gain.connect(audioCtx.destination); if (audioCtx.state === 'suspended') audioCtx.resume(); } } catch (err) { gain = null; }
     const now = { nodes: [], fk, el, gain, analyser, pos, idx, until: Infinity, t0: performance.now() };
-    const setVol = () => { const v = 0.8 * jukeVolAt(now.pos); if (gain) { gain.gain.value = v; el.volume = 1; } else el.volume = Math.min(1, v); };
+    const setVol = () => { const v = soundLevelFurn(fk); if (gain) { gain.gain.value = v; el.volume = 1; } else el.volume = Math.min(1, v); };
     now.setVol = setVol; setVol();
     el.addEventListener('ended', () => { if (jukeNow === now) { jukeNow = null; jukeShuffleNext(); } });
     el.addEventListener('playing', () => { if (jukeShuffle) jukeShuffle.fails = 0; });
@@ -9823,7 +9864,7 @@
     const el = jukeNow.el, stuck = performance.now() - jukeNow.t0 > 45000 && el.currentTime === 0; // never got going (missing file, no network…)
     if (el.ended || stuck) { if (stuck) showBriefMessage('🎵 That song wouldn\u2019t play'); jukeNow = null; jukeShuffleNext(); return; } // (a load error is handled by the element's own error event — it tries the other places first) // (so the game's own tune isn't kept waiting)
     jukeNow.setVol();
-  } catch (e) {} }, 500); // a song fades as you walk away from the jukebox
+  } catch (e) {} }, 250); // a song fades as you walk out of the building (see SOUND OUT OF A BUILDING)
   // ---- THE DANCERS ----
   // While a jukebox plays, three women come over and dance on the free floor near it, then drift off when the music
   // stops. Each is a jointed figure — knees and elbows that bend — and her legs are worked out from where her feet are
@@ -10499,9 +10540,8 @@
     const bodyMat = new THREE.MeshPhongMaterial({ color: 0x3a2a1a, shininess: 20 });
     const shelfMat = new THREE.MeshPhongMaterial({ color: 0x2a1c10, shininess: 10 });
     const bottleColors = [0x2e6b3a, 0x8a1f2a, 0xd9962a, 0x3a3a8a, 0xc9c9c9];
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.5, 0.4), bodyMat);
-    body.position.set(0, 0.75, 0);
-    group.add(body);
+    // an open front (local -Z) with a back, sides, top and base — it used to be a solid box with the bottles shut inside, which from any side looked like the back of something
+    for (const [w, h, d, x, y, z] of [[0.9, 1.5, 0.03, 0, 0.75, 0.185], [0.03, 1.5, 0.4, -0.435, 0.75, 0], [0.03, 1.5, 0.4, 0.435, 0.75, 0], [0.9, 0.04, 0.4, 0, 1.48, 0], [0.9, 0.1, 0.4, 0, 0.05, 0]]) { const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), bodyMat); b.position.set(x, y, z); group.add(b); }
     [0.35, 0.75, 1.15].forEach(y => {
       const shelf = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.03, 0.36), shelfMat);
       shelf.position.set(0, y, 0);
@@ -12010,8 +12050,7 @@
       if (fx) return true;
       for (const rr of restaurants.values()) if (rr.pianoKey === fk && rr.people.some(p => p.role === 'pianist')) { say('🎹 Shh — the pianist’s playing'); return true; } // (not over the top of the restaurant's music)
       for (const hh of hotelEntries.values()) if (hh.pianoKey === fk && hh.pianist) { say('🎹 Shh — the pianist’s playing'); return true; } // (nor the hotel's)
-      furnFx.set(fk, { fk, f, kind: 'piano', t: 0, parts: [], note: 0 });
-      say('🎹 ♪'); return true;
+      { const tune = pianoToggle(fk); say(tune ? '🎹 ♪ ' + tune + ' — ✋ again to stop' : '🎹 Stopped'); } return true;
     }
     if (name === 'Pool Table') { // ✋ steps up to the table to play — see POOL
       if (remote) return true; // (each player's game is their own)
@@ -17616,14 +17655,14 @@
     limiter.connect(audioCtx.destination);
     vehicleGunBus = limiter;
   }
-  function playVehicleGunshot() {
+  function playVehicleGunshot(vol) {
     if (!audioCtx) return;
     if (!vehicleGunshotBuffer) { ensureVehicleGunshotBuffer(); return; } // buffer not ready yet (shouldn't normally happen — see enterVehicle) — skip this one shot's sound rather than throw
     ensureVehicleGunBus();
     const src = audioCtx.createBufferSource();
     src.buffer = vehicleGunshotBuffer;
     const gain = audioCtx.createGain();
-    gain.gain.value = 1.3; // safe as a single shot (the sample itself is normalized with headroom) — it's overlapping shots during sustained fire that the limiter above is actually for
+    gain.gain.value = 1.3 * (vol == null ? 1 : vol); // safe as a single shot (the sample itself is normalized with headroom) — it's overlapping shots during sustained fire that the limiter above is actually for
     src.connect(gain); gain.connect(vehicleGunBus || audioCtx.destination);
     src.start();
   }
@@ -19719,10 +19758,11 @@
     showSaveStatus('🛰️ Field drone picked up — place it again from your Weapons menu (×' + fieldDroneStock() + ')');
     return true;
   }
+  const FDRONE_HEAR = 30;
   function fieldDroneShoot(fx, targetPos, hit) {
     const from = fx.group.position.clone().add(new THREE.Vector3(0, -0.2, 0));
     showTracer(from, targetPos);
-    playVehicleGunshot();
+    { const d = Math.min(from.distanceTo(player.pos), targetPos.distanceTo(player.pos)); if (d < FDRONE_HEAR) playVehicleGunshot(1 - d / FDRONE_HEAR); } // only heard when you're close to it
     sendWeaponMsg('weaponFx', { k: 'shot', a: vecArr(from), b: vecArr(targetPos) });
     if (hit.kind === 'player') sendWeaponMsg('weaponHit', { targetUid: hit.rec.uid, shooterUid: playerUid, shooterName: getMyDisplayName() + '\u2019s field drone', dmg: FDRONE_DAMAGE, w: 'gun' });
     else if (hit.kind === 'animal') hitCreatureAndSend(hit.rec, FDRONE_DAMAGE);
@@ -26868,6 +26908,7 @@
       if (roadRampCells.size) { const h = rdRampSurfAt(x, y, z); if (h !== null && y < h && y >= h - 1.2) return true; } // a road ramp — see roadRampCells
       if (hotelEntries && hotelEntries.size && hotelSolidAt(x, y, z, k)) return true; // lift doors / the lift car's floor — see HOTEL
       if (furnBoxCells && furnBoxCells.size && furnBoxSolidAt(x, y, z, bx, bz)) return true; // furniture — see FURNITURE INTERACTION & COLLISION
+      if (mansions && mansions.size && mansionStairSolidAt(x, y, z)) return true; // a mansion's staircase — see MANSION
       if (concertStages && concertSolidAt(x, y, z)) return true; // a stadium's concert stage, while it's up — see STADIUM CONCERTS
       if (yachts && yachts.size && yachtSolidAt(x, y, z)) return true; // a yacht's decks — see SUPERYACHT
       // A fence is half a block taller to walk into than it looks (like Minecraft's): the bottom half of the
@@ -26987,7 +27028,21 @@
     const r = player.radius;
     const onFoot = !rideSlopes && !ridingVehicle;
     slopeInsetNow = onFoot ? 0 : SLOPE_COLLISION_INSET; // see SLOPE_COLLISION_INSET
+    // The points below are enough for full blocks, but a Curve (above all an Inverse one) or a tilted Step / Slope can be
+    // a thin sliver up at waist or chest height — laid on its side, an Inverse Curve fills only the top corner of its
+    // cell — and that slipped between the feet and the head, so you walked straight through it. With one of those
+    // right by you, the whole body's checked. (Not if you're already overlapping one: you can always walk back out.)
+    let denseBody = false;
+    { const y0 = Math.floor(player.pos.y), y1 = Math.floor(player.pos.y + player.height + STEP_HEIGHT);
+      const ax = Math.floor(Math.min(player.pos.x, newPos.x) - r), bx = Math.floor(Math.max(player.pos.x, newPos.x) + r), az = Math.floor(Math.min(player.pos.z, newPos.z) - r), bz = Math.floor(Math.max(player.pos.z, newPos.z) + r);
+      for (let cx = ax; cx <= bx && !denseBody; cx++) for (let cz = az; cz <= bz && !denseBody; cz++) for (let cy = y0; cy <= y1; cy++) {
+        const ck = key(cx, cy, cz), ct = blocks.get(ck); if (ct === undefined) continue; const ce = BLOCK_TYPES[ct];
+        if (ce && (ce.curve || ((ce.half || ce.slope) && (stepRotations.get(ck) || 0) > 3))) { denseBody = true; break; }
+      } }
+    const bodyTest = (x, y, z) => { for (let dy = 0.2; dy < player.height; dy += 0.14) for (const [ox, oz] of [[0, 0], [-r, -r], [r, -r], [-r, r], [r, r], [-r, 0], [r, 0], [0, -r], [0, r]]) if (isSolid(x + ox, y + dy, z + oz)) return true; return false; };
+    if (denseBody && bodyTest(player.pos.x, player.pos.y, player.pos.z)) denseBody = false;
     const test = (x,y,z) => {
+      if (denseBody && bodyTest(x, y, z)) return true;
       const pts = [
         [x-r,y+0.05,z-r],[x+r,y+0.05,z-r],[x-r,y+0.05,z+r],[x+r,y+0.05,z+r],
         [x-r,y+player.height,z-r],[x+r,y+player.height,z-r],[x-r,y+player.height,z+r],[x+r,y+player.height,z+r],
@@ -27681,7 +27736,7 @@
     { id: 's_flowers', icon: '🌷', title: 'Flower garden', reward: 150, text: () => 'Plant 20 flowers.', tip: () => 'Flower seeds are on the Seeds list with the crops — sow them on mud. They sell at the grocer too.', prog: () => [objCount('flower'), 20] },
     { id: 's_pet', icon: '🐕', title: 'A pet of your own', reward: 200, text: () => 'Hatch a dog, a cat or a horse.', tip: () => 'Animal Seeds → Dog, Cat or Horse, into an incubator. Ride the horse!', prog: () => [(objHatched(3) || objHatched(4) || objHatched(5)) ? 1 : 0, 1] },
     { id: 's_lead', icon: '🪢', title: 'Walkies', reward: 100, text: () => 'Lead an animal on the lead.', tip: () => 'Equipment → 🪢 Lead, then ✋ near an animal.', prog: () => [objCount('lead'), 1] },
-    { id: 's_concert', icon: '🎤', title: 'Rock the stadium', reward: 5000, text: () => 'Upgrade your Football Stadium for concerts.', tip: () => 'At your stadium, ✋ the <b>Ticket Booth</b> → Upgrade for concerts (' + objFmt(100000) + '). Every night from 18:00 there’s a stage, a band and a dancing crowd, with ticket money in the morning.', prog: () => [objCount('concert') > 0 || objAnySpec('stadium', sp => sp.stadium && sp.stadium.concert) ? 1 : 0, 1] },
+    { id: 's_concert', icon: '🎤', title: 'Rock the stadium', reward: 5000, text: () => 'Upgrade your Football Stadium for concerts.', tip: () => 'At your stadium, ✋ the <b>Ticket Booth</b> → Upgrade for concerts (' + objFmt(100000) + '). Every night from 19:00 there’s a stage, a band and a dancing crowd, with ticket money in the morning.', prog: () => [objCount('concert') > 0 || objAnySpec('stadium', sp => sp.stadium && sp.stadium.concert) ? 1 : 0, 1] },
     { id: 's_explore', icon: '🧭', title: 'Explorer', reward: 200, text: () => 'Travel 1,000 blocks from the middle of your world.', tip: () => 'The arrow by the clock always points back to the middle. A vehicle makes it quicker.', prog: () => [Math.min(1000, Math.floor(objCount('far'))), 1000] },
     { id: 's_sky', icon: '☁️', title: 'Head in the clouds', reward: 150, text: () => 'Fly 100 blocks above sea level.', tip: () => 'Toggle flying (or take a helicopter) and keep going up.', prog: () => [Math.min(100, Math.floor(objCount('high'))), 100] },
     { id: 's_harvest1k', icon: '🎃', title: 'Bumper crop', reward: 1000, text: () => 'Harvest 1,000 crops by hand.', tip: () => 'Every crop you ✋ pick counts.', prog: () => [objCount('harvest'), 1000] },
@@ -29343,11 +29398,11 @@
     { t: 'restaurant', name: 'Restaurant',    emoji: '🍽️', price: 18000, sx: 27, sz: 40, h: 7, note: 'cooks your crops and meat into meals — hire a head chef, who grows the veg in its kitchen garden' },
     { t: 'rocket',    name: 'Rocket & Moon Base', emoji: '🚀', price: 10000000, sx: 36, sz: 36, h: 36, note: 'launch to the Moon — low gravity, a moon base, moon rock worth 💰1,000–10,000 a sample' },
     { t: 'yacht',     name: 'Superyacht',     emoji: '🛥️', price: 5000000, sx: 12, sz: 36, h: 12, note: 'sail her anywhere there\u2019s deep water — stand on the shore facing the sea to buy' },
-    { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day. Upgrade it at the ticket office for concerts every night' },
+    { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match from 12:00 to 16:00 you can watch live — gate money every day. Upgrade it at the ticket office for concerts every night' },
     { t: 'haunted',   name: 'Haunted House',  emoji: '👻', price: 1000000, sx: 33, sz: 35, h: 17, note: 'a ghost train through five spooky rooms you can ride — riders pay every day' },
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
     { t: 'arena',     name: 'Arena',          emoji: '🎯', price: 1000000, sx: 120, sz: 120, h: 22, note: 'a massive indestructible metal battle arena — three levels, maze, containers, towers and catwalks; fight other players or bots' }, // see ARENA
-    { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 56, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
+    { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 70, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
     { t: 'airport',   name: 'Airport',        emoji: '✈️', price: 50000, sx: 140, sz: 56, h: 17, note: 'runway, terminal, control tower and hangar — buy airliners at check-in, fly them yourself or hire pilots; passengers pay by the distance flown' },
     { t: 'ferryport', name: 'Ferry Port',     emoji: '⛴️', price: 25000, sx: 60, sz: 44, h: 8, note: 'on a shore, sea or lake — a terminal, a quay and two piers with four berths; buy a ferry at the Ferry Desk, steer it yourself or let it sail; passengers pay by the distance sailed' },
     { t: 'busstation', name: 'Bus Station',   emoji: '🚌', price: 25000, sx: 36, sz: 48, h: 8, note: 'a ticket hall, a road across the front (open both ends) and a turning loop — buy a bus at the Bus Desk, lay roads (or have a crew lay them) to other bus stations, put bus stops along them; passengers pay by the distance' },
@@ -29439,7 +29494,7 @@
     let dx = 0, dz = 0; // snap "away from me" to the nearest axis
     if (Math.abs(fx) > Math.abs(fz)) dx = Math.sign(fx); else dz = Math.sign(fz);
     let W = bt.sx, D = bt.sz; const floor = r.hit.y;
-    if ((bt.t === 'station' || bt.t === 'airport' || bt.t === 'ferryport' || bt.t === 'busstation' || bt.t === 'restaurant' || bt.t === 'pub') && dx) { W = bt.sz; D = bt.sx; } // long and thin: its frame runs across your view whichever way you face (see shopFrame)
+    if ((bt.t === 'station' || bt.t === 'airport' || bt.t === 'ferryport' || bt.t === 'busstation' || bt.t === 'restaurant' || bt.t === 'pub' || bt.t === 'mansion') && dx) { W = bt.sz; D = bt.sx; } // long and thin: its frame runs across your view whichever way you face (see shopFrame)
     let sx0, sz0;
     if (dx) { sx0 = dx > 0 ? r.hit.x : r.hit.x - W + 1; sz0 = r.hit.z - Math.floor(D / 2); }
     else { sz0 = dz > 0 ? r.hit.z : r.hit.z - D + 1; sx0 = r.hit.x - Math.floor(W / 2); }
@@ -29704,6 +29759,7 @@
       objNote('built_' + (bt.t === 'landmark' ? 'lm' + bt.kind : bt.t)); // see OBJECTIVES
       recordStructureSpec(spec); // saved (promptly) and sent live to anyone else here
       try { replayStructureSpec(spec); } catch (e) { console.error('[voxel] bought building failed to build', e); }
+      try { if (spec.bought && (LEAF_SWEEP_TYPES.has(spec.t) || LEAF_ABOVE_ONLY.has(spec.t))) leafSweepSpec(spec); } catch (e) {} // no leaves left hanging over it — see NO TREES INSIDE
       playCoin(); playThud(420);
       showSaveStatus(bt.emoji + ' ' + (spec.name ? spec.name + ' (' + bt.name + ')' : bt.name) + ' built! (−💰' + bt.price + ')');
     }, nameAsk);
@@ -32914,13 +32970,21 @@
   // as you walk away. Separate files in a piano/ folder next to voxel.html (like music.mp3 and the jukebox — so this
   // page stays small). Only while a pianist's playing (the restaurant's open: see updateRestPeople) and you're in
   // earshot; walk off and it pauses, come back and the tune carries on. The game's own tune and any jukebox song take turns with it.
-  const REST_PIANO_TUNES = ['piano/happy-hour-jazz.mp3', 'piano/dinner-for-two.mp3', 'piano/dinner-at-two.mp3'], REST_PIANO_VOL = 0.5, REST_PIANO_RANGE = 28;
+  const REST_PIANO_TUNES = ['piano/happy-hour-jazz.mp3', 'piano/dinner-for-two.mp3', 'piano/dinner-at-two.mp3'], REST_PIANO_FULL = 1;
   let pianoEl = null, pianoGain = null, pianoIdx = 0, pianoTry = 0, pianoFails = 0, pianoHeard = false;
+  var pianoManual = null; // the furniture key of a piano you've sat down at — see pianoToggle
+  // ✋ a grand piano nobody's playing: the next of the piano tunes, once through. ✋ again stops it.
+  function pianoToggle(fk) { // -> the tune's title, or null if it's stopped
+    pianoEnsure();
+    if (pianoManual === fk) { pianoManual = null; pianoEl.pause(); return null; }
+    pianoManual = fk; pianoLoad(pianoIdx + 1); pianoSetVol(soundLevelFurn(fk)); pianoEl.play().catch(() => {});
+    return REST_PIANO_TUNES[pianoIdx].replace(/^.*\//, '').replace(/\.mp3$/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
   function pianoLoad(i) { pianoIdx = i % REST_PIANO_TUNES.length; pianoTry = 0; pianoEl.src = REST_PIANO_TUNES[pianoIdx]; }
   function pianoEnsure() {
     if (pianoEl) return;
     pianoEl = new Audio(); pianoEl.crossOrigin = 'anonymous'; pianoEl.preload = 'auto';
-    pianoEl.addEventListener('ended', () => { pianoFails = 0; pianoLoad(pianoIdx + 1); if (pianoHeard) pianoEl.play().catch(() => {}); }); // on to the next tune
+    pianoEl.addEventListener('ended', () => { pianoFails = 0; if (pianoManual) { pianoManual = null; pianoEl.pause(); } pianoLoad(pianoIdx + 1); if (pianoHeard) pianoEl.play().catch(() => {}); }); // on to the next tune (or, played by you: that's the end of it)
     pianoEl.addEventListener('playing', () => { pianoFails = 0; });
     pianoEl.addEventListener('error', () => { // not in piano/: try it loose beside voxel.html, then move on to the next tune
       if (!pianoEl.getAttribute('src')) return;
@@ -32939,16 +33003,12 @@
   function pianoAudible() { return pianoHeard; } // (the game's own tune waits — see MUSIC)
   setInterval(() => { try {
     let v = 0;
-    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeBusy === 'function' && jukeBusy())) {
-      for (const r of restaurants.values()) {
-        if (r.worldId !== currentWorldId || !r.people.some(q => q.role === 'pianist')) continue;
-        const fu = r.pianoKey && furniture.get(r.pianoKey); if (!fu) continue;
-        v = Math.max(v, 1 - fu.group.position.distanceTo(player.pos) / REST_PIANO_RANGE);
-      }
-      for (const h of hotelEntries.values()) { // the hotel's: heard in reception, not up in the rooms
-        if (h.worldId !== currentWorldId || !h.pianist || player.pos.y > h.pianoFloor + 6) continue;
-        const fu = h.pianoKey && furniture.get(h.pianoKey); if (!fu) continue;
-        v = Math.max(v, 1 - fu.group.position.distanceTo(player.pos) / REST_PIANO_RANGE);
+    if (pianoManual && !furniture.has(pianoManual)) pianoManual = null;
+    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeHeard === 'function' && jukeHeard())) {
+      if (pianoManual) v = soundLevelFurn(pianoManual); // one you're playing yourself
+      else {
+        for (const r of restaurants.values()) { if (r.worldId === currentWorldId && r.pianoKey && r.people.some(q => q.role === 'pianist')) v = Math.max(v, soundLevelFurn(r.pianoKey)); }
+        for (const h of hotelEntries.values()) { if (h.worldId === currentWorldId && h.pianist && h.pianoKey && player.pos.y <= h.pianoFloor + 6) v = Math.max(v, soundLevelFurn(h.pianoKey)); } // (the hotel's: heard in reception, not up in the rooms)
       }
     }
     if (typeof concertHeard !== 'undefined' && concertHeard) v = 0; // (nothing competes with a concert)
@@ -32957,7 +33017,7 @@
     pianoEnsure();
     if (!pianoEl.getAttribute('src')) return; // (the files aren't on the site)
     if (typeof musicEl !== 'undefined' && musicEl && !musicEl.paused) musicEl.pause();
-    pianoSetVol(REST_PIANO_VOL * v);
+    pianoSetVol(REST_PIANO_FULL * v);
     if (pianoEl.paused) pianoEl.play().catch(() => {}); // (not allowed yet — no tap/click so far: tried again shortly)
   } catch (e) {} }, 400);
   let restPrevDayTime = null;
@@ -32990,9 +33050,36 @@
   //              desk); dining room (ten-seat table, chandelier, sideboard); kitchen
   //     upstairs: a galleried landing round the stairwell; master suite (four-poster-sized bed, fireplace, TV) with
   //              an en-suite and a dressing room; two guest bedrooms; a games room (pool table, bar, fruit machines)
-  //   back (v41-51):  stone terrace with tables and parasols, a swimming pool with loungers, a tennis court
-  // Every room is papered (one merged mesh a room — see bizWallpaper). The staircase is half-steps, 12 up.
-  const MAN_W = 45, MAN_D = 52;
+  //   back (v41-65):  stone terrace with tables and parasols, a swimming pool with loungers; a lawn behind, with the tennis court
+  // Every room is papered (one merged mesh a room — see bizWallpaper).
+  const MAN_W = 45, MAN_D = 66, MAN_D_OLD = 52;
+  // The plot grew at the back (Nov 2026) for a lawn with the tennis court on it. An older mansion's plot is grown too, once, as
+  // long as nothing's in the way (as restSite does); if something is, its court stays beside the house.
+  function mansionSite(spec) {
+    const s = spec.site, side = restDoorSide(spec), deep = (side === 'south' || side === 'north') ? s.sz1 - s.sz0 + 1 : s.sx1 - s.sx0 + 1, need = MAN_D + 4;
+    if (deep >= need) return true;
+    if (spec.noBackLawn) return false;
+    const e = need - deep, n = { ...s };
+    if (side === 'south') n.sz0 -= e; else if (side === 'north') n.sz1 += e; else if (side === 'east') n.sx0 -= e; else n.sx1 += e;
+    for (const o of structureSpecs.values()) { if (!o || o === spec || !o.site) continue; const b = structureSpecBox(o); if (b && b.x0 <= n.sx1 && b.x1 >= n.sx0 && b.z0 <= n.sz1 && b.z1 >= n.sz0) { spec.noBackLawn = true; return false; } }
+    s.sx0 = n.sx0; s.sx1 = n.sx1; s.sz0 = n.sz0; s.sz1 = n.sz1;
+    return true;
+  }
+  // ---- the grand staircase, solid (asked by isSolid): 24 treads up the middle of the hall, each 0.25 high and half a block deep, from
+  // the hall floor (u21-23, v25) up to the landing at v37; banisters either side. Not blocks: a block's half-step can't make even treads.
+  const MAN_STAIR = { u0: 21, u1: 24, v0: 25, v1: 37, rise: 0.25, tread: 0.5 };
+  function mansionStairSolidAt(x, y, z) {
+    for (const m of mansions.values()) {
+      if (m.worldId !== currentWorldId || x < m.bx0 || x > m.bx1 + 1 || z < m.bz0 || z > m.bz1 + 1) continue;
+      const rel = y - (m.floor + 1); if (rel < 0 || rel > 7.4) continue;
+      const [u, v] = stadToLocal(m, x, z), S = MAN_STAIR;
+      if (v < S.v0 || v >= S.v1 || u < S.u0 - 0.25 || u >= S.u1 + 0.25) continue;
+      const top = Math.min(6, (Math.floor((v - S.v0) / S.tread) + 1) * S.rise);
+      if (u >= S.u0 && u < S.u1) { if (rel < top) return true; continue; }
+      if (rel >= top - 0.3 && rel < top + 1.05 && v >= S.v0 + 0.3) return true; // the banister
+    }
+    return false;
+  }
   var mansions = new Map();
   // Paper the walls round each room (u0..u1, v0..v1) between heights y0..y1: every wall face that looks into the
   // room, windows (glass) and doorways left bare. One merged mesh per room, pattern chosen from seedKey.
@@ -33032,7 +33119,9 @@
 
   function maybeBuildMansion(cx, cz, replay) {
     if (!replay) return;
-    const K = bizKit(cx, cz, replay, MAN_W, MAN_D, 18); if (!K) return;
+    const siteWas = JSON.stringify(replay.site), backLawn = mansionSite(replay), D_ = backLawn ? MAN_D : MAN_D_OLD;
+    const K = bizKit(cx, cz, replay, MAN_W, D_, 18); if (!K) return;
+    if (JSON.stringify(replay.site) !== siteWas && !visitMode) try { specSave(K.ck, replay); } catch (e) {}
     const { f, floor, put, clear, dirW, door, fix, prop, plaque, reg, idxOf } = K;
     const B = {
       render: BLOCK_ID('White Concrete'), quoin: BLOCK_ID('Chiseled Brick'), band: BLOCK_ID('Polished Stone'), plinth: BLOCK_ID('Grey Brick'),
@@ -33047,20 +33136,22 @@
     const inHouse = (u, v) => u >= HU0 && u <= HU1 && v >= HV0 && v <= HV1;
     // ---- ground ----
     const fountainC = [22, 11];
-    for (let u = 0; u < MAN_W; u++) for (let v = 0; v < MAN_D; v++) {
+    const COURT = backLawn ? { u0: 13, u1: 32, v0: 53, v1: 63, cu: 23, cv: 58.5 } : { u0: 2, u1: 11, v0: 43, v1: 49, cu: 7, cv: 46.5 }; // its surface, and the middle of it
+    for (let u = 0; u < MAN_W; u++) for (let v = 0; v < D_; v++) {
       const [x, z] = f.cell(u, v);
       let t = B.grass;
       const dc = Math.hypot(u - fountainC[0], v - fountainC[1]);
       if (v < HV0 && ((u >= 21 && u <= 23) || (dc >= 3.2 && dc <= 6.2) || (v >= 15 && u >= 18 && u <= 26))) t = B.gravel; // drive + turning circle
       if (v >= 41 && v <= 43 && u >= 14 && u <= 40) t = B.marble;           // terrace
       if (v >= 44 && v <= 50 && u >= 14 && u <= 32) t = B.marble;           // pool surround
-      if (v >= 43 && v <= 49 && u >= 2 && u <= 11) t = B.court;             // tennis court (a grass walk round it, inside its hedge)
+      if (v >= COURT.v0 && v <= COURT.v1 && u >= COURT.u0 && u <= COURT.u1) t = B.court; // the tennis court, with room to run round it
+      if (backLawn && v >= 51 && v < COURT.v0 && u >= 22 && u <= 23) t = B.gravel;        // a path to it from the pool
       if (inHouse(u, v)) t = B.marble;
       put(u, v, G, t); markVillageGround(x, z, G);
     }
     // boundary: hedge wall two high, gate pillars at the drive
-    for (let u = 0; u < MAN_W; u++) for (const v of [0, MAN_D - 1]) if (!(v === 0 && u >= 21 && u <= 23)) for (const y of [G + 1, G + 2]) put(u, v, y, B.hedge);
-    for (let v = 1; v < MAN_D - 1; v++) for (const u of [0, MAN_W - 1]) for (const y of [G + 1, G + 2]) put(u, v, y, B.hedge);
+    for (let u = 0; u < MAN_W; u++) for (const v of [0, D_ - 1]) if (!(v === 0 && u >= 21 && u <= 23)) for (const y of [G + 1, G + 2]) put(u, v, y, B.hedge);
+    for (let v = 1; v < D_ - 1; v++) for (const u of [0, MAN_W - 1]) for (const y of [G + 1, G + 2]) put(u, v, y, B.hedge);
     for (const u of [20, 24]) { for (let y = G + 1; y <= G + 3; y++) put(u, 0, y, B.quoin); put(u, 0, G + 4, B.band); }
     // hedge mazes, both sides of the drive: 11 x 13, hedges two high (just over your head), a way in off the drive
     // and a way out at the far side, topiary at the corners. Carved from the estate's own seed, so it's the same
@@ -33150,23 +33241,44 @@
     wallRun(13, 13, 21, 24, F1, new Set()); wallRun(14, 16, 25, 25, F1, new Set()); // the family bathroom (u14-16, v21-24), door off the landing at u17 v22
     wallRun(8, 16, 33, 33, F1, new Set(['10,33', '15,33'])); wallRun(13, 13, 34, 39, F1, new Set());
     wallRun(28, 36, 28, 28, F1, new Set()); wallRun(28, 36, 34, 34, F1, new Set());
-    // the grand staircase: 12 half-steps up the middle of the hall (u21-23, v25-36), solid underneath, and the
-    // first-floor slab left open above it — a galleried landing with a glass balustrade round the stairwell
-    for (let u = 21; u <= 23; u++) for (let v = 25; v <= 35; v++) clear(u, v, F1); // the stairwell — cut BEFORE the steps go in (step 11's half-step sits at exactly slab height)
-    // A step block's raised quarter is on its local -x, turned by its rotation (0: -x, 1: +z, 2: +x, 3: -z) — so it
-    // goes on the uphill side (+d, away from the door) and the low edge of every step faces the front door.
-    const upRot = f.d[0] === 1 ? 2 : f.d[0] === -1 ? 0 : f.d[1] === 1 ? 1 : 3;
-    for (let k = 1; k <= 12; k++) {
-      const v = 24 + k, h = k * 0.5, full = Math.floor(h);
-      for (let u = 21; u <= 23; u++) {
-        for (let j = 0; j < full; j++) put(u, v, G + 1 + j, B.marble);
-        if (h - full > 0.01) { put(u, v, G + 1 + full, B.step); const [x, z] = f.cell(u, v); stepRotations.set(key(x, G + 1 + full, z), upRot); }
+    // the grand staircase up the middle of the hall (u21-23, v25-36), and the first-floor slab left open above it — a galleried landing
+    for (let u = 21; u <= 23; u++) for (let v = 25; v <= 35; v++) clear(u, v, F1); // the stairwell
+    // the staircase itself: even stone treads with a nosing, a red carpet runner held by brass stair rods, wrought-iron
+    // balusters under a dark wooden handrail, newel posts with brass caps, and the bottom step curling out either side. It's
+    // one drawn model (solid: see mansionStairSolidAt). Local: z up the stairs (+v), x across, y from the hall floor.
+    { const S = MAN_STAIR, N = 24, STONE = 0xe6e0d2, EDGE = 0xcfc8b6, RED = 0x7a1420, GOLD = 0xd2b062, IRON = 0x18181c, WOOD = 0x43240f, L = [], ex = [];
+      const slope = Math.atan2(S.rise, S.tread), runLen = Math.hypot(N * S.tread, N * S.rise), railLift = 0.98;
+      for (let i = 0; i < N; i++) {
+        const z = i * S.tread, top = (i + 1) * S.rise;
+        L.push([3, top, S.tread, 0, top / 2, z + S.tread / 2, 0, STONE]);                                       // the step, solid to the floor
+        L.push([3.04, 0.05, 0.07, 0, top - 0.025, z - 0.005, 0, EDGE]);                                         // its nosing
+        L.push([1.9, 0.02, S.tread, 0, top + 0.01, z + S.tread / 2, 0, RED]);                                  // the carpet: tread…
+        L.push([1.9, S.rise, 0.02, 0, top - S.rise / 2 + 0.01, z - 0.012, 0, RED]);                             // …and riser
+        for (const sx of [-1, 1]) L.push([0.035, 0.024, S.tread, sx * 0.93, top + 0.012, z + S.tread / 2, 0, GOLD]); // its gold edging
+        L.push([2.02, 0.03, 0.03, 0, top + 0.024, z + 0.03, 0, GOLD]);                                         // a brass stair rod
+        for (const sx of [-1, 1]) {                                                                             // a baluster to every tread, every other one with a collar
+          const bh = railLift - (i % 2 ? 0 : 0); L.push([0.045, bh, 0.045, sx * 1.62, top + bh / 2, z + S.tread / 2, 0, IRON]);
+          if (i % 2 === 0) L.push([0.09, 0.09, 0.09, sx * 1.62, top + 0.48, z + S.tread / 2, 0, GOLD]);
+        }
       }
+      for (const sx of [-1, 1]) {
+        const midY = N * S.rise / 2;
+        L.push([0.11, 0.09, runLen + 0.1, sx * 1.62, midY + S.rise / 2 + railLift, N * S.tread / 2, 0, WOOD, -slope, 0]);   // the handrail
+        L.push([0.07, 0.34, runLen, sx * 1.54, midY - 0.02, N * S.tread / 2, 0, WOOD, -slope, 0]);                          // the string along the side of the steps
+        for (const [zp, base] of [[0.02, 0], [N * S.tread + 0.02, 6]]) {                                                     // newel posts, bottom and top
+          L.push([0.22, 1.2, 0.22, sx * 1.62, base + 0.6, zp, 0, WOOD]); L.push([0.28, 0.06, 0.28, sx * 1.62, base + 1.22, zp, 0, GOLD]);
+          const ball = new THREE.SphereGeometry(0.11, 10, 8); ball.translate(sx * 1.62, base + 1.34, zp); ex.push([ball, GOLD]);
+        }
+        const curl = new THREE.CylinderGeometry(0.42, 0.42, S.rise, 18); curl.translate(sx * 1.5, S.rise / 2, 0.08); ex.push([curl, STONE]); // the bottom step curls out
+      }
+      L.push([1.9, 0.02, 3.8, 0, 0.012, -1.92, 0, RED]); for (const sx of [-1, 1]) L.push([0.04, 0.024, 3.8, sx * 0.93, 0.014, -1.92, 0, GOLD]); // and the runner on along the hall to the front door
+      const stair = mergedBoxes(L, ex); stair.userData.noSolid = true; stair.castShadow = false;
+      prop(stair, 22.5, S.v0, G + 1, 'back');
     }
-    // the banister: a chrome-and-glass balustrade round the open stairwell on the landing (straight pieces run along their local x;
+    // the banister: wrought iron, to match the stairs, round the open stairwell on the landing (straight pieces run along their local x;
     // a corner joins its local +x and +z — each turned to suit)
     {
-      const fenceT = BLOCK_ID('Chrome Balustrade'), cornerT = BLOCK_ID('Chrome Balustrade Corner'); // chrome and glass, not a garden fence
+      const fenceT = BLOCK_ID('Iron Railing'), cornerT = BLOCK_ID('Iron Railing Corner');
       const runRot = w => (w[0] !== 0 ? 0 : 1); // along world x: 0, along world z: 1
       const cornerRot = (a, b) => { // the rotation that points a corner's arms along world directions a and b
         for (let r = 0; r < 4; r++) { const th = r * Math.PI / 2, ax = [Math.round(Math.cos(th)), -Math.round(Math.sin(th))], az = [Math.round(Math.sin(th)), Math.round(Math.cos(th))];
@@ -33207,7 +33319,9 @@
     fg(18, 21, 'Armchair', 'right'); fg(26, 21, 'Armchair', 'left'); fg(18, 33, 'Full-Length Mirror', 'left'); fg(26, 33, 'Bookcase', 'left');
     // drawing room (u8-16, v21-29)
     big(9, 22, 'Grand Piano', 'back', G);
-    fg(12, 26, '2-Seater Couch', 'back'); fg(13, 26, '2-Seater Couch', 'back'); fg(12, 28, 'Coffee Table', 'front'); fg(13, 28, 'Coffee Table', 'front');
+    fg(12, 26, '2-Seater Couch', 'back'); fg(13, 26, '2-Seater Couch', 'back'); 
+    for (const [cu, cv] of [[12, 28], [13, 28]]) { const [x, z] = f.cell(cu, cv), k = key(x, G, z), fu = furniture.get(k); if (fu && FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name === 'Coffee Table') removeFurniture(k); } // (there used to be two, right up against the fireplace)
+    fg(12, 27, 'Coffee Table', 'front');
     fg(10, 28, 'Armchair', 'right'); fg(15, 28, 'Armchair', 'left'); fg(12, 29, 'Fireplace', 'front'); fg(14, 29, 'TV', 'front'); fg(8, 29, 'Drinks Cabinet', 'right'); // the TV beside the fireplace
     // library (u8-16, v31-39)
     for (let u = 8; u <= 16; u++) if (u !== 12) fg(u, 39, 'Bookcase', 'front');
@@ -33253,7 +33367,8 @@
     // landing
     f1(18, 38, 'Armchair', 'right'); f1(26, 38, 'Armchair', 'left'); f1(26, 22, 'Bookcase', 'left'); // (the left-hand bookcase made way for the bathroom door)
     // terrace, pool and tennis court
-    for (const u of [4, 9, 34, 38]) { fg(u, 42, 'Table', 'front'); fg(u - 1, 42, 'Chair', 'right'); fg(u + 1, 42, 'Chair', 'left'); prop(buildParasol(), u + 0.5, 42.5, G + 1); } // u4/u9: on the grass walk beside the court
+    if (!backLawn) for (const u of [4, 9]) for (const du of [-1, 0, 1]) { const [x, z] = f.cell(u + du, 42), k = key(x, G, z); if (furniture.has(k)) removeFurniture(k); } // (an older plot: clear of the court, which has nowhere else to go)
+    for (const u of backLawn ? [4, 9, 34, 38] : [34, 38]) { fg(u, 42, 'Table', 'front'); fg(u - 1, 42, 'Chair', 'right'); fg(u + 1, 42, 'Chair', 'left'); prop(buildParasol(), u + 0.5, 42.5, G + 1); } // u4/u9: on the grass walk beside the court
     for (let u = 16; u <= 30; u++) for (let v = 45; v <= 49; v++) { // the pool: two deep, tiled
       const [x, z] = f.cell(u, v);
       put(u, v, G - 2, B.tile);
@@ -33263,8 +33378,7 @@
     for (let v = 44; v <= 50; v++) for (const u of [15, 31]) for (const y of [G - 2, G - 1]) put(u, v, y, B.tile);
     { const [x, z] = f.cell(23, 47); waterBlocks.dirtyChunks.add(chunkKeyOf(x, z)); }
     for (const u of [17, 20, 26, 29]) { const l = buildSunLounger(); prop(l, u + 0.5, 43.4, G + 1, 'back'); }
-    // tennis court (u2-11, v43-49): 10 long (along u) x 7 wide (along v), a one-block grass walk all round it, then
-    // its hedge (v41 along the top, u13 down the pool side; the estate's own boundary hedge on the other two sides).
+    // the tennis court: 10 long (along u) x 7 wide (along v) on its own bigger surface, open lawn all round it.
     // Turned with the estate (faceDir 'back' points the group's local +z along v), so the lines always sit on it.
     { const court = new THREE.Group(), white = new THREE.MeshBasicMaterial({ color: 0xffffff });
       const line = (w, d, x, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.01, d), white); m.position.set(x, 0.005, z); court.add(m); };
@@ -33275,10 +33389,8 @@
       const net = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.9, 2 * W + 0.5), new THREE.MeshLambertMaterial({ color: 0x1a1a1a, transparent: true, opacity: 0.6 })); net.position.y = 0.45; court.add(net);
       const tape = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.06, 2 * W + 0.5), white); tape.position.y = 0.9; court.add(tape);
       for (const z of [-(W + 0.25), W + 0.25]) { const p2 = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.0, 8), new THREE.MeshLambertMaterial({ color: 0x2a2a2a })); p2.position.set(0, 0.5, z); court.add(p2); }
-      prop(court, 7, 46.5, G + 1, 'back'); }
-    for (let u = 1; u <= 13; u++) for (const y of [G + 1, G + 2]) put(u, 41, y, B.hedge); // hedged round the court
-    for (let v = 41; v <= 50; v++) for (const y of [G + 1, G + 2]) put(13, v, y, B.hedge);
-    for (const y of [G + 1, G + 2]) clear(13, 46, y); // a gap into the court from the pool
+      court.userData.noSolid = true; prop(court, COURT.cu, COURT.cv, G + 1, 'back');
+      if (backLawn) for (const bu of [18, 28]) { const bench = mergedBoxes([[1.8, 0.08, 0.45, 0, 0.45, 0, 0, 0x7a5230], [1.8, 0.4, 0.06, 0, 0.72, -0.2, 0, 0x7a5230], [0.08, 0.45, 0.4, -0.75, 0.22, 0, 0, 0x222222], [0.08, 0.45, 0.4, 0.75, 0.22, 0, 0, 0x222222]]); prop(bench, bu, COURT.v1 + 1.2, G + 1, 'front'); } }
     // street lights up the drive
     for (const v of [3, 8, 14]) { fg(19, v, 'Street Light', 'right'); fg(25, v, 'Street Light', 'left'); }
     // ---- curtains or blinds on EVERY window, in every room: curtains in the living rooms and bedrooms (each its
@@ -33316,7 +33428,11 @@
     for (const [u, v, y, dir] of [[12, 30, G + 3, 'front'], [12, 30, G + 3, 'back'], [32, 30, G + 3, 'front'], [32, 30, G + 3, 'back'],
       [12, 33, F1 + 3, 'front'], [27, 28, F1 + 3, 'right'], [27, 34, F1 + 3, 'right'], [32, 34, F1 + 3, 'back'], [13, 37, F1 + 3, 'left']]) fix(u, v, y, dir);
     // chandeliers: proper lights now — start on Dim like the rest, ✋ to change (see buildChandelierFurniture)
-    fg(22, 22, 'Chandelier', 'front'); fg(12, 25, 'Chandelier', 'front'); fg(31, 28, 'Chandelier', 'front'); f1(22, 38, 'Chandelier', 'front'); f1(12, 27, 'Chandelier', 'front');
+    fg(22, 22, 'Chandelier', 'front'); fg(12, 25, 'Chandelier', 'front'); f1(22, 38, 'Chandelier', 'front');
+    { const [x, z] = f.cell(31, 28), k = key(x, G, z), fu = furniture.get(k); if (fu && FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name === 'Chandelier') removeFurniture(k); } // (it hung by the wall, not over the table)
+    // the dining room's: right over the middle of the table (the table's in its square, so this one's hung as a fitting)
+    { const ch = buildChandelier(), lt = ch.children.find(c => c.isPooledLight); try { mergeFurniturePieces(ch); } catch (e) {} if (lt) lt.intensity = 1.5 * FIXTURE_DIM_LEVELS[FIXTURE_DIM_DEFAULT].m; ch.scale.setScalar(1.25); ch.userData.noSolid = true; prop(ch, 31.5, 25.5, G + 6); }
+ f1(12, 27, 'Chandelier', 'front');
     bizWallpaper(f, [
       ['drawing', 8, 16, 21, 29, G + 1, G + 5], ['library', 8, 16, 31, 39, G + 1, G + 5], ['dining', 28, 36, 21, 29, G + 1, G + 5], ['kitchen', 28, 36, 31, 39, G + 1, G + 5],
       ['hall', 18, 26, 21, 39, G + 1, G + 5], ['master', 8, 12, 21, 32, F1 + 1, F1 + 4], ['master', 13, 16, 26, 32, F1 + 1, F1 + 4], ['bathroom', 14, 16, 21, 24, F1 + 1, F1 + 4], ['ensuite', 8, 12, 34, 39, F1 + 1, F1 + 4], ['dressing', 14, 16, 34, 39, F1 + 1, F1 + 4],
@@ -33325,15 +33441,34 @@
     plaque(17, 25, 'right', 'DRAWING ROOM'); plaque(17, 35, 'right', 'LIBRARY'); plaque(27, 25, 'left', 'DINING ROOM'); plaque(27, 35, 'left', 'KITCHEN');
     // a name plate on the gate pillar
     const sign = new THREE.Group(); sign.userData.w = 3; prop(sign, 22.5, -0.12, G + 3.6, 'front');
-    const m = { ck: K.ck, spec: replay, f, floor, worldId: currentWorldId, sign, people: [], peopleSig: null, bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1 };
+    const m = { ck: K.ck, spec: replay, f, floor, worldId: currentWorldId, sign, reg, depth: D_, people: [], peopleSig: null, bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1 };
     const old = mansions.get(K.ck); if (old) bizClearPeople(old);
     mansions.set(K.ck, m);
     bizSetSign(sign, mansionName(m), '#1d2a33', '#f3dc9a');
     K.finish();
   }
   function mansionName(m) { const n = m.spec && typeof m.spec.name === 'string' ? m.spec.name.trim() : ''; return n || 'Fairview Hall'; }
-  // The household: a butler at the foot of the stairs, a housekeeper upstairs, a gardener out front — drawn within
-  // PUB_PEOPLE_SHOW, still beyond ANIMATE_NEAR. ✋ on the butler: a word, and the chance to rename the house.
+  // The household: a butler (the ground floor, the terrace and out to the drive), a housekeeper (upstairs) and a gardener
+  // (the grounds) — walking from place to place, stopping a while at each, opening doors as they go. Drawn within
+  // PUB_PEOPLE_SHOW, still until you're on the estate. ✋ on the butler: a word, and the chance to rename the house.
+  const MAN_ROUNDS = {
+    butler: [[22.5, 23], [12, 26], [14, 22], [12, 35], [15, 37], [31, 23], [35, 28], [31, 33], [19, 38], [25, 38], [19, 42], [27, 42], [22.5, 18], [20, 15]],
+    house: [[22.5, 38], [19, 30], [25, 30], [10, 27], [15, 30], [10, 37], [15, 37], [32, 24], [32, 31], [31, 34], [19, 23]],
+    garden: [[10.5, 17.5], [34, 17.5], [17, 12], [27, 12], [3, 30], [3, 40], [41, 30], [41, 42], [10, 44], [36, 47], [8, 58], [37, 58], [22, 52], [22, 64]],
+  };
+  function manWalkFor(m, upstairs, now) { // the free squares on that level (re-checked now and then)
+    const slot = upstairs ? 'walkUp' : 'walkG';
+    if (m[slot] && now < (m[slot + 'At'] || 0)) return m[slot];
+    const f = m.f, w = new Set(), y = upstairs ? m.floor + 7 : m.floor + 1, [u0, u1, v0, v1] = upstairs ? [8, 36, 21, 39] : [1, MAN_W - 2, 1, (m.depth || MAN_D_OLD) - 2];
+    for (let u = u0; u <= u1; u++) for (let v = v0; v <= v1; v++) {
+      const [x, z] = f.cell(u, v), cx = x + 0.5, cz = z + 0.5;
+      if (isSolid(cx, y + 0.1, cz) || isSolid(cx, y + 1, cz) || isSolid(cx, y + 1.8, cz) || !isSolid(cx, y - 0.3, cz)) continue;
+      if (waterBlocks.has(key(x, y, z)) || waterBlocks.has(key(x, y - 1, z))) continue;
+      w.add(x + ',' + z);
+    }
+    m[slot] = w; m[slot + 'At'] = now + 30000;
+    return w;
+  }
   function updateMansions(dt) {
     if (!mansions.size) return;
     for (const m of mansions.values()) {
@@ -33348,14 +33483,33 @@
           const d = { front: [-f.d[0], -f.d[1]], back: [f.d[0], f.d[1]] }[face]; fig.rotation.y = Math.atan2(d[0], d[1]);
           if (role === 'butler') { fig.userData.shopkeeper = true; fig.userData.shopKind = 'butler'; fig.userData.mansionCk = m.ck; shopkeepers.push(fig); }
           if (role === 'garden') { const hat = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.05, 12), new THREE.MeshLambertMaterial({ color: 0x8a6a3a })); hat.position.y = 1.76; fig.add(hat); }
-          m.people.push({ mesh: fig, role, t: Math.random() * 5 });
+          m.people.push({ mesh: fig, role, t: Math.random() * 5, route: [], wait: 2 + Math.random() * 6 });
         });
       }
+      const nowMs = performance.now(), onEstate = player.pos.x >= m.bx0 - 12 && player.pos.x <= m.bx1 + 12 && player.pos.z >= m.bz0 - 12 && player.pos.z <= m.bz1 + 12;
       for (const pe of m.people) {
-        if (!animNear(pe.mesh.position.x, pe.mesh.position.z)) { if (!pe.still) { stillLimbs(pe.mesh); pe.still = true; } continue; }
+        if (!onEstate) { if (!pe.still) { stillLimbs(pe.mesh); pe.still = true; } continue; }
         pe.still = false; pe.t += dt;
-        const arms = pe.mesh.userData.arms || [];
-        if (pe.role === 'garden' && arms[1]) arms[1].rotation.x = -0.5 - Math.abs(Math.sin(pe.t * 2.5)) * 0.6; // clipping the hedge
+        const fig = pe.mesh, arms = fig.userData.arms || [], legs = fig.userData.legs || [];
+        if (pe.route.length) { // walking
+          const [tx, tz] = pe.route[0], dx = tx + 0.5 - fig.position.x, dz = tz + 0.5 - fig.position.z, ds = Math.hypot(dx, dz);
+          if (ds < 0.05) { pe.route.shift(); if (!pe.route.length) { pe.wait = 4 + Math.random() * 8; stillLimbs(fig); } continue; }
+          const st = Math.min(ds, 1.25 * dt); fig.position.x += dx / ds * st; fig.position.z += dz / ds * st;
+          fig.rotation.y += angWrap(Math.atan2(dx, dz) - fig.rotation.y) * Math.min(1, dt * 8);
+          const sw = Math.sin(pe.t * 7.5) * 0.45; for (const l of legs) l.rotation.x = sw * (l.position.x < 0 ? 1 : -1); if (arms[0]) arms[0].rotation.x = -sw * 0.5; if (arms[1]) arms[1].rotation.x = sw * 0.5;
+          for (const dk of m.reg.doorKeys) { const dr = doors.get(dk); if (dr && Math.abs(dr.group.position.y - fig.position.y) < 3.2 && Math.hypot(dr.group.position.x - fig.position.x, dr.group.position.z - fig.position.z) < 2) dr.heldUntil = nowMs + 500; } // the door opens for them
+          continue;
+        }
+        // stopped a while: the gardener's clipping, the housekeeper's dusting; then on to the next place
+        if (pe.role === 'garden' && arms[1]) arms[1].rotation.x = -0.5 - Math.abs(Math.sin(pe.t * 2.5)) * 0.6;
+        if (pe.role === 'house' && arms[1]) arms[1].rotation.x = -1.1 - Math.sin(pe.t * 3.2) * 0.25;
+        pe.wait -= dt; if (pe.wait > 0) continue;
+        pe.wait = 2;
+        const walk = manWalkFor(m, pe.role === 'house', nowMs), list = MAN_ROUNDS[pe.role], cur = [Math.floor(fig.position.x), Math.floor(fig.position.z)];
+        for (let tries = 0; tries < 6 && !pe.route.length; tries++) { // the next place: a free square close to it
+          const [wu, wv] = list[Math.floor(Math.random() * list.length)];
+          for (const [ou, ov] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [2, 0], [0, 2], [-2, 0], [0, -2]]) { const c = m.f.cell(Math.floor(wu) + ou, Math.floor(wv) + ov); if (!walk.has(c[0] + ',' + c[1])) continue; const rt = hotelRoute(walk, cur, c); if (rt.length) { pe.route = rt; stillLimbs(fig); break; } }
+        }
       }
     }
   }
@@ -33641,23 +33795,54 @@
   // rooms — they'd only go after a reload. While you're in (or right by) one of your enclosed buildings, any leaves
   // inside its plot that you didn't put there yourself are cleared. (Not the house, theme park or mansion — their
   // gardens have real trees.)
-  const LEAF_SWEEP_TYPES = new Set(['hotel', 'pub', 'carpenter', 'mason', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'bakery', 'restaurant', 'haunted', 'station', 'airport', 'busstation', 'ferryport', 'arena', 'stadium']);
+  const LEAF_SWEEP_TYPES = new Set(['hotel', 'pub', 'carpenter', 'mason', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'bakery', 'restaurant', 'haunted', 'station', 'airport', 'busstation', 'ferryport', 'arena', 'stadium', 'mansion', 'farm', 'church', 'rocket']);
+  // Up to 20 blocks above the top of the building, and any canopy left floating just outside the plot once its trunk
+  // has gone (leaves with no trunk joined to them, within LEAF_SWEEP_EDGE of the walls) — a neighbouring tree that's
+  // still standing keeps its own. Gardens with real trees (LEAF_ABOVE_ONLY) only lose what's above those trees.
+  // Done as soon as a building goes up, and again every LEAF_SWEEP_EVERY while you're within LEAF_SWEEP_NEAR of it, as
+  // trees generate when their chunk streams in — sometimes after the building.
+  const LEAF_ABOVE_ONLY = new Set(['house', 'lethouse', 'themepark']), LEAF_SWEEP_EDGE = 6, LEAF_SWEEP_NEAR = 30, LEAF_SWEEP_EVERY = 20000, LEAF_SWEEP_ABOVE = 20;
+  const leafSweptAt = new Map();
+  const isLeafBlock = t => { const e = t === undefined ? null : BLOCK_TYPES[t]; return !!e && /Leaves$/.test(e.name); };
+  const isTrunkBlock = t => { const e = t === undefined ? null : BLOCK_TYPES[t]; return !!e && (t === 3 || / Wood$/.test(e.name)); };
+  function leafSweepSpec(sp) {
+    const s = sp.site, bt = BUILDING_TYPES.find(b => b.t === sp.t), top = s.floor + Math.min(90, ((bt && bt.h) || 12) + LEAF_SWEEP_ABOVE), from = LEAF_ABOVE_ONLY.has(sp.t) ? s.floor + 14 : s.floor + 1;
+    let n = 0;
+    for (let x = s.sx0; x <= s.sx1; x++) for (let z = s.sz0; z <= s.sz1; z++) for (let y = from; y <= top; y++) {
+      const k = key(x, y, z), t = blocks.get(k); if (t === undefined || !isLeafBlock(t) || blockEdits.has(k)) continue;
+      blocks.delete(k); n++;
+    }
+    // the floating bits round the edge
+    const kept = new Set(), E = LEAF_SWEEP_EDGE;
+    for (let x = s.sx0 - E; x <= s.sx1 + E; x++) for (let z = s.sz0 - E; z <= s.sz1 + E; z++) {
+      if (x >= s.sx0 && x <= s.sx1 && z >= s.sz0 && z <= s.sz1) continue;
+      for (let y = s.floor - 2; y <= top; y++) {
+        const k0 = key(x, y, z), t0 = blocks.get(k0); if (t0 === undefined || !isLeafBlock(t0) || kept.has(k0) || blockEdits.has(k0)) continue;
+        const seen = new Map([[k0, [x, y, z, 0]]]), q = [[x, y, z, 0]]; let trunk = false;
+        while (q.length && !trunk) { const [cx, cy, cz, cd] = q.shift(); if (cd >= 7) continue;
+          for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]) {
+            const nk = key(cx + dx, cy + dy, cz + dz), nt = blocks.get(nk); if (nt === undefined) continue;
+            if (isTrunkBlock(nt)) { trunk = true; break; }
+            if (isLeafBlock(nt) && !seen.has(nk)) { seen.set(nk, 1); q.push([cx + dx, cy + dy, cz + dz, cd + 1]); }
+          } }
+        if (trunk || q.length) { for (const sk of seen.keys()) kept.add(sk); continue; }
+        for (const sk of seen.keys()) { if (!blockEdits.has(sk)) { blocks.delete(sk); n++; } }
+      }
+    }
+    if (n) resyncChunksInRange(s.sx0 - E, s.sx1 + E, s.sz0 - E, s.sz1 + E);
+    if (!LEAF_ABOVE_ONLY.has(sp.t)) overlaysClearBox(s.sx0, s.sx1, s.sz0, s.sz1); // (and any flowers drawn on its floor)
+    leafSweptAt.set(sp.ck, performance.now());
+    return n;
+  }
   setInterval(() => { try {
     if (visitMode || !currentWorldId || !structureSpecsActive()) return;
-    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z);
+    const px = Math.floor(player.pos.x), pz = Math.floor(player.pos.z), now = performance.now(), R = LEAF_SWEEP_NEAR;
     for (const sp of structureSpecs.values()) {
-      if (!sp || !sp.bought || !sp.site || !LEAF_SWEEP_TYPES.has(sp.t) || !villageRegistry.has(sp.ck)) continue;
-      const s = sp.site; if (px < s.sx0 - 3 || px > s.sx1 + 3 || pz < s.sz0 - 3 || pz > s.sz1 + 3) continue;
-      const bt = BUILDING_TYPES.find(b => b.t === sp.t), top = s.floor + Math.min(60, (bt && bt.h) || 12);
-      let n = 0;
-      for (let x = s.sx0; x <= s.sx1; x++) for (let z = s.sz0; z <= s.sz1; z++) for (let y = s.floor + 1; y <= top; y++) {
-        const k = key(x, y, z), t = blocks.get(k); if (t === undefined) continue;
-        const e = BLOCK_TYPES[t]; if (!e || !/Leaves$/.test(e.name) || blockEdits.has(k)) continue;
-        blocks.delete(k); n++;
-      }
-      if (n) resyncChunksInRange(s.sx0, s.sx1, s.sz0, s.sz1);
-      overlaysClearBox(s.sx0, s.sx1, s.sz0, s.sz1); // (and any flowers drawn on its floor)
-      break;
+      if (!sp || !sp.bought || !sp.site || !(LEAF_SWEEP_TYPES.has(sp.t) || LEAF_ABOVE_ONLY.has(sp.t)) || !villageRegistry.has(sp.ck)) continue;
+      const s = sp.site; if (px < s.sx0 - R || px > s.sx1 + R || pz < s.sz0 - R || pz > s.sz1 + R) continue;
+      if (now - (leafSweptAt.get(sp.ck) || -1e9) < LEAF_SWEEP_EVERY) continue;
+      leafSweepSpec(sp);
+      break; // (one a go)
     }
   } catch (e) {} }, 3000);
 
@@ -34649,7 +34834,7 @@
   // Bought from the Property menu for 💰5,000,000 (48 x 64). A grass pitch (u10-37 x v10-53) with full markings and
   // netted goals at each end, four stands of tiered seats in the club's colours (roofs over the long sides, the
   // players' tunnel through the south end), four floodlight pylons, a scoreboard, dugouts and a ticket office.
-  //   Match day: every afternoon at 15:00 (game time) there's a match. Near enough to see it, you watch it live —
+  //   Match day: every day from 12:00 to 16:00 (game time) there's a match. Near enough to see it, you watch it live —
   //   22 players (formations, the nearest of each side chasing the ball, passes and shots, keepers on their lines),
   //   the crowd in the stands, a roar for every goal, the scoreboard counting the minutes. Not there, the result's
   //   still played out. Either way it's recorded (spec.stadium.record), and a win puts more on the gate next time.
@@ -34657,7 +34842,7 @@
   //   Earnings: gate money every sunrise into the ticket office — ✋ there to rename the club and collect (or the
   //   world manager does). Settled whether loaded or not (see bizAllOfType).
   const STAD_W = 48, STAD_D = 64, STAD_GATE = 1200, STAD_TICKET = 10, STAD_WAGES = 6000;
-  const MATCH_START = 0.375, MATCH_LEN = 0.15; // dayTime: 15:00, lasting 0.15 of a day (3 real minutes)
+  const MATCH_START = 0.25, MATCH_LEN = 4 / 24; // dayTime: 12:00 to 16:00 (about 3 and a third real minutes)
   const PITCH = { u0: 10, u1: 38, v0: 10, v1: 54 }; // continuous local coords of the playing area (touchlines / goal lines)
   const GOAL_U0 = 21.5, GOAL_U1 = 26.5;                 // the goal mouth (posts) across u
   var stadiums = new Map();
@@ -34669,11 +34854,36 @@
 
   // a footballer: shirt, shorts, socks, head, hair — one merged mesh (one draw)
   function buildFootballer(shirt, shorts) {
-    const m = mergedBoxes([[0.16, 0.42, 0.16, -0.1, 0.21, 0, 0, 0xf2f2f2], [0.16, 0.42, 0.16, 0.1, 0.21, 0, 0, 0xf2f2f2], [0.4, 0.25, 0.24, 0, 0.55, 0, 0, shorts],
+    const m = mergedBoxes([[0.4, 0.25, 0.24, 0, 0.55, 0, 0, shorts],
       [0.44, 0.55, 0.26, 0, 0.95, 0, 0, shirt], [0.12, 0.45, 0.12, -0.29, 0.98, 0, 0, shirt], [0.12, 0.45, 0.12, 0.29, 0.98, 0, 0, shirt],
       [0.26, 0.28, 0.26, 0, 1.38, 0, 0, 0xe0b090], [0.28, 0.08, 0.28, 0, 1.53, 0, 0, 0x3a2a1a]]);
     m.castShadow = false;
-    const g = new THREE.Group(); g.add(m); return g;
+    const g = new THREE.Group(); g.add(m); g.userData.legs = [];
+    for (const sx of [-1, 1]) { const leg = mergedBoxes([[0.16, 0.42, 0.16, 0, -0.21, 0, 0, 0xf2f2f2], [0.17, 0.08, 0.26, 0, -0.39, 0.04, 0, 0x151515]]); leg.castShadow = false; leg.position.set(sx * 0.1, 0.42, 0); g.add(leg); g.userData.legs.push(leg); }
+    return g;
+  }
+  // The home kit, picked at the ticket booth (spec.stadium.kit). The visitors wear blue, or gold if you do.
+  const STAD_KITS = [['Red', 0xc0392b], ['Blue', 0x2468b0], ['Green', 0x1f8a4a], ['Gold', 0xe0a82a], ['Black', 0x1a1a1e], ['White', 0xf0f0f0], ['Claret', 0x6e1f3a], ['Purple', 0x6a3ac0], ['Orange', 0xe06a1a], ['Sky', 0x6fb4e8]];
+  function stadKit(s2) { const k = stadState(s2).kit || {}; const shirt = k.shirt != null ? k.shirt : 0xc0392b, shorts = k.shorts != null ? k.shorts : 0xf0f0f0; return { shirt, shorts, away: shirt === 0x2468b0 || shirt === 0x6fb4e8 ? 0xe0a82a : 0x2468b0, awayShorts: shorts === 0x1a1a1e ? 0xf0f0f0 : 0x1a1a1e }; }
+  function stadPlayerMesh(s2, side, keeper) { const K = stadKit(s2), home = side === 'home'; return buildFootballer(keeper ? (home ? 0x2f8f4a : 0xf2c14e) : (home ? K.shirt : K.away), home ? K.shorts : K.awayShorts); }
+  function stadRekit(s2) { if (!s2.match) return; for (const p of s2.match.players) if (p.side === 'home') { const old = p.mesh, nm = stadPlayerMesh(s2, p.side, p.keeper); nm.position.copy(old.position); nm.rotation.copy(old.rotation); nm.visible = old.visible; scene.remove(old); disposeObject3D(old); scene.add(nm); p.mesh = nm; } }
+  // the legs going, and the little bob, by how fast he's moving
+  function stadLegs(p, moving) { p.stride = (p.stride || 0) + (moving ? 0.34 : 0); const sw = moving ? Math.sin(p.stride) * 0.75 : 0, L = p.mesh.userData.legs; if (L) { L[0].rotation.x = sw; L[1].rotation.x = -sw; } }
+  // ---- the teams come out of the tunnel before kick-off, and go back in at the end ----
+  const STAD_WALK_SECS = 26, STAD_WALK = STAD_WALK_SECS / 1200, STAD_TUNNEL = [24, 2.5]; // (DAY_LENGTH is 1200: 26 seconds before 12:00 / after 16:00)
+  function stadWalkStep(s2, dt, off) { // -> true while anyone's still walking
+    const m = s2.match; let any = false; m.t = (m.t || 0) + dt;
+    m.players.forEach((p, i) => {
+      if (off && p.gone) return;
+      if (!off && m.t < p.delay) { p.mesh.visible = false; any = true; return; }
+      p.mesh.visible = true;
+      const tu = off ? STAD_TUNNEL[0] + ((i % 3) - 1) * 0.8 : p.hu, tv = off ? STAD_TUNNEL[1] : p.hv, du = tu - p.u, dv = tv - p.v, d = Math.hypot(du, dv);
+      if (d > 0.08) { const st = Math.min(d, 3.8 * dt); p.u += du / d * st; p.v += dv / d * st; p.face = Math.atan2(du * s2.f.s[0] + dv * s2.f.d[0], du * s2.f.s[1] + dv * s2.f.d[1]); stadLegs(p, true); any = true; }
+      else if (off) { p.gone = true; p.mesh.visible = false; return; }
+      else { stadLegs(p, false); const au = 24 - p.u, av = 32 - p.v; p.face = Math.atan2(au * s2.f.s[0] + av * s2.f.d[0], au * s2.f.s[1] + av * s2.f.d[1]); }
+      const [x, z] = stadToWorld(s2, p.u, p.v); p.mesh.position.set(x, s2.floor + 1, z); if (p.face !== undefined) p.mesh.rotation.y = p.face;
+    });
+    return any;
   }
   function crowdTexture(home, away) { // lots of little fans in the seats
     const c = document.createElement('canvas'); c.width = 256; c.height = 64; const x = c.getContext('2d');
@@ -34769,7 +34979,7 @@
   }
   function stadClear(s2) { if (s2.match) { for (const pl of s2.match.players) { scene.remove(pl.mesh); disposeObject3D(pl.mesh); } } if (s2.ball) { scene.remove(s2.ball.mesh); disposeObject3D(s2.ball.mesh); } s2.match = null; s2.ball = null; }
   function stadDrawBoard(s2, force) {
-    const m = s2.match, txt = s2.rig && s2.rig.group.visible ? concertBandName(s2) + ' — Live|♪ ' + concertSong(s2).title : m ? (clubName(s2) + ' ' + m.home + ' – ' + m.away + ' ' + m.opp + '|' + Math.min(90, Math.floor(m.minute)) + "'") : (clubName(s2) + '|Next match 15:00');
+    const m = s2.match, txt = s2.rig && s2.rig.group.visible ? concertBandName(s2) + ' — Live|♪ ' + concertSong(s2).title : m ? (clubName(s2) + ' ' + m.home + ' – ' + m.away + ' ' + m.opp + '|' + Math.min(90, Math.floor(m.minute)) + "'") : (clubName(s2) + '|Next match 12:00');
     if (!force && txt === s2.boardShown) return; s2.boardShown = txt;
     const x = s2.bc.getContext('2d'), [a, b] = txt.split('|');
     x.fillStyle = '#0a0a0a'; x.fillRect(0, 0, 512, 128);
@@ -34780,24 +34990,28 @@
   }
   // ---- the ball (shared by the match and your kickabout) ----
   function stadMakeBall(s2) {
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60 }));
-    const pent = new THREE.Mesh(new THREE.SphereGeometry(0.225, 6, 4), new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true })); mesh.add(pent);
+    const mesh = new THREE.Group(), spin = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 10), new THREE.MeshPhongMaterial({ color: 0xffffff, shininess: 60 }));
+    const pent = new THREE.Mesh(new THREE.SphereGeometry(0.225, 6, 4), new THREE.MeshBasicMaterial({ color: 0x111111, wireframe: true })); spin.add(pent); mesh.add(spin);
+    const shadow = new THREE.Mesh(new THREE.CircleGeometry(0.2, 12), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthWrite: false })); shadow.rotation.x = -Math.PI / 2; mesh.add(shadow); // its shadow on the grass, so you can see how high it is
     scene.add(mesh);
-    return { mesh, u: 24, v: 32, vu: 0, vv: 0 };
+    return { mesh, spin, shadow, u: 24, v: 32, h: 0, vh: 0, vu: 0, vv: 0 };
   }
   function stadToWorld(s2, u, v) { const [x, z] = s2.f.pos(u, v); return [x, z]; }
   function stadToLocal(s2, x, z) { const o = s2.f.cell(0, 0), dx = x - o[0] - 0.5, dz = z - o[1] - 0.5; return [dx * s2.f.s[0] + dz * s2.f.s[1] + 0.5, dx * s2.f.d[0] + dz * s2.f.d[1] + 0.5]; }
   // moves the ball; returns 'home' / 'away' when it goes in (home attack the north goal, v1)
+  const BALL_G = 14; // gravity on the ball (its height, b.h, is above the grass)
+  function stadBallPlace(s2) { const b = s2.ball, [x, z] = stadToWorld(s2, b.u, b.v); b.mesh.position.set(x, s2.floor + 1.22 + b.h, z); b.shadow.position.y = -(0.2 + b.h) + 0.01; b.shadow.material.opacity = Math.max(0.1, 0.35 - b.h * 0.1); }
   function stadBallStep(s2, dt) {
     const b = s2.ball; b.u += b.vu * dt; b.v += b.vv * dt;
-    const fr = Math.pow(0.55, dt); b.vu *= fr; b.vv *= fr;
+    if (b.h > 0 || b.vh > 0) { b.h += b.vh * dt; b.vh -= BALL_G * dt; if (b.h <= 0) { b.h = 0; if (b.vh < -1.6) { b.vh = -b.vh * 0.42; const dmp = 0.75; b.vu *= dmp; b.vv *= dmp; } else b.vh = 0; } } // up and over, then a bounce or two
+    const fr = Math.pow(b.h > 0.02 ? 0.9 : 0.55, dt); b.vu *= fr; b.vv *= fr; // (the grass slows it far more than the air)
     if (b.u < PITCH.u0 + 0.2) { b.u = PITCH.u0 + 0.2; b.vu = Math.abs(b.vu) * 0.5; }
     if (b.u > PITCH.u1 - 0.2) { b.u = PITCH.u1 - 0.2; b.vu = -Math.abs(b.vu) * 0.5; }
     let scored = null;
-    if (b.v > PITCH.v1 - 0.1) { if (b.u > GOAL_U0 && b.u < GOAL_U1) scored = 'home'; else { b.v = PITCH.v1 - 0.2; b.vv = -Math.abs(b.vv) * 0.5; } }
-    if (b.v < PITCH.v0 + 0.1) { if (b.u > GOAL_U0 && b.u < GOAL_U1) scored = 'away'; else { b.v = PITCH.v0 + 0.2; b.vv = Math.abs(b.vv) * 0.5; } }
-    const [x, z] = stadToWorld(s2, b.u, b.v); b.mesh.position.set(x, s2.floor + 1.22, z);
-    const sp = Math.hypot(b.vu, b.vv); b.mesh.rotation.x += sp * dt * 3; b.mesh.rotation.z += b.vu * dt * 2;
+    if (b.v > PITCH.v1 - 0.1) { if (b.u > GOAL_U0 && b.u < GOAL_U1 && b.h < 1.9) scored = 'home'; else { b.v = PITCH.v1 - 0.2; b.vv = -Math.abs(b.vv) * 0.5; } }
+    if (b.v < PITCH.v0 + 0.1) { if (b.u > GOAL_U0 && b.u < GOAL_U1 && b.h < 1.9) scored = 'away'; else { b.v = PITCH.v0 + 0.2; b.vv = Math.abs(b.vv) * 0.5; } }
+    stadBallPlace(s2);
+    const sp = Math.hypot(b.vu, b.vv); b.spin.rotation.x += sp * dt * 3; b.spin.rotation.z += b.vu * dt * 2;
     return scored;
   }
   function stadCheer(s2, big) {
@@ -34810,7 +35024,7 @@
   }
   // ---- the match ----
   const FORMATION = [[0.5, 0.04], [0.2, 0.22], [0.4, 0.2], [0.6, 0.2], [0.8, 0.22], [0.2, 0.45], [0.4, 0.42], [0.6, 0.42], [0.8, 0.45], [0.38, 0.66], [0.62, 0.66]]; // (across, how far up) — keeper first
-  function stadStartMatch(s2) {
+  function stadStartMatch(s2, walkOn) {
     stadClear(s2);
     const st = stadState(s2), day = stadDayNumber(s2);
     if (!st.today || st.today.day !== day) st.today = { day, home: 0, away: 0, done: false };
@@ -34818,55 +35032,81 @@
     const W = PITCH.u1 - PITCH.u0, Lg = PITCH.v1 - PITCH.v0;
     for (const side of ['home', 'away']) FORMATION.forEach(([a, b], i) => {
       const keeper = i === 0, homeTeam = side === 'home';
-      const mesh = buildFootballer(keeper ? (homeTeam ? 0x2f8f4a : 0xf2c14e) : (homeTeam ? 0xc0392b : 0x2468b0), homeTeam ? 0xffffff : 0x1a1a1a);
+      const mesh = stadPlayerMesh(s2, side, keeper);
       scene.add(mesh);
       const hu = PITCH.u0 + a * W, hv = homeTeam ? PITCH.v0 + b * Lg : PITCH.v1 - b * Lg;
-      m.players.push({ mesh, side, keeper, hu, hv, u: hu, v: hv, cool: 0 });
+      const n = m.players.length, pl = { mesh, side, keeper, hu, hv, u: hu, v: hv, cool: 0, delay: 0 };
+      if (walkOn) { pl.u = STAD_TUNNEL[0] + (homeTeam ? -1 : 1); pl.v = STAD_TUNNEL[1]; pl.delay = (i * 0.55) + (homeTeam ? 0 : 0.25); mesh.visible = false; } // two lines, side by side, out of the tunnel
+      else { const [x, z] = stadToWorld(s2, hu, hv); mesh.position.set(x, s2.floor + 1, z); }
+      m.players.push(pl);
     });
+    m.phase = walkOn ? 'walkon' : 'play';
     s2.match = m; s2.ball = stadMakeBall(s2);
     stadDrawBoard(s2, true);
   }
   function stadMatchStep(s2, dt) {
     const m = s2.match, b = s2.ball, W = PITCH.u1 - PITCH.u0, Lg = PITCH.v1 - PITCH.v0;
-    if (m.pause > 0) { m.pause -= dt; if (m.pause <= 0) { b.u = 24; b.v = 32; b.vu = b.vv = 0; } }
+    if (m.pause > 0) { m.pause -= dt; if (m.pause <= 0) { b.u = 24; b.v = 32; b.h = 0; b.vh = 0; b.vu = b.vv = 0; } }
     // the two players nearest the ball (one each side, not keepers) go for it; everyone else holds formation, shifted with play
-    const chaser = {};
-    for (const side of ['home', 'away']) { let best = null, bd = Infinity; for (const p of m.players) if (p.side === side && !p.keeper) { const d = Math.hypot(p.u - b.u, p.v - b.v); if (d < bd) { bd = d; best = p; } } chaser[side] = best; }
+    // (not whoever's just kicked it. A pass is meant for someone: he goes to meet it, wherever it's coming down.)
+    const chaser = {}, airT = b.h > 0 || b.vh > 0 ? (b.vh + Math.sqrt(b.vh * b.vh + 2 * BALL_G * b.h)) / BALL_G : 0, landU = b.u + b.vu * airT, landV = b.v + b.vv * airT;
+    if (m.recv && (m.recvT -= dt) <= 0) m.recv = null;
+    for (const side of ['home', 'away']) { let best = null, bd = Infinity; for (const p of m.players) if (p.side === side && !p.keeper && p.cool <= 0) { const d = Math.hypot(p.u - landU, p.v - landV); if (d < bd) { bd = d; best = p; } } chaser[side] = m.recv && m.recv.side === side ? m.recv : best; }
     const shift = (b.v - (PITCH.v0 + Lg / 2)) * 0.45;
     for (const p of m.players) {
       let tu, tv, speed = 4.2;
       if (p.keeper) { tu = Math.max(GOAL_U0 + 0.3, Math.min(GOAL_U1 - 0.3, b.u)); tv = p.hv; speed = 5; }
-      else if (chaser[p.side] === p && m.pause <= 0) { tu = b.u; tv = b.v; speed = 5.4; }
+      else if (m.holder === p) { const gv = p.side === 'home' ? PITCH.v1 : PITCH.v0; tu = p.u + ((GOAL_U0 + GOAL_U1) / 2 - p.u) * 0.12; tv = p.v + Math.sign(gv - p.v) * 3; speed = 3.7; } // on the ball: taking it forward
+      else if (chaser[p.side] === p && m.pause <= 0 && !(m.holder && m.holder.side === p.side)) { tu = landU; tv = landV; speed = 5.4; }
       else { tu = p.hu + (b.u - (PITCH.u0 + W / 2)) * 0.25; tv = p.hv + shift; }
       tu = Math.max(PITCH.u0 + 0.4, Math.min(PITCH.u1 - 0.4, tu)); tv = Math.max(PITCH.v0 + 0.4, Math.min(PITCH.v1 - 0.4, tv)); // never off the pitch
       const du = tu - p.u, dv = tv - p.v, d = Math.hypot(du, dv);
       if (d > 0.05) { const st = Math.min(d, speed * dt); p.u += du / d * st; p.v += dv / d * st; p.face = Math.atan2(du * s2.f.s[0] + dv * s2.f.d[0], du * s2.f.s[1] + dv * s2.f.d[1]); p.run = true; } else p.run = false; // face: the world direction it's running
       p.cool -= dt;
       // on the ball: shoot if close to goal, pass forward otherwise; keepers clear it long
-      if (m.pause <= 0 && p.cool <= 0 && Math.hypot(p.u - b.u, p.v - b.v) < 0.6) {
+      // getting to it: it's brought down and under control, carried on a moment — then away, along the ground or chipped
+      if (m.pause <= 0 && p.cool <= 0 && !m.holder && b.h < 0.55 && Math.hypot(p.u - b.u, p.v - b.v) < 0.6) { m.holder = p; m.recv = null; p.holdT = p.keeper ? 0.8 : 0.4 + Math.random() * 1.0; b.h = 0; b.vh = 0; b.vu = b.vv = 0; }
+      if (m.pause > 0 && m.holder === p) m.holder = null;
+      if (m.holder && m.holder !== p && m.holder.side !== p.side && !m.holder.keeper && !p.keeper && p.cool <= 0 && Math.hypot(p.u - m.holder.u, p.v - m.holder.v) < 0.6 && Math.random() < dt * 1.5) { m.holder.cool = 0.9; m.holder = p; p.holdT = 0.4 + Math.random() * 0.8; } // tackled
+      if (m.holder === p) { const dirB = p.side === 'home' ? 1 : -1; b.u = p.u; b.v = p.v + dirB * 0.34; b.h = 0; b.vh = 0; b.vu = b.vv = 0; p.holdT -= dt; }
+      if (m.pause <= 0 && m.holder === p && p.holdT <= 0) {
+        m.holder = null;
         const dir = p.side === 'home' ? 1 : -1, goalV = p.side === 'home' ? PITCH.v1 : PITCH.v0, distGoal = Math.abs(goalV - p.v);
-        let au, av, pw;
-        if (p.keeper) { au = (Math.random() - 0.5) * 10; av = dir * 14; pw = 15; }
-        else if (distGoal < 15) { au = (GOAL_U0 + GOAL_U1) / 2 + (Math.random() - 0.5) * 7 - p.u; av = goalV - p.v; pw = 15; }
-        else { au = (Math.random() - 0.5) * 12; av = dir * (6 + Math.random() * 8); pw = 8 + Math.random() * 3; }
-        const al = Math.hypot(au, av) || 1; b.vu = au / al * pw; b.vv = av / al * pw; p.cool = 0.6;
+        let au, av, pw, lift; m.recv = null;
+        if (!p.keeper && distGoal < 15) { au = (GOAL_U0 + GOAL_U1) / 2 + (Math.random() - 0.5) * 7 - p.u; av = goalV - p.v; pw = 15; lift = 0.5 + Math.random() * 4.6; } // a shot: some along the ground, some rising (the odd one over the bar)
+        else { // a pass: to a team-mate in space, further up the pitch if there's one, chipped so it drops at his feet
+          let mate = null, ms = -Infinity; const reach = p.keeper ? 26 : 18;
+          for (const q of m.players) { if (q.side !== p.side || q === p || q.keeper) continue; const dq = Math.hypot(q.u - p.u, q.v - p.v), fwd = (q.v - p.v) * dir; if (dq < 3.5 || dq > reach || fwd < -6) continue;
+            let near = Infinity; for (const o of m.players) if (o.side !== p.side) near = Math.min(near, Math.hypot(o.u - q.u, o.v - q.v));
+            const sc = fwd * 0.5 + Math.min(near, 6) * 1.2 - dq * 0.1 + Math.random() * 3; if (sc > ms) { ms = sc; mate = q; } }
+          if (mate) {
+            au = mate.u - p.u + (Math.random() - 0.5) * 1.4; av = mate.v - p.v + (Math.random() - 0.5) * 1.4; const dd = Math.hypot(au, av);
+            // anyone in the way? Then up and over their heads (a peak of 2 to 2.7 blocks; he's 1.6 tall). A long one always goes up; a short clear one stays low.
+            let inWay = false; const ux = au / (dd || 1), uv = av / (dd || 1);
+            for (const o of m.players) { if (o.side === p.side) continue; const ou = o.u - p.u, ov = o.v - p.v, al2 = ou * ux + ov * uv; if (al2 > 0.8 && al2 < dd - 0.5 && Math.abs(ou * uv - ov * ux) < 1.3) { inWay = true; break; } }
+            lift = p.keeper ? 9.5 : (dd >= 7 || inWay) ? 7.5 + Math.random() * 1.2 : 0.6 + Math.random() * 1.2;
+            const T = 2 * lift / BALL_G; pw = lift > 3 ? Math.max(3.5, Math.min(16, dd * 0.88 / T)) : Math.max(6, Math.min(14, dd * 0.72 + 3.4)); m.recv = mate; m.recvT = 3.5;
+          } else { au = (Math.random() - 0.5) * 12; av = dir * (6 + Math.random() * 8); pw = 9 + Math.random() * 3; lift = 8 + Math.random() * 1.5; } // nobody on: hoof it forward
+        }
+        const al = Math.hypot(au, av) || 1; b.vu = au / al * pw; b.vv = av / al * pw; b.vh = lift; p.cool = 0.6; p.kickT = 0.25;
       }
+      if (p.kickT > 0) { p.kickT -= dt; p.mesh.children[0].rotation.x = Math.max(0, p.kickT) * 1.3; } else if (p.mesh.children[0].rotation.x) p.mesh.children[0].rotation.x = 0; // a lean into the kick
     }
     // a keeper gets a hand to a shot coming at him about half the time — one try per shot
     for (const k of m.players) {
       if (!k.keeper) continue;
       k.saveCd = (k.saveCd || 0) - dt;
-      if (k.saveCd <= 0 && Math.hypot(k.u - b.u, k.v - b.v) < 0.9 && Math.abs(b.vv) > 6) { k.saveCd = 0.8; if (Math.random() < 0.5) { b.vv = -b.vv * 0.4; b.vu += (Math.random() - 0.5) * 6; } }
+      if (k.saveCd <= 0 && b.h < 2.3 && Math.hypot(k.u - b.u, k.v - b.v) < 0.9 && Math.abs(b.vv) > 6) { k.saveCd = 0.8; if (Math.random() < 0.5) { b.vv = -b.vv * 0.4; b.vu += (Math.random() - 0.5) * 6; } }
     }
     const scored = m.pause > 0 ? null : stadBallStep(s2, dt);
-    if (m.pause > 0) { const [x, z] = stadToWorld(s2, b.u, b.v); b.mesh.position.set(x, s2.floor + 1.22, z); }
+    if (m.pause > 0) stadBallPlace(s2);
     if (scored) {
-      m[scored]++; m.pause = 3;
+      m[scored]++; m.pause = 3; m.recv = null; m.holder = null;
       const st = stadState(s2); if (st.today) { st.today.home = m.home; st.today.away = m.away; }
       stadCheer(s2, scored === 'home');
       showBriefMessage('⚽ GOAL! ' + (scored === 'home' ? clubName(s2) : m.opp) + ' — ' + m.home + '–' + m.away);
     }
-    for (const p of m.players) { const [x, z] = stadToWorld(s2, p.u, p.v); p.mesh.position.set(x, s2.floor + 1 + (p.run ? Math.abs(Math.sin(performance.now() / 90 + p.hu)) * 0.06 : 0), z); if (p.face !== undefined) p.mesh.rotation.y = p.face; }
+    for (const p of m.players) { const [x, z] = stadToWorld(s2, p.u, p.v); p.mesh.position.set(x, s2.floor + 1 + (p.run ? Math.abs(Math.sin(performance.now() / 90 + p.hu)) * 0.06 : 0), z); if (p.face !== undefined) p.mesh.rotation.y = p.face; stadLegs(p, p.run); }
   }
   // the result: played out live, or (not there) decided on the day — either way recorded once
   function stadFinish(s2, home, away) {
@@ -34882,7 +35122,7 @@
     if (!stadiums.size) return;
     if (!visitMode && stadPrevDayTime !== null && stadPrevDayTime > 0.9 && dayTime < 0.1) stadNightPassed();
     stadPrevDayTime = dayTime;
-    const inWindow = dayTime >= MATCH_START && dayTime < MATCH_START + MATCH_LEN;
+    const inWindow = dayTime >= MATCH_START && dayTime < MATCH_START + MATCH_LEN, preWindow = dayTime >= MATCH_START - STAD_WALK && dayTime < MATCH_START;
     const dusk = Math.sin(dayTime * Math.PI * 2) < 0.15;
     for (const s2 of stadiums.values()) {
       if (s2.worldId !== currentWorldId || !s2.board || !s2.board.parent) { stadClear(s2); concertRigDrop(s2); continue; }
@@ -34903,16 +35143,25 @@
       for (const l of s2.lights) l.intensity = dusk ? 1.4 : 0; // was 2.2 — too glaring on the pitch
       const near = Math.hypot(player.pos.x - s2.board.position.x, player.pos.z - s2.board.position.z) < 90;
       const st = stadState(s2), done = st.lastResult && st.lastResult.day === stadDayNumber(s2);
-      if (inWindow && !done && near) {
-        if (!s2.match) stadStartMatch(s2);
+      if (preWindow && !done && near) { // out of the tunnel, ready for kick-off
+        if (!s2.match) stadStartMatch(s2, true);
+        s2.crowd.visible = true; s2.match.minute = 0;
+        stadWalkStep(s2, dt, false); stadDrawBoard(s2, false);
+      } else if (inWindow && !done && near) {
+        if (!s2.match) stadStartMatch(s2, false);
+        if (s2.match.phase !== 'play') { s2.match.phase = 'play'; for (const p of s2.match.players) p.mesh.visible = true; stadCheer(s2, true); }
         s2.crowd.visible = true;
         s2.match.minute = (dayTime - MATCH_START) / MATCH_LEN * 90;
         stadMatchStep(s2, dt);
         stadDrawBoard(s2, false);
+      } else if (s2.match && s2.match.phase === 'walkoff' && near && dayTime < MATCH_START + MATCH_LEN + STAD_WALK) { // back down the tunnel
+        s2.crowd.visible = true;
+        if (!stadWalkStep(s2, dt, true)) stadClear(s2);
       } else {
         if (s2.match) { // full time (or you walked off)
           const m = s2.match;
           if (!inWindow) { const r = stadFinish(s2, m.home, m.away); if (r) { stadCheer(s2, r.res === 'w'); showSaveStatus('⚽ Full time: ' + clubName(s2) + ' ' + m.home + '–' + m.away + ' ' + m.opp + (r.res === 'w' ? ' — a win!' : r.res === 'd' ? ' — a draw' : ' — beaten')); } }
+          if (near && !inWindow && m.phase === 'play' && dayTime >= MATCH_START + MATCH_LEN && dayTime < MATCH_START + MATCH_LEN + STAD_WALK) { m.phase = 'walkoff'; m.t = 0; if (s2.ball) { scene.remove(s2.ball.mesh); disposeObject3D(s2.ball.mesh); s2.ball = null; } s2.crowd.visible = true; stadDrawBoard(s2, false); continue; } // the players walk off
           stadClear(s2);
         }
         if (!inWindow && !done && dayTime >= MATCH_START + MATCH_LEN) { const h = Math.floor(Math.random() * 4), a = Math.floor(Math.random() * 3); stadFinish(s2, h, a); } // missed it: the result comes in anyway
@@ -34922,12 +35171,12 @@
         if (Math.hypot(player.pos.x - s2.board.position.x, player.pos.z - s2.board.position.z) < 60) {
           if (!s2.ball) s2.ball = stadMakeBall(s2);
           const [pu, pv] = stadToLocal(s2, player.pos.x, player.pos.z), b = s2.ball;
-          if (Math.abs(player.pos.y - (s2.floor + 1)) < 1.2 && Math.hypot(pu - b.u, pv - b.v) < 0.7) {
+          if (Math.abs(player.pos.y - (s2.floor + 1)) < 1.2 && b.h < 1.2 && Math.hypot(pu - b.u, pv - b.v) < 0.7) {
             const fu = pu - b.u, fv = pv - b.v, l = Math.hypot(fu, fv) || 1, pw = Math.hypot(player.vel.x, player.vel.z) > 3 ? 12 : 6;
-            b.vu = -fu / l * pw; b.vv = -fv / l * pw;
+            b.vu = -fu / l * pw; b.vv = -fv / l * pw; b.vh = pw > 6 ? 3.2 : 0.8;
           }
           const sc = stadBallStep(s2, dt);
-          if (sc) { stadCheer(s2, false); showBriefMessage('⚽ GOAL!'); b.u = 24; b.v = 32; b.vu = b.vv = 0; }
+          if (sc) { stadCheer(s2, false); showBriefMessage('⚽ GOAL!'); b.u = 24; b.v = 32; b.h = 0; b.vh = 0; b.vu = b.vv = 0; }
         } else if (s2.ball) { scene.remove(s2.ball.mesh); disposeObject3D(s2.ball.mesh); s2.ball = null; }
       }
     }
@@ -34959,25 +35208,26 @@
   }
   function openStadiumOffice(fk) {
     const s2 = stadForFurniture(fk); if (!s2) return;
-    if (visitMode) { showBriefMessage('🎟️ "Match day\u2019s at three — enjoy the game!"'); return; }
+    if (visitMode) { showBriefMessage('🎟️ "Kick-off\u2019s at noon — enjoy the game!"'); return; }
     const st = stadState(s2), n = stadNight(s2), el = bizPanel('stadPanel'), R = st.record, LR = st.lastResult;
     const minsTo = (() => { let d = MATCH_START - dayTime; if (d < 0) d += 1; return Math.round(d * DAY_LENGTH / 60); })();
     el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(380px,calc(92 * var(--vw, 1vw)));color:#fff;font:13px system-ui,sans-serif;line-height:1.45;">'
       + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">⚽ ' + bizEsc(clubName(s2)) + '</div>'
       + '<div style="display:flex;gap:6px;margin-bottom:12px;"><input id="stadNameInput" maxlength="24" autocomplete="off" placeholder="Club name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:15px;">' + bizBtn('stadRename', 'Rename', '#2f7d46') + '</div>'
       + '<div style="background:rgba(210,176,98,0.12);border:1px solid rgba(210,176,98,0.4);border-radius:8px;padding:10px;margin-bottom:10px;display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-size:12px;opacity:0.75;">In the ticket office</div><div style="font-size:20px;font-weight:700;">💰' + Math.floor(st.till || 0) + '</div></div>' + bizBtn('stadCollect', 'Collect', '#c7901d', !(st.till > 0)) + '</div>'
+      + (() => { const K = stadKit(s2), row = (label, id, cur) => '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;"><div style="width:48px;opacity:0.8;">' + label + '</div><div style="display:flex;flex-wrap:wrap;gap:5px;">' + STAD_KITS.map(([n, c], i) => '<button class="' + id + '" data-i="' + i + '" title="' + n + '" style="width:24px;height:24px;border-radius:50%;cursor:pointer;background:#' + c.toString(16).padStart(6, '0') + ';border:' + (c === cur ? '3px solid #ffd34d' : '1px solid rgba(255,255,255,0.45)') + ';padding:0;"></button>').join('') + '</div></div>'; return '<div style="margin-bottom:10px;"><div style="font-weight:600;margin-bottom:6px;">👕 Team kit</div>' + row('Shirts', 'kitShirt', K.shirt) + row('Shorts', 'kitShorts', K.shorts) + '</div>'; })()
       + bizRow('Season', R.w + ' won · ' + R.d + ' drawn · ' + R.l + ' lost')
       + (LR ? bizRow('Last match', clubName(s2) + ' ' + LR.home + '–' + LR.away + ' ' + LR.opp) : '')
-      + bizRow('Next match', '15:00 vs ' + stadOpponent(s2, stadDayNumber(s2) + (LR && LR.day === stadDayNumber(s2) ? 1 : 0)) + ' (in about ' + minsTo + ' min)')
+      + bizRow('Next match', '12:00 vs ' + stadOpponent(s2, stadDayNumber(s2) + (LR && LR.day === stadDayNumber(s2) ? 1 : 0)) + ' (in about ' + minsTo + ' min)')
       + bizRow('Gate', n.gate + ' × 💰' + STAD_TICKET + (n.won ? ' (up after a win)' : '')) + bizRow('Wages', '−💰' + n.wages) + bizRow('Each day', '💰' + n.profit, '#7ee08a')
       + (st.concert
-        ? '<div style="background:rgba(160,90,255,0.14);border:1px solid rgba(160,90,255,0.5);border-radius:8px;padding:10px;margin-top:10px;"><div style="font-weight:700;margin-bottom:6px;">🎤 Concerts — every night, 18:00 till dawn</div>'
+        ? '<div style="background:rgba(160,90,255,0.14);border:1px solid rgba(160,90,255,0.5);border-radius:8px;padding:10px;margin-top:10px;"><div style="font-weight:700;margin-bottom:6px;">🎤 Concerts — every night, 19:00 till 05:00</div>'
           + '<div style="display:flex;gap:6px;margin-bottom:8px;"><input id="stadBandInput" maxlength="24" autocomplete="off" placeholder="Band name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:15px;">' + bizBtn('stadBandSave', 'Rename', '#6a3ac0') + '</div>'
           + bizRow('Tickets', 'about ' + Math.round((CONCERT_FANS_MIN + CONCERT_FANS_MAX) / 2).toLocaleString() + ' fans × 💰' + CONCERT_TICKET)
           + (st.concert.last ? bizRow('Last concert', st.concert.last.fans.toLocaleString() + ' fans — 💰' + st.concert.last.take.toLocaleString(), '#7ee08a') : '')
           + bizRow('Taken so far', '💰' + Math.floor(st.concert.total || 0).toLocaleString()) + '</div>'
         : '<div style="background:rgba(160,90,255,0.14);border:1px solid rgba(160,90,255,0.5);border-radius:8px;padding:10px;margin-top:10px;display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-weight:700;">🎤 Upgrade for concerts</div><div style="opacity:0.8;font-size:12px;">A stage, lights and a live band on the pitch every night, with about ' + Math.round((CONCERT_FANS_MIN + CONCERT_FANS_MAX) / 2).toLocaleString() + ' fans at 💰' + CONCERT_TICKET + ' a ticket. Football carries on by day.</div></div>' + bizBtn('stadConcertBuy', '💰' + CONCERT_PRICE.toLocaleString(), '#6a3ac0') + '</div>')
-      + '<div style="opacity:0.7;margin-top:8px;">Be at the ground at 15:00 to watch the match live. Any other time there\u2019s a ball on the pitch for a kickabout' + (st.concert ? ', until the stage goes up at 18:00' : '') + '.</div>'
+      + '<div style="opacity:0.7;margin-top:8px;">Be at the ground between 12:00 and 16:00 to watch the match live. Any other time there\u2019s a ball on the pitch for a kickabout' + (st.concert ? ', until the stage goes up at 19:00' : '') + '.</div>'
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="stadClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const $ = id => document.getElementById(id), inp = $('stadNameInput'); inp.value = s2.spec.name || '';
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) s2.spec.name = c; else delete s2.spec.name; specSave(s2.ck, s2.spec); stadDrawBoard(s2, true); playThud(500); openStadiumOffice(fk); };
@@ -34985,7 +35235,8 @@
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
     $('stadCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(s2.ck, s2.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_stad', a); showSaveStatus('🎟️ Collected 💰' + a); openStadiumOffice(fk); });
     $('stadClose').addEventListener('click', () => { el.style.display = 'none'; });
-    if ($('stadConcertBuy')) $('stadConcertBuy').addEventListener('click', () => { if (!trySpendCoins(CONCERT_PRICE, 'the concert upgrade')) return; st.concert = { song: 0, band: '', last: null, total: 0 }; specSave(s2.ck, s2.spec); playCoin(); objNote('concert'); showSaveStatus('🎤 Upgraded! The first concert’s at 18:00 tonight'); openStadiumOffice(fk); });
+    for (const [cls, field] of [['kitShirt', 'shirt'], ['kitShorts', 'shorts']]) el.querySelectorAll('.' + cls).forEach(b => b.addEventListener('click', () => { st.kit = st.kit || {}; st.kit[field] = STAD_KITS[+b.dataset.i][1]; specSave(s2.ck, s2.spec); stadRekit(s2); playThud(500); openStadiumOffice(fk); }));
+    if ($('stadConcertBuy')) $('stadConcertBuy').addEventListener('click', () => { if (!trySpendCoins(CONCERT_PRICE, 'the concert upgrade')) return; st.concert = { song: 0, band: '', last: null, total: 0 }; specSave(s2.ck, s2.spec); playCoin(); objNote('concert'); showSaveStatus('🎤 Upgraded! The first concert’s at 19:00 tonight'); openStadiumOffice(fk); });
     if ($('stadBandInput')) { const bi = $('stadBandInput'); bi.value = st.concert.band || ''; bi.placeholder = CONCERT_DEFAULT_BAND;
       const saveBand = () => { st.concert.band = (bi.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); specSave(s2.ck, s2.spec); stadDrawBoard(s2, true); if (s2.rig) s2.rig.screenSig = ''; playThud(500); openStadiumOffice(fk); };
       $('stadBandSave').addEventListener('click', saveBand); bi.addEventListener('keydown', e => { if (e.key === 'Enter') saveBand(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); }); }
@@ -34994,15 +35245,15 @@
   }
 
   // ================= STADIUM CONCERTS =================
-  // A 💰100,000 upgrade, bought at the stadium's ticket office. Football carries on by day; every night from 18:00 until
-  // just before dawn the goals come away and a stage stands at the north end of the pitch: two singers (a man and a
+  // A 💰100,000 upgrade, bought at the stadium's ticket office. Football carries on by day; every night the goals come away and, from half an hour before the 19:00 start, the crowd walks in through the tunnel;
+  // at 19:00 the band come on, and at 05:00 they go off and the crowd walks out again. A stage stands at the north end of the pitch: two singers (a man and a
   // woman — side by side with their own space for most songs, close together for the duets), a band behind them, an LED wall,
   // moving beams, lasers and flame jets. Fans dance on the pitch; the stands fill up and bounce, phone lights twinkling.
   // The songs are real files in a concert/ folder next to voxel.html, played in order and round again, picking up where
-  // they left off. You hear it as you approach (fading in and muffled from outside until you're close) — even before
+  // they left off. Full volume in the ground, fading as you walk away (see SOUND OUT OF A BUILDING) — even before
   // the stadium's loaded. Everything moves to the song's own beat (see jdBeatStep). Tickets: settled every sunrise with
   // the football gate, into the ticket office, loaded or not (stadNightPassed).
-  const CONCERT_PRICE = 100000, CONCERT_TICKET = 10, CONCERT_FANS_MIN = 1800, CONCERT_FANS_MAX = 2200, CONCERT_START = 0.5, CONCERT_END = 0.97, CONCERT_SHOW = 170, CONCERT_HEAR = 170;
+  const CONCERT_PRICE = 100000, CONCERT_TICKET = 10, CONCERT_FANS_MIN = 1800, CONCERT_FANS_MAX = 2200, CONCERT_START = 13 / 24, CONCERT_END = 23 / 24, CONCERT_WALK_SECS = 30, CONCERT_WALK = 30 / 1200, CONCERT_SHOW = 170;
   const CONCERT_DEFAULT_BAND = 'The Long Road';
   const CONCERT_SONGS = [
     { title: 'I’m Yours for the Long Road', file: 'concert/im-yours-for-the-long-road.mp3', duet: true },
@@ -35012,24 +35263,46 @@
     { title: 'I Miss You in the Small', file: 'concert/i-miss-you-in-the-small.mp3' },
     { title: 'In and Out of Love', file: 'concert/in-and-out-of-love.mp3' },
     { title: 'Paper Cup Sky', file: 'concert/paper-cup-sky.mp3' },
+    { title: 'Live It', file: 'jukebox/live-it.mp3' },
+    { title: 'Start Somewhere', file: 'jukebox/start-somewhere.mp3' },
   ];
   const CONCERT_COLOURS = [0xff2a6d, 0x05d9e8, 0xffd23f, 0x8a2be2, 0x39ff14, 0xff7a18];
   const concertWindow = () => dayTime >= CONCERT_START && dayTime < CONCERT_END;
-  function concertTonight(st) { return !!(st && st.concert) && concertWindow(); }
+  const concertOpen = () => dayTime >= CONCERT_START - CONCERT_WALK && dayTime < CONCERT_END + CONCERT_WALK; // (the crowd coming in beforehand and leaving afterwards)
+  function concertTonight(st) { return !!(st && st.concert) && concertOpen(); }
   function concertBandName(s2) { const c = stadState(s2).concert; return (c && c.band) || CONCERT_DEFAULT_BAND; }
   function concertSong(s2) { const c = stadState(s2).concert; return CONCERT_SONGS[((c && c.song) | 0) % CONCERT_SONGS.length]; }
   // ---- the stage's solid parts (asked by isSolid) ----
   var concertStages = 0; // how many are up — nothing to check otherwise
   const CONCERT_DECK = { u0: 15, u1: 33, v0: 46, v1: 54, h: 1.5 };
+  const CONCERT_BARRIER = { u0: 11, u1: 37, v0: 41.2, v1: 41.6, h: 1.6 }; // solid a bit higher than it looks, so it can't be hopped (as a fence is). Way round at each end
   function concertSolidAt(x, y, z) {
     for (const s2 of stadiums.values()) {
       if (!s2.rig || !s2.rig.group.visible || s2.worldId !== currentWorldId) continue;
-      if (y < s2.floor + 1 || y >= s2.floor + 1 + CONCERT_DECK.h) continue;
-      const [u, v] = stadToLocal(s2, x, z), h = y - (s2.floor + 1), D = CONCERT_DECK;
+      if (y < s2.floor + 1 || y >= s2.floor + 1 + CONCERT_BARRIER.h) continue;
+      const [u, v] = stadToLocal(s2, x, z), h = y - (s2.floor + 1), D = CONCERT_DECK, Br = CONCERT_BARRIER;
+      if (u >= Br.u0 && u < Br.u1 && v >= Br.v0 && v < Br.v1) return true;
+      if (h >= D.h) continue;
       if (u >= D.u0 && u < D.u1 && v >= D.v0 && v < D.v1) return true;
       if (u >= 22.5 && u < 25.5) { if (v >= 45 && v < 46 && h < 1.0) return true; if (v >= 44 && v < 45 && h < 0.5) return true; } // the steps up the front
     }
     return false;
+  }
+  // Where the singing arm goes: the arm's joints searched for the pose that brings the hand just under the mouth, in the
+  // chest's own frame (so it holds whatever she's dancing), and which way the mic then has to point. Worked out once.
+  let _concertMic = null;
+  function concertMicPose() {
+    if (_concertMic) return _concertMic;
+    const S = new THREE.Vector3(0.24, 0.45, 0), mouth = new THREE.Vector3(0, 0.66, 0.235), want = new THREE.Vector3(0.14, 0.5, 0.27), EU = new THREE.Euler(0, 0, 0, 'ZXY'), v = new THREE.Vector3(), e2 = new THREE.Euler();
+    const hand = (a, o, e, out) => { out.set(0, -0.3, 0).applyEuler(e2.set(-e, 0, 0)); out.y -= 0.28; return out.applyEuler(EU.set(-a, 0, o, 'ZXY')).add(S); };
+    let best = null, bd = 1e9;
+    for (let a = 0.5; a <= 1.8; a += 0.03) for (let o = -0.6; o <= 0.2; o += 0.03) for (let e = 1.5; e <= 2.9; e += 0.03) { const d = hand(a, o, e, v).distanceToSquared(want) + 0.0003 * o * o; if (d < bd) { bd = d; best = [a, o, e]; } } // (elbow down and out in front, not across the chest)
+    const [a, o, e] = best, Rs = new THREE.Quaternion().setFromEuler(EU.set(-a, 0, o, 'ZXY')), Re = new THREE.Quaternion().setFromEuler(e2.set(-e, 0, 0));
+    // the mouth, in the forearm's own frame: which way from the hand the mic points
+    const m = mouth.clone().sub(S).applyQuaternion(Rs.clone().invert()); m.y += 0.28; m.applyQuaternion(Re.clone().invert()); m.y += 0.3;
+    const len = m.length() - 0.03;
+    _concertMic = { a, o, e, len, q: new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), m.normalize()) };
+    return _concertMic;
   }
   // ---- the rig ----
   function concertRigBuild(s2) {
@@ -35051,7 +35324,8 @@
     }
     for (const z of [-3.8, 3.8]) box(18.8, 0.5, 0.5, 0, 12.3, z, 0x3a3f46);                              // the truss across
     box(16.8, 8.9, 0.3, 0, deck + 4.75, -3.95, 0x08080a);                                                  // the LED wall's frame
-    box(26, 1.1, 0.25, 0, 0.55, 8.6, 0x9aa0a8);                                                            // the crowd barrier
+    box(26, 0.08, 0.1, 0, 1.08, 8.6, 0xc9ced3); box(26, 0.06, 0.08, 0, 0.62, 8.6, 0x9aa0a8); box(26, 0.06, 0.08, 0, 0.2, 8.6, 0x9aa0a8); // the crowd barrier: rails…
+    for (let bx2 = -13; bx2 <= 13; bx2 += 2) { box(0.08, 1.12, 0.08, bx2, 0.56, 8.6, 0xc9ced3); box(0.1, 0.05, 0.9, bx2, 0.03, 8.9, 0x7a8088); }                   // …on posts with feet
     // the drum kit
     box(0.7, 0.7, 0.5, 0, deck + 1.15, -1.6, 0xb02030);
     for (const sx of [-1, 1]) { box(0.4, 0.3, 0.4, sx * 0.65, deck + 1.4, -1.45, 0x8a2030); box(0.04, 0.9, 0.04, sx * 1.15, deck + 1.2, -1.6, 0xb8bcc2); box(0.6, 0.02, 0.6, sx * 1.15, deck + 1.68, -1.6, 0xd8b050); }
@@ -35082,23 +35356,43 @@
     const mk = (look, seed, inst) => { const d = jdBuild(seed, look); group.add(d.root); jdSetFade(d, 1); d.inst = inst; perf.push(d); return d; };
     const woman = mk({ dress: 0xd21f5a, hair: 0x2a1610, skin: 0 }, 11, 'mic'), man = mk({ dress: 0x20262e, hair: 0x241a12, skin: 1, male: true, legs: 0x15181f }, 12, 'mic');
     const gtr = mk({ dress: 0x5a2a2a, hair: 0x4a3a20, skin: 3, male: true, legs: 0x1c2230 }, 13, 'guitar'), bass = mk({ dress: 0x24406a, hair: 0x101010, skin: 2, male: true, legs: 0x181818 }, 14, 'guitar');
-    for (const d of [woman, man]) { const mic = mergedBoxes([[0.05, 0.2, 0.05, 0, 0, 0, 0, 0x202020], [0.08, 0.08, 0.08, 0, 0.13, 0, 0, 0x9aa0a8]]); mic.castShadow = false; mic.position.set(0, -0.32, 0.03); mic.rotation.x = -0.3; d.arms[1].el.add(mic); }
-    const guitarOn = (d, col) => { const g = mergedBoxes([[0.36, 0.4, 0.07, 0, 0, 0, 0, col], [0.07, 0.72, 0.05, 0.16, 0.42, 0, 0, 0x5a3a1a, 0, -0.75]]); g.castShadow = false; g.position.set(0, 0.17, 0.14); g.rotation.z = -0.25; d.torso.add(g); };
+    { const P = concertMicPose(); // the mic in the hand, reaching to the lips (worked out from the arm's own joints: see concertMicPose)
+      for (const d of [woman, man]) { const mic = mergedBoxes([[0.045, P.len, 0.045, 0, P.len / 2, 0, 0, 0x202020], [0.09, 0.09, 0.09, 0, P.len, 0, 0, 0x9aa0a8]]); mic.castShadow = false; mic.position.set(0, -0.3, 0); mic.quaternion.copy(P.q); d.arms[1].el.add(mic); } }
+    const guitarOn = (d, col) => { // slung across the front of the body (well clear of it), neck rising to his left hand
+      const g = mergedBoxes([[0.46, 0.34, 0.09, 0, 0, 0, 0, col], [0.3, 0.2, 0.1, -0.02, 0, 0, 0, 0xf2efe6], [0.07, 0.3, 0.02, -0.04, 0, 0.055, 0, 0x202020], [0.76, 0.07, 0.05, 0.6, 0.02, 0, 0, 0x5a3a1a], [0.15, 0.12, 0.05, 1.04, 0.02, 0, 0, 0x2a1a0e]]);
+      g.castShadow = false; g.position.set(-0.06, 0.12, 0.215); g.rotation.z = 0.5; d.torso.add(g); };
     guitarOn(gtr, 0xc03030); guitarOn(bass, 0x2a80a0);
     const drummer = pubFigure(true, 'staff', s2.ck + ':drummer'); scene.remove(drummer); drummer.position.set(0, deck + 0.8, -2.55); group.add(drummer);
-    woman.home = [-2.6, 0.9]; woman.duet = [-0.7, 1.5]; woman.pos = [-2.6, 0.9];
-    man.home = [2.6, 0.9]; man.duet = [0.7, 1.5]; man.pos = [2.6, 0.9];
-    gtr.home = [-6, -1.2]; gtr.pos = [-6, -1.2]; bass.home = [6, -1.2]; bass.pos = [6, -1.2];
-    for (const d of perf) d.root.position.set(d.pos[0], deck, d.pos[1]);
+    // security on the stage side of the barrier, facing the crowd, in hi-vis
+    const guards = [], tagC = document.createElement('canvas'); tagC.width = 128; tagC.height = 32; { const x = tagC.getContext('2d'); x.fillStyle = '#e8d21a'; x.fillRect(0, 0, 128, 32); x.fillStyle = '#111'; x.font = 'bold 21px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('SECURITY', 64, 17); }
+    const tagTex = new THREE.CanvasTexture(tagC);
+    (isTouchDevice ? [-9, -3.5, 3.5, 9] : [-11.5, -7, -3.5, 3.5, 7, 11.5]).forEach((gx, i) => {
+      const gd = pubFigure(false, 'staff', s2.ck + ':security:' + i); scene.remove(gd); gd.position.set(gx, 0, 7.5); gd.rotation.y = (i % 2 ? 0.12 : -0.12);
+      const vest = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.52, 0.24), new THREE.MeshBasicMaterial({ color: 0xe8d21a })); vest.position.y = 1.02; gd.add(vest);
+      gd.traverse(o => { if (o.isMesh && o.material && o.material.emissive) o.material.emissive.copy(o.material.color).multiplyScalar(0.55); }); // (they've their backs to the stage lights: lit enough to see their faces)
+      for (const fz of [-1, 1]) { const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.38, 0.095), new THREE.MeshBasicMaterial({ map: tagTex })); tag.position.set(0, 1.12, fz * 0.122); if (fz < 0) tag.rotation.y = Math.PI; gd.add(tag); }
+      group.add(gd); guards.push({ m: gd, base: gd.rotation.y, i });
+    });
+    const onNow = concertWindow(); // (built part-way through the show, for someone walking up: they're already on)
+    woman.home = [-2.6, 0.9]; woman.duet = [-0.7, 1.5]; woman.off = [-8.6, -3.2]; woman.late = 3;
+    man.home = [2.6, 0.9]; man.duet = [0.7, 1.5]; man.off = [8.6, -3.2]; man.late = 3.5;
+    gtr.home = [-6, -1.2]; gtr.off = [-8.6, -3.4]; gtr.late = 0; bass.home = [6, -1.2]; bass.off = [8.6, -3.4]; bass.late = 0.5;
+    for (const d of perf) { d.pos = (onNow ? d.home : d.off).slice(); d.root.position.set(d.pos[0], deck, d.pos[1]); }
+    drummer.visible = onNow;
     // the crowd
-    const nPitch = isTouchDevice ? 150 : 340, nStands = isTouchDevice ? 170 : 460, n = nPitch + nStands, shirts = [0xc0392b, 0x2468b0, 0x27ae60, 0xe0a82a, 0x8e44ad], skins = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
-    const bodyMats = [], ims = shirts.map((c, si) => { const m0 = mergedBoxes([[0.42, 0.58, 0.24, 0, 0.29, 0, 0, c], [0.34, 0.34, 0.34, 0, 0.77, 0, 0, skins[si % skins.length]], [0.36, 0.1, 0.36, 0, 0.97, 0, 0, si % 2 ? 0x2a1a12 : 0x6a4a2a]]);
+    const nPitch = isTouchDevice ? 150 : 340, nStands = isTouchDevice ? 170 : 460, n = nPitch + nStands, shirts = [0xc0392b, 0x2468b0, 0x27ae60, 0xe0a82a, 0x8e44ad, 0xe0518a, 0x1fb0b0, 0xf0f0f0, 0xd2402a, 0x6a3ac0], skins = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
+    const bodyMats = [], ims = shirts.map((c, si) => { const woman = si >= 5, hairC = [0x2a1a12, 0x6a4a2a, 0x151515, 0xd4a017, 0x7a2e12][si % 5], skin = skins[si % skins.length]; // half of them men, half women: long hair, and a skirt in the colour of her top
+      const parts = [[0.42, 0.58, 0.24, 0, 0.29, 0, 0, c], [0.34, 0.34, 0.34, 0, 0.77, 0, 0, skin], [0.36, 0.1, 0.36, 0, 0.97, 0, 0, hairC],
+        [0.06, 0.05, 0.02, -0.08, 0.81, 0.172, 0, 0x151515], [0.06, 0.05, 0.02, 0.08, 0.81, 0.172, 0, 0x151515], [0.13, 0.03, 0.02, 0, 0.69, 0.172, 0, woman ? 0xb02030 : 0x7a2a2a]];
+      if (woman) parts.push([0.36, 0.62, 0.06, 0, 0.66, -0.19, 0, hairC], [0.04, 0.34, 0.3, -0.19, 0.78, -0.02, 0, hairC], [0.04, 0.34, 0.3, 0.19, 0.78, -0.02, 0, hairC], [0.5, 0.34, 0.32, 0, -0.14, 0, 0, c]);
+      const m0 = mergedBoxes(parts);
       const mat = new THREE.MeshBasicMaterial({ vertexColors: true }); bodyMats.push(mat); const im = new THREE.InstancedMesh(m0.geometry, mat, Math.ceil(n / shirts.length) + 1); im.frustumCulled = false; im.count = 0; group.add(im); return im; });
     const limbMat = new THREE.MeshBasicMaterial({ color: 0xc99a7a }), legMat = new THREE.MeshBasicMaterial({ color: 0x20242e });
     const armGeo = new THREE.BoxGeometry(0.12, 0.56, 0.14); armGeo.translate(0, -0.28, 0); const legGeo = new THREE.BoxGeometry(0.17, 0.72, 0.19); legGeo.translate(0, -0.36, 0);
-    const armIM = new THREE.InstancedMesh(armGeo, limbMat, n * 2), legIM = new THREE.InstancedMesh(legGeo, legMat, n * 2); armIM.frustumCulled = legIM.frustumCulled = false; group.add(armIM); group.add(legIM);
+    const armIM = new THREE.InstancedMesh(armGeo, limbMat, n * 2), legIM = new THREE.InstancedMesh(legGeo, legMat, n * 2), legFMat = new THREE.MeshBasicMaterial({ color: 0xd8ac8a }), legIMF = new THREE.InstancedMesh(legGeo, legFMat, n * 2); armIM.frustumCulled = legIM.frustumCulled = legIMF.frustumCulled = false; legIM.count = 0; legIMF.count = 0; group.add(armIM); group.add(legIM); group.add(legIMF);
     const fans = []; // local: x across, z towards the south end. On the pitch, from the barrier back to the far goal line
     const toLocal = (u, v) => { const [wx, wz] = f.pos(u, v), dx = wx - cx, dz = wz - cz, a = group.rotation.y, c = Math.cos(a), sn = Math.sin(a); return [dx * c - dz * sn, dx * sn + dz * c]; };
+    const gate = toLocal(STAD_TUNNEL[0], STAD_TUNNEL[1] + 3); // the crowd comes in through the tunnel
     for (let i = 0; i < n; i++) {
       const si = i % shirts.length, im = ims[si]; let x, y = 0, z, stand = i >= nPitch;
       if (!stand) { x = (Math.random() - 0.5) * 26.4; z = 9.6 + Math.pow(Math.random(), 1.35) * 29.5; }
@@ -35108,7 +35402,9 @@
         else { v = 7.5 - k; u = 8 + t * 32; if (u >= 20.5 && u <= 27.5) u = t < 0.5 ? 19.5 : 28.5; }
         [x, z] = toLocal(u, v); y = k + 1;
       }
-      fans.push({ x, z, y, stand, im, ii: im.count++, ai: i * 2, style: stand ? (i % 3 ? 3 - (i % 3) : 1) : i % 4, ph: Math.random() * 0.5, yaw: stand ? Math.atan2(-x, -z) + (Math.random() - 0.5) * 0.35 : (Math.random() - 0.5) * 0.5 + Math.atan2(-x * 0.25, -(z + 3)), step: Math.random() < 0.5 ? 1 : -1 });
+      const woman = si >= 5, lIM = woman ? legIMF : legIM, li = lIM.count; lIM.count += 2;
+      const inDelay = Math.random() * 16, gx = gate[0] + (Math.random() - 0.5) * 3, gz = gate[1], travel = Math.hypot(x - gx, z - gz);
+      fans.push({ x, z, y, stand, im, ii: im.count++, ai: i * 2, lIM, li, gx, gz, travel, inDelay, outDelay: Math.random() * 14, spd: 3.6 + Math.random() + (stand ? 1 : 0), style: stand ? (i % 3 ? 3 - (i % 3) : 1) : i % 4, ph: Math.random() * 0.5, yaw: stand ? Math.atan2(-x, -z) + (Math.random() - 0.5) * 0.35 : (Math.random() - 0.5) * 0.5 + Math.atan2(-x * 0.25, -(z + 3)), step: Math.random() < 0.5 ? 1 : -1 });
     }
     // phone lights twinkling in the stands
     const pPos = [];
@@ -35116,7 +35412,7 @@
     const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.Float32BufferAttribute(pPos, 3));
     const phones = new THREE.Points(pg, new THREE.PointsMaterial({ color: 0xfff4d0, size: 0.22, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending })); phones.frustumCulled = false; group.add(phones);
     s2.reg.props.push(group);
-    s2.rig = { group, beams, lasers, flames, lights, perf, woman, man, drummer, fans, ims, armIM, legIM, bodyMats, limbMat, legMat, phones, cv, tex, screenSig: '', fanTick: 0, base: s2.crowd.position.y, flameT: 0, lastFlame: -1, beat: { b: 0, bpm: 118, avg: 0, lastAt: 0, gaps: [], buf: null } };
+    s2.rig = { legIMF, legFMat, gate, guards, group, beams, lasers, flames, lights, perf, woman, man, drummer, fans, ims, armIM, legIM, bodyMats, limbMat, legMat, phones, cv, tex, screenSig: '', fanTick: 0, base: s2.crowd.position.y, flameT: 0, lastFlame: -1, beat: { b: 0, bpm: 118, avg: 0, lastAt: 0, gaps: [], buf: null } };
     concertStages++;
     return s2.rig;
   }
@@ -35132,8 +35428,8 @@
     x.globalAlpha = 1; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#ffffff';
     const name = concertBandName(s2).toUpperCase(); let sz = 58; x.font = 'bold ' + sz + 'px sans-serif'; while (sz > 22 && x.measureText(name).width > W - 30) { sz -= 2; x.font = 'bold ' + sz + 'px sans-serif'; }
     x.shadowColor = c; x.shadowBlur = 8 + pulse * 18; x.fillText(name, W / 2, 74); x.shadowBlur = 0;
-    const t = concertSong(s2).title; sz = 28; x.font = '600 ' + sz + 'px sans-serif'; while (sz > 14 && x.measureText(t).width > W - 30) { sz -= 1; x.font = '600 ' + sz + 'px sans-serif'; }
-    x.fillStyle = '#e8e8f4'; x.fillText('♪ ' + t, W / 2, 132);
+    const t = concertWindow() ? concertSong(s2).title : 'Thank you & goodnight!'; sz = 28; x.font = '600 ' + sz + 'px sans-serif'; while (sz > 14 && x.measureText(t).width > W - 30) { sz -= 1; x.font = '600 ' + sz + 'px sans-serif'; }
+    x.fillStyle = '#e8e8f4'; x.fillText(concertWindow() ? '♪ ' + t : dayTime < CONCERT_START ? 'Tonight · 19:00' : 'Thank you & goodnight!', W / 2, 132);
     R.tex.needsUpdate = true;
   }
   // ---- every frame, while it's on ----
@@ -35143,15 +35439,17 @@
     dt = Math.min(dt, 0.1);
     const now = performance.now(), an = concertAnalyser, BT = R.beat, song = concertSong(s2), playingHere = concertHeard;
     jdBeatStep(dt, now, BT, playingHere ? an : null);
+    const showOn = concertWindow(), sinceDoors = (dayTime - (CONCERT_START - CONCERT_WALK)) * DAY_LENGTH, sinceStart = (dayTime - CONCERT_START) * DAY_LENGTH, sinceEnd = (dayTime - CONCERT_END) * DAY_LENGTH;
+    const cheering = now < concertCheerUntil;
     const b = BT.b, phrase = Math.floor(b / 8), bIn = b - phrase * 8, pulse = Math.pow(0.5 + 0.5 * Math.cos(2 * Math.PI * b), 3), colour = CONCERT_COLOURS[Math.floor(b / 4) % CONCERT_COLOURS.length], col2 = CONCERT_COLOURS[(Math.floor(b / 4) + 2) % CONCERT_COLOURS.length];
     // beams and lasers
-    for (const B of R.beams) { const q = B.i, tw = b * Math.PI / 4; B.piv.rotation.set(0.55 * Math.sin(tw + q * 0.7) + (q % 2 ? -0.45 : -0.2), 0, 0.65 * Math.sin(tw * 0.75 + q)); B.mat.color.setHex(q % 2 ? colour : col2); B.mat.opacity = 0.09 + 0.14 * pulse; }
-    const lazOn = phrase % 2 === 1; for (let i = 0; i < R.lasers.length; i++) { const L = R.lasers[i]; L.visible = lazOn; if (lazOn) { L.rotation.y = Math.sin(b * Math.PI / 8 + i) * 0.5; L.rotation.x = 0.03 + 0.09 * Math.sin(b * Math.PI / 4 + i * 0.6); } }
+    for (const B of R.beams) { B.piv.visible = showOn; const q = B.i, tw = b * Math.PI / 4; B.piv.rotation.set(0.55 * Math.sin(tw + q * 0.7) + (q % 2 ? -0.45 : -0.2), 0, 0.65 * Math.sin(tw * 0.75 + q)); B.mat.color.setHex(q % 2 ? colour : col2); B.mat.opacity = 0.09 + 0.14 * pulse; }
+    const lazOn = showOn && phrase % 2 === 1; for (let i = 0; i < R.lasers.length; i++) { const L = R.lasers[i]; L.visible = lazOn; if (lazOn) { L.rotation.y = Math.sin(b * Math.PI / 8 + i) * 0.5; L.rotation.x = 0.03 + 0.09 * Math.sin(b * Math.PI / 4 + i * 0.6); } }
     // flame jets: on the first beat of every fourth phrase
-    if (phrase !== R.lastFlame && phrase % 4 === 0) { R.lastFlame = phrase; R.flameT = 1.1; }
+    if (showOn && phrase !== R.lastFlame && phrase % 4 === 0) { R.lastFlame = phrase; R.flameT = 1.1; }
     R.flameT -= dt; for (let i = 0; i < R.flames.length; i++) { const fl = R.flames[i]; fl.visible = R.flameT > 0; if (fl.visible) fl.scale.set(1 + Math.sin(now * 0.05 + i) * 0.15, 0.55 + Math.max(0, R.flameT) * 0.6 + Math.sin(now * 0.08 + i) * 0.12, 1); }
     // the light on it all
-    R.lights[0].color.setHex(0xffffff); R.lights[0].intensity = 1.2 + pulse * 0.6; R.lights[1].color.setHex(colour); R.lights[1].intensity = 0.45 + pulse * 0.55; R.lights[2].color.setHex(col2); R.lights[2].intensity = 0.45 + pulse * 0.55;
+    R.lights[0].color.setHex(0xffffff); R.lights[0].intensity = showOn ? 1.2 + pulse * 0.6 : 0.5; R.lights[1].color.setHex(showOn ? colour : 0xffe8c8); R.lights[1].intensity = showOn ? 0.45 + pulse * 0.55 : 0.5; R.lights[2].color.setHex(showOn ? col2 : 0xffe8c8); R.lights[2].intensity = showOn ? 0.45 + pulse * 0.55 : 0.5;
     concertScreen(s2, R, pulse, colour, playingHere ? an : null);
     R.phones.material.opacity = 0.55 + 0.25 * Math.sin(b * Math.PI / 2);
     // the people on the stage
@@ -35159,7 +35457,8 @@
     if (dist < 110) {
       for (let n = 0; n < R.perf.length; n++) {
         const d = R.perf[n], T = _jdTarget; Object.assign(T, jdPoseZero());
-        const target = d.inst === 'mic' && song.duet && d.duet ? d.duet : d.home, dx = target[0] - d.pos[0], dz = target[1] - d.pos[1], ds = Math.hypot(dx, dz);
+        const on = showOn && sinceStart >= d.late, target = !on ? d.off : d.inst === 'mic' && song.duet && d.duet ? d.duet : d.home, dx = target[0] - d.pos[0], dz = target[1] - d.pos[1], ds = Math.hypot(dx, dz);
+        d.root.visible = on || ds > 0.1; // (off behind the wall until they come on)
         if (ds > 0.05) { // walking over for the duet, or back
           const st = Math.min(ds, 1.4 * dt); d.pos[0] += dx / ds * st; d.pos[1] += dz / ds * st; d.stride = (d.stride || 0) + st * 4.2;
           const w = Math.sin(d.stride); T.fz1 = 0.2 * w; T.fz0 = -0.2 * w; T.fl1 = 0.06 * Math.max(0, Math.cos(d.stride)); T.fl0 = 0.06 * Math.max(0, -Math.cos(d.stride)); T.fx0 = -0.09; T.fx1 = 0.09; T.hy = 0.76; T.la = 0.15 + 0.35 * w; T.le = 0.35; d.yaw = (d.yaw || 0) + angWrap(Math.atan2(dx, dz) - (d.yaw || 0)) * Math.min(1, dt * 8);
@@ -35170,12 +35469,14 @@
           if (d.inst === 'mic') { if (song.duet) want = (target[0] < 0 ? 1 : -1) * (0.55 + 0.35 * Math.sin(b * Math.PI / 16)); else want = Math.sin(b * Math.PI / 16 + n) * 0.5; } else want = (target[0] < 0 ? 0.25 : -0.25) + Math.sin(b * Math.PI / 8) * 0.12;
           d.yaw = (d.yaw || 0) + angWrap(want - (d.yaw || 0)) * Math.min(1, dt * 3);
         }
-        if (d.inst === 'mic') { T.ra = 1.15; T.ro = -0.28; T.re = 2.42; T.tf = Math.max(0, T.tf); T.hn = Math.min(0.06, T.hn); } // the mic at her / his mouth
-        if (d.inst === 'guitar') { T.ra = 0.75; T.ro = -0.2; T.re = 1.35 + 0.28 * Math.sin(b * Math.PI * 2); T.la = 1.1; T.lo = -0.3; T.le = 1.25; T.hn = 0.14 + 0.1 * pulse; T.tw = T.tw * 0.3; T.tf = 0.08; T.hr = T.hr * 0.3; } // strumming
+        if (d.inst === 'mic') { const MP = concertMicPose(); T.ra = MP.a; T.ro = MP.o; T.re = MP.e; T.hn = 0; T.hd = Math.max(-0.1, Math.min(0.1, T.hd)); } // the mic at her / his mouth
+        if (d.inst === 'guitar') { T.ra = 1.45; T.ro = 0.42; T.re = 0.72; T.la = 0.75; T.lo = -0.45; T.le = 1.25 + 0.3 * Math.sin(b * Math.PI * 2); T.hn = 0.14 + 0.1 * pulse; T.tw = T.tw * 0.3; T.tf = 0.08; T.hr = T.hr * 0.3; } // strumming
         d.root.position.set(d.pos[0], CONCERT_DECK.h, d.pos[1]); d.root.rotation.y = d.yaw || 0;
         const q = d.pose, k = Math.min(1, dt * 13); for (const key2 of Object.keys(q)) q[key2] += (T[key2] - q[key2]) * k;
         jdApply(d); d.mane.rotation.x = 0.1 + 0.12 * Math.abs(Math.sin(b * Math.PI));
       }
+      for (const g of R.guards) { g.m.rotation.y = g.base + Math.sin(b / 7 + g.i * 2) * 0.35; const ga = g.m.userData.arms || []; for (const a of ga) a.rotation.x = -0.25; } // watching the crowd
+      R.drummer.visible = showOn;
       const dm = R.drummer, arms = dm.userData.arms || []; if (arms[0]) arms[0].rotation.x = -1.2 - Math.abs(Math.sin(b * Math.PI)) * 0.9; if (arms[1]) arms[1].rotation.x = -1.2 - Math.abs(Math.sin(b * Math.PI + 1.6)) * 0.9;
     }
     // the crowd: the pitch one frame, the stands the next (mobile: smaller crowds)
@@ -35186,24 +35487,50 @@
       const O = _cDummy; O.rotation.order = 'YXZ';
       for (const F of R.fans) {
         if (F.stand !== (R.fanTick === 1)) continue;
-        let am = F.ai, lm = F.ai;
-        const t = b + F.ph, s1 = Math.sin(Math.PI * t), bounce = Math.abs(Math.sin(Math.PI * t)), hop = F.style === 0 ? bounce * 0.42 : bounce * 0.08, sway = F.style === 1 ? s1 * 0.16 : s1 * 0.05;
+        let am = F.ai, lm = F.li;
+        // walking in from the tunnel before the show and back out after it (worked out from the clock: arrive at any time and they're where they should be)
+        const pIn = Math.max(0, Math.min(1, (sinceDoors - F.inDelay) * F.spd / F.travel)), pOut = Math.max(0, Math.min(1, (sinceEnd - F.outDelay) * F.spd / F.travel)), at = pIn * (1 - pOut);
+        if (at <= 0) { O.position.set(0, -50, 0); O.rotation.set(0, 0, 0); O.scale.set(0.001, 0.001, 0.001); O.updateMatrix(); F.im.setMatrixAt(F.ii, O.matrix); R.armIM.setMatrixAt(am, O.matrix); R.armIM.setMatrixAt(am + 1, O.matrix); F.lIM.setMatrixAt(lm, O.matrix); F.lIM.setMatrixAt(lm + 1, O.matrix); O.scale.set(1, 1, 1); continue; }
+        O.scale.set(1, 1, 1);
+        if (at < 1) {
+          const k = at, wx = F.gx + (F.x - F.gx) * k, wz = F.gz + (F.z - F.gz) * k, rise = k < 0.7 ? 0 : (k - 0.7) / 0.3, wy = F.y * rise * rise * (3 - 2 * rise), goingIn = pOut <= 0, hdg = Math.atan2((F.x - F.gx) * (goingIn ? 1 : -1), (F.z - F.gz) * (goingIn ? 1 : -1)), step = Math.sin(k * F.travel * 3.2) * 0.55, cy2 = Math.cos(hdg), sy2 = Math.sin(hdg);
+          O.position.set(wx, wy + 0.74 + Math.abs(step) * 0.03, wz); O.rotation.set(0, hdg, 0); O.updateMatrix(); F.im.setMatrixAt(F.ii, O.matrix);
+          for (const side of [-1, 1]) {
+            O.position.set(wx + cy2 * side * 0.28, wy + 1.26, wz - sy2 * side * 0.28); O.rotation.set(step * side * 0.8, hdg, 0); O.updateMatrix(); R.armIM.setMatrixAt(am++, O.matrix);
+            O.position.set(wx + cy2 * side * 0.11, wy + 0.72, wz - sy2 * side * 0.11); O.rotation.set(-step * side, hdg, 0); O.updateMatrix(); F.lIM.setMatrixAt(lm++, O.matrix);
+          }
+          continue;
+        }
+        const live = showOn, style = cheering ? 0 : live ? F.style : 3, t = b + F.ph, s1 = Math.sin(Math.PI * t) * (live ? 1 : 0.35), bounce = Math.abs(s1), hop = style === 0 ? bounce * (cheering ? 0.3 : 0.42) : bounce * 0.08, sway = style === 1 ? s1 * 0.16 : s1 * 0.05;
         const px = F.x + sway, py = F.y + hop, cy = Math.cos(F.yaw), sy = Math.sin(F.yaw);
-        O.position.set(px, py + 0.74, F.z); O.rotation.set(0, F.yaw, -sway * 0.8); O.scale.set(1, 1, 1); O.updateMatrix(); F.im.setMatrixAt(F.ii, O.matrix);
+        O.position.set(px, py + 0.74, F.z); O.rotation.set(0, F.yaw, -sway * 0.8); O.updateMatrix(); F.im.setMatrixAt(F.ii, O.matrix);
         for (const side of [-1, 1]) {
-          const lift = F.style === 0 ? 2.75 + 0.2 * s1 * side : F.style === 1 ? 2.65 + 0.25 * s1 * side : F.style === 2 ? (side > 0 ? 2.5 + 0.55 * bounce : 0.25) : 1.45 + 0.28 * Math.sin(2 * Math.PI * t);
-          const out = F.style === 3 ? -0.45 : 0.2 + 0.12 * s1;
+          const lift = !live && !cheering ? 0.15 : style === 0 ? 2.75 + 0.2 * s1 * side : style === 1 ? 2.65 + 0.25 * s1 * side : style === 2 ? (side > 0 ? 2.5 + 0.55 * bounce : 0.25) : 1.45 + 0.28 * Math.sin(2 * Math.PI * t);
+          const out = style === 3 && live ? -0.45 : 0.2 + 0.12 * s1;
           O.position.set(px + cy * side * 0.28, py + 1.26, F.z - sy * side * 0.28); O.rotation.set(-lift, F.yaw, side * out); O.updateMatrix(); R.armIM.setMatrixAt(am++, O.matrix);
-          const stp = F.style === 3 ? s1 * side * 0.2 : side * 0.1 * F.step * s1;
-          O.position.set(px + cy * side * 0.11, py + 0.72, F.z - sy * side * 0.11); O.rotation.set(stp, F.yaw, side * 0.04); O.updateMatrix(); R.legIM.setMatrixAt(lm++, O.matrix);
+          const stp = style === 3 ? s1 * side * 0.2 : side * 0.1 * F.step * s1;
+          O.position.set(px + cy * side * 0.11, py + 0.72, F.z - sy * side * 0.11); O.rotation.set(stp, F.yaw, side * 0.04); O.updateMatrix(); F.lIM.setMatrixAt(lm++, O.matrix);
         }
       }
-      for (const im of R.ims) im.instanceMatrix.needsUpdate = true; R.armIM.instanceMatrix.needsUpdate = true; R.legIM.instanceMatrix.needsUpdate = true;
+      for (const im of R.ims) im.instanceMatrix.needsUpdate = true; R.armIM.instanceMatrix.needsUpdate = true; R.legIM.instanceMatrix.needsUpdate = true; R.legIMF.instanceMatrix.needsUpdate = true;
     }
+  }
+  // The crowd goes wild as each song starts: a couple of seconds of cheering and screaming, arms in the air.
+  var concertCheerUntil = 0, concertCheeredSrc = '';
+  function concertCheer(vol) {
+    concertCheerUntil = performance.now() + 2600;
+    if (!audioCtx || !noiseBuffer() || vol <= 0) return;
+    try {
+      const now = audioCtx.currentTime, out = audioCtx.createGain(), lay = (type, hz, Q, g) => { const src = audioCtx.createBufferSource(); src.buffer = noiseBuffer(); src.loop = true; const flt = audioCtx.createBiquadFilter(); flt.type = type; flt.frequency.value = hz; flt.Q.value = Q; const gn = audioCtx.createGain(); gn.gain.value = g; src.connect(flt); flt.connect(gn); gn.connect(out); src.start(now); src.stop(now + 2.8); return flt; };
+      lay('bandpass', 850, 0.6, 0.9); lay('bandpass', 1900, 1.2, 0.5);
+      const scream = lay('bandpass', 3000, 5, 0.75); scream.frequency.setValueAtTime(2500, now); scream.frequency.linearRampToValueAtTime(3500, now + 0.9); scream.frequency.linearRampToValueAtTime(2900, now + 2.6);
+      out.gain.setValueAtTime(0.0001, now); out.gain.exponentialRampToValueAtTime(0.5 * vol, now + 0.28); out.gain.setValueAtTime(0.5 * vol, now + 1.5); out.gain.exponentialRampToValueAtTime(0.0001, now + 2.7);
+      out.connect(audioCtx.destination); setTimeout(() => { try { out.disconnect(); } catch (e) {} }, 3000);
+    } catch (e) {}
   }
   // ---- the music: heard from the spec alone, so it carries before the stadium's even loaded ----
   var concertEl = null, concertGain = null, concertFilter = null, concertAnalyser = null, concertHeard = false, concertFor = null, concertTry = 0, concertFails = 0, concertPlayingIdx = -1;
-  function concertLoad(i) { concertPlayingIdx = i; concertTry = 0; concertEl.src = CONCERT_SONGS[i].file; }
+  function concertLoad(i) { concertPlayingIdx = i; concertTry = 0; concertCheeredSrc = ''; concertEl.src = CONCERT_SONGS[i].file; }
   function concertNext() { // on to the next song
     if (!concertFor || !concertFor.stadium || !concertFor.stadium.concert) return;
     const c = concertFor.stadium.concert; c.song = (((c.song | 0) + 1) % CONCERT_SONGS.length); concertLoad(c.song);
@@ -35214,7 +35541,7 @@
     if (concertEl) return;
     concertEl = new Audio(); concertEl.crossOrigin = 'anonymous'; concertEl.preload = 'auto';
     concertEl.addEventListener('ended', () => { concertFails = 0; concertNext(); });
-    concertEl.addEventListener('playing', () => { concertFails = 0; });
+    concertEl.addEventListener('playing', () => { concertFails = 0; if (concertEl.currentTime < 1 && concertCheeredSrc !== concertEl.src && concertFor && concertFor.site) { concertCheeredSrc = concertEl.src; const st = concertFor.site; concertCheer(soundLevelBox([st.sx0, st.sx1, st.sz0, st.sz1])); } }); // a new song: the crowd goes wild
     concertEl.addEventListener('error', () => { // not in concert/: try it loose beside voxel.html, then move on
       if (!concertEl.getAttribute('src')) return;
       if (concertTry === 0) { concertTry = 1; concertEl.src = CONCERT_SONGS[concertPlayingIdx].file.replace(/^.*\//, ''); if (concertHeard) concertEl.play().catch(() => {}); return; }
@@ -35228,14 +35555,14 @@
   }
   setInterval(() => { try {
     let best = null, bd = Infinity;
-    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && concertWindow() && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeBusy === 'function' && jukeBusy()) && !onMoon) {
+    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && concertWindow() && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeHeard === 'function' && jukeHeard()) && !onMoon) {
       for (const sp of structureSpecs.values()) {
         if (!sp || sp.t !== 'stadium' || !sp.stadium || !sp.stadium.concert || !sp.site) continue;
-        const d = Math.hypot(player.pos.x - (sp.site.sx0 + sp.site.sx1) / 2, player.pos.z - (sp.site.sz0 + sp.site.sz1) / 2);
+        const d = (1 - soundLevelBox([sp.site.sx0, sp.site.sx1, sp.site.sz0, sp.site.sz1])) / SOUND_LOSS_PER_BLOCK; // blocks outside the ground (see SOUND OUT OF A BUILDING)
         if (d < bd) { bd = d; best = sp; }
       }
     }
-    const heard = best && bd < CONCERT_HEAR;
+    const heard = best && bd * SOUND_LOSS_PER_BLOCK < 1;
     concertHeard = !!heard;
     if (!heard) { if (concertEl && !concertEl.paused) concertEl.pause(); return; }
     concertEnsure();
@@ -35243,8 +35570,8 @@
     if (!concertEl.getAttribute('src')) return; // (the files aren't on the site)
     concertAudioChain();
     if (typeof musicEl !== 'undefined' && musicEl && !musicEl.paused) musicEl.pause();
-    const k = 1 - bd / CONCERT_HEAR, vol = 0.85 * Math.pow(k, 1.6); // close to full inside the ground; muffled through the stands until you're near
-    if (concertGain) { concertGain.gain.value = vol; concertEl.volume = 1; if (concertFilter) concertFilter.frequency.value = bd < 45 ? 20000 : 500 + Math.pow(k / (1 - 45 / CONCERT_HEAR), 3) * 7000; } else concertEl.volume = Math.min(1, vol);
+    const vol = Math.max(0, 1 - bd * SOUND_LOSS_PER_BLOCK); // full inside the ground, muffled by the stands from outside
+    if (concertGain) { concertGain.gain.value = vol; concertEl.volume = 1; if (concertFilter) concertFilter.frequency.value = bd <= 0 ? 20000 : 3200 - vol * 1400; } else concertEl.volume = vol;
     if (concertEl.paused) concertEl.play().catch(() => {}); // (not allowed yet — no tap/click so far: tried again shortly)
   } catch (e) {} }, 400);
 
@@ -39224,7 +39551,7 @@ float moonDetail(vec3 p, float d) {
     if (now < musicPreviewT) return; // the slider's preview is playing
     const may = (inGame || !!demoState) && !document.hidden && vol > 0;
     if (!may) { if (musicEl && !musicEl.paused) musicEl.pause(); return; }
-    if (typeof jukeBusy === 'function' && jukeBusy()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // a jukebox song's playing: the game's tune waits till it's finished (see THE JUKEBOX)
+    if (typeof jukeHeard === 'function' && jukeHeard()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // a jukebox song's playing: the game's tune waits till it's finished (see THE JUKEBOX)
     if (typeof pianoAudible === 'function' && pianoAudible()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // …or you're in earshot of a restaurant's pianist (see RESTAURANT)
     if (typeof concertHeard !== 'undefined' && concertHeard) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // …or a concert (see STADIUM CONCERTS)
     if (musicOn) { if (musicEl.paused) { musicApplyVol(); musicEl.play().catch(() => {}); } return; } // back from the menu / another tab
@@ -42866,6 +43193,45 @@ float moonDetail(vec3 p, float d) {
   function apName(sp) { const n = sp && typeof sp.name === 'string' ? sp.name.trim() : ''; if (n) return n; let h = 11; for (const ch of String((sp && sp.ck) || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return AP_DEFAULT_NAMES[h % AP_DEFAULT_NAMES.length]; }
   function apList() { const out = []; for (const [ck, sp] of structureSpecs) if (sp && sp.t === 'airport' && sp.airport && sp.airport.geo) out.push({ ck, spec: sp, geo: sp.airport.geo }); return out; }
   function apGroundAt(x, z) { const g = groundHeightOnly.get(Math.floor(x) + ',' + Math.floor(z)); return g !== undefined ? g : Math.round(rawTerrainHeight(Math.floor(x), Math.floor(z))); }
+  // ---- MISSING THE SCENERY ----
+  // The top of whatever's there — hills, trees, your own builds, anything put up after the airport was — and planes steer round
+  // it: every moment they look along their way ahead, and if what's there is too high to clear they take the smallest turn that gets
+  // a clear run (climbing over only if there's no way round). A building away from where you are comes from its plot, unloaded ground from the terrain.
+  let apSiteTops = [], apSiteTopsAt = 0;
+  function apTop(x, z) {
+    const now = performance.now();
+    if (now > apSiteTopsAt) { apSiteTopsAt = now + 4000; apSiteTops = []; for (const sp of structureSpecs.values()) { if (!sp || !sp.site) continue; const bt = BUILDING_TYPES.find(b => b.t === sp.t); apSiteTops.push([sp.site.sx0, sp.site.sx1, sp.site.sz0, sp.site.sz1, sp.t === 'airport' ? sp.site.floor + 1 : sp.site.floor + ((bt && bt.h) || 12) + 1]); } }
+    for (const b of apSiteTops) if (x >= b[0] && x <= b[1] + 1 && z >= b[2] && z <= b[3] + 1) return b[4]; // (an airport: the planes' own ground)
+    const bx = Math.floor(x), bz = Math.floor(z), ck = bx + ',' + bz, ch = columnHeight.get(ck);
+    let top = apGroundAt(x, z);
+    if (ch !== undefined) { for (let y = ch; y >= ch - 40 && y >= SEA_LEVEL; y--) if (blocks.has(key(bx, y, bz))) { top = y + 1; break; } } // (columnHeight remembers the tallest ever: look for what's really there now)
+    return Math.max(top, SEA_LEVEL);
+  }
+  const AP_LOOK = []; for (let d = 12; d <= 280; d += 6) AP_LOOK.push(d); const AP_TURNS = [0, 0.3, -0.3, 0.6, -0.6, 0.9, -0.9, 1.25, -1.25, 1.6, -1.6, 2.1, -2.1, 2.6, -2.6];
+  function apRunClear(p, hdg, climb) { // -> the highest thing along this heading if it can be cleared, or -1 if not
+    let most = 0; const fx = Math.sin(hdg), fz = Math.cos(hdg);
+    for (const d of AP_LOOK) { const t = apTop(p.x + fx * d, p.z + fz * d); if (t + 9 > p.y + d * climb) return -1; if (t > most) most = t; }
+    return most;
+  }
+  // -> { hdg, top } where to steer (wanting `want`) and what it has to stay above. Worked out a few times a second.
+  function apAvoid(p, want) {
+    const now = performance.now();
+    if (p.avoid && now < p.avoid.at && Math.abs(apWrap(want - p.avoid.want)) < 0.2) return p.avoid;
+    const climb = Math.min(0.2, 9 / Math.max(10, p.v)), side = p.avoid && p.avoid.side ? p.avoid.side : 1;
+    let hdg = want, top = -1, sideNow = 0;
+    for (const off of AP_TURNS) { const t = apRunClear(p, want + off * side, climb); if (t >= 0) { hdg = apWrap(want + off * side); top = t; sideNow = off ? side * Math.sign(off) : 0; break; } }
+    if (top < 0) { top = 0; for (const d of AP_LOOK) top = Math.max(top, apTop(p.x + Math.sin(want) * d, p.z + Math.cos(want) * d)); } // no way round: over it
+    p.avoid = { at: now + 350, want, hdg, top, side: sideNow || side, turning: Math.abs(apWrap(hdg - want)) > 0.05 };
+    return p.avoid;
+  }
+  function apClearApproach(ap, slot, th, ax, az) { const y0 = ap.geo.y; for (const d of [30, 60, 90, 130, 170, 220, 280]) if (apTop(th[0] - ax * d, th[1] - az * d) > y0 + Math.min(30, d * 0.15) + 8) return false; return true; }
+  const apEndClear = new Map(); // "airport|slot" -> { at, plus, minus } which end of the runway has a clear approach
+  function apRunwayEnds(ap, slot) {
+    const k = ap.ck + '|' + slot, now = performance.now(); let c = apEndClear.get(k); if (c && now < c.at) return c;
+    const g = apRwy(ap, slot);
+    c = { at: now + 8000, plus: apClearApproach(ap, slot, g.t0, g.axis[0], g.axis[1]), minus: apClearApproach(ap, slot, g.t1, -g.axis[0], -g.axis[1]) };
+    apEndClear.set(k, c); return c;
+  }
 
   // ---- the building ----
   function maybeBuildAirport(cx, cz, replay) {
@@ -43233,7 +43599,8 @@ float moonDetail(vec3 p, float d) {
   // which way it lands: along its runway in the direction it's arriving from (from the end nearer where it is now)
   function apLandingDir(p, ap) {
     const g = apRwy(ap, p.slot), mx = (g.t0[0] + g.t1[0]) / 2, mz = (g.t0[1] + g.t1[1]) / 2; // its own runway
-    const s = ((mx - p.x) * g.axis[0] + (mz - p.z) * g.axis[1]) >= 0 ? 1 : -1; // landing heading = axis * s
+    let s = ((mx - p.x) * g.axis[0] + (mz - p.z) * g.axis[1]) >= 0 ? 1 : -1; // landing heading = axis * s
+    { const E = apRunwayEnds(ap, p.slot); if (s > 0 ? (!E.plus && E.minus) : (!E.minus && E.plus)) s = -s; } // (coming in over the clear end, if the near one has a hill in the way)
     const th = s > 0 ? g.t0 : g.t1;
     return { s, th, ax: g.axis[0] * s, az: g.axis[1] * s };
   }
@@ -43251,13 +43618,14 @@ float moonDetail(vec3 p, float d) {
     let ta, ty;
     if (p.goAround) { ta = 320; ty = g.y + 30; }
     else { const look = Math.max(25, Math.min(70, along * 0.45)); ta = Math.max(0, along - look); ty = g.y + 1 + Math.min(30, Math.max(0, along) * 0.15); }
+    if (along > 40 || p.goAround) { let up = 0; for (const d of [15, 40, 70]) up = Math.max(up, apTop(p.x + Math.sin(p.yaw) * d, p.z + Math.cos(p.yaw) * d)); ty = Math.max(ty, up + 7); } // over anything on the way in
     const tx = L.th[0] - L.ax * ta, tz = L.th[1] - L.az * ta;
     apTurnTo(p, Math.atan2(tx - p.x, tz - p.z), 0.8, dt);
     p.v += (Math.max(AP_V_MIN + 2, Math.min(28, Math.max(0, along) * 0.08 + 18)) - p.v) * Math.min(1, dt * 0.8);
     const wantVy = Math.max(-10, Math.min(8, (ty - p.y) * 1.2));
     p.vy += (wantVy - p.vy) * Math.min(1, dt * 4);
     apMoveForward(p, dt); p.y += p.vy * dt;
-    if (along > 40 || p.goAround) p.y = Math.max(p.y, apGroundAt(p.x, p.z) + 5); // keep clear of hills on the way in
+    if (along > 40 || p.goAround) p.y = Math.max(p.y, apTop(p.x, p.z) + 5); // keep clear of hills on the way in
     p.pitch = Math.atan2(p.vy, Math.max(1, p.v));
     return false;
   }
@@ -43272,7 +43640,9 @@ float moonDetail(vec3 p, float d) {
   }
   function apDepart(p, dest, mode) { // from the gate: taxi out to the end of the runway pointing towards the destination
     const ap = apGetAirport(p.at); if (!ap) return false;
-    const g = apRwy(ap, p.slot), toward = ((dest.geo.t0[0] - g.t0[0]) * g.axis[0] + (dest.geo.t0[1] - g.t0[1]) * g.axis[1]) >= 0 ? 1 : -1;
+    const g = apRwy(ap, p.slot); let toward = ((dest.geo.t0[0] - g.t0[0]) * g.axis[0] + (dest.geo.t0[1] - g.t0[1]) * g.axis[1]) >= 0 ? 1 : -1;
+    const clearOut = (th, ax, az) => { for (const d of [60, 110, 160, 220, 280]) if (apTop(th[0] + ax * d, th[1] + az * d) + 8 > ap.geo.y + d * 0.2) return false; return true; };
+    if (toward > 0 ? (!clearOut(g.t1, g.axis[0], g.axis[1]) && clearOut(g.t0, -g.axis[0], -g.axis[1])) : (!clearOut(g.t0, -g.axis[0], -g.axis[1]) && clearOut(g.t1, g.axis[0], g.axis[1]))) toward = -toward; // (taking off the way that's clear of the hill)
     const startEnd = toward > 0 ? g.t0 : g.t1, gp = apGatePts(ap, p.slot !== undefined ? p.slot : p.gate);
     p.from = ap.ck; p.to = dest.ck; p.mode = mode; p.land = null;
     p.path = [gp.apron, gp.rwy, startEnd, [startEnd[0] + g.axis[0] * toward * 2, startEnd[1] + g.axis[1] * toward * 2]];
@@ -43448,9 +43818,10 @@ float moonDetail(vec3 p, float d) {
         const bx = structureSpecBox(dest.spec), g = apRwy(dest, p.slot), cx = bx ? (bx.x0 + bx.x1) / 2 : (g.t0[0] + g.t1[0]) / 2, cz = bx ? (bx.z0 + bx.z1) / 2 : (g.t0[1] + g.t1[1]) / 2, a = Math.atan2(p.z - cz, p.x - cx), R = 60; // tight, right over it — so the ground under the whole airport loads in
         apTurnTo(p, Math.atan2(cx + Math.cos(a + 0.5) * R - p.x, cz + Math.sin(a + 0.5) * R - p.z), 0.5, dt);
         p.v += (AP_V_ME_NEAR - p.v) * Math.min(1, dt * 0.5);
-        const ty = Math.max(dest.geo.y + 40 + 10 * (p.slot | 0), g0 + 20);
-        p.vy += (Math.max(-6, Math.min(6, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
-        apMoveForward(p, dt); p.y += p.vy * dt; p.pitch = Math.atan2(p.vy, Math.max(1, p.v)); p.roll += (0.25 - p.roll) * Math.min(1, dt * 2);
+        let holdTop = g0; for (const d of [20, 60, 110]) holdTop = Math.max(holdTop, apTop(p.x + Math.sin(p.yaw) * d, p.z + Math.cos(p.yaw) * d));
+        const ty = Math.max(dest.geo.y + 40 + 10 * (p.slot | 0), holdTop + 14);
+        p.vy += (Math.max(-6, Math.min(9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
+        apMoveForward(p, dt); p.y += p.vy * dt; p.y = Math.max(p.y, apTop(p.x, p.z) + 4); p.pitch = Math.atan2(p.vy, Math.max(1, p.v)); p.roll += (0.25 - p.roll) * Math.min(1, dt * 2);
         if (apReadyToLand(dest)) { p.holding = false; if (mine || apWithMe(p)) showSaveStatus('🛬 ' + apName(dest.spec) + ' is ready — coming in to land'); }
         return;
       }
@@ -43462,25 +43833,26 @@ float moonDetail(vec3 p, float d) {
         if (turnIn) { p.yaw = apWrap(p.yaw - turnIn * 0.55 * dt); p.roll += (turnIn * 0.45 - p.roll) * Math.min(1, dt * 3); }
         const dd = dest ? Math.hypot(apLandingDir(p, dest).th[0] - p.x, apLandingDir(p, dest).th[1] - p.z) : 1e9;
         p.v += ((dd < 700 ? AP_V_ME_NEAR : AP_V_ME) - p.v) * Math.min(1, dt * 0.5);
-        const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw); let gAhead = g0; for (const k of [15, 30, 45]) gAhead = Math.max(gAhead, apGroundAt(p.x + fx * k, p.z + fz * k)); // (looking ahead for hills — she flies low now)
+        const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw); let gAhead = g0; for (const k of [15, 30, 50, 80, 120]) gAhead = Math.max(gAhead, apTop(p.x + fx * k, p.z + fz * k)); // (looking ahead for hills and anything built — she flies low now)
         const myCruise = Math.max(AP_CRUISE_ME, gAhead + AP_CRUISE_ME_AGL) + 10 * (p.slot | 0); // (its own height — see ONE PLANE PER AIRPORT)
         const ty = dd < 700 && dest ? Math.max(dest.geo.y + 26 + 10 * (p.slot | 0) + Math.max(0, dd - AP_CAPTURE_DIST) * 0.1, gAhead + 12) : myCruise;
-        p.vy += (Math.max(-8, Math.min(9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
+        p.vy += (Math.max(-8, Math.min(gAhead + 10 > p.y ? 16 : 9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
       } else {
         // autopilot: up to cruise, across, and down to the approach
         const cruise = dest ? cruiseAlt : p.y;
         let tx = p.x, tz = p.z;
         if (dest) { const L = apLandingDir(p, dest); tx = L.th[0] - L.ax * 170; tz = L.th[1] - L.az * 170; }
         const dist = Math.hypot(tx - p.x, tz - p.z);
-        if (p.phase === 'air' && dest) apTurnTo(p, Math.atan2(tx - p.x, tz - p.z), 0.45, dt);
+        const way = dest ? apAvoid(p, p.phase === 'air' ? Math.atan2(tx - p.x, tz - p.z) : p.yaw) : null; // (and round anything too high in the way — see MISSING THE SCENERY)
+        if (way && (p.phase === 'air' || way.turning)) apTurnTo(p, way.hdg, way.turning ? 0.85 : 0.45, dt);
         const withMe = mine || (aboard && aboard.kind === 'plane' && aboard.p === p); // (a passenger: slower too — see AP_V_ME)
         p.v += ((dist < 300 ? (withMe ? AP_V_ME_NEAR : 30) : (withMe ? AP_V_ME : 42)) - p.v) * Math.min(1, dt * 0.5);
-        const ty = dist < 350 && dest ? dest.geo.y + 26 + 12 * (p.slot | 0) : cruise; // (each plane comes in at its own height)
-        p.vy += (Math.max(-8, Math.min(9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
+        const ty = Math.max(dist < 350 && dest ? dest.geo.y + 26 + 12 * (p.slot | 0) : cruise, way ? way.top + 12 : 0); // (each plane comes in at its own height)
+        p.vy += (Math.max(-8, Math.min(way && way.top + 8 > p.y ? 16 : 9, (ty - p.y) * 0.5)) - p.vy) * Math.min(1, dt * 1.5);
       }
-      if (p.phase === 'climbout') { p.vy = Math.max(p.vy, 5); if (p.y > apGroundAt(p.x, p.z) + 14) { p.phase = 'air'; if (mine) showBriefMessage('✈ Airborne — steer left / right (A / D); she climbs, cruises and comes down by herself. Follow the arrow!'); } }
+      if (p.phase === 'climbout') { let up = 0; for (const d of [40, 90, 150]) up = Math.max(up, apTop(p.x + Math.sin(p.yaw) * d, p.z + Math.cos(p.yaw) * d)); p.vy = Math.max(p.vy, up + 8 > p.y ? 13 : 5); if (p.y > apGroundAt(p.x, p.z) + 14) { p.phase = 'air'; if (mine) showBriefMessage('✈ Airborne — steer left / right (A / D); she climbs, cruises and comes down by herself. Follow the arrow!'); } }
       apMoveForward(p, dt); p.y += p.vy * dt;
-      if (p.y < g0 + 6 && p.phase === 'air') { p.y = Math.max(p.y, g0 + 3); p.vy = Math.max(p.vy, 6); } // never into the ground
+      { const under = apTop(p.x, p.z); if (p.y < under + 5 && p.phase === 'air') { p.y = Math.max(p.y, under + 3); p.vy = Math.max(p.vy, 6); } } // never into the ground, or anything on it
       p.pitch = Math.atan2(p.vy, Math.max(1, p.v));
       if (p.phase === 'air') p.roll *= Math.pow(0.4, dt);
       // close enough to the destination: down we go (AUTOLAND when it's you)
@@ -55900,6 +56272,29 @@ float moonDetail(vec3 p, float d) {
     if (!inCol && !inPopup && !catSlotEls[openCatIdx].contains(e.target)) closeCategoryColumn();
   });
   window.addEventListener('resize', () => { closeFamilyPopup(); closeCategoryColumn(); });
+  // TOUCH ANYWHERE ELSE AND IT CLOSES: pressing or starting to drag on the screen away from an open popup menu closes it — the hotbar's
+  // menus, the trade panel and every full-screen panel (its dim backdrop). Not the loading screens, the world menu or a quiz.
+  const POPUP_NEVER_CLOSE = new Set(['overlay', 'worldSelect', 'terrainLoadingOverlay', 'reconnectOverlay', 'rotatePrompt', 'resumeFullscreenPrompt', 'avatarModal', 'quizModal', 'quizSummaryModal', 'promoOfferModal', 'rotTip', 'startOverlay']);
+  function popupTouchElsewhere(e) {
+    const t = e.target; if (!t || !t.closest) return;
+    // the hotbar's menus
+    if (openFamilyPopup || openCatIdx >= 0) {
+      const inMenu = (openFamilyPopup && openFamilyPopup.contains(t)) || (openCatIdx >= 0 && catColumns[openCatIdx] && catColumns[openCatIdx].contains(t)) || t.closest('.slot') || t.closest('#hotbar');
+      if (!inMenu) { closeFamilyPopup(); closeCategoryColumn(); }
+    }
+    // the shop's trade panel
+    { const sp = document.getElementById('shopPanel'); if (sp && sp.style.display !== 'none' && getComputedStyle(sp).display !== 'none' && !sp.contains(t) && !t.closest('.touchBtn')) closeShopPanel(); }
+    // a full-screen panel's backdrop
+    if (t.parentElement === document.body && !POPUP_NEVER_CLOSE.has(t.id)) {
+      const cs = getComputedStyle(t);
+      if (cs.position === 'fixed' && cs.display !== 'none' && t.offsetWidth >= window.innerWidth * 0.9 && t.offsetHeight >= window.innerHeight * 0.9) {
+        const al = /rgba\([^)]*,\s*([\d.]+)\)/.exec(cs.backgroundColor); // (a see-through dim backdrop: a solid screen isn't a popup)
+        if (al && +al[1] > 0 && +al[1] < 0.9) { t.style.display = 'none'; e.preventDefault && e.cancelable && e.preventDefault(); }
+      }
+    }
+  }
+  document.addEventListener('pointerdown', popupTouchElsewhere, true);
+  document.addEventListener('touchstart', popupTouchElsewhere, { capture: true, passive: false });
   menuCategoriesReady = true;
   MENU_CATEGORIES.forEach((cat, ci) => updateCategoryIcon(ci));
   refreshMenuCategories(variantToPrimary[selectedSlot] !== undefined ? variantToPrimary[selectedSlot] : selectedSlot); // highlight the starting category
@@ -56420,7 +56815,7 @@ float moonDetail(vec3 p, float d) {
     '🥖 At the Mill & Bakery, bring wheat, eggs and milk to the till. Every sunrise the mill grinds flour and the baker sells bread and Victoria sponges.',
     '🍽️ A Restaurant cooks your own crops and meat into meals worth far more. Hire a head chef, stock the pantry — or hire a manager to restock it from your bag.',
     '🎢 The Theme Park (💰5,000,000) has a rollercoaster, ferris wheel and carousel you can ride — ✋ on a ride\u2019s gate. Visitors pay every day.',
-    '🏟️ The Football Stadium (💰5,000,000) has a match every afternoon at 15:00 — be there to watch it live. Any other time, kick the ball about yourself.',
+    '🏟️ The Football Stadium (💰5,000,000) has a match every day from 12:00 to 16:00 — be there to watch it live. Any other time, kick the ball about yourself.',
     '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm on the bridge to sail (V switches the view), ✋ again to drop anchor. ✋ beside her helicopter to fly it.',
     '🎱 Pool: ✋ on a pool table steps up to play — turn to walk round the cue ball, hold ✋ for power and let go to strike, jump to leave.',
     '🏠 The house button (top right) takes you back to where your world starts.',

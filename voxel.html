@@ -19,6 +19,7 @@
 <meta name="apple-mobile-web-app-title" content="Mining World">
 <meta name="mobile-web-app-capable" content="yes">
 <style>
+    .bizPanelShell > div { max-height: calc(92 * var(--vh, 1vh)); overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; box-sizing: border-box; } /* a panel too tall for the screen scrolls */
   html, body { margin: 0; padding: 0; overflow: hidden; background: #7ec0ee; font-family: -apple-system, sans-serif; }
   /* Stops long-pressing anything on screen (block names, labels, etc.)
      from triggering the browser's own text-selection / "Search Google
@@ -9817,11 +9818,11 @@
     jukeNow = null;
   }
   function jukeBusy() { return !!jukeNow && performance.now() < jukeNow.until; } // a song's playing — the game's own tune waits (see MUSIC)
-  // SOUND OUT OF A BUILDING: the jukebox, a piano and a concert play at full volume inside their building and lose 5% for
-  // every block you are outside it (so nothing at 20 blocks). The building's walls where it has a garden or grounds
+  // SOUND OUT OF A BUILDING: the jukebox, a piano and a concert play at full volume inside their building, drop straight to
+  // half the moment you step outside, then lose another 5% for every block further away (so nothing at 10 blocks). The building's walls where it has a garden or grounds
   // round it (restaurant, mansion, pub), the plot otherwise; a few blocks round the piece if it's not in a building at all.
-  const SOUND_LOSS_PER_BLOCK = 0.05;
-  function soundLevelBox(b) { const px = player.pos.x, pz = player.pos.z, dx = Math.max(b[0] - px, 0, px - (b[1] + 1)), dz = Math.max(b[2] - pz, 0, pz - (b[3] + 1)); return Math.max(0, 1 - Math.hypot(dx, dz) * SOUND_LOSS_PER_BLOCK); }
+  const SOUND_LOSS_PER_BLOCK = 0.05, SOUND_OUTSIDE = 0.5;
+  function soundLevelBox(b) { const px = player.pos.x, pz = player.pos.z, dx = Math.max(b[0] - px, 0, px - (b[1] + 1)), dz = Math.max(b[2] - pz, 0, pz - (b[3] + 1)), d = Math.hypot(dx, dz); return d <= 0 ? 1 : Math.max(0, SOUND_OUTSIDE - d * SOUND_LOSS_PER_BLOCK); }
   function soundBoxOfSpec(sp) {
     const fromUV = (o, u0, v0, u1, v1) => { const a = o.f.cell(u0, v0), c = o.f.cell(u1, v1); return [Math.min(a[0], c[0]), Math.max(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[1], c[1])]; };
     const s = sp.site, r = sp.t === 'restaurant' && restaurants.get(sp.ck), m = sp.t === 'mansion' && mansions.get(sp.ck), pb = sp.t === 'pub' && pubEntries.get(sp.ck);
@@ -15519,13 +15520,14 @@
         const cur = groundHeightOnly.get(x + ',' + z);
         const curSurface = blocks.get(key(x, cur, z));
         const fillType = (curSurface === 5) ? 5 : 1; // Sand stays sand-based; everything else gets Dirt
+        const overWater = floor - cur > 8 && waterBlocks.has(key(x, cur + 1, z)); // (out on the water: the footings go right down to the seabed, or there'd be a dry hole under the sea)
         const clearTop = Math.max(cur, floor) + clearAbove;
         for (let y = Math.min(cur, floor); y <= clearTop; y++) {
           const k = key(x, y, z);
           blocks.delete(k); stepRotations.delete(k);
           if (waterBlocks.delete(k)) anyWaterTouchedThisStream = true;
         }
-        for (let y = Math.max(0, floor - 8); y < floor; y++) blocks.set(key(x, y, z), fillType); // solid base under the new floor
+        for (let y = overWater ? cur : Math.max(0, floor - 8); y < floor; y++) blocks.set(key(x, y, z), fillType); // solid base under the new floor
         blocks.set(key(x, floor, z), fillType === 5 ? 5 : 0); // a clean grass/sand surface
         trackVillageHeight(x, z, floor);
         markVillageGround(x, z, floor);
@@ -27673,35 +27675,19 @@
     { id: 'save1m', icon: '🏦', title: 'Millionaire', reward: 10000,
       text: () => 'Save up 💰1,000,000.',
       tip: () => 'Big fields of slow crops and a World Manager selling the lot every morning — keep adding fields and properties.',
-      money: true, prog: () => [coins, 1000000], doneIf: () => objOwned('mansion') > 0 },
-    { id: 'mansion', icon: '🏰', title: 'Buy a Mansion', reward: 15000,
-      text: () => 'Buy a Mansion (' + objFmt(objPrice('mansion')) + ').',
-      tip: () => 'A fully furnished country house with grounds, pool and tennis court. ' + objBuyHow('mansion'),
-      prog: () => [objOwned('mansion'), 1] },
-    { id: 'arena', icon: '🎯', title: 'Gladiator', reward: 20000,
-      text: () => 'Build the Arena and take out 10 opponents in it.',
-      tip: () => objBuyHow('arena') + ' Walk in through the lobby (✋ the Arena Master to choose how many bots and how good they are), then take on the bots — or your friends. Every weapon is free in there, and it costs you no lives.',
-      prog: () => [Math.min(1, objOwned('arena')) + Math.min(10, objCount('arena_kill')), 11] },
+      money: true, prog: () => [coins, 1000000], doneIf: () => objOwned('mansion') + objOwned('arena') + objOwned('haunted') > 0 },
+    { id: 'buy1m', icon: '🏰', title: 'Big spender', reward: 15000,
+      text: () => 'Buy one of the 💰1,000,000 buildings: a Mansion, an Arena or a Haunted House.',
+      tip: () => 'Whichever you like — the other two are waiting in Side Missions. They’re all on 🏗️ Property in the Buildings menu.',
+      prog: () => [Math.min(1, objOwned('mansion') + objOwned('arena') + objOwned('haunted')), 1] },
     { id: 'save5m', icon: '💎', title: 'Multi-millionaire', reward: 25000,
       text: () => 'Save up 💰5,000,000.',
-      tip: () => 'The Theme Park, Stadium and Superyacht are 💰5,000,000 each — they’re next.',
+      tip: () => 'The Theme Park, Football Stadium and Superyacht are 💰5,000,000 each — one of them’s next.',
       money: true, prog: () => [coins, 5000000], doneIf: () => objOwned('themepark') + objOwned('stadium') + objOwned('yacht') > 0 },
-    { id: 'park', icon: '🎢', title: 'Theme Park', reward: 30000,
-      text: () => 'Buy a Theme Park.',
-      tip: () => 'Visitors pay every day, and you can ride the rollercoaster, ferris wheel and carousel. ' + objBuyHow('themepark') + ' Collect at the <b>Ticket Booth</b>.',
-      prog: () => [objOwned('themepark'), 1] },
-    { id: 'haunted', icon: '👻', title: 'Fright Night', reward: 50000,
-      text: () => 'Buy the Haunted House and ride its ghost train.',
-      tip: () => 'Riders pay every day. ' + objBuyHow('haunted') + ' Then ✋ the <b>Ride Gate</b> in the station to ride. Collect at the <b>Ticket Booth</b>, or hire a manager in the office.',
-      prog: () => [Math.min(1, objOwned('haunted')) + Math.min(1, objCount('ghost_ride')), 2] },
-    { id: 'stadium', icon: '🏟️', title: 'Football Stadium', reward: 30000,
-      text: () => 'Buy a Football Stadium.',
-      tip: () => 'A match every afternoon and gate money every day. ' + objBuyHow('stadium') + ' Collect at the <b>Ticket Booth</b>.',
-      prog: () => [objOwned('stadium'), 1] },
-    { id: 'yacht', icon: '🛥️', title: 'Superyacht', reward: 30000,
-      text: () => 'Buy a Superyacht.',
-      tip: () => 'Stand on the shore facing deep water and buy her from 🏗️ Property → 🛥️ Superyacht. Sail her anywhere.',
-      prog: () => [objOwned('yacht'), 1] },
+    { id: 'buy5m', icon: '🎢', title: 'Tycoon', reward: 30000,
+      text: () => 'Buy one of the 💰5,000,000 buildings: a Theme Park, a Football Stadium or a Superyacht.',
+      tip: () => 'Whichever you like — the other two are waiting in Side Missions. They’re all on 🏗️ Property in the Buildings menu.',
+      prog: () => [Math.min(1, objOwned('themepark') + objOwned('stadium') + objOwned('yacht')), 1] },
     { id: 'save10m', icon: '👑', title: 'Ten million', reward: 50000,
       text: () => 'Save up 💰10,000,000.',
       tip: () => 'Enough for the Rocket & Moon Base.',
@@ -27754,6 +27740,30 @@
     { id: 's_lights', icon: '💡', title: 'Light up the street', reward: 150, text: () => 'Put up 5 street lights.', tip: () => 'Light menu → Street Light (buy them at a Carpenter). R or 🔄 turns the arm the way you want it; they come on at dusk.', prog: () => [objCount('streetlight'), 5] },
     { id: 's_bounce', icon: '🟩', title: 'Boing!', reward: 100, text: () => 'Bounce on a Bounce Crystal.', tip: () => 'They’re on the alien planet, in the Arena — or put one down yourself (Buildings menu → Bounce Crystal) and step on it.', prog: () => [objCount('bounce'), 1] },
     { id: 's_streak', icon: '🔥', title: 'On a roll', reward: 1000, text: () => 'Take out 5 in a row in the Arena without being taken out.', tip: () => 'Keep moving, use the levels and grab the green health packs.', prog: () => [Math.min(5, objCount('arena_streak')), 5] },
+    { id: 'mansion', icon: '🏰', title: 'Buy a Mansion', reward: 15000,
+      text: () => 'Buy a Mansion (' + objFmt(objPrice('mansion')) + ').',
+      tip: () => 'A fully furnished country house with grounds, pool and tennis court. ' + objBuyHow('mansion'),
+      prog: () => [objOwned('mansion'), 1] },
+    { id: 'arena', icon: '🎯', title: 'Gladiator', reward: 20000,
+      text: () => 'Build the Arena and take out 10 opponents in it.',
+      tip: () => objBuyHow('arena') + ' Walk in through the lobby (✋ the Arena Master to choose how many bots and how good they are), then take on the bots — or your friends. Every weapon is free in there, and it costs you no lives.',
+      prog: () => [Math.min(1, objOwned('arena')) + Math.min(10, objCount('arena_kill')), 11] },
+    { id: 'park', icon: '🎢', title: 'Theme Park', reward: 30000,
+      text: () => 'Buy a Theme Park.',
+      tip: () => 'Visitors pay every day, and you can ride the rollercoaster, ferris wheel and carousel. ' + objBuyHow('themepark') + ' Collect at the <b>Ticket Booth</b>.',
+      prog: () => [objOwned('themepark'), 1] },
+    { id: 'haunted', icon: '👻', title: 'Fright Night', reward: 50000,
+      text: () => 'Buy the Haunted House and ride its ghost train.',
+      tip: () => 'Riders pay every day. ' + objBuyHow('haunted') + ' Then ✋ the <b>Ride Gate</b> in the station to ride. Collect at the <b>Ticket Booth</b>, or hire a manager in the office.',
+      prog: () => [Math.min(1, objOwned('haunted')) + Math.min(1, objCount('ghost_ride')), 2] },
+    { id: 'stadium', icon: '🏟️', title: 'Football Stadium', reward: 30000,
+      text: () => 'Buy a Football Stadium.',
+      tip: () => 'A match every afternoon and gate money every day. ' + objBuyHow('stadium') + ' Collect at the <b>Ticket Booth</b>.',
+      prog: () => [objOwned('stadium'), 1] },
+    { id: 'yacht', icon: '🛥️', title: 'Superyacht', reward: 30000,
+      text: () => 'Buy a Superyacht.',
+      tip: () => 'Stand on the shore facing deep water and buy her from 🏗️ Property → 🛥️ Superyacht. Sail her anywhere.',
+      prog: () => [objOwned('yacht'), 1] },
   ];
   const OBJ_ALL = OBJECTIVES.concat(SIDE_MISSIONS);
   function objPercent() { const st = objLoad(); let d = 0; for (const o of OBJ_ALL) if (st.done[o.id]) d++; return Math.floor(d / OBJ_ALL.length * 100); }
@@ -29475,6 +29485,11 @@
   }
   // Buildings whose builders can put the door on any side. Church and farm have fixed layouts; landmarks have no door.
   const DOOR_FACING_TYPES = new Set(['airport', 'ferryport', 'busstation', 'station', 'house', 'shop', 'bbq', 'tailor', 'slaughter', 'vehicleshop', 'equipshop', 'carpenter', 'mason', 'arena', 'hotel', 'pub', 'lethouse', 'bakery', 'restaurant', 'mansion', 'themepark', 'stadium', 'rocket', 'haunted']);
+  function blockOnWater(x, y, z) { // a block floating on the surface: water under it, or water right beside it at its own level
+    if (waterBlocks.has(key(x, y - 1, z))) return true;
+    for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (waterBlocks.has(key(x + a, y, z + b)) || waterBlocks.has(key(x + a, y - 1, z + b))) return true;
+    return false;
+  }
   function planPurchase(bt) {
     const r = voxelRaycast(true, true);
     if (bt.t === 'demolish') return demolishPlan(r); // see DEMOLISHING
@@ -29507,7 +29522,10 @@
     const fail = why => { plan.reason = why; return plan; };
     if (!structureSpecsActive() || visitMode) return fail('Buildings can only be bought in your own worlds');
     if (fpWhy) return fail(fpWhy);
-    if (floor < SEA_LEVEL && bt.t !== 'ferryport') return fail('Too low — that\u2019s under the waterline');
+    // ON THE WATER: one block sitting on the surface is enough to build from, so long as there's room — the rest of the plot can be open water (see colWet below)
+    const anchorWet = bt.t !== 'ferryport' && blockOnWater(r.hit.x, r.hit.y, r.hit.z), anchorKey = key(r.hit.x, r.hit.y, r.hit.z);
+    const colWet = (x, z) => waterBlocks.has(key(x, floor, z)) || waterBlocks.has(key(x, floor - 1, z)) || (x === r.hit.x && z === r.hit.z);
+    if (floor < SEA_LEVEL && bt.t !== 'ferryport') return fail('Too low — that\u2019s under the waterline. To build on water, put one block on the surface and aim at that');
     if (player.pos.x > site.sx0 - 1 && player.pos.x < site.sx1 + 2 && player.pos.z > site.sz0 - 1 && player.pos.z < site.sz1 + 2) return fail('Step back — you\u2019re standing where it would go');
     const stepXZ = bt.t === 'arena' ? 2 : 1; // (the Arena's 14,400 columns: every other one is plenty, and keeps the outline quick)
     if (bt.t !== 'ferryport') for (let x = site.sx0; x <= site.sx1; x += stepXZ) for (let z = site.sz0; z <= site.sz1; z += stepXZ) { // (a ferry port's land and water were checked by fpFindSite)
@@ -29515,7 +29533,7 @@
       let g = liveGroundHeight(x, z); // as it is now — not how it was generated (see liveGroundHeight)
       if (g === undefined) { if (bt.t === 'arena') g = Math.round(rawTerrainHeight(x, z)); else return fail('Too far out — that ground isn\u2019t loaded'); } // (the Arena reaches further than the loaded ground — its far end is checked against the terrain as generated, and generated when it's built: see tryBuyBuilding)
       const slack = (bt.t === 'airport' || bt.t === 'arena') ? 2.5 : 1; // an airport's (or the arena's) levelled flat whatever — only a real cliff or mountain stops it
-      if (g < floor - 6 * slack) return fail('Too steep — the ground drops away there');
+      if (g < floor - 6 * slack && !(anchorWet && colWet(x, z))) return fail(anchorWet ? 'Not enough room here — something\u2019s in the way' : 'Too steep — the ground drops away there. Over water? Put one block on the surface and aim at that');
       if (g > floor + 14 * slack) return fail('Too steep — there\u2019s a hill in the way');
     }
     if (structureSpecs.has(ck) || villageRegistry.has(ck) || villageFootprintChunkKeys.has(ck) || lockedStructureChunks.has(ck)) return fail('There\u2019s already a building on this patch — try a bit further away');
@@ -29525,7 +29543,7 @@
       const xz = k => { const c1 = k.indexOf(','), c2 = k.lastIndexOf(','); return [+k.slice(0, c1), +k.slice(c2 + 1)]; };
       for (const tck of chunksTouchedByBox(site.sx0, site.sx1, site.sz0, site.sz1)) {
         const be = blockEdits.byChunk.get(tck);
-        if (be) for (const [k, t] of be) { if (t < 0) continue; const [x, z] = xz(k);
+        if (be) for (const [k, t] of be) { if (t < 0 || (anchorWet && k === anchorKey)) continue; const [x, z] = xz(k);
           if (isGroundBlockType(t) && +k.slice(k.indexOf(',') + 1, k.lastIndexOf(',')) <= floor) continue; /* ground you levelled, filled or the bulldozer firmed up under the plot — still natural ground to build on */ if (inSite(x, z)) { const bt2 = BLOCK_TYPES[t]; return fail((bt2 && bt2.track ? 'There\u2019s railway track there' : 'You\u2019ve built something there') + ' — buildings only go on natural ground (' + x + ', ' + z + ')'); } }
         const se = seedEdits.byChunk.get(tck);
         if (se) for (const k of se.keys()) { const [x, z] = xz(k); if (inSite(x, z)) return fail('There\u2019s a field, a tractor or a train there — buildings only go on natural ground'); }
@@ -29727,7 +29745,7 @@
       return;
     }
     const plan = planPurchase(bt);
-    if (!plan) { showBriefMessage('Aim at the ground where the ' + bt.name + ' should go'); return; }
+    if (!plan) { const w = voxelRaycast(false, true); showBriefMessage(w && w.isWater ? 'To build on water, put one block on the surface, then aim at that block' : 'Aim at the ground where the ' + bt.name + ' should go'); return; }
     if (!plan.ok) { showSaveStatus('⚠ ' + plan.reason, true); return; }
     if (coins < bt.price) { showSaveStatus('⚠ A ' + bt.name + ' costs 💰' + bt.price + ' (you have ' + coins + ')', true); return; }
     const nameAsk = BUY_NAME_ASK[bt.t];
@@ -31920,7 +31938,7 @@
     let el = document.getElementById(id);
     if (!el) {
       el = document.createElement('div'); el.id = id;
-      el.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
+      el.className = 'bizPanelShell'; el.style.cssText = 'position:fixed;inset:0;z-index:46;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center;';
       document.body.appendChild(el);
       el.addEventListener('click', e => { if (e.target === el) el.style.display = 'none'; });
     }
@@ -34875,6 +34893,7 @@
     const m = s2.match; let any = false; m.t = (m.t || 0) + dt;
     m.players.forEach((p, i) => {
       if (off && p.gone) return;
+      p.mesh.rotation.z = 0; // (a keeper mid-dive at the whistle gets up)
       if (!off && m.t < p.delay) { p.mesh.visible = false; any = true; return; }
       p.mesh.visible = true;
       const tu = off ? STAD_TUNNEL[0] + ((i % 3) - 1) * 0.8 : p.hu, tv = off ? STAD_TUNNEL[1] : p.hv, du = tu - p.u, dv = tv - p.v, d = Math.hypot(du, dv);
@@ -35004,7 +35023,20 @@
   function stadBallStep(s2, dt) {
     const b = s2.ball; b.u += b.vu * dt; b.v += b.vv * dt;
     if (b.h > 0 || b.vh > 0) { b.h += b.vh * dt; b.vh -= BALL_G * dt; if (b.h <= 0) { b.h = 0; if (b.vh < -1.6) { b.vh = -b.vh * 0.42; const dmp = 0.75; b.vu *= dmp; b.vv *= dmp; } else b.vh = 0; } } // up and over, then a bounce or two
-    const fr = Math.pow(b.h > 0.02 ? 0.9 : 0.55, dt); b.vu *= fr; b.vv *= fr; // (the grass slows it far more than the air)
+    const live = !!(s2.match && s2.match.phase === 'play'); // (a real match: out of play is out of play. A kickabout: it comes back off the boards)
+    const fr = Math.pow(b.h > 0.02 ? 0.9 : live && s2.match.shot ? 0.82 : 0.55, dt); b.vu *= fr; b.vv *= fr; // (the grass slows it far more than the air; a shot's struck too hard to die)
+    if (live) {
+      if (b.u < PITCH.u0 - 0.15 || b.u > PITCH.u1 + 0.15) { stadBallPlace(s2); return 'touch'; }
+      const over = b.v > PITCH.v1 - 0.1 ? 'v1' : b.v < PITCH.v0 + 0.1 ? 'v0' : null;
+      if (over) {
+        const post = (Math.abs(b.u - GOAL_U0) < 0.16 || Math.abs(b.u - GOAL_U1) < 0.16) && b.h < 1.95, bar = b.u > GOAL_U0 && b.u < GOAL_U1 && b.h >= 1.85 && b.h < 2.1;
+        if (post || bar) { b.v = over === 'v1' ? PITCH.v1 - 0.15 : PITCH.v0 + 0.15; b.vv *= -0.6; b.vu += (Math.random() - 0.5) * 3; if (bar) b.vh = -Math.abs(b.vh) - 1; s2.match.shot = null; s2.match.woodwork = (s2.match.woodwork || 0) + 1; stadCheer(s2, false); stadBallPlace(s2); return null; } // off the woodwork!
+        stadBallPlace(s2); return b.u > GOAL_U0 && b.u < GOAL_U1 && b.h < 1.9 ? over : over + 'out';
+      }
+      stadBallPlace(s2);
+      const sp = Math.hypot(b.vu, b.vv); b.spin.rotation.x += sp * dt * 3; b.spin.rotation.z += b.vu * dt * 2;
+      return null;
+    }
     if (b.u < PITCH.u0 + 0.2) { b.u = PITCH.u0 + 0.2; b.vu = Math.abs(b.vu) * 0.5; }
     if (b.u > PITCH.u1 - 0.2) { b.u = PITCH.u1 - 0.2; b.vu = -Math.abs(b.vu) * 0.5; }
     let scored = null;
@@ -35044,67 +35076,290 @@
     s2.match = m; s2.ball = stadMakeBall(s2);
     stadDrawBoard(s2, true);
   }
+  // ---- THE MATCH: played like football ----
+  // Every player has a job. Teams keep a shape that slides up and down with the ball and with who has it. The side
+  // without it marks: goal-side of the nearest man, the closest one pressing the ball. The side with it makes runs into
+  // space (never camping behind the last defender — an offside line). On the ball a player looks for a team-mate who
+  // ISN'T marked, plays it to where he's running, and goes over the top only if someone's in the way. Round the box he
+  // shoots: he never walks it in. The keeper covers his angle, dives, catches or parries. Out of play means a throw-in,
+  // corner or goal kick; there are fouls and free kicks, a kick-off after every goal, and half-time with ends changed.
+  function stadDir(m, side) { return (side === 'home') === (m.homeDir > 0) ? 1 : -1; } // +1: attacking the v1 end
+  function stadProg(m, side, v) { const Lg = PITCH.v1 - PITCH.v0; return stadDir(m, side) > 0 ? (v - PITCH.v0) / Lg : (PITCH.v1 - v) / Lg; } // 0 own goal .. 1 their goal
+  function stadFromProg(m, side, x) { const Lg = PITCH.v1 - PITCH.v0; return stadDir(m, side) > 0 ? PITCH.v0 + x * Lg : PITCH.v1 - x * Lg; }
+  function stadGoalV(m, side) { return stadDir(m, side) > 0 ? PITCH.v1 : PITCH.v0; }
+  function stadOther(side) { return side === 'home' ? 'away' : 'home'; }
+  function stadWhistle(s2, n) { try { for (let i = 0; i < (n || 1); i++) setTimeout(() => playBeep(2300, 0.22, 0.07, s2.board.position), i * 320); } catch (e) {} }
+  function stadNearestOpp(m, p, u, v) { let best = Infinity; for (const o of m.players) if (o.side !== p.side && !o.keeper) { const d = Math.hypot(o.u - u, o.v - v); if (d < best) best = d; } return best; }
+  function stadLaneBlocked(m, side, u0, v0, u1, v1, wide) { // an opponent standing in the way of a ball along the ground
+    const du = u1 - u0, dv = v1 - v0, L = Math.hypot(du, dv) || 1, ux = du / L, uv = dv / L;
+    for (const o of m.players) { if (o.side === side) continue; const ou = o.u - u0, ov = o.v - v0, al = ou * ux + ov * uv; if (al > 0.6 && al < L - 0.3 && Math.abs(ou * uv - ov * ux) < wide) return true; }
+    return false;
+  }
+  function stadBoxOf(m, side, u, v) { const g = stadGoalV(m, side); return Math.abs(v - g) < 8 && u > 14 && u < 34; } // inside the penalty box at the end this side attacks
+  function stadRestart(m, type, side, u, v, wait) {
+    let taker = null, bd = Infinity;
+    for (const p of m.players) { if (p.side !== side) continue; if (type === 'goalkick') { if (p.keeper) taker = p; continue; } if (type === 'kickoff') { if (p.idx === 9) taker = p; continue; } if (p.keeper) continue; const d = Math.hypot(p.u - u, p.v - v); if (d < bd) { bd = d; taker = p; } }
+    m.restart = { type, side, u, v, t: wait === undefined ? 1.2 : wait, taker }; m.holder = null; m.recv = null; m.shot = null; m.lastSide = side;
+  }
+  function stadKick(s2, p, au, av, pw, lift) { // the ball goes, from where it is
+    const m = s2.match, b = s2.ball, al = Math.hypot(au, av) || 1; if (m.holder === p) m.holder = null;
+    b.vu = au / al * pw; b.vv = av / al * pw; b.vh = lift; if (lift > 0 && b.h <= 0) b.h = 0.01; p.cool = 0.55; p.kickT = 0.25; m.lastSide = p.side; p.holdAll = 0;
+  }
+  function stadPass(s2, p, q, mode) { // to where he's going to be
+    const m = s2.match, b = s2.ball, W0 = PITCH.u0 + 0.8, W1 = PITCH.u1 - 0.8, V0 = PITCH.v0 + 0.8, V1 = PITCH.v1 - 0.8;
+    const dd0 = Math.hypot(q.u - b.u, q.v - b.v), lead = Math.min(1.1, dd0 / 11);
+    let tu = Math.max(W0, Math.min(W1, q.u + (q.vu || 0) * lead)), tv = Math.max(V0, Math.min(V1, q.v + (q.vv || 0) * lead));
+    tu += (Math.random() - 0.5) * (0.5 + dd0 * 0.05); tv += (Math.random() - 0.5) * (0.5 + dd0 * 0.05);
+    const au = tu - b.u, av = tv - b.v, dd = Math.hypot(au, av), blocked = stadLaneBlocked(m, p.side, b.u, b.v, tu, tv, 1.1);
+    let lift, pw;
+    if (mode === 'throw') { lift = 4.6 + Math.random(); const T = 2 * lift / BALL_G; pw = Math.max(3, Math.min(13, dd * 0.92 / T)); }
+    else if (p.keeper && dd > 10 || mode === 'cross' || dd >= 15 || (blocked && dd > 4)) { lift = (p.keeper && dd > 16) ? 9.4 : 7.5 + Math.random() * 1.2; const T = 2 * lift / BALL_G; pw = Math.max(3.5, Math.min(16.5, dd * 0.9 / T)); } // up over their heads, dropping at his feet
+    else { lift = 0; pw = Math.max(5.5, Math.min(14, dd * 0.68 + 3.2)); } // along the floor
+    stadKick(s2, p, au, av, pw, lift);
+    m.recv = q; m.recvT = 3.2; q.runT = 0.8; m.passes = (m.passes || 0) + 1; if (stadNearestOpp(m, q, q.u, q.v) >= 2) m.openPasses = (m.openPasses || 0) + 1;
+  }
+  function stadBestPass(s2, p, reach, wantBox) {
+    const m = s2.match, dir = stadDir(m, p.side), gv = stadGoalV(m, p.side), cu = (GOAL_U0 + GOAL_U1) / 2, myG = Math.hypot(cu - p.u, gv - p.v);
+    let best = null, bs = -Infinity;
+    for (const q of m.players) {
+      if (q.side !== p.side || q === p) continue;
+      const dq = Math.hypot(q.u - p.u, q.v - p.v), fwd = (q.v - p.v) * dir; if (dq < 2.8 || dq > reach) continue;
+      if (q.keeper && (fwd > -4 || stadNearestOpp(m, p, p.u, p.v) > 2.5)) continue; // back to the keeper only when he's in trouble
+      if (fwd < -9 && !p.keeper) continue;
+      let near = stadNearestOpp(m, q, q.u, q.v); // (how much room he's got: this is what matters most)
+      const qG = Math.hypot(cu - q.u, gv - q.v), lane = stadLaneBlocked(m, p.side, p.u, p.v, q.u, q.v, 1.1);
+      let sc = Math.min(near, 7) * 2.2 + fwd * 0.42 - dq * 0.08 + Math.random() * 1.6;
+      if (near < 1.8) sc -= 8; // he's marked
+      if (lane) sc -= dq < 8 ? 4 : 1.5; // (a long one can go over)
+      if (fwd < 0) sc += fwd * 0.18;
+      if (qG < myG - 2 && qG < 18) sc += 3 + (near > 3 ? 2 : 0); // a man in a better place to shoot
+      if (wantBox) sc += stadBoxOf(m, p.side, q.u, q.v) ? 8 : -5;
+      if (sc > bs) { bs = sc; best = q; }
+    }
+    return best ? { q: best, sc: bs } : null;
+  }
+  function stadShoot(s2, p, header) {
+    const m = s2.match, b = s2.ball, gv = stadGoalV(m, p.side), cu = (GOAL_U0 + GOAL_U1) / 2, G = Math.hypot(cu - b.u, gv - b.v), k = m.players.find(o => o.keeper && o.side !== p.side);
+    const pressed = stadNearestOpp(m, p, p.u, p.v) < 1.4;
+    const corner = (k && Math.abs(k.u - cu) > 0.3) ? (k.u < cu ? GOAL_U1 - 0.55 : GOAL_U0 + 0.55) : (Math.random() < 0.5 ? GOAL_U1 - 0.55 : GOAL_U0 + 0.55); // away from the keeper
+    const aimU = corner + (Math.random() - 0.5) * 2 * (0.45 + G * 0.1 + (pressed ? 0.7 : 0)), aimH = 0.2 + Math.random() * 1.45 + (Math.random() < 0.16 + G * 0.008 ? 0.9 : 0);
+    const pw = header ? 10.5 : 15.5 + Math.random() * 3.5, T = G / pw * 1.05;
+    const low = !header && (G < 8 || Math.random() < 0.42);
+    const lift = header ? -1 + Math.random() * 2 : low ? 0.8 : Math.min(8, (aimH + 7 * T * T) / T);
+    stadKick(s2, p, aimU - b.u, gv - b.v, pw, lift);
+    m.recv = null; (m.shotG = m.shotG || []).push(Math.round(G)); m.shot = { side: p.side, aimU, t: T + 0.8, done: false, by: p, at: 0 }; m.shots = (m.shots || 0) + 1;
+  }
+  // on the ball: -> true if he's keeping it for now
+  function stadOnBall(s2, p) {
+    const m = s2.match, b = s2.ball, sp = m.setPiece, gv = stadGoalV(m, p.side), dir = stadDir(m, p.side), cu = (GOAL_U0 + GOAL_U1) / 2; m.setPiece = null;
+    const G = Math.hypot(cu - p.u, gv - p.v), near = stadNearestOpp(m, p, p.u, p.v), wide = Math.abs(p.u - cu), clear = !stadLaneBlocked(m, p.side, p.u, p.v, cu, gv, 0.9);
+    if (p.keeper) { const o = stadBestPass(s2, p, 30); if (o) stadPass(s2, p, o.q); else stadKick(s2, p, (Math.random() - 0.5) * 8, dir * 14, 13, 9); return false; }
+    if (sp === 'throw') { const o = stadBestPass(s2, p, 13); if (o) stadPass(s2, p, o.q, 'throw'); else stadKick(s2, p, (cu - p.u) * 0.5, dir * 6, 8, 5); return false; }
+    if (sp === 'corner') { const o = stadBestPass(s2, p, 30, true); if (o) stadPass(s2, p, o.q, 'cross'); else stadKick(s2, p, cu - p.u, (gv - p.v) - dir * 6, 13, 8); return false; }
+    if (sp === 'kickoff') { const o = stadBestPass(s2, p, 12); if (o) stadPass(s2, p, o.q); return false; }
+    // (a free kick is played like open play, with a go at goal when it's in range)
+    if (G < 7.5 || (G < 11.5 && (clear || near < 2)) || (G < 14 && clear && wide < 8) || (sp === 'free' && G < 17 && clear) || (G < 18 && clear && near > 2.5 && wide < 9 && Math.random() < 0.38)) { stadShoot(s2, p); return false; }
+    if (G < 20 && wide > 8.5) { const o = stadBestPass(s2, p, 24, true); if (o && o.sc > 5) { stadPass(s2, p, o.q, 'cross'); return false; } }
+    const o = stadBestPass(s2, p, 22), all = p.holdAll || 0;
+    if (o && (o.sc > 8.5 || near < 2.2 || all > 2.6)) { stadPass(s2, p, o.q); return false; }
+    if (all < 3.2 && near > 1.2) { p.holdT = 0.32; return true; } // room to run into: he carries it
+    if (o) stadPass(s2, p, o.q); else stadKick(s2, p, (cu - p.u) * 0.3, dir * 12, 12, 8.5); // nothing on: gets rid
+    return false;
+  }
+  function stadShapeSpot(s2, p, poss, ballProg, oppLine) { // [u, v] his place in the team just now
+    const m = s2.match, b = s2.ball, W = PITCH.u1 - PITCH.u0, [a, b0] = FORMATION[p.idx], cu = (PITCH.u0 + PITCH.u1) / 2, have = poss === p.side;
+    const off = have ? -0.08 + ballProg * 0.46 : -0.15 + ballProg * 0.3;
+    let x = b0 + off * (p.line === 'd' ? 0.95 : 1), au = PITCH.u0 + a * W + (b.u - cu) * (p.line === 'd' ? 0.42 : 0.34);
+    if (have) au = cu + (au - cu) * 1.14; // spread out when we have it
+    x = Math.max(0.05, Math.min(0.94, x));
+    if (p.line !== 'd' && x > oppLine + 0.015 && ballProg < oppLine) x = oppLine + 0.015; // not offside
+    return [au, stadFromProg(m, p.side, x)];
+  }
   function stadMatchStep(s2, dt) {
-    const m = s2.match, b = s2.ball, W = PITCH.u1 - PITCH.u0, Lg = PITCH.v1 - PITCH.v0;
-    if (m.pause > 0) { m.pause -= dt; if (m.pause <= 0) { b.u = 24; b.v = 32; b.h = 0; b.vh = 0; b.vu = b.vv = 0; } }
-    // the two players nearest the ball (one each side, not keepers) go for it; everyone else holds formation, shifted with play
-    // (not whoever's just kicked it. A pass is meant for someone: he goes to meet it, wherever it's coming down.)
-    const chaser = {}, airT = b.h > 0 || b.vh > 0 ? (b.vh + Math.sqrt(b.vh * b.vh + 2 * BALL_G * b.h)) / BALL_G : 0, landU = b.u + b.vu * airT, landV = b.v + b.vv * airT;
+    const m = s2.match, b = s2.ball, cu = (GOAL_U0 + GOAL_U1) / 2;
+    if (m.homeDir === undefined) { // first whistle
+      m.homeDir = 1; m.players.forEach((p, n) => { p.idx = n % 11; p.line = p.idx === 0 ? 'k' : p.idx < 5 ? 'd' : p.idx < 9 ? 'm' : 'f'; p.vu = p.vv = 0; });
+      m.half2 = m.minute >= 45; if (m.half2) m.homeDir = -1;
+      stadRestart(m, 'kickoff', m.half2 ? 'away' : 'home', 24, 32, 0.8); stadWhistle(s2);
+      b.u = 24; b.v = 32; b.h = 0; b.vh = b.vu = b.vv = 0; m.lastSide = 'home';
+    }
+    if (!m.half2 && m.minute >= 45) { // half-time: they change ends, the other side kicks off
+      m.half2 = true; m.homeDir = -1; m.pause = 8; stadRestart(m, 'kickoff', 'away', 24, 32, 0); stadWhistle(s2, 2); m.celeb = null;
+      showBriefMessage('⚽ Half-time: ' + clubName(s2) + ' ' + m.home + '–' + m.away + ' ' + m.opp);
+      b.u = 24; b.v = 32; b.h = 0; b.vh = b.vu = b.vv = 0;
+    }
+    const dead = m.pause > 0;
+    if (dead) { m.pause -= dt; if (m.pause <= 0) { m.pause = 0; if (m.restart) { b.u = m.restart.u; b.v = m.restart.v; } b.h = 0; b.vh = b.vu = b.vv = 0; if (m.restart && m.restart.type === 'kickoff') stadWhistle(s2); } }
+    const R = m.restart;
+    if (!dead && R) { b.u = R.u; b.v = R.v; b.h = 0; b.vh = b.vu = b.vv = 0; R.t -= dt; }
     if (m.recv && (m.recvT -= dt) <= 0) m.recv = null;
-    for (const side of ['home', 'away']) { let best = null, bd = Infinity; for (const p of m.players) if (p.side === side && !p.keeper && p.cool <= 0) { const d = Math.hypot(p.u - landU, p.v - landV); if (d < bd) { bd = d; best = p; } } chaser[side] = m.recv && m.recv.side === side ? m.recv : best; }
-    const shift = (b.v - (PITCH.v0 + Lg / 2)) * 0.45;
-    for (const p of m.players) {
-      let tu, tv, speed = 4.2;
-      if (p.keeper) { tu = Math.max(GOAL_U0 + 0.3, Math.min(GOAL_U1 - 0.3, b.u)); tv = p.hv; speed = 5; }
-      else if (m.holder === p) { const gv = p.side === 'home' ? PITCH.v1 : PITCH.v0; tu = p.u + ((GOAL_U0 + GOAL_U1) / 2 - p.u) * 0.12; tv = p.v + Math.sign(gv - p.v) * 3; speed = 3.7; } // on the ball: taking it forward
-      else if (chaser[p.side] === p && m.pause <= 0 && !(m.holder && m.holder.side === p.side)) { tu = landU; tv = landV; speed = 5.4; }
-      else { tu = p.hu + (b.u - (PITCH.u0 + W / 2)) * 0.25; tv = p.hv + shift; }
-      tu = Math.max(PITCH.u0 + 0.4, Math.min(PITCH.u1 - 0.4, tu)); tv = Math.max(PITCH.v0 + 0.4, Math.min(PITCH.v1 - 0.4, tv)); // never off the pitch
-      const du = tu - p.u, dv = tv - p.v, d = Math.hypot(du, dv);
-      if (d > 0.05) { const st = Math.min(d, speed * dt); p.u += du / d * st; p.v += dv / d * st; p.face = Math.atan2(du * s2.f.s[0] + dv * s2.f.d[0], du * s2.f.s[1] + dv * s2.f.d[1]); p.run = true; } else p.run = false; // face: the world direction it's running
-      p.cool -= dt;
-      // on the ball: shoot if close to goal, pass forward otherwise; keepers clear it long
-      // getting to it: it's brought down and under control, carried on a moment — then away, along the ground or chipped
-      if (m.pause <= 0 && p.cool <= 0 && !m.holder && b.h < 0.55 && Math.hypot(p.u - b.u, p.v - b.v) < 0.6) { m.holder = p; m.recv = null; p.holdT = p.keeper ? 0.8 : 0.4 + Math.random() * 1.0; b.h = 0; b.vh = 0; b.vu = b.vv = 0; }
-      if (m.pause > 0 && m.holder === p) m.holder = null;
-      if (m.holder && m.holder !== p && m.holder.side !== p.side && !m.holder.keeper && !p.keeper && p.cool <= 0 && Math.hypot(p.u - m.holder.u, p.v - m.holder.v) < 0.6 && Math.random() < dt * 1.5) { m.holder.cool = 0.9; m.holder = p; p.holdT = 0.4 + Math.random() * 0.8; } // tackled
-      if (m.holder === p) { const dirB = p.side === 'home' ? 1 : -1; b.u = p.u; b.v = p.v + dirB * 0.34; b.h = 0; b.vh = 0; b.vu = b.vv = 0; p.holdT -= dt; }
-      if (m.pause <= 0 && m.holder === p && p.holdT <= 0) {
-        m.holder = null;
-        const dir = p.side === 'home' ? 1 : -1, goalV = p.side === 'home' ? PITCH.v1 : PITCH.v0, distGoal = Math.abs(goalV - p.v);
-        let au, av, pw, lift; m.recv = null;
-        if (!p.keeper && distGoal < 15) { au = (GOAL_U0 + GOAL_U1) / 2 + (Math.random() - 0.5) * 7 - p.u; av = goalV - p.v; pw = 15; lift = 0.5 + Math.random() * 4.6; } // a shot: some along the ground, some rising (the odd one over the bar)
-        else { // a pass: to a team-mate in space, further up the pitch if there's one, chipped so it drops at his feet
-          let mate = null, ms = -Infinity; const reach = p.keeper ? 26 : 18;
-          for (const q of m.players) { if (q.side !== p.side || q === p || q.keeper) continue; const dq = Math.hypot(q.u - p.u, q.v - p.v), fwd = (q.v - p.v) * dir; if (dq < 3.5 || dq > reach || fwd < -6) continue;
-            let near = Infinity; for (const o of m.players) if (o.side !== p.side) near = Math.min(near, Math.hypot(o.u - q.u, o.v - q.v));
-            const sc = fwd * 0.5 + Math.min(near, 6) * 1.2 - dq * 0.1 + Math.random() * 3; if (sc > ms) { ms = sc; mate = q; } }
-          if (mate) {
-            au = mate.u - p.u + (Math.random() - 0.5) * 1.4; av = mate.v - p.v + (Math.random() - 0.5) * 1.4; const dd = Math.hypot(au, av);
-            // anyone in the way? Then up and over their heads (a peak of 2 to 2.7 blocks; he's 1.6 tall). A long one always goes up; a short clear one stays low.
-            let inWay = false; const ux = au / (dd || 1), uv = av / (dd || 1);
-            for (const o of m.players) { if (o.side === p.side) continue; const ou = o.u - p.u, ov = o.v - p.v, al2 = ou * ux + ov * uv; if (al2 > 0.8 && al2 < dd - 0.5 && Math.abs(ou * uv - ov * ux) < 1.3) { inWay = true; break; } }
-            lift = p.keeper ? 9.5 : (dd >= 7 || inWay) ? 7.5 + Math.random() * 1.2 : 0.6 + Math.random() * 1.2;
-            const T = 2 * lift / BALL_G; pw = lift > 3 ? Math.max(3.5, Math.min(16, dd * 0.88 / T)) : Math.max(6, Math.min(14, dd * 0.72 + 3.4)); m.recv = mate; m.recvT = 3.5;
-          } else { au = (Math.random() - 0.5) * 12; av = dir * (6 + Math.random() * 8); pw = 9 + Math.random() * 3; lift = 8 + Math.random() * 1.5; } // nobody on: hoof it forward
-        }
-        const al = Math.hypot(au, av) || 1; b.vu = au / al * pw; b.vv = av / al * pw; b.vh = lift; p.cool = 0.6; p.kickT = 0.25;
+    if (m.shot && (m.shot.t -= dt) <= 0) m.shot = null;
+    const poss = R ? R.side : m.holder ? m.holder.side : (m.lastSide || 'home');
+    const airT = b.h > 0 || b.vh > 0 ? (b.vh + Math.sqrt(Math.max(0, b.vh * b.vh + 2 * BALL_G * b.h))) / BALL_G : 0, landU = b.u + b.vu * airT * 0.9, landV = b.v + b.vv * airT * 0.9;
+    // who's going for it: the nearest on each side (the one the pass was meant for, on his side)
+    const chaser = {}, line = {}; const liveBall = !dead && !R;
+    for (const side of ['home', 'away']) {
+      let best = null, bd = Infinity, deep = 0;
+      for (const p of m.players) {
+        if (p.side === side || p.keeper) { if (p.side === side && !p.keeper && p.cool <= 0) { const d = Math.hypot(p.u - landU, p.v - landV); if (d < bd) { bd = d; best = p; } } continue; }
+        deep = Math.max(deep, stadProg(m, side, p.v)); // their last defender, as this side sees it
       }
-      if (p.kickT > 0) { p.kickT -= dt; p.mesh.children[0].rotation.x = Math.max(0, p.kickT) * 1.3; } else if (p.mesh.children[0].rotation.x) p.mesh.children[0].rotation.x = 0; // a lean into the kick
+      chaser[side] = m.recv && m.recv.side === side ? m.recv : best; line[side] = deep;
     }
-    // a keeper gets a hand to a shot coming at him about half the time — one try per shot
-    for (const k of m.players) {
-      if (!k.keeper) continue;
-      k.saveCd = (k.saveCd || 0) - dt;
-      if (k.saveCd <= 0 && b.h < 2.3 && Math.hypot(k.u - b.u, k.v - b.v) < 0.9 && Math.abs(b.vv) > 6) { k.saveCd = 0.8; if (Math.random() < 0.5) { b.vv = -b.vv * 0.4; b.vu += (Math.random() - 0.5) * 6; } }
+    // marking, a few times a second: the most dangerous of theirs gets the nearest of ours, goal-side
+    if ((m.markT = (m.markT || 0) - dt) <= 0) {
+      m.markT = 0.4;
+      for (const side of ['home', 'away']) {
+        for (const p of m.players) if (p.side === side) p.mark = null;
+        if (poss === side && m.holder) continue;
+        const gv = stadGoalV(m, stadOther(side)), free = m.players.filter(p => p.side === side && (p.line === 'd' || p.line === 'm') && p !== chaser[side]);
+        const threats = m.players.filter(p => p.side !== side && !p.keeper && p !== m.holder).sort((x, y) => Math.abs(x.v - gv) - Math.abs(y.v - gv));
+        for (const t of threats) { let best = null, bd = 11; for (const p of free) if (!p.mark) { const d = Math.hypot(p.u - t.u, p.v - t.v); if (d < bd) { bd = d; best = p; } } if (best) best.mark = t; }
+      }
     }
-    const scored = m.pause > 0 ? null : stadBallStep(s2, dt);
-    if (m.pause > 0) stadBallPlace(s2);
-    if (scored) {
-      m[scored]++; m.pause = 3; m.recv = null; m.holder = null;
+    for (const p of m.players) {
+      const dir = stadDir(m, p.side), bp = stadProg(m, p.side, b.v), gv = stadGoalV(m, p.side), ownG = stadGoalV(m, stadOther(p.side));
+      let tu, tv, speed = 3.5;
+      if (p.keeper) {
+        const shotAtMe = m.shot && m.shot.side !== p.side, dg = Math.hypot(b.u - cu, b.v - ownG), loose = liveBall && !m.holder && !shotAtMe && dg < 7 && m.lastSide !== p.side;
+        if (m.holder === p) { tu = p.u; tv = p.v; }
+        else if (R && R.taker === p) { tu = R.u; tv = R.v; speed = 4.6; }
+        else if (shotAtMe) { m.shot.at += dt; tu = m.shot.at > 0.1 ? m.shot.aimU : p.u; tv = p.v; speed = 7; } // he reads it, a moment late, and goes
+        else if (loose && Math.hypot(b.u - p.u, b.v - p.v) < 6.5) { tu = b.u; tv = b.v; speed = 5.6; } // comes and claims it
+        else { tu = cu + (b.u - cu) * 0.36; tu = Math.max(GOAL_U0 + 0.3, Math.min(GOAL_U1 - 0.3, tu)); tv = ownG - stadDir(m, stadOther(p.side)) * -1 * 0; const off = Math.min(3, 0.8 + dg / 12); tv = ownG + dir * off; speed = 4.6; }
+      } else if (m.holder === p) {
+        // running with it: at goal, round anyone in front of him
+        let hu = (cu - p.u) * 0.1, hv = dir; const e = m.players.filter(o => o.side !== p.side && !o.keeper).sort((x, y) => Math.hypot(x.u - p.u, x.v - p.v) - Math.hypot(y.u - p.u, y.v - p.v))[0];
+        if (e) { const ed = Math.hypot(e.u - p.u, e.v - p.v); if (ed < 3.2 && (e.v - p.v) * dir > -0.5) hu += (p.u >= e.u ? 1 : -1) * (3.2 - ed) * 0.5; }
+        tu = p.u + hu * 3; tv = p.v + hv * 3; speed = m.setPiece ? 0 : 4;
+      } else if (R) { // play's stopped: everyone back in place, the taker to the ball
+        if (R.taker === p) { tu = R.u; tv = R.v; speed = 5; }
+        else {
+          [tu, tv] = stadShapeSpot(s2, p, R.side, bp, line[p.side]); speed = dead ? 4.6 : 3.8;
+          if (R.type === 'kickoff') { const x = Math.min(0.47, stadProg(m, p.side, tv)); tv = stadFromProg(m, p.side, x); if (R.side !== p.side && p.line === 'f') tu = cu + (p.idx === 9 ? -5.5 : 5.5); }
+          if (R.type === 'corner') { const gc = stadGoalV(m, R.side); if (R.side === p.side && p.line !== 'd') { tu = cu - 6 + (p.idx - 5) * 2; tv = gc + (gc > 30 ? -1 : 1) * (3 + (p.idx % 3) * 2); } else if (R.side !== p.side && p.line !== 'f') { tu = cu - 7 + (p.idx - 1) * 1.8; tv = gc + (gc > 30 ? -1 : 1) * (2 + (p.idx % 3) * 1.8); } }
+          const sd = Math.hypot(tu - R.u, tv - R.v); if (R.side !== p.side && R.type !== 'kickoff' && sd < 4) { tu = R.u + (tu - R.u) / (sd || 1) * 4; tv = R.v + (tv - R.v) / (sd || 1) * 4; } // back ten yards
+        }
+      } else if (dead) {
+        tu = p.u; tv = p.v;
+      } else if (m.celeb && m.celeb.side === p.side && m.celeb.t > 0) {
+        tu = p.u; tv = p.v;
+      } else if (m.recv === p) { tu = landU; tv = landV; speed = 5.6; } // goes to meet it
+      else if (chaser[p.side] === p && !(m.holder && m.holder.side === p.side) && !(m.holder && m.holder.keeper) && !(m.recv && m.recv.side === p.side)) {
+        if (m.holder) { const h = m.holder, gd = stadDir(m, stadOther(p.side)); tu = h.u; tv = h.v + (h.v > p.v ? -0.1 : 0.1) - gd * -0.15 * 0; speed = 4.9; } // closes him down
+        else { tu = landU; tv = landV; speed = 5.6; }
+      } else if (p.mark) { // tight, on the goal side of his man, and between him and the ball
+        const t = p.mark, dg = Math.hypot(t.u - cu, t.v - ownG) || 1, gapu = (cu - t.u) / dg, gapv = (ownG - t.v) / dg, tight = stadProg(m, p.side, t.v) < 0.55 ? 1.0 : 1.8;
+        tu = t.u + gapu * tight + (b.u - t.u) * 0.05; tv = t.v + gapv * tight; speed = Math.hypot(tu - p.u, tv - p.v) > 3 ? 5 : 4.1;
+      } else {
+        const [su, sv] = stadShapeSpot(s2, p, poss, bp, line[p.side]);
+        if (poss === p.side) { // looking for space: every couple of seconds he picks the best open spot near his place
+          p.runT = (p.runT || 0) - dt;
+          if (p.runT <= 0 || p.ru === undefined) {
+            p.runT = 1.1 + Math.random() * 1.6; let bs = -Infinity, r = p.line === 'd' ? 2.5 : p.line === 'm' ? 5 : 6.5;
+            for (let c = 0; c < 8; c++) {
+              const ang = Math.random() * 6.283, cuu = Math.max(PITCH.u0 + 1, Math.min(PITCH.u1 - 1, su + Math.cos(ang) * r * Math.random())); let cv = sv + Math.sin(ang) * r * Math.random();
+              const cx = stadProg(m, p.side, cv); if (p.line !== 'd' && cx > line[p.side] + 0.015 && bp < line[p.side]) cv = stadFromProg(m, p.side, line[p.side] + 0.015); // (stays onside)
+              const open = Math.min(8, stadNearestOpp(m, p, cuu, cv)), sc = open + (cv - p.v) * dir * 0.22 - Math.hypot(cuu - su, cv - sv) * 0.22 + (stadLaneBlocked(m, p.side, b.u, b.v, cuu, cv, 1.1) ? 0 : 2);
+              if (sc > bs) { bs = sc; p.ru = cuu; p.rv = cv; }
+            }
+          }
+          tu = p.ru; tv = p.rv; speed = Math.hypot(tu - p.u, tv - p.v) > 2.5 ? 4.6 : 3;
+        } else { tu = su; tv = sv; p.ru = undefined; speed = Math.hypot(tu - p.u, tv - p.v) > 4 ? 4.6 : 3.3; }
+      }
+      if (m.celeb && m.celeb.t > 0 && (m.celeb.p === p || m.celeb.mates.includes(p))) { tu = m.celeb.u + (m.celeb.p === p ? 0 : (p.idx % 3 - 1) * 1.2); tv = m.celeb.v + (m.celeb.p === p ? 0 : (p.idx % 2 ? -1.2 : 1.2)); speed = 5.6; }
+      tu = Math.max(PITCH.u0 + 0.3, Math.min(PITCH.u1 - 0.3, tu)); tv = Math.max(PITCH.v0 + 0.3, Math.min(PITCH.v1 - 0.3, tv)); // never off the pitch
+      // moving: picks up and sheds speed, doesn't snap to it
+      const du = tu - p.u, dv = tv - p.v, d = Math.hypot(du, dv), want = d > 0.12 ? speed * Math.min(1, d / 0.7) : 0, k = Math.min(1, dt * 8);
+      p.vu += ((d > 0.001 ? du / d : 0) * want - p.vu) * k; p.vv += ((d > 0.001 ? dv / d : 0) * want - p.vv) * k;
+      if (!(m.holder === p && m.setPiece)) { p.u += p.vu * dt; p.v += p.vv * dt; }
+      const sp = Math.hypot(p.vu, p.vv); p.run = sp > 0.45;
+      const fu = p.run ? p.vu : b.u - p.u, fv = p.run ? p.vv : b.v - p.v; p.face = Math.atan2(fu * s2.f.s[0] + fv * s2.f.d[0], fu * s2.f.s[1] + fv * s2.f.d[1]); // (stood still, he watches the ball)
+      p.cool -= dt;
+    }
+    // nobody stands in anybody: they ease apart
+    for (let i = 0; i < m.players.length; i++) for (let j = i + 1; j < m.players.length; j++) { const A = m.players[i], B = m.players[j], ddu = B.u - A.u, ddv = B.v - A.v, dd = Math.hypot(ddu, ddv); if (dd < 0.62 && dd > 0.001) { const push = (0.62 - dd) * 0.5 * Math.min(1, dt * 8), nu = ddu / dd * push, nv = ddv / dd * push; A.u -= nu; A.v -= nv; B.u += nu; B.v += nv; } }
+    // set pieces: the taker gets there, then plays it
+    if (!dead && R && R.taker && R.t <= 0 && Math.hypot(R.taker.u - R.u, R.taker.v - R.v) < 0.55) { const T = R.taker; m.restart = null; m.holder = T; m.setPiece = R.type; T.holdT = R.type === 'kickoff' ? 0.15 : 0.5; T.holdAll = 0; T.cool = 0; }
+    const sb = Math.hypot(b.vu, b.vv);
+    for (const p of m.players) {
+      if (m.pause > 0 || m.restart) break;
+      const dist = Math.hypot(p.u - b.u, p.v - b.v);
+      // the keeper's hands
+      if (p.keeper) {
+        if (m.shot && m.shot.side !== p.side && !m.shot.done) {
+          const pv = m.pv === undefined ? b.v : m.pv, crossed = (pv - p.v) * (b.v - p.v) <= 0 || Math.abs(b.v - p.v) < 0.4;
+          if (crossed) {
+            m.shot.done = true; const off = Math.abs(b.u - p.u); p.dive = (b.u > p.u ? 1 : -1); p.diveT = 0.7;
+            if (off < 1.35 && b.h < 2.3) {
+              if (Math.random() < 0.86 - off * 0.25 - (sb > 15 ? 0.06 : 0)) { // saved
+                m.saves = (m.saves || 0) + 1; stadCheer(s2, false);
+                if (sb < 11.5 || Math.random() < 0.3) { m.holder = p; p.holdT = 1 + Math.random() * 0.9; p.holdAll = 0; m.recv = null; m.shot = null; m.lastSide = p.side; b.vu = b.vv = b.vh = 0; b.h = Math.min(b.h, 0.5); }
+                else { b.vv = -b.vv * 0.34; b.vu = (Math.random() - 0.5) * 11; b.vh = 2 + Math.random() * 2.5; m.lastSide = p.side; m.shot = null; p.cool = 0.7; m.parry = (m.parry || 0) + 1; } // parried away
+              }
+            }
+          }
+        } else if (!m.holder && !m.shot && p.cool <= 0 && b.h < 2.2 && dist < 1.05 && Math.hypot(b.u - cu, b.v - p.v) < 11 && m.lastSide !== p.side) { m.holder = p; p.holdT = 1 + Math.random() * 0.9; p.holdAll = 0; m.recv = null; m.lastSide = p.side; b.vu = b.vv = b.vh = 0; }
+        else if (!m.holder && p.cool <= 0 && b.h < 0.55 && dist < 0.7) { m.holder = p; p.holdT = 0.45; p.holdAll = 0; m.recv = null; m.lastSide = p.side; b.vu = b.vv = b.vh = 0; b.h = 0; } // (a back-pass: at his feet)
+      } else if (!m.holder && p.cool <= 0) {
+        // in the air: heads it, at goal if he can, away if not
+        if (b.h >= 1.05 && b.h < 2.1 && dist < 0.55 && b.vh < 1) {
+          const G = Math.hypot(cu - b.u, stadGoalV(m, p.side) - b.v), dir = stadDir(m, p.side); p.cool = 0.7; m.heads = (m.heads || 0) + 1;
+          if (G < 12) stadShoot(s2, p, true);
+          else { m.recv = null; const o = stadBestPass(s2, p, 11); if (o && o.sc > 2) { stadKick(s2, p, o.q.u - b.u, o.q.v - b.v, Math.min(11, Math.hypot(o.q.u - b.u, o.q.v - b.v) * 1.1), 3.5); m.recv = o.q; m.recvT = 2; } else stadKick(s2, p, (Math.random() - 0.5) * 8, dir * 9, 9, 6); }
+          continue;
+        }
+        if (b.h < 0.6 && dist < 0.72) {
+          if (m.shot && m.shot.side !== p.side && sb > 9) { if (Math.random() < 0.6) { b.vv = -b.vv * 0.35; b.vu = (Math.random() - 0.5) * 9; b.vh = 2; m.lastSide = p.side; m.shot = null; m.blocks = (m.blocks || 0) + 1; p.cool = 0.5; continue; } p.cool = 0.4; continue; } // gets in the way of a shot
+          if (sb > 12 && Math.random() < 0.45) { p.cool = 0.35; continue; } // too hot to hold
+          m.holder = p; if (m.recv && m.recv.side === p.side && m.recv !== p) m.mislaid = 1; m.recv = null; m.shot = null; m.lastSide = p.side;
+          const near = stadNearestOpp(m, p, p.u, p.v); p.holdT = near < 2 ? 0.12 + Math.random() * 0.2 : 0.5 + Math.random() * 0.7; p.holdAll = 0; b.h = 0; b.vh = 0; b.vu = b.vv = 0;
+        }
+      }
+    }
+    // tackles
+    const H = m.holder;
+    if (H && !H.keeper && !m.setPiece && !m.pause) {
+      for (const p of m.players) {
+        if (p.side === H.side || p.keeper || p.cool > 0 || Math.hypot(p.u - H.u, p.v - H.v) > 0.8) continue;
+        if (Math.random() < dt * 1.8) {
+          if (Math.random() < 0.1 && !stadBoxOf(m, p.side, H.u, H.v)) { stadWhistle(s2); m.fouls = (m.fouls || 0) + 1; stadRestart(m, 'free', H.side, Math.max(PITCH.u0 + 1, Math.min(PITCH.u1 - 1, H.u)), Math.max(PITCH.v0 + 1, Math.min(PITCH.v1 - 1, H.v)), 1.4); H.cool = 0.5; p.cool = 1; }
+          else { H.cool = 0.9; m.tackles = (m.tackles || 0) + 1; m.holder = null; m.lastSide = p.side; p.cool = 0.15; const a = Math.random() * 6.283; b.vu = Math.cos(a) * 3 + (p.u - H.u); b.vv = Math.sin(a) * 3 + stadDir(m, p.side) * 2; } // nicked away
+          break;
+        }
+      }
+    }
+    if (m.holder && m.holder === H) {
+      const p = H, sp = Math.hypot(p.vu, p.vv), nu = sp > 0.3 ? p.vu / sp : 0, nv = sp > 0.3 ? p.vv / sp : stadDir(m, p.side);
+      b.u = p.u + nu * 0.36; b.v = p.v + nv * 0.36; b.h = 0; b.vh = 0; b.vu = b.vv = 0; p.holdT -= dt; p.holdAll = (p.holdAll || 0) + dt;
+      if (!m.pause && !m.restart && p.holdT <= 0) stadOnBall(s2, p);
+    }
+    // a kick, a dive: what the body does
+    for (const p of m.players) {
+      if (p.kickT > 0) { p.kickT -= dt; p.mesh.children[0].rotation.x = Math.max(0, p.kickT) * 1.3; } else if (p.mesh.children[0].rotation.x) p.mesh.children[0].rotation.x = 0;
+      if (p.keeper) { if (p.diveT > 0) { p.diveT -= dt; p.mesh.rotation.z = p.dive * Math.min(1.25, Math.sin(Math.max(0, p.diveT) / 0.7 * Math.PI) * 1.5); } else if (p.mesh.rotation.z) p.mesh.rotation.z = 0; }
+    }
+    if (m.celeb) { m.celeb.t -= dt; if (m.celeb.t <= 0) m.celeb = null; }
+    m.pv = b.v;
+    const live = !(m.pause > 0) && !m.restart && !m.holder;
+    const res = live ? stadBallStep(s2, dt) : (stadBallPlace(s2), null);
+    if (res === 'v1' || res === 'v0') { // GOAL
+      const scored = (res === 'v1') === (m.homeDir > 0) ? 'home' : 'away';
+      m[scored]++; m.pause = 5.5; const by = m.lastSide === scored && m.shot ? m.shot.by : null;
+      const scorer = by || m.players.filter(q => q.side === scored && !q.keeper).sort((x, y) => Math.hypot(x.u - b.u, x.v - b.v) - Math.hypot(y.u - b.u, y.v - b.v))[0];
+      const cnrU = scorer.u < 24 ? PITCH.u0 + 1 : PITCH.u1 - 1, cnrV = res === 'v1' ? PITCH.v1 - 1 : PITCH.v0 + 1, mates = m.players.filter(q => q.side === scored && !q.keeper && q !== scorer).sort((x, y) => Math.hypot(x.u - scorer.u, x.v - scorer.v) - Math.hypot(y.u - scorer.u, y.v - scorer.v)).slice(0, 3);
+      m.celeb = { side: scored, p: scorer, mates, u: cnrU, v: cnrV, t: 2.8 }; // off to the corner flag, team-mates after him
+      stadRestart(m, 'kickoff', stadOther(scored), 24, 32, 0); stadWhistle(s2);
+      b.v = res === 'v1' ? PITCH.v1 + 0.4 : PITCH.v0 - 0.4; b.vu = b.vv = b.vh = 0; b.h = Math.min(b.h, 0.6); stadBallPlace(s2); // in the back of the net
       const st = stadState(s2); if (st.today) { st.today.home = m.home; st.today.away = m.away; }
       stadCheer(s2, scored === 'home');
       showBriefMessage('⚽ GOAL! ' + (scored === 'home' ? clubName(s2) : m.opp) + ' — ' + m.home + '–' + m.away);
+    } else if (res === 'touch') { // over the sideline: a throw-in, to the side that didn't touch it last
+      const u = b.u < 24 ? PITCH.u0 + 0.3 : PITCH.u1 - 0.3; m.outs = (m.outs || 0) + 1; stadWhistle(s2); stadRestart(m, 'throw', stadOther(m.lastSide || 'home'), u, Math.max(PITCH.v0 + 1, Math.min(PITCH.v1 - 1, b.v)), 1.1);
+    } else if (res === 'v1out' || res === 'v0out') { // over the goal line: a corner, or a goal kick
+      const atV1 = res === 'v1out', attackers = (atV1 === (m.homeDir > 0)) ? 'home' : 'away', u = b.u; m.outs = (m.outs || 0) + 1; stadWhistle(s2);
+      if (m.lastSide === attackers) stadRestart(m, 'goalkick', stadOther(attackers), cu + (u < cu ? -3 : 3), atV1 ? PITCH.v1 - 3 : PITCH.v0 + 3, 1.3);
+      else { stadRestart(m, 'corner', attackers, u < cu ? PITCH.u0 + 0.4 : PITCH.u1 - 0.4, atV1 ? PITCH.v1 - 0.4 : PITCH.v0 + 0.4, 2.2); m.corners = (m.corners || 0) + 1; }
     }
     for (const p of m.players) { const [x, z] = stadToWorld(s2, p.u, p.v); p.mesh.position.set(x, s2.floor + 1 + (p.run ? Math.abs(Math.sin(performance.now() / 90 + p.hu)) * 0.06 : 0), z); if (p.face !== undefined) p.mesh.rotation.y = p.face; stadLegs(p, p.run); }
   }
@@ -35554,15 +35809,15 @@
     try { const src = audioCtx.createMediaElementSource(concertEl); concertAnalyser = audioCtx.createAnalyser(); concertAnalyser.fftSize = 512; concertAnalyser.smoothingTimeConstant = 0.3; concertFilter = audioCtx.createBiquadFilter(); concertFilter.type = 'lowpass'; concertGain = audioCtx.createGain(); src.connect(concertAnalyser); concertAnalyser.connect(concertFilter); concertFilter.connect(concertGain); concertGain.connect(audioCtx.destination); } catch (e) { concertGain = null; }
   }
   setInterval(() => { try {
-    let best = null, bd = Infinity;
+    let best = null, bl = 0;
     if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && concertWindow() && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeHeard === 'function' && jukeHeard()) && !onMoon) {
       for (const sp of structureSpecs.values()) {
         if (!sp || sp.t !== 'stadium' || !sp.stadium || !sp.stadium.concert || !sp.site) continue;
-        const d = (1 - soundLevelBox([sp.site.sx0, sp.site.sx1, sp.site.sz0, sp.site.sz1])) / SOUND_LOSS_PER_BLOCK; // blocks outside the ground (see SOUND OUT OF A BUILDING)
-        if (d < bd) { bd = d; best = sp; }
+        const l = soundLevelBox([sp.site.sx0, sp.site.sx1, sp.site.sz0, sp.site.sz1]); // (see SOUND OUT OF A BUILDING)
+        if (l > bl) { bl = l; best = sp; }
       }
     }
-    const heard = best && bd * SOUND_LOSS_PER_BLOCK < 1;
+    const heard = best && bl > 0;
     concertHeard = !!heard;
     if (!heard) { if (concertEl && !concertEl.paused) concertEl.pause(); return; }
     concertEnsure();
@@ -35570,8 +35825,8 @@
     if (!concertEl.getAttribute('src')) return; // (the files aren't on the site)
     concertAudioChain();
     if (typeof musicEl !== 'undefined' && musicEl && !musicEl.paused) musicEl.pause();
-    const vol = Math.max(0, 1 - bd * SOUND_LOSS_PER_BLOCK); // full inside the ground, muffled by the stands from outside
-    if (concertGain) { concertGain.gain.value = vol; concertEl.volume = 1; if (concertFilter) concertFilter.frequency.value = bd <= 0 ? 20000 : 3200 - vol * 1400; } else concertEl.volume = vol;
+    const vol = bl; // full inside the ground, half at the gate and fading, muffled by the stands from outside
+    if (concertGain) { concertGain.gain.value = vol; concertEl.volume = 1; if (concertFilter) concertFilter.frequency.value = vol >= 1 ? 20000 : 3200 - vol * 1400; } else concertEl.volume = vol;
     if (concertEl.paused) concertEl.play().catch(() => {}); // (not allowed yet — no tap/click so far: tried again shortly)
   } catch (e) {} }, 400);
 
@@ -49676,7 +49931,7 @@ float moonDetail(vec3 p, float d) {
     vertexShader: 'attribute float age; varying float vAge; uniform float uScale; void main() { vAge = age; vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_PointSize = age >= 1.0 ? 0.0 : uScale * (0.1 + age * 0.6) / -mv.z; gl_Position = projectionMatrix * mv; }',
     fragmentShader: 'varying float vAge; void main() { float d = length(gl_PointCoord - 0.5) * 2.0; float ring = smoothstep(0.6, 0.78, d) * (1.0 - smoothstep(0.84, 1.0, d)); float ring2 = smoothstep(0.3, 0.42, d) * (1.0 - smoothstep(0.48, 0.6, d)) * 0.6; float drop = (1.0 - smoothstep(0.0, 0.3, d)) * (1.0 - smoothstep(0.0, 0.2, vAge)); float a = (ring + ring2 + drop) * (1.0 - vAge); if (a < 0.02) discard; gl_FragColor = vec4(0.9, 0.96, 1.0, a); }' });
   const splashPoints = new THREE.Points(splashGeom, splashMat); splashPoints.frustumCulled = false; splashPoints.renderOrder = 6; scene.add(splashPoints);
-  function addSplash(x, y, z) { const i = splashNext; splashNext = (splashNext + 1) % SPLASH_MAX; splashPos[i * 3] = x; splashPos[i * 3 + 1] = y + 0.03; splashPos[i * 3 + 2] = z; splashAge[i] = 0; }
+  function addSplash(x, y, z) { const i = splashNext; splashNext = (splashNext + 1) % SPLASH_MAX; splashPos[i * 3] = x; splashPos[i * 3 + 1] = y + 0.09; splashPos[i * 3 + 2] = z; splashAge[i] = 0; }
   // melting flakes: snow resting on the water, shrinking away
   const MELT_MAX = 300, meltPos = new Float32Array(MELT_MAX * 3), meltLife = new Float32Array(MELT_MAX); let meltNext = 0;
   const meltGeom = new THREE.BufferGeometry(); meltGeom.setAttribute('position', new THREE.BufferAttribute(meltPos, 3)); meltGeom.setAttribute('life', new THREE.BufferAttribute(meltLife, 1));
@@ -49971,10 +50226,14 @@ float moonDetail(vec3 p, float d) {
         const gi = surfAt(player.pos.x + x, player.pos.z + pos.getZ(i)); // (where this drop meets the ground, a treetop or the water — see RAIN & SNOW MEET THE WORLD)
         const hitY = gi >= 0 ? surfGrid.top[gi] : -1e9;
         if (y < hitY) { if (surfGrid.kind[gi] === 1) addSplash(player.pos.x + x, hitY, player.pos.z + pos.getZ(i)); y = Math.max(player.pos.y + 20, hitY + 18) + Math.random()*10; x = (Math.random()-0.5)*40; }
-        else if (y < player.pos.y - 5) { y = player.pos.y + 20 + Math.random()*10; x = (Math.random()-0.5)*40; }
+        else if (y < player.pos.y - 5) { if (gi >= 0 && surfGrid.kind[gi] === 1) addSplash(player.pos.x + x, hitY, player.pos.z + pos.getZ(i)); y = player.pos.y + 20 + Math.random()*10; x = (Math.random()-0.5)*40; } // (a drop recycled high above the water — you're up on a hill or a boat deck: it still lands)
         pos.setY(i, y); pos.setX(i, x);
       }
       pos.needsUpdate = true;
+      if (!snowy) for (let n = Math.ceil(dt * 90); n > 0; n--) { // the sea further out, as far as you can see it well: rain lands on that too
+        const a = Math.random() * 6.283, r = 20 + Math.random() * 45, wx = Math.floor(player.pos.x + Math.cos(a) * r), wz = Math.floor(player.pos.z + Math.sin(a) * r), c = surfColumn(wx, wz);
+        if (c[1] === 1) addSplash(wx + Math.random(), c[0], wz + Math.random());
+      }
     }
     const precipActive = weatherState === 'precip' && !playerIndoors;
     updateRainSnowSound(precipActive && !snowy, precipActive && snowy);

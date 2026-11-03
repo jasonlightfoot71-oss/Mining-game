@@ -9772,6 +9772,22 @@
   ];
   function jukeList() { return JUKE_FILES.map(s => ({ title: s.title, artist: s.artist || '', file: s.file })); } // (just your songs — the five synthesised house tunes, JUKE_SONGS, are off the list)
   let jukeNow = null; // { nodes, fk, until, el?, gain?, pos, idx }
+  // 🔀 SHUFFLE: every song on the list in a random order, then again in a new order, until you stop it or pick a song.
+  // Whoever pressed it picks each next song; it goes out to everyone in earshot like any other pick.
+  let jukeShuffle = null; // { fk, queue, last, fails }
+  function jukeShuffleNext() {
+    const S = jukeShuffle; if (!S) return;
+    const fu = furniture.get(S.fk); if (!fu) { jukeShuffle = null; return; }
+    if (!S.queue.length) {
+      const q = jukeList().map((_, i) => i);
+      for (let i = q.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [q[i], q[j]] = [q[j], q[i]]; }
+      if (q.length > 1 && q[0] === S.last) q.push(q.shift()); // (never the same song twice running)
+      S.queue = q;
+    }
+    const i = S.queue.shift(), g = fu.group; S.last = i; g.userData.song = i;
+    const e = jukePlayIdx(S.fk, i, furnPos(g));
+    if (e) { showBriefMessage('🔀 Now playing: ' + e.title); g.userData.jukeSend = true; try { sendFurnFx(S.fk); } catch (err) {} }
+  }
   function jukeStop() {
     if (!jukeNow) return;
     for (const n of jukeNow.nodes || []) { try { n.stop(); } catch (e) {} }
@@ -9790,27 +9806,210 @@
     // the zips' own folders, doubled up, or the songs loose beside voxel.html) it tries those too, one after another.
     const base = e.file.replace(/^.*\//, ''), tries = [e.file, 'jukebox/jukebox/' + base, 'jukebox-part1/jukebox/' + base, 'jukebox-part2/jukebox/' + base, 'jukebox-part1/' + base, 'jukebox-part2/' + base, base];
     const el = new Audio(); el.preload = 'auto'; el.src = tries[0]; let tryN = 0;
-    let gain = null;
-    try { if (audioCtx && audioCtx.state === 'running') { const src = audioCtx.createMediaElementSource(el); /* (only through a running context — a suspended one would hold the song silent) */ gain = audioCtx.createGain(); src.connect(gain); gain.connect(audioCtx.destination); if (audioCtx.state === 'suspended') audioCtx.resume(); } } catch (err) { gain = null; }
-    const now = { nodes: [], fk, el, gain, pos, idx, until: Infinity, t0: performance.now() };
+    let gain = null, analyser = null;
+    try { if (audioCtx && audioCtx.state === 'running') { const src = audioCtx.createMediaElementSource(el); /* (only through a running context — a suspended one would hold the song silent) */ gain = audioCtx.createGain(); analyser = audioCtx.createAnalyser(); analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.3; src.connect(analyser); analyser.connect(gain); /* (the analyser: so the dancers can find the beat — see THE DANCERS) */ gain.connect(audioCtx.destination); if (audioCtx.state === 'suspended') audioCtx.resume(); } } catch (err) { gain = null; }
+    const now = { nodes: [], fk, el, gain, analyser, pos, idx, until: Infinity, t0: performance.now() };
     const setVol = () => { const v = 0.8 * jukeVolAt(now.pos); if (gain) { gain.gain.value = v; el.volume = 1; } else el.volume = Math.min(1, v); };
     now.setVol = setVol; setVol();
-    el.addEventListener('ended', () => { if (jukeNow === now) jukeNow = null; });
-    el.addEventListener('error', () => { if (jukeNow !== now) return; if (++tryN < tries.length) { el.src = tries[tryN]; el.play().catch(() => {}); now.t0 = performance.now(); return; } if (jukeNow === now) { jukeNow = null; showBriefMessage('🎵 Couldn\u2019t load "' + e.title + '" — is ' + e.file + ' on the site?'); } });
-    el.play().catch(err => { now.playErr = String(err && err.name); if (err && err.name === 'NotAllowedError' && jukeNow === now) { jukeNow = null; showBriefMessage('🎵 Tap the screen once, then pick the song again'); } }); // (a slow load isn't a failure — the check below gives up if it never starts)
+    el.addEventListener('ended', () => { if (jukeNow === now) { jukeNow = null; jukeShuffleNext(); } });
+    el.addEventListener('playing', () => { if (jukeShuffle) jukeShuffle.fails = 0; });
+    el.addEventListener('error', () => { if (jukeNow !== now) return; if (++tryN < tries.length) { el.src = tries[tryN]; el.play().catch(() => {}); now.t0 = performance.now(); return; } if (jukeNow === now) { jukeNow = null; showBriefMessage('🎵 Couldn\u2019t load "' + e.title + '" — is ' + e.file + ' on the site?'); if (jukeShuffle) { if (++jukeShuffle.fails >= list.length) jukeShuffle = null; else jukeShuffleNext(); } } });
+    el.play().catch(err => { now.playErr = String(err && err.name); if (err && err.name === 'NotAllowedError' && jukeNow === now) { jukeNow = null; jukeShuffle = null; showBriefMessage('🎵 Tap the screen once, then pick the song again'); } }); // (a slow load isn't a failure — the check below gives up if it never starts)
     jukeNow = now;
     return e;
   }
   setInterval(() => { try {
     if (!jukeNow || !jukeNow.el) return;
     const el = jukeNow.el, stuck = performance.now() - jukeNow.t0 > 45000 && el.currentTime === 0; // never got going (missing file, no network…)
-    if (el.ended || stuck) { if (stuck) showBriefMessage('🎵 That song wouldn\u2019t play'); jukeNow = null; return; } // (a load error is handled by the element's own error event — it tries the other places first) // (so the game's own tune isn't kept waiting)
+    if (el.ended || stuck) { if (stuck) showBriefMessage('🎵 That song wouldn\u2019t play'); jukeNow = null; jukeShuffleNext(); return; } // (a load error is handled by the element's own error event — it tries the other places first) // (so the game's own tune isn't kept waiting)
     jukeNow.setVol();
   } catch (e) {} }, 500); // a song fades as you walk away from the jukebox
+  // ---- THE DANCERS ----
+  // While a jukebox plays, three women come over and dance on the free floor near it, then drift off when the music
+  // stops. Each is a jointed figure — knees and elbows that bend — and her legs are worked out from where her feet are
+  // meant to be, so feet stay planted while her hips move (no sliding about). They dance to the song's own beat: the
+  // tempo is picked up from the bass as it plays (a steady 118 until it's found). Every eight beats each moves on to
+  // another move — side taps, hands in the air, twists, spins, shimmies, disco points, rocking steps — and every third
+  // phrase all three do the same one together.
+  const JD_SHOW = 34, JD_THIGH = 0.36, JD_SHIN = 0.36, JD_ANKLE = 0.08;
+  const JD_LOOKS = [{ dress: 0xc8264a, hair: 0x1a1a1a, skin: 0 }, { dress: 0x1f9aa8, hair: 0xd4a017, skin: 3 }, { dress: 0xe0a82a, hair: 0x6a2a18, skin: 1 }];
+  function jdBuild(i, look) { // look (optional): { dress, hair, skin, male, legs } — the concert's singers and band use these bodies too
+    const L = look || JD_LOOKS[i % JD_LOOKS.length], mat = c => new THREE.MeshPhongMaterial({ color: c, shininess: 0, flatShading: true });
+    const skin = mat(AVATAR_SKIN_TONES[L.skin % AVATAR_SKIN_TONES.length]), dress = mat(L.dress), hair = mat(L.hair), shoe = mat(0x161616), lips = mat(L.male ? 0x8a4a3a : 0xb02030), eye = mat(0x111111), legMat = L.male ? mat(L.legs || 0x1c2230) : skin;
+    const box = (par, w, h, d, m, x, y, z) => { const o = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); o.position.set(x, y, z); o.castShadow = false; par.add(o); return o; };
+    const root = new THREE.Group(), hips = new THREE.Group(); root.add(hips); hips.rotation.order = 'YXZ';
+    box(hips, 0.35, 0.16, 0.22, dress, 0, 0.02, 0);
+    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.33, 0.34, 8), dress); skirt.position.y = -0.2; skirt.rotation.y = Math.PI / 8; hips.add(skirt); if (L.male) skirt.visible = false;
+    const torso = new THREE.Group(); torso.position.y = 0.1; torso.rotation.order = 'YXZ'; hips.add(torso);
+    box(torso, 0.35, 0.5, 0.2, dress, 0, 0.25, 0);
+    box(torso, 0.1, 0.08, 0.1, skin, 0, 0.53, 0);
+    const head = new THREE.Group(); head.position.y = 0.56; torso.add(head); head.rotation.order = 'YXZ';
+    box(head, 0.36, 0.36, 0.36, skin, 0, 0.18, 0);
+    box(head, 0.39, 0.1, 0.39, hair, 0, 0.35, 0);
+    for (const sx of [-1, 1]) { box(head, 0.06, 0.05, 0.02, eye, sx * 0.08, 0.21, 0.185); if (!L.male) box(head, 0.05, 0.3, 0.32, hair, sx * 0.19, 0.17, -0.02); }
+    box(head, 0.12, 0.03, 0.02, lips, 0, 0.09, 0.185);
+    const mane = new THREE.Group(); mane.position.set(0, 0.32, -0.18); head.add(mane); if (!L.male) box(mane, 0.36, 0.52, 0.07, hair, 0, -0.24, 0); // long hair down her back — it swings
+    const arms = [-1, 1].map(side => {
+      const sh = new THREE.Group(); sh.position.set(side * 0.24, 0.45, 0); sh.rotation.order = 'ZXY'; torso.add(sh);
+      box(sh, 0.12, 0.28, 0.13, skin, 0, -0.14, 0);
+      const el = new THREE.Group(); el.position.y = -0.28; sh.add(el); box(el, 0.1, 0.25, 0.11, skin, 0, -0.125, 0); box(el, 0.1, 0.09, 0.11, skin, 0, -0.29, 0);
+      return { sh, el, side };
+    });
+    const legs = [-1, 1].map(side => {
+      const hip = new THREE.Group(); hip.position.set(side * 0.1, -0.02, 0); hip.rotation.order = 'ZXY'; hips.add(hip);
+      box(hip, 0.15, JD_THIGH, 0.16, legMat, 0, -JD_THIGH / 2, 0);
+      const knee = new THREE.Group(); knee.position.y = -JD_THIGH; hip.add(knee); box(knee, 0.13, JD_SHIN, 0.14, legMat, 0, -JD_SHIN / 2, 0);
+      const foot = new THREE.Group(); foot.position.y = -JD_SHIN; knee.add(foot); box(foot, 0.14, 0.08, 0.27, shoe, 0, -0.04, 0.05);
+      return { hip, knee, foot, side };
+    });
+    scene.add(root);
+    root.traverse(o => { if (o.isMesh) { o.material.transparent = true; o.material.opacity = 0; } });
+    alienizeFigure(root, i * 31 + 7);
+    return { root, hips, torso, head, mane, skirt, arms, legs, seed: i, pose: jdPoseZero(), rot: 0, fade: 0, faded: false };
+  }
+  function jdPoseZero() { return { hx: 0, hy: 0.74, hz: 0, hr: 0, tw: 0, tl: 0, tf: 0, hd: 0, hn: 0, la: 0.1, lo: 0.1, le: 0.3, ra: 0.1, ro: 0.1, re: 0.3, fx0: -0.12, fz0: 0, fl0: 0, fx1: 0.12, fz1: 0, fl1: 0, flare: 0 }; }
+  const jdEase = t => t * t * (3 - 2 * t);
+  // Each move: fills pose q for beat b within its phrase (b runs 0-8). One foot's always planted unless it's on a spin.
+  const JD_MOVES = {
+    taps(q, b) { const f = b % 2, r = f < 1 ? Math.sin(Math.PI * f) : 0, l = f >= 1 ? Math.sin(Math.PI * (f - 1)) : 0, dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b);
+      q.fx1 = 0.12 + 0.2 * r; q.fl1 = 0.05 * r; q.fx0 = -0.12 - 0.2 * l; q.fl0 = 0.05 * l; q.hx = 0.09 * (r - l); q.hy = 0.74 - 0.06 * dip; q.tl = -0.14 * (r - l); q.tw = 0.2 * (r - l); q.hd = 0.3 * (r - l);
+      q.la = 0.75 + 0.5 * l - 0.2 * r; q.lo = 0.2; q.le = 1.75; q.ra = 0.75 + 0.5 * r - 0.2 * l; q.ro = 0.2; q.re = 1.75; },
+    armsUp(q, b) { const sw = Math.sin(Math.PI * b), dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b);
+      q.fx0 = -0.17; q.fx1 = 0.17; q.hx = 0.11 * sw; q.hz = 0.04 * Math.cos(Math.PI * b); q.hy = 0.72 - 0.05 * dip; q.tl = -0.17 * sw; q.hd = 0.22 * sw; q.hn = -0.14;
+      q.la = 2.75 - 0.12 * sw; q.lo = 0.2; q.le = 0.3 + 0.32 * (0.5 + 0.5 * sw); q.ra = 2.75 + 0.12 * sw; q.ro = 0.2; q.re = 0.3 + 0.32 * (0.5 - 0.5 * sw); },
+    twist(q, b) { const t = Math.sin(Math.PI * b), dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b);
+      q.fx0 = -0.13; q.fx1 = 0.13; q.fz0 = 0.03 * t; q.fz1 = -0.03 * t; q.hr = 0.55 * t; q.tw = -0.85 * t; q.hy = 0.66 - 0.04 * dip; q.tf = 0.1; q.hd = 0.3 * t;
+      q.la = 0.8 - 0.45 * t; q.lo = 0.25; q.le = 1.8; q.ra = 0.8 + 0.45 * t; q.ro = 0.25; q.re = 1.8; },
+    spin(q, b) { const f = b % 4, sw = Math.sin(Math.PI * b), dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b);
+      if (f < 2) { q.fx0 = -0.15; q.fx1 = 0.15; q.hx = 0.09 * sw; q.hy = 0.73 - 0.05 * dip; q.tl = -0.1 * sw; q.la = 0.5; q.lo = 0.5; q.le = 1.2; q.ra = 0.5; q.ro = 0.5; q.re = 1.2; }
+      else { const k = Math.sin(Math.PI * (f - 2) / 2); q.fx0 = -0.09; q.fx1 = 0.09; q.hy = 0.77; q.la = 0.25; q.lo = 1.15 * k + 0.2; q.le = 0.25; q.ra = 2.6 * k + 0.2; q.ro = 0.25; q.re = 0.4; q.flare = k; q.hn = -0.08 * k; } },
+    shimmy(q, b) { const f = (b % 4) / 4, low = Math.sin(Math.PI * f), sh = Math.sin(4 * Math.PI * b);
+      q.fx0 = -0.2; q.fx1 = 0.2; q.hy = 0.75 - 0.2 * low; q.tl = 0.1 * sh; q.tw = 0.13 * sh; q.tf = 0.08 + 0.12 * low; q.hx = 0.02 * sh; q.hn = 0.08 * Math.cos(2 * Math.PI * b);
+      q.la = 0.25; q.lo = 0.6; q.le = 2.0; q.ra = 0.25; q.ro = 0.6; q.re = 2.0; },
+    point(q, b) { const f = b % 2, up = jdEase(f < 1 ? f : 2 - f), sw = Math.sin(Math.PI * b), dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b);
+      q.fx0 = -0.14; q.fx1 = 0.14 + 0.08 * up; q.fl1 = 0.03 * Math.max(0, sw); q.hx = -0.09 * (up * 2 - 1); q.hy = 0.73 - 0.05 * dip; q.tl = 0.12 * (up * 2 - 1); q.hd = 0.45 * (up * 2 - 1); q.hn = -0.15 * up;
+      q.ra = 0.5 + 2.1 * up; q.ro = -0.3 + 0.8 * up; q.re = 0.1; q.la = 0.25; q.lo = 0.6; q.le = 2.0; },
+    rock(q, b) { const sw = Math.sin(Math.PI * b), dip = 0.5 + 0.5 * Math.cos(2 * Math.PI * b), fwd = sw > 0 ? sw : 0, back = sw < 0 ? -sw : 0;
+      q.fx0 = -0.11; q.fx1 = 0.11; q.fz1 = 0.24; q.fz0 = -0.12; q.fl1 = 0.02 * back; q.fl0 = 0.02 * fwd; q.hz = 0.06 + 0.12 * sw; q.hy = 0.71 - 0.05 * dip; q.tf = 0.1 * sw; q.tw = 0.22 * sw; q.hd = -0.18 * sw;
+      q.la = 0.7 + 0.5 * sw; q.lo = 0.2; q.le = 1.45; q.ra = 0.7 - 0.5 * sw; q.ro = 0.2; q.re = 1.45; },
+  };
+  const JD_ORDER = ['taps', 'armsUp', 'twist', 'spin', 'rock', 'point', 'shimmy'];
+  function jdMoveFor(i, phrase) { return phrase % 3 === 2 ? JD_ORDER[Math.floor(phrase / 3) % JD_ORDER.length] : JD_ORDER[(phrase + [0, 2, 5][i % 3]) % JD_ORDER.length]; }
+  const _jdTarget = jdPoseZero();
+  function jdApply(d) { // pose -> joints. The legs: from hip to where the foot's meant to be
+    const q = d.pose, cr = Math.cos(q.hr), sr = Math.sin(q.hr);
+    d.hips.position.set(q.hx, q.hy, q.hz); d.hips.rotation.y = q.hr;
+    d.torso.rotation.set(q.tf, q.tw, q.tl); d.head.rotation.set(q.hn, q.hd, -q.tl * 0.5);
+    d.arms[0].sh.rotation.set(-q.la, 0, -q.lo); d.arms[0].el.rotation.x = -q.le;
+    d.arms[1].sh.rotation.set(-q.ra, 0, q.ro); d.arms[1].el.rotation.x = -q.re;
+    d.skirt.scale.set(1 + 0.45 * q.flare, 1 - 0.18 * q.flare, 1 + 0.45 * q.flare);
+    for (let n = 0; n < 2; n++) {
+      const lg = d.legs[n], fx = n ? q.fx1 : q.fx0, fz = n ? q.fz1 : q.fz0, lift = n ? q.fl1 : q.fl0;
+      // the ankle's target relative to this hip, in the hips' own (twisted) frame
+      const wx = fx - q.hx, wz = fz - q.hz, lx = wx * cr - wz * sr - lg.hip.position.x, lz = wx * sr + wz * cr, ly = (JD_ANKLE + lift) - (q.hy + lg.hip.position.y);
+      let D = Math.hypot(lx, ly, lz); const max = JD_THIGH + JD_SHIN - 0.002; D = Math.min(max, Math.max(0.2, D));
+      const k = Math.PI - Math.acos(Math.max(-1, Math.min(1, (JD_THIGH * JD_THIGH + JD_SHIN * JD_SHIN - D * D) / (2 * JD_THIGH * JD_SHIN))));
+      const alpha = Math.acos(Math.max(-1, Math.min(1, (JD_THIGH * JD_THIGH + D * D - JD_SHIN * JD_SHIN) / (2 * JD_THIGH * D))));
+      const fwd = Math.atan2(lz, Math.hypot(lx, ly)), a = fwd + alpha;
+      lg.hip.rotation.set(-a, 0, Math.atan2(lx, -ly)); lg.knee.rotation.x = k; lg.foot.rotation.x = a - k;
+    }
+  }
+  // ---- finding the beat ----
+  const jdBeat = { b: 0, bpm: 118, avg: 0, lastAt: 0, gaps: [], buf: null };
+  function jdBeatStep(dt, now, jdBeat, an) {
+    if (an) { try {
+      if (!jdBeat.buf || jdBeat.buf.length !== an.frequencyBinCount) jdBeat.buf = new Uint8Array(an.frequencyBinCount);
+      an.getByteFrequencyData(jdBeat.buf);
+      let e = 0; for (let i = 1; i <= 5; i++) e += jdBeat.buf[i]; e /= 5; // the bass and the kick
+      if (e > jdBeat.avg * 1.18 && e > 60 && now - jdBeat.lastAt > 280) {
+        const gap = now - jdBeat.lastAt; jdBeat.lastAt = now;
+        if (gap < 1500) { jdBeat.gaps.push(gap); if (jdBeat.gaps.length > 12) jdBeat.gaps.shift(); }
+        if (jdBeat.gaps.length >= 5) { let g = [...jdBeat.gaps].sort((a, c) => a - c)[jdBeat.gaps.length >> 1], bpm = 60000 / g; while (bpm < 84) bpm *= 2; while (bpm > 160) bpm /= 2; jdBeat.bpm += (bpm - jdBeat.bpm) * 0.15; }
+        const near = Math.round(jdBeat.b); jdBeat.b += (near - jdBeat.b) * 0.3; // and on to the kick
+      }
+      jdBeat.avg += (e - jdBeat.avg) * Math.min(1, dt * 4);
+    } catch (err) {} }
+    jdBeat.b += dt * jdBeat.bpm / 60;
+  }
+  // ---- where they dance, and getting there ----
+  function jdFreeCell(x, y, z) { return !isSolid(x + 0.5, y + 0.1, z + 0.5) && !isSolid(x + 0.5, y + 1, z + 0.5) && !isSolid(x + 0.5, y + 1.8, z + 0.5) && isSolid(x + 0.5, y - 0.3, z + 0.5); }
+  function jdPlan(fu) { // -> { walk, spots: [[x, z] x3], from: [[x, z] x3] } or null: the floor you can walk to round the jukebox
+    const y = fu.group.position.y, walk = new Set(), start = [], dist = new Map(), q = [];
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [-2, 0], [0, 2], [0, -2]]) { const x = fu.bx + dx, z = fu.bz + dz; if (jdFreeCell(x, y, z)) start.push([x, z]); }
+    for (const c of start) { const k = c[0] + ',' + c[1]; if (!dist.has(k)) { dist.set(k, 1); q.push(c); walk.add(k); } }
+    while (q.length) { const [x, z] = q.shift(), d = dist.get(x + ',' + z); if (d >= 13) continue;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, nz = z + dz, k = nx + ',' + nz; if (dist.has(k) || !jdFreeCell(nx, y, nz)) continue; dist.set(k, d + 1); walk.add(k); q.push([nx, nz]); } }
+    const cells = [...walk].map(k => k.split(',').map(Number));
+    const openness = (x, z) => { let n = 0; for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) if ((dx || dz) && walk.has((x + dx) + ',' + (z + dz))) n++; return n; }; // room to swing her arms
+    const scored = cells.map(c => { const de = Math.hypot(c[0] - fu.bx, c[1] - fu.bz); return { c, de, s: Math.abs(de - 2.4) - openness(c[0], c[1]) * 0.35 }; }).filter(o => o.de >= 1.4 && o.de <= 6).sort((a, b) => a.s - b.s);
+    const spots = [];
+    for (const minGap of [2.2, 1.7, 1.2]) { for (const o of scored) { if (spots.length >= 3) break; if (spots.every(p => Math.hypot(p[0] - o.c[0], p[1] - o.c[1]) >= minGap)) spots.push(o.c); } if (spots.length >= 3) break; }
+    if (spots.length < 3) return null;
+    const far = cells.filter(c => spots.every(p => p[0] !== c[0] || p[1] !== c[1])).sort((a, b) => dist.get(b[0] + ',' + b[1]) - dist.get(a[0] + ',' + a[1]));
+    const from = []; for (let i = 0; i < 3; i++) from.push(far[Math.min(far.length - 1, i * 3)] || spots[i]);
+    return { walk, spots, from };
+  }
+  let jukeDance = null; // { fk, plan, dancers, centre }
+  function jdClear() { if (!jukeDance) return; for (const d of jukeDance.dancers) { scene.remove(d.root); disposeObject3D(d.root); } jukeDance = null; }
+  function jdSetFade(d, v) { d.fade = v; d.root.traverse(o => { if (o.isMesh) { o.material.opacity = v; if (v >= 1) o.material.transparent = false; else o.material.transparent = true; } }); d.faded = v >= 1; }
+  function updateJukeDancers(dt, now) {
+    dt = Math.min(dt, 0.1);
+    const playing = typeof jukeBusy === 'function' && jukeBusy() && jukeNow && furniture.has(jukeNow.fk);
+    const fk = playing ? jukeNow.fk : null, fu = fk && furniture.get(fk);
+    const inRange = fu && fu.group.position.distanceTo(player.pos) < JD_SHOW;
+    if (jukeDance && (jukeDance.fk !== fk && fk)) jdClear();                     // a different jukebox
+    if (jukeDance && !jukeDance.leaving && (!playing)) { // the music's stopped: off they go
+      jukeDance.leaving = true;
+      for (const d of jukeDance.dancers) { const cur = [Math.floor(d.root.position.x), Math.floor(d.root.position.z)]; d.route = hotelRoute(jukeDance.plan.walk, cur, d.from); d.state = 'out'; }
+    }
+    if (jukeDance && jukeDance.leaving && playing) { jukeDance.leaving = false; for (const d of jukeDance.dancers) { const cur = [Math.floor(d.root.position.x), Math.floor(d.root.position.z)]; d.route = hotelRoute(jukeDance.plan.walk, cur, d.spot); d.state = 'in'; } } // (the next song's on)
+    if (jukeDance && fk && !inRange) jdClear();                                  // out of sight
+    if (!jukeDance && playing && inRange && now >= (updateJukeDancers.retry || 0)) {
+      const y = fu.group.position.y, plan = jdPlan(fu);
+      if (!plan) { updateJukeDancers.retry = now + 5000; return; }
+      const cx = (plan.spots[0][0] + plan.spots[1][0] + plan.spots[2][0]) / 3 + 0.5, cz = (plan.spots[0][1] + plan.spots[1][1] + plan.spots[2][1]) / 3 + 0.5;
+      jukeDance = { fk, plan, cx, cz, y, leaving: false, dancers: plan.spots.map((spot, i) => { const d = jdBuild(i); d.spot = spot; d.from = plan.from[i]; d.root.position.set(d.from[0] + 0.5, y, d.from[1] + 0.5); d.route = hotelRoute(plan.walk, d.from, spot); d.state = 'in'; d.stride = i * 1.3; d.delay = i * 0.5; d.yaw = 0; return d; }) };
+      jdBeat.gaps.length = 0; jdBeat.lastAt = now;
+    }
+    if (!jukeDance) return;
+    jdBeatStep(dt, now, jdBeat, jukeNow && jukeNow.analyser);
+    const J = jukeDance, phrase = Math.floor(jdBeat.b / 8), bIn = jdBeat.b - phrase * 8;
+    for (let n = J.dancers.length - 1; n >= 0; n--) {
+      const d = J.dancers[n], r = d.root;
+      if (d.delay > 0) { d.delay -= dt; continue; }
+      if (d.state !== 'out' && d.fade < 1) jdSetFade(d, Math.min(1, d.fade + dt * 2));
+      const T = _jdTarget; Object.assign(T, jdPoseZero());
+      let rotAdd = 0;
+      if (d.route.length || d.state === 'in' || d.state === 'out') {
+        if (d.route.length) { // walking, heel and toe
+          const [tx, tz] = d.route[0], dx = tx + 0.5 - r.position.x, dz = tz + 0.5 - r.position.z, ds = Math.hypot(dx, dz);
+          if (ds < 0.05) d.route.shift();
+          else { const st = Math.min(ds, 1.5 * dt); r.position.x += dx / ds * st; r.position.z += dz / ds * st; d.stride += st * 4.2; d.yaw += angWrap(Math.atan2(dx, dz) - d.yaw) * Math.min(1, dt * 9); }
+          const w = Math.sin(d.stride); T.fz1 = 0.2 * w; T.fz0 = -0.2 * w; T.fl1 = 0.06 * Math.max(0, Math.cos(d.stride)); T.fl0 = 0.06 * Math.max(0, -Math.cos(d.stride)); T.fx0 = -0.09; T.fx1 = 0.09; T.hy = 0.76 + 0.012 * Math.cos(2 * d.stride); T.la = 0.15 + 0.35 * w; T.ra = 0.15 - 0.35 * w; T.le = 0.35; T.re = 0.35; T.tw = 0.08 * w;
+        }
+        if (!d.route.length) {
+          if (d.state === 'in') d.state = 'dance';
+          else if (d.state === 'out') { jdSetFade(d, Math.max(0, d.fade - dt * 2)); if (d.fade <= 0) { scene.remove(r); disposeObject3D(r); J.dancers.splice(n, 1); continue; } }
+        }
+      }
+      if (d.state === 'dance') {
+        JD_MOVES[jdMoveFor(n, phrase)](T, bIn);
+        if (jdMoveFor(n, phrase) === 'spin') { const f = bIn % 4; if (f >= 2) rotAdd = jdEase((f - 2) / 2) * Math.PI * 2 * (n === 1 ? -1 : 1); }
+        // facing the other two, with a slow turn out to the room and back
+        d.yaw += angWrap(Math.atan2(J.cx - r.position.x, J.cz - r.position.z) + Math.sin(jdBeat.b / 8 + n * 2) * 0.7 - d.yaw) * Math.min(1, dt * 2.5);
+      }
+      r.rotation.y = d.yaw + rotAdd;
+      const q = d.pose, k = Math.min(1, dt * 13); for (const key2 of Object.keys(q)) q[key2] += (T[key2] - q[key2]) * k;
+      jdApply(d);
+      d.mane.rotation.x = 0.1 + Math.abs(rotAdd ? 0.9 : 0.12 * Math.sin(jdBeat.b * Math.PI));
+    }
+    if (!J.dancers.length) jukeDance = null;
+  }
   function openJukePanel(fk, g) {
     const el = bizPanel('jukePanel'), list = jukeList(), cur = jukeNow && jukeNow.fk === fk && jukeBusy() ? jukeNow.idx : -1;
     el.innerHTML = '<div style="background:#1a1420;border:1px solid #6a3a2a;border-radius:12px;padding:14px;width:min(360px,calc(92 * var(--vw, 1vw)));max-height:calc(80 * var(--vh, 1vh));display:flex;flex-direction:column;color:#fff;font:13px system-ui,sans-serif;">'
       + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">🎵 Jukebox — pick a song</div>'
+      + '<button id="jukeShuffleBtn" style="margin-bottom:8px;' + (jukeShuffle && jukeShuffle.fk === fk ? 'background:#ff6a2a;border:1px solid #ff6a2a;' : 'background:rgba(255,106,42,0.18);border:1px solid rgba(255,106,42,0.6);') + 'color:#fff;border-radius:6px;padding:10px 14px;font-weight:700;cursor:pointer;">' + (jukeShuffle && jukeShuffle.fk === fk ? '🔀 Shuffle is on — tap for the next song' : '🔀 Shuffle — all the songs at random') + '</button>'
       + '<div id="jukeList" style="overflow-y:auto;flex:1;min-height:0;border-radius:8px;background:rgba(255,255,255,0.04);">'
       + list.map((s, i) => '<div class="jukeRow" data-i="' + i + '" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.07);cursor:pointer;' + (i === cur ? 'background:rgba(255,106,42,0.25);' : '') + '">'
         + '<span style="font-size:18px;">' + (i === cur ? '🔊' : s.synth !== undefined ? '🎹' : '💿') + '</span><span style="flex:1;min-width:0;"><div style="font-weight:600;">' + bizEsc(s.title) + '</div><div style="opacity:0.6;font-size:11px;">' + bizEsc(s.artist) + '</div></span></div>').join('')
@@ -9818,11 +10017,12 @@
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">' + (cur >= 0 ? '<button id="jukeStopBtn" style="background:#8a3a3a;border:none;color:#fff;border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer;">■ Stop</button>' : '')
       + '<button id="jukeClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     el.querySelectorAll('.jukeRow').forEach(r => r.addEventListener('click', () => {
-      const i = +r.dataset.i; g.userData.song = i;
+      const i = +r.dataset.i; g.userData.song = i; jukeShuffle = null;
       const s = jukePlayIdx(fk, i, furnPos(g)); el.style.display = 'none';
       if (s) { showBriefMessage('🎵 Now playing: ' + s.title + (s.artist && s.synth === undefined ? ' — ' + s.artist : '')); g.userData.jukeSend = true; try { sendFurnFx(fk); } catch (e) {} }
     }));
-    const st = document.getElementById('jukeStopBtn'); if (st) st.addEventListener('click', () => { jukeStop(); g.userData.song = -1; g.userData.jukeSend = true; try { sendFurnFx(fk); } catch (e) {} el.style.display = 'none'; });
+    document.getElementById('jukeShuffleBtn').addEventListener('click', () => { if (!jukeShuffle || jukeShuffle.fk !== fk) jukeShuffle = { fk, queue: [], last: cur, fails: 0 }; el.style.display = 'none'; jukeShuffleNext(); });
+    const st = document.getElementById('jukeStopBtn'); if (st) st.addEventListener('click', () => { jukeShuffle = null; jukeStop(); g.userData.song = -1; g.userData.jukeSend = true; try { sendFurnFx(fk); } catch (e) {} el.style.display = 'none'; });
     document.getElementById('jukeClose').addEventListener('click', () => { el.style.display = 'none'; });
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
@@ -11809,6 +12009,7 @@
     if (name === 'Grand Piano') { // a little tune — anyone nearby hears it
       if (fx) return true;
       for (const rr of restaurants.values()) if (rr.pianoKey === fk && rr.people.some(p => p.role === 'pianist')) { say('🎹 Shh — the pianist’s playing'); return true; } // (not over the top of the restaurant's music)
+      for (const hh of hotelEntries.values()) if (hh.pianoKey === fk && hh.pianist) { say('🎹 Shh — the pianist’s playing'); return true; } // (nor the hotel's)
       furnFx.set(fk, { fk, f, kind: 'piano', t: 0, parts: [], note: 0 });
       say('🎹 ♪'); return true;
     }
@@ -11958,7 +12159,7 @@
     }
     if (name === 'Dartboard') { if (!remote) enterDarts(fk); return true; } // see DARTS
     if (name === 'Jukebox') { // ✋ brings up the song list (see THE JUKEBOX); someone else's pick plays here too
-      if (remote) { const i = remote.song | 0; if (i < 0) { if (jukeNow && jukeNow.fk === fk) jukeStop(); } else jukePlayIdx(fk, i, furnPos(g)); return true; }
+      if (remote) { jukeShuffle = null; /* (someone else has picked: theirs now) */ const i = remote.song | 0; if (i < 0) { if (jukeNow && jukeNow.fk === fk) jukeStop(); } else jukePlayIdx(fk, i, furnPos(g)); return true; }
       openJukePanel(fk, g); return 'panel';
     }
     if (name === 'Fruit Machine') {
@@ -26667,6 +26868,7 @@
       if (roadRampCells.size) { const h = rdRampSurfAt(x, y, z); if (h !== null && y < h && y >= h - 1.2) return true; } // a road ramp — see roadRampCells
       if (hotelEntries && hotelEntries.size && hotelSolidAt(x, y, z, k)) return true; // lift doors / the lift car's floor — see HOTEL
       if (furnBoxCells && furnBoxCells.size && furnBoxSolidAt(x, y, z, bx, bz)) return true; // furniture — see FURNITURE INTERACTION & COLLISION
+      if (concertStages && concertSolidAt(x, y, z)) return true; // a stadium's concert stage, while it's up — see STADIUM CONCERTS
       if (yachts && yachts.size && yachtSolidAt(x, y, z)) return true; // a yacht's decks — see SUPERYACHT
       // A fence is half a block taller to walk into than it looks (like Minecraft's): the bottom half of the
       // empty cell above one is solid over the fence's footprint, so it can't be jumped over (a jump reaches
@@ -27376,6 +27578,13 @@
       text: () => 'Hatch a chicken.',
       tip: () => 'Animal Seeds → Chicken. Chickens lay eggs for the bakery’s cakes.',
       prog: () => [objHatched(2) ? 1 : 0, 1] },
+    { id: 'mate', icon: '💞', title: 'Love is in the air', reward: 500,
+      text: () => 'Get two animals to mate in a field.',
+      tip: () => '<b>1.</b> Farming → Animal Seeds: hatch a male — Bull (cows), Ram (sheep), Boar (pigs) or Cockerel (chickens). The female’s a Cow, Sheep, Pig or Chicken.<br><b>2.</b> Make a field: fence in some grass all the way round, with a gate in the fence. It must be all grass inside.<br><b>3.</b> Equipment → 🪢 Lead: ✋ near each animal, walk it into the field and ✋ again to let go. You’ll see “it lives in this field now”.<br>He’ll go over to her, hearts appear and a 💗 shows she’s expecting. Her young arrive after half that animal’s hatch time.',
+      prog: () => { let mated = objCount('mated') > 0; if (!mated && !visitMode) { try { loadBreed(); mated = Object.keys(breedState.preg).length > 0 || Object.keys(breedState.dam || {}).length > 0; } catch (e) {} }
+        if (mated) return [3, 3];
+        let field = false; try { loadFields(); field = Object.keys(fieldState.f).length > 0; } catch (e) {}
+        return objStep([7, 8, 9, 10].some(objHatched), field, false); } },
     { id: 'tailor', icon: '🧶', title: 'Tailor-made', reward: 400,
       text: () => 'Buy a Tailor and have her knit you a jumper.',
       tip: () => objBuyHow('tailor') + ' Sell her your wool (3 makes a jumper), then buy a <b>Wool Jumper</b> — you put it straight on.',
@@ -27472,6 +27681,7 @@
     { id: 's_flowers', icon: '🌷', title: 'Flower garden', reward: 150, text: () => 'Plant 20 flowers.', tip: () => 'Flower seeds are on the Seeds list with the crops — sow them on mud. They sell at the grocer too.', prog: () => [objCount('flower'), 20] },
     { id: 's_pet', icon: '🐕', title: 'A pet of your own', reward: 200, text: () => 'Hatch a dog, a cat or a horse.', tip: () => 'Animal Seeds → Dog, Cat or Horse, into an incubator. Ride the horse!', prog: () => [(objHatched(3) || objHatched(4) || objHatched(5)) ? 1 : 0, 1] },
     { id: 's_lead', icon: '🪢', title: 'Walkies', reward: 100, text: () => 'Lead an animal on the lead.', tip: () => 'Equipment → 🪢 Lead, then ✋ near an animal.', prog: () => [objCount('lead'), 1] },
+    { id: 's_concert', icon: '🎤', title: 'Rock the stadium', reward: 5000, text: () => 'Upgrade your Football Stadium for concerts.', tip: () => 'At your stadium, ✋ the <b>Ticket Booth</b> → Upgrade for concerts (' + objFmt(100000) + '). Every night from 18:00 there’s a stage, a band and a dancing crowd, with ticket money in the morning.', prog: () => [objCount('concert') > 0 || objAnySpec('stadium', sp => sp.stadium && sp.stadium.concert) ? 1 : 0, 1] },
     { id: 's_explore', icon: '🧭', title: 'Explorer', reward: 200, text: () => 'Travel 1,000 blocks from the middle of your world.', tip: () => 'The arrow by the clock always points back to the middle. A vehicle makes it quicker.', prog: () => [Math.min(1000, Math.floor(objCount('far'))), 1000] },
     { id: 's_sky', icon: '☁️', title: 'Head in the clouds', reward: 150, text: () => 'Fly 100 blocks above sea level.', tip: () => 'Toggle flying (or take a helicopter) and keep going up.', prog: () => [Math.min(100, Math.floor(objCount('high'))), 100] },
     { id: 's_harvest1k', icon: '🎃', title: 'Bumper crop', reward: 1000, text: () => 'Harvest 1,000 crops by hand.', tip: () => 'Every crop you ✋ pick counts.', prog: () => [objCount('harvest'), 1000] },
@@ -29133,7 +29343,7 @@
     { t: 'restaurant', name: 'Restaurant',    emoji: '🍽️', price: 18000, sx: 27, sz: 40, h: 7, note: 'cooks your crops and meat into meals — hire a head chef, who grows the veg in its kitchen garden' },
     { t: 'rocket',    name: 'Rocket & Moon Base', emoji: '🚀', price: 10000000, sx: 36, sz: 36, h: 36, note: 'launch to the Moon — low gravity, a moon base, moon rock worth 💰1,000–10,000 a sample' },
     { t: 'yacht',     name: 'Superyacht',     emoji: '🛥️', price: 5000000, sx: 12, sz: 36, h: 12, note: 'sail her anywhere there\u2019s deep water — stand on the shore facing the sea to buy' },
-    { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day' },
+    { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match every afternoon you can watch live — gate money every day. Upgrade it at the ticket office for concerts every night' },
     { t: 'haunted',   name: 'Haunted House',  emoji: '👻', price: 1000000, sx: 33, sz: 35, h: 17, note: 'a ghost train through five spooky rooms you can ride — riders pay every day' },
     { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
     { t: 'arena',     name: 'Arena',          emoji: '🎯', price: 1000000, sx: 120, sz: 120, h: 22, note: 'a massive indestructible metal battle arena — three levels, maze, containers, towers and catwalks; fight other players or bots' }, // see ARENA
@@ -29520,7 +29730,7 @@
 
   // ================= HOTEL =================
   // Bought from the Property menu. 15 x 17, eleven storeys: a ground-floor reception (desk, receptionist, a
-  // few armchairs) and 10 floors above it, each with a hallway outside the lift and ONE unfurnished room off
+  // few armchairs, a pianist at a grand piano) and 10 floors above it, each with a hallway outside the lift and ONE unfurnished room off
   // it — a separate bathroom, plus an open-plan kitchen / living room / bedroom (the kitchen corner and the
   // bathroom have their own floor tiles so you can see where things are meant to go). The roof has a pool,
   // sun loungers and a glass balustrade.
@@ -29726,6 +29936,11 @@
     }
     { const [x, z] = f.cell(1, 4); addFurnitureTracked(x, floor, z, 0, 2, reg); }  // Coffee Table
     { const [x, z] = f.cell(13, 4); addFurnitureTracked(x, floor, z, 0, 2, reg); }
+    // the grand piano in the corner of reception, its tail to the side wall and the keyboard facing into the room (the pianist: hotelPianist)
+    let pianoKey = null;
+    { const cs = [[1, 8], [2, 8], [1, 9], [2, 9]].map(c => f.cell(c[0], c[1])), pi = FURNITURE_TYPES.findIndex(t => t.name === 'Grand Piano');
+      for (const [x, z] of cs) { const k = key(x, floor, z), fu = furniture.get(k); if (fu && !(FURNITURE_TYPES[fu.typeIdx] && FURNITURE_TYPES[fu.typeIdx].name === 'Grand Piano')) removeFurniture(k); }
+      if (pi >= 0) pianoKey = addFurnitureTracked(Math.min(...cs.map(c => c[0])), floor, Math.min(...cs.map(c => c[1])), furnRotFacing('Grand Piano', f.s[0], f.s[1]), pi, reg); }
     let keeper;
     {
       const colors = {
@@ -29805,7 +30020,7 @@
       for (let u = 1; u <= 13; u++) for (let v = 1; v <= 8; v++) { const [x, z] = f.cell(u, v); cells.add(x + ',' + z); uv.push([u, v, x, z]); }
       h.rooms.push({ n: i, slab: slab(i), cells, uv }); // uv: [u, v, x, z] — for the hotel manager (see AUTO-FURNISHING)
     }
-    if (old) { h.rented = old.rented; h.checked = old.checked; hotelClearGuests(old); } // the new rooms get their own guests
+    if (old) { h.rented = old.rented; h.checked = old.checked; hotelClearGuests(old); hotelPianistClear(old); } // the new rooms get their own guests
     // The big lit name sign on top of the lift housing, facing the front.
     {
       const g = new THREE.Group(); const [px, pz] = f.pos(7.5, 13.2);
@@ -29814,6 +30029,7 @@
       hotelSetSign(h);
     }
     hotelEntries.set(ck, h);
+    { const [px, pz] = f.pos(3.05, 9); h.pianoKey = pianoKey; h.pianoSeat = { x: px, y: floor + 1.1, z: pz, ry: Math.atan2(-f.s[0], -f.s[1]) }; h.pianoFloor = floor; }
     hotelUpdateDoors(h, true);
 
     registerBuildingFootprint({ x0: sx0, x1: sx1, z0: sz0, z1: sz1, gy: floor, baseSurfaceType: 0, subFillType: 1, trim: palette.trim, doorSide, standalone: true }, ck);
@@ -30134,6 +30350,14 @@
     return null;
   }
   function stillLimbs(m) { for (const l of m.userData.legs || []) l.rotation.x = 0; for (const a of m.userData.arms || []) a.rotation.x = 0; }
+  // The pianist in reception: at the keys whenever you're anywhere near (the music's with the restaurant's — see REST_PIANO_TUNES).
+  function hotelPianistClear(h) { if (h.pianist) { scene.remove(h.pianist.mesh); disposeObject3D(h.pianist.mesh); h.pianist = null; } }
+  function hotelPianist(h, dt) {
+    const S = h.pianoSeat, show = S && h.pianoKey && furniture.has(h.pianoKey) && Math.hypot(player.pos.x - S.x, player.pos.z - S.z) < HOTEL_GUEST_SHOW;
+    if (!show) { hotelPianistClear(h); return; }
+    if (!h.pianist) { const m = pubFigure(true, 'staff', h.ck + ':pianist'); m.position.set(S.x, S.y, S.z); m.rotation.y = S.ry; h.pianist = { mesh: m, t: Math.random() * 6, baseRy: S.ry }; }
+    if (Math.hypot(player.pos.x - S.x, player.pos.z - S.z) < 20) { h.pianist.t += dt; pianistPlay(h.pianist); }
+  }
   function updateHotelGuests(h, dt) {
     const cx = (h.bx0 + h.bx1) / 2 + 0.5, cz = (h.bz0 + h.bz1) / 2 + 0.5;
     const show = h.car && h.car.parent && Math.hypot(player.pos.x - cx, player.pos.z - cz) < HOTEL_GUEST_SHOW;
@@ -30208,7 +30432,8 @@
     if (!visitMode && hotelPrevDayTime !== null && hotelPrevDayTime > 0.9 && dayTime < 0.1) hotelNightPassed();
     hotelPrevDayTime = dayTime;
     for (const h of hotelEntries.values()) {
-      if (h.worldId !== currentWorldId) continue;
+      if (h.worldId !== currentWorldId) { hotelPianistClear(h); continue; }
+      try { hotelPianist(h, dt); } catch (err) { console.warn('hotel pianist error (recovered):', err); }
       if (now >= h.checkAt) { h.checkAt = now + 3000; hotelRefreshRooms(h); } // visitors too — it's what decides which rooms have guests
       try { hotelMgrTick(h, now); } catch (err) { console.warn('hotel manager error (recovered):', err); } // see AUTO-FURNISHING
       try { updateHotelGuests(h, dt); } catch (err) { console.warn('hotel guests error (recovered):', err); }
@@ -32565,6 +32790,12 @@
     }
     return null;
   }
+  function pianistPlay(pe) { // hands moving over the keys, swaying a little (the music: REST_PIANO_TUNES)
+    const m = pe.mesh, arms = m.userData.arms || [];
+    if (arms[0]) arms[0].rotation.x = -1.75 + Math.sin(pe.t * 5.1) * 0.1;
+    if (arms[1]) arms[1].rotation.x = -1.75 + Math.sin(pe.t * 4.3 + 1) * 0.1;
+    m.rotation.y = pe.baseRy + Math.sin(pe.t * 0.7) * 0.05;
+  }
   function restWaiterStep(r, pe, dt, now) {
     const m = pe.mesh, arms = m.userData.arms || [], legs = m.userData.legs || [];
     const carry = what => { pe.carry = what; pe.tray.visible = !!what; plateFood(pe.tray, what === 'full'); };
@@ -32674,16 +32905,12 @@
           if (pe.meal === 'eat') { pe.meal = 'done'; plateFood(pe.plate, false); pe.mealT = 4 + Math.random() * 6; } // finished: a clean plate, waiting to be cleared
           else if (pe.meal === 'gap') { pe.meal = 'wait'; pe.mealT = 0; } } } // ready for the next course
       }
-      else if (pe.role === 'pianist') { // hands moving over the keys, swaying a little (the music: REST_PIANO_TUNES)
-        if (arms[0]) arms[0].rotation.x = -1.75 + Math.sin(pe.t * 5.1) * 0.1;
-        if (arms[1]) arms[1].rotation.x = -1.75 + Math.sin(pe.t * 4.3 + 1) * 0.1;
-        m.rotation.y = pe.baseRy + Math.sin(pe.t * 0.7) * 0.05;
-      }
+      else if (pe.role === 'pianist') pianistPlay(pe);
       else if (pe.role === 'chef') { if (arms[1]) arms[1].rotation.x = -0.8 - Math.abs(Math.sin(pe.t * 3)) * 0.4; }
       else if (pe.role === 'waiter') restWaiterStep(r, pe, dt, now);
     }
   }
-  // ---- the pianist's music: three real tunes, one after another and round again, heard round the restaurant and fading
+  // ---- the pianists' music (the restaurant's and the hotel's): three real tunes, one after another and round again, heard round the room and fading
   // as you walk away. Separate files in a piano/ folder next to voxel.html (like music.mp3 and the jukebox — so this
   // page stays small). Only while a pianist's playing (the restaurant's open: see updateRestPeople) and you're in
   // earshot; walk off and it pauses, come back and the tune carries on. The game's own tune and any jukebox song take turns with it.
@@ -32718,7 +32945,13 @@
         const fu = r.pianoKey && furniture.get(r.pianoKey); if (!fu) continue;
         v = Math.max(v, 1 - fu.group.position.distanceTo(player.pos) / REST_PIANO_RANGE);
       }
+      for (const h of hotelEntries.values()) { // the hotel's: heard in reception, not up in the rooms
+        if (h.worldId !== currentWorldId || !h.pianist || player.pos.y > h.pianoFloor + 6) continue;
+        const fu = h.pianoKey && furniture.get(h.pianoKey); if (!fu) continue;
+        v = Math.max(v, 1 - fu.group.position.distanceTo(player.pos) / REST_PIANO_RANGE);
+      }
     }
+    if (typeof concertHeard !== 'undefined' && concertHeard) v = 0; // (nothing competes with a concert)
     pianoHeard = v > 0;
     if (!pianoHeard) { if (pianoEl && !pianoEl.paused) pianoEl.pause(); return; }
     pianoEnsure();
@@ -34491,6 +34724,7 @@
       crowdPlane(8, 4.6, 21, 4.6, [-toS[0], -toS[1]]); crowdPlane(27, 4.6, 40, 4.6, [-toS[0], -toS[1]]); crowdPlane(8, 59.4, 40, 59.4, [-toN[0], -toN[1]]); }
     crowd.visible = false;
     // pitch markings (one merged mesh of thin white strips) and the goals
+    const goals = [];
     { const lines = [], L = (u0, v0, u1, v1) => { const [ax, az] = f.pos(u0, v0), [bx, bz] = f.pos(u1, v1), dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz); lines.push([0.12, 0.02, len + 0.12, (ax + bx) / 2, G + 1.01, (az + bz) / 2, Math.atan2(dx, dz), 0xffffff]); };
       const { u0, u1, v0, v1 } = PITCH, mu = (u0 + u1) / 2, mv = (v0 + v1) / 2;
       L(u0, v0, u1, v0); L(u0, v1, u1, v1); L(u0, v0, u0, v1); L(u1, v0, u1, v1); L(u0, mv, u1, mv);
@@ -34505,7 +34739,7 @@
         goal.add(mergedBoxes([[0.12, 2.0, 0.12, -w / 2, 1.0, 0, 0, 0xffffff], [0.12, 2.0, 0.12, w / 2, 1.0, 0, 0, 0xffffff], [w + 0.12, 0.12, 0.12, 0, 2.0, 0, 0, 0xffffff]]));
         const net = new THREE.Mesh(new THREE.BoxGeometry(w, 2.0, 1.4), new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }));
         net.position.set(0, 1.0, 0.7); goal.add(net);
-        prop(goal, mu, gv, G + 1, dir > 0 ? 'back' : 'front');
+        prop(goal, mu, gv, G + 1, dir > 0 ? 'back' : 'front'); goals.push(goal);
       }
     }
     // floodlight pylons at the corners (their lamps glow at dusk; two pooled lights over the pitch)
@@ -34526,16 +34760,16 @@
     for (const v of [26, 36]) { const dg = mergedBoxes([[1.2, 1.4, 4, 0, 0.7, 0, 0, 0x2a2d34], [1.0, 0.4, 3.6, 0.1, 0.25, 0, 0, 0xc0392b]]); prop(dg, 8.8, v, G + 1, 'right'); }
     // the ticket office outside the main entrance
     const officeKey = furn(19, 0, 'Ticket Booth', 'front'); furn(28, 0, 'Ticket Booth', 'front');
-    const st = { ck: K.ck, spec: replay, f, floor: G, worldId: currentWorldId, crowd, lamps, lights, board, btex, bc, officeKey, people: [], peopleSig: null,
+    const st = { ck: K.ck, spec: replay, f, floor: G, worldId: currentWorldId, crowd, goals, reg, lamps, lights, board, btex, bc, officeKey, people: [], peopleSig: null,
       bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1, match: null, ball: null, kick: null, boardShown: '' };
-    const old = stadiums.get(K.ck); if (old) stadClear(old);
+    const old = stadiums.get(K.ck); if (old) { stadClear(old); concertRigDrop(old); }
     stadState(st); stadiums.set(K.ck, st);
     stadDrawBoard(st, true);
     K.finish();
   }
   function stadClear(s2) { if (s2.match) { for (const pl of s2.match.players) { scene.remove(pl.mesh); disposeObject3D(pl.mesh); } } if (s2.ball) { scene.remove(s2.ball.mesh); disposeObject3D(s2.ball.mesh); } s2.match = null; s2.ball = null; }
   function stadDrawBoard(s2, force) {
-    const m = s2.match, txt = m ? (clubName(s2) + ' ' + m.home + ' – ' + m.away + ' ' + m.opp + '|' + Math.min(90, Math.floor(m.minute)) + "'") : (clubName(s2) + '|Next match 15:00');
+    const m = s2.match, txt = s2.rig && s2.rig.group.visible ? concertBandName(s2) + ' — Live|♪ ' + concertSong(s2).title : m ? (clubName(s2) + ' ' + m.home + ' – ' + m.away + ' ' + m.opp + '|' + Math.min(90, Math.floor(m.minute)) + "'") : (clubName(s2) + '|Next match 15:00');
     if (!force && txt === s2.boardShown) return; s2.boardShown = txt;
     const x = s2.bc.getContext('2d'), [a, b] = txt.split('|');
     x.fillStyle = '#0a0a0a'; x.fillRect(0, 0, 512, 128);
@@ -34651,7 +34885,20 @@
     const inWindow = dayTime >= MATCH_START && dayTime < MATCH_START + MATCH_LEN;
     const dusk = Math.sin(dayTime * Math.PI * 2) < 0.15;
     for (const s2 of stadiums.values()) {
-      if (s2.worldId !== currentWorldId || !s2.board || !s2.board.parent) { stadClear(s2); continue; }
+      if (s2.worldId !== currentWorldId || !s2.board || !s2.board.parent) { stadClear(s2); concertRigDrop(s2); continue; }
+      // a concert tonight (see STADIUM CONCERTS): the stage is up instead of the goals and the kickabout, and the floodlights are off
+      const gig = concertTonight(stadState(s2)) && Math.hypot(player.pos.x - s2.board.position.x, player.pos.z - s2.board.position.z) < CONCERT_SHOW;
+      for (const g of s2.goals || []) g.visible = !gig;
+      if (gig) {
+        if (s2.ball) { scene.remove(s2.ball.mesh); disposeObject3D(s2.ball.mesh); s2.ball = null; }
+        for (const g of s2.lamps) g.material.color.setHex(0x333333);
+        for (const l of s2.lights) l.intensity = 0;
+        s2.crowd.visible = false; // (real fans on the tiers tonight — see concertRigBuild)
+        try { concertStep(s2, dt); } catch (err) { console.warn('concert error (recovered):', err); }
+        stadDrawBoard(s2, false);
+        continue;
+      }
+      concertRigHide(s2);
       for (const g of s2.lamps) g.material.color.setHex(dusk || s2.match ? 0xe9e4d2 : 0x555555);
       for (const l of s2.lights) l.intensity = dusk ? 1.4 : 0; // was 2.2 — too glaring on the pitch
       const near = Math.hypot(player.pos.x - s2.board.position.x, player.pos.z - s2.board.position.z) < 90;
@@ -34696,8 +34943,13 @@
       const st = stadState(s2), n = stadNight(s2);
       st.till = Math.floor(st.till || 0) + n.profit; st.last = n;
       st.dayNo = (st.dayNo || 0) + 1; // a new match day
+      let gigMsg = '';
+      if (st.concert) { // last night's concert: tickets sold (see STADIUM CONCERTS)
+        const fans = CONCERT_FANS_MIN + Math.floor(Math.random() * (CONCERT_FANS_MAX - CONCERT_FANS_MIN + 1)), take = fans * CONCERT_TICKET;
+        st.till += take; st.concert.last = { fans, take }; st.concert.total = Math.floor(st.concert.total || 0) + take; gigMsg = ' · 🎤 ' + fans.toLocaleString() + ' concert tickets — 💰' + take.toLocaleString();
+      }
       specSave(s2.ck, s2.spec); playCoin();
-      showSaveStatus('⚽ ' + clubName(s2) + ': ' + n.gate + ' through the gates' + (n.won ? ' after the win' : '') + ' — 💰' + n.profit + ' in the ticket office');
+      showSaveStatus('⚽ ' + clubName(s2) + ': ' + n.gate + ' through the gates' + (n.won ? ' after the win' : '') + ' — 💰' + n.profit + ' in the ticket office' + gigMsg);
     }
   }
   function stadForFurniture(fk) {
@@ -34718,7 +34970,14 @@
       + (LR ? bizRow('Last match', clubName(s2) + ' ' + LR.home + '–' + LR.away + ' ' + LR.opp) : '')
       + bizRow('Next match', '15:00 vs ' + stadOpponent(s2, stadDayNumber(s2) + (LR && LR.day === stadDayNumber(s2) ? 1 : 0)) + ' (in about ' + minsTo + ' min)')
       + bizRow('Gate', n.gate + ' × 💰' + STAD_TICKET + (n.won ? ' (up after a win)' : '')) + bizRow('Wages', '−💰' + n.wages) + bizRow('Each day', '💰' + n.profit, '#7ee08a')
-      + '<div style="opacity:0.7;margin-top:8px;">Be at the ground at 15:00 to watch the match live. Any other time there\u2019s a ball on the pitch for a kickabout.</div>'
+      + (st.concert
+        ? '<div style="background:rgba(160,90,255,0.14);border:1px solid rgba(160,90,255,0.5);border-radius:8px;padding:10px;margin-top:10px;"><div style="font-weight:700;margin-bottom:6px;">🎤 Concerts — every night, 18:00 till dawn</div>'
+          + '<div style="display:flex;gap:6px;margin-bottom:8px;"><input id="stadBandInput" maxlength="24" autocomplete="off" placeholder="Band name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:15px;">' + bizBtn('stadBandSave', 'Rename', '#6a3ac0') + '</div>'
+          + bizRow('Tickets', 'about ' + Math.round((CONCERT_FANS_MIN + CONCERT_FANS_MAX) / 2).toLocaleString() + ' fans × 💰' + CONCERT_TICKET)
+          + (st.concert.last ? bizRow('Last concert', st.concert.last.fans.toLocaleString() + ' fans — 💰' + st.concert.last.take.toLocaleString(), '#7ee08a') : '')
+          + bizRow('Taken so far', '💰' + Math.floor(st.concert.total || 0).toLocaleString()) + '</div>'
+        : '<div style="background:rgba(160,90,255,0.14);border:1px solid rgba(160,90,255,0.5);border-radius:8px;padding:10px;margin-top:10px;display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-weight:700;">🎤 Upgrade for concerts</div><div style="opacity:0.8;font-size:12px;">A stage, lights and a live band on the pitch every night, with about ' + Math.round((CONCERT_FANS_MIN + CONCERT_FANS_MAX) / 2).toLocaleString() + ' fans at 💰' + CONCERT_TICKET + ' a ticket. Football carries on by day.</div></div>' + bizBtn('stadConcertBuy', '💰' + CONCERT_PRICE.toLocaleString(), '#6a3ac0') + '</div>')
+      + '<div style="opacity:0.7;margin-top:8px;">Be at the ground at 15:00 to watch the match live. Any other time there\u2019s a ball on the pitch for a kickabout' + (st.concert ? ', until the stage goes up at 18:00' : '') + '.</div>'
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="stadClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const $ = id => document.getElementById(id), inp = $('stadNameInput'); inp.value = s2.spec.name || '';
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) s2.spec.name = c; else delete s2.spec.name; specSave(s2.ck, s2.spec); stadDrawBoard(s2, true); playThud(500); openStadiumOffice(fk); };
@@ -34726,9 +34985,268 @@
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
     $('stadCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(s2.ck, s2.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_stad', a); showSaveStatus('🎟️ Collected 💰' + a); openStadiumOffice(fk); });
     $('stadClose').addEventListener('click', () => { el.style.display = 'none'; });
+    if ($('stadConcertBuy')) $('stadConcertBuy').addEventListener('click', () => { if (!trySpendCoins(CONCERT_PRICE, 'the concert upgrade')) return; st.concert = { song: 0, band: '', last: null, total: 0 }; specSave(s2.ck, s2.spec); playCoin(); objNote('concert'); showSaveStatus('🎤 Upgraded! The first concert’s at 18:00 tonight'); openStadiumOffice(fk); });
+    if ($('stadBandInput')) { const bi = $('stadBandInput'); bi.value = st.concert.band || ''; bi.placeholder = CONCERT_DEFAULT_BAND;
+      const saveBand = () => { st.concert.band = (bi.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); specSave(s2.ck, s2.spec); stadDrawBoard(s2, true); if (s2.rig) s2.rig.screenSig = ''; playThud(500); openStadiumOffice(fk); };
+      $('stadBandSave').addEventListener('click', saveBand); bi.addEventListener('keydown', e => { if (e.key === 'Enter') saveBand(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); }); }
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
   }
+
+  // ================= STADIUM CONCERTS =================
+  // A 💰100,000 upgrade, bought at the stadium's ticket office. Football carries on by day; every night from 18:00 until
+  // just before dawn the goals come away and a stage stands at the north end of the pitch: two singers (a man and a
+  // woman — side by side with their own space for most songs, close together for the duets), a band behind them, an LED wall,
+  // moving beams, lasers and flame jets. Fans dance on the pitch; the stands fill up and bounce, phone lights twinkling.
+  // The songs are real files in a concert/ folder next to voxel.html, played in order and round again, picking up where
+  // they left off. You hear it as you approach (fading in and muffled from outside until you're close) — even before
+  // the stadium's loaded. Everything moves to the song's own beat (see jdBeatStep). Tickets: settled every sunrise with
+  // the football gate, into the ticket office, loaded or not (stadNightPassed).
+  const CONCERT_PRICE = 100000, CONCERT_TICKET = 10, CONCERT_FANS_MIN = 1800, CONCERT_FANS_MAX = 2200, CONCERT_START = 0.5, CONCERT_END = 0.97, CONCERT_SHOW = 170, CONCERT_HEAR = 170;
+  const CONCERT_DEFAULT_BAND = 'The Long Road';
+  const CONCERT_SONGS = [
+    { title: 'I’m Yours for the Long Road', file: 'concert/im-yours-for-the-long-road.mp3', duet: true },
+    { title: 'The Day That Got Away', file: 'concert/the-day-that-got-away.mp3' },
+    { title: 'Hold My Hand and Race', file: 'concert/hold-my-hand-and-race.mp3' },
+    { title: 'A Thin Line', file: 'concert/a-thin-line.mp3', duet: true },
+    { title: 'I Miss You in the Small', file: 'concert/i-miss-you-in-the-small.mp3' },
+    { title: 'In and Out of Love', file: 'concert/in-and-out-of-love.mp3' },
+    { title: 'Paper Cup Sky', file: 'concert/paper-cup-sky.mp3' },
+  ];
+  const CONCERT_COLOURS = [0xff2a6d, 0x05d9e8, 0xffd23f, 0x8a2be2, 0x39ff14, 0xff7a18];
+  const concertWindow = () => dayTime >= CONCERT_START && dayTime < CONCERT_END;
+  function concertTonight(st) { return !!(st && st.concert) && concertWindow(); }
+  function concertBandName(s2) { const c = stadState(s2).concert; return (c && c.band) || CONCERT_DEFAULT_BAND; }
+  function concertSong(s2) { const c = stadState(s2).concert; return CONCERT_SONGS[((c && c.song) | 0) % CONCERT_SONGS.length]; }
+  // ---- the stage's solid parts (asked by isSolid) ----
+  var concertStages = 0; // how many are up — nothing to check otherwise
+  const CONCERT_DECK = { u0: 15, u1: 33, v0: 46, v1: 54, h: 1.5 };
+  function concertSolidAt(x, y, z) {
+    for (const s2 of stadiums.values()) {
+      if (!s2.rig || !s2.rig.group.visible || s2.worldId !== currentWorldId) continue;
+      if (y < s2.floor + 1 || y >= s2.floor + 1 + CONCERT_DECK.h) continue;
+      const [u, v] = stadToLocal(s2, x, z), h = y - (s2.floor + 1), D = CONCERT_DECK;
+      if (u >= D.u0 && u < D.u1 && v >= D.v0 && v < D.v1) return true;
+      if (u >= 22.5 && u < 25.5) { if (v >= 45 && v < 46 && h < 1.0) return true; if (v >= 44 && v < 45 && h < 0.5) return true; } // the steps up the front
+    }
+    return false;
+  }
+  // ---- the rig ----
+  function concertRigBuild(s2) {
+    const f = s2.f, G = s2.floor, group = new THREE.Group(), [cx, cz] = f.pos(24, 50), deck = CONCERT_DECK.h, deckY = deck;
+    group.position.set(cx, G + 1, cz); group.rotation.y = Math.atan2(-f.d[0], -f.d[1]); // local +z: towards the fans (south); local origin: mid-stage at pitch level
+    scene.add(group);
+    const B = []; // [w, h, d, x, y, z, ry, colour]
+    const box = (w, h, d, x, y, z, c, ry) => B.push([w, h, d, x, y, z, ry || 0, c]);
+    box(18, deck, 8, 0, deck / 2, 0, 0x17171b); box(18.1, 0.1, 8.1, 0, deck + 0.02, 0, 0x2b2b31);      // the deck
+    box(3, 0.5, 1, 0, 0.25, 5.5, 0x26262c); box(3, 1.0, 1, 0, 0.5, 4.5, 0x26262c);                       // the steps up the front
+    box(4.4, 0.8, 3, 0, deck + 0.4, -2.3, 0x101014);                                                      // the drum riser
+    for (const sx of [-1, 1]) {
+      for (const z of [-3.8, 3.8]) box(0.45, 12.5, 0.45, sx * 9.2, 6.25, z, 0x3a3f46);                   // the truss towers
+      box(0.45, 0.45, 8, sx * 9.2, 12.3, 0, 0x3a3f46);
+      for (let i = 0; i < 3; i++) box(2, 1.6, 1.4, sx * 11.3, 0.8 + i * 1.6, 2.6 - i * 0.12, i === 1 ? 0x101010 : 0x1b1b1b); // speaker stacks
+      for (let i = 0; i < 3; i++) box(1.6, 0.7, 0.04, sx * 11.3, 0.8 + i * 1.6, 3.32 - i * 0.12, 0x050505);
+      box(1.4, 0.45, 0.7, sx * 3.6, deck + 0.22, 3.2, 0x111114, sx * 0.3);                                 // a monitor wedge
+      box(1.0, 1.3, 0.7, sx * 6.6, deck + 0.65, -2.8, 0x222228);                                           // amp
+    }
+    for (const z of [-3.8, 3.8]) box(18.8, 0.5, 0.5, 0, 12.3, z, 0x3a3f46);                              // the truss across
+    box(16.8, 8.9, 0.3, 0, deck + 4.75, -3.95, 0x08080a);                                                  // the LED wall's frame
+    box(26, 1.1, 0.25, 0, 0.55, 8.6, 0x9aa0a8);                                                            // the crowd barrier
+    // the drum kit
+    box(0.7, 0.7, 0.5, 0, deck + 1.15, -1.6, 0xb02030);
+    for (const sx of [-1, 1]) { box(0.4, 0.3, 0.4, sx * 0.65, deck + 1.4, -1.45, 0x8a2030); box(0.04, 0.9, 0.04, sx * 1.15, deck + 1.2, -1.6, 0xb8bcc2); box(0.6, 0.02, 0.6, sx * 1.15, deck + 1.68, -1.6, 0xd8b050); }
+    const body = mergedBoxes(B); body.castShadow = false; body.receiveShadow = false; group.add(body);
+    // the LED wall (a canvas: the band, the song, bars that move with the music)
+    const cv = document.createElement('canvas'); cv.width = 512; cv.height = 256; const tex = new THREE.CanvasTexture(cv);
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(16.2, 8.3), new THREE.MeshBasicMaterial({ map: tex })); screen.position.set(0, deck + 4.75, -3.78); group.add(screen);
+    const sideTex = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 2.6), new THREE.MeshBasicMaterial({ map: tex }));
+    for (const sx of [-1, 1]) { const m = sx < 0 ? sideTex : sideTex.clone(); m.position.set(sx * 11.3, 8.6, 2.6); group.add(m); const fr = mergedBoxes([[4.7, 2.9, 0.2, 0, 0, -0.14, 0, 0x08080a]]); fr.castShadow = false; fr.position.copy(m.position); group.add(fr); }
+    // beams, from the front truss and the back one
+    const beams = [], beamGeo = new THREE.ConeGeometry(1.5, 34, 12, 1, true); beamGeo.translate(0, -17, 0);
+    for (let i = 0; i < 12; i++) {
+      const piv = new THREE.Group(); piv.position.set(-8 + i * (16 / 11), 12.0, i % 2 ? 3.6 : -3.4);
+      const mat = new THREE.MeshBasicMaterial({ color: CONCERT_COLOURS[i % CONCERT_COLOURS.length], transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+      const cone = new THREE.Mesh(beamGeo, mat); piv.add(cone);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6), new THREE.MeshBasicMaterial({ color: 0xffffff })); piv.add(head);
+      group.add(piv); beams.push({ piv, mat, i });
+    }
+    // lasers: thin lines out across the crowd
+    const lasers = []; for (let i = 0; i < 6; i++) { const piv = new THREE.Group(); piv.position.set(-7.5 + i * 3, deck + 8.8, -3.6); const m = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 60), new THREE.MeshBasicMaterial({ color: i % 2 ? 0x39ff14 : 0xff2a6d, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })); m.position.z = 30; piv.add(m); group.add(piv); lasers.push(piv); }
+    // flame jets along the front of the stage
+    const flames = []; for (const x of [-8, -4.5, 4.5, 8]) { const fl = new THREE.Mesh(new THREE.ConeGeometry(0.42, 3.2, 8), new THREE.MeshBasicMaterial({ color: 0xffa030, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })); fl.position.set(x, deck + 1.6, 3.6); fl.visible = false; group.add(fl); flames.push(fl); }
+    // real light on the stage and the crowd
+    const lights = [];
+    for (const [x, z, y] of [[0, 2, 9], [-14, 24, 12], [14, 24, 12]]) { const l = makePooledLight(0xffffff, 0, 46, 0.5); l.castShadow = false; l.userData.floodRange = CONCERT_SHOW; l.position.set(x, y, z); group.add(l); lights.push(l); }
+    // the performers
+    const perf = [];
+    const mk = (look, seed, inst) => { const d = jdBuild(seed, look); group.add(d.root); jdSetFade(d, 1); d.inst = inst; perf.push(d); return d; };
+    const woman = mk({ dress: 0xd21f5a, hair: 0x2a1610, skin: 0 }, 11, 'mic'), man = mk({ dress: 0x20262e, hair: 0x241a12, skin: 1, male: true, legs: 0x15181f }, 12, 'mic');
+    const gtr = mk({ dress: 0x5a2a2a, hair: 0x4a3a20, skin: 3, male: true, legs: 0x1c2230 }, 13, 'guitar'), bass = mk({ dress: 0x24406a, hair: 0x101010, skin: 2, male: true, legs: 0x181818 }, 14, 'guitar');
+    for (const d of [woman, man]) { const mic = mergedBoxes([[0.05, 0.2, 0.05, 0, 0, 0, 0, 0x202020], [0.08, 0.08, 0.08, 0, 0.13, 0, 0, 0x9aa0a8]]); mic.castShadow = false; mic.position.set(0, -0.32, 0.03); mic.rotation.x = -0.3; d.arms[1].el.add(mic); }
+    const guitarOn = (d, col) => { const g = mergedBoxes([[0.36, 0.4, 0.07, 0, 0, 0, 0, col], [0.07, 0.72, 0.05, 0.16, 0.42, 0, 0, 0x5a3a1a, 0, -0.75]]); g.castShadow = false; g.position.set(0, 0.17, 0.14); g.rotation.z = -0.25; d.torso.add(g); };
+    guitarOn(gtr, 0xc03030); guitarOn(bass, 0x2a80a0);
+    const drummer = pubFigure(true, 'staff', s2.ck + ':drummer'); scene.remove(drummer); drummer.position.set(0, deck + 0.8, -2.55); group.add(drummer);
+    woman.home = [-2.6, 0.9]; woman.duet = [-0.7, 1.5]; woman.pos = [-2.6, 0.9];
+    man.home = [2.6, 0.9]; man.duet = [0.7, 1.5]; man.pos = [2.6, 0.9];
+    gtr.home = [-6, -1.2]; gtr.pos = [-6, -1.2]; bass.home = [6, -1.2]; bass.pos = [6, -1.2];
+    for (const d of perf) d.root.position.set(d.pos[0], deck, d.pos[1]);
+    // the crowd
+    const nPitch = isTouchDevice ? 150 : 340, nStands = isTouchDevice ? 170 : 460, n = nPitch + nStands, shirts = [0xc0392b, 0x2468b0, 0x27ae60, 0xe0a82a, 0x8e44ad], skins = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8];
+    const bodyMats = [], ims = shirts.map((c, si) => { const m0 = mergedBoxes([[0.42, 0.58, 0.24, 0, 0.29, 0, 0, c], [0.34, 0.34, 0.34, 0, 0.77, 0, 0, skins[si % skins.length]], [0.36, 0.1, 0.36, 0, 0.97, 0, 0, si % 2 ? 0x2a1a12 : 0x6a4a2a]]);
+      const mat = new THREE.MeshBasicMaterial({ vertexColors: true }); bodyMats.push(mat); const im = new THREE.InstancedMesh(m0.geometry, mat, Math.ceil(n / shirts.length) + 1); im.frustumCulled = false; im.count = 0; group.add(im); return im; });
+    const limbMat = new THREE.MeshBasicMaterial({ color: 0xc99a7a }), legMat = new THREE.MeshBasicMaterial({ color: 0x20242e });
+    const armGeo = new THREE.BoxGeometry(0.12, 0.56, 0.14); armGeo.translate(0, -0.28, 0); const legGeo = new THREE.BoxGeometry(0.17, 0.72, 0.19); legGeo.translate(0, -0.36, 0);
+    const armIM = new THREE.InstancedMesh(armGeo, limbMat, n * 2), legIM = new THREE.InstancedMesh(legGeo, legMat, n * 2); armIM.frustumCulled = legIM.frustumCulled = false; group.add(armIM); group.add(legIM);
+    const fans = []; // local: x across, z towards the south end. On the pitch, from the barrier back to the far goal line
+    const toLocal = (u, v) => { const [wx, wz] = f.pos(u, v), dx = wx - cx, dz = wz - cz, a = group.rotation.y, c = Math.cos(a), sn = Math.sin(a); return [dx * c - dz * sn, dx * sn + dz * c]; };
+    for (let i = 0; i < n; i++) {
+      const si = i % shirts.length, im = ims[si]; let x, y = 0, z, stand = i >= nPitch;
+      if (!stand) { x = (Math.random() - 0.5) * 26.4; z = 9.6 + Math.pow(Math.random(), 1.35) * 29.5; }
+      else { // on the stands' tiers, all the way round (the tier's top is its number + 1 above the ground); not behind the stage
+        const k = Math.floor(Math.random() * 6), which = Math.random(), t = Math.random(); let u, v;
+        if (which < 0.36) { u = 7.5 - k; v = 8 + t * 40; } else if (which < 0.72) { u = 40.5 + k; v = 8 + t * 40; }
+        else { v = 7.5 - k; u = 8 + t * 32; if (u >= 20.5 && u <= 27.5) u = t < 0.5 ? 19.5 : 28.5; }
+        [x, z] = toLocal(u, v); y = k + 1;
+      }
+      fans.push({ x, z, y, stand, im, ii: im.count++, ai: i * 2, style: stand ? (i % 3 ? 3 - (i % 3) : 1) : i % 4, ph: Math.random() * 0.5, yaw: stand ? Math.atan2(-x, -z) + (Math.random() - 0.5) * 0.35 : (Math.random() - 0.5) * 0.5 + Math.atan2(-x * 0.25, -(z + 3)), step: Math.random() < 0.5 ? 1 : -1 });
+    }
+    // phone lights twinkling in the stands
+    const pPos = [];
+    for (let i = 0; i < 520; i++) { const side = i % 4, t = Math.random(), k = 1 + Math.random() * 5; let u, v; if (side === 0) { u = 8 - k; v = 8 + t * 48; } else if (side === 1) { u = 39 + k; v = 8 + t * 48; } else if (side === 2) { u = 8 + t * 32; v = 8 - k; } else { u = 8 + t * 32; v = 55 + k; } const [lx, lz] = toLocal(u, v); pPos.push(lx, k + 1.6, lz); }
+    const pg = new THREE.BufferGeometry(); pg.setAttribute('position', new THREE.Float32BufferAttribute(pPos, 3));
+    const phones = new THREE.Points(pg, new THREE.PointsMaterial({ color: 0xfff4d0, size: 0.22, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending })); phones.frustumCulled = false; group.add(phones);
+    s2.reg.props.push(group);
+    s2.rig = { group, beams, lasers, flames, lights, perf, woman, man, drummer, fans, ims, armIM, legIM, bodyMats, limbMat, legMat, phones, cv, tex, screenSig: '', fanTick: 0, base: s2.crowd.position.y, flameT: 0, lastFlame: -1, beat: { b: 0, bpm: 118, avg: 0, lastAt: 0, gaps: [], buf: null } };
+    concertStages++;
+    return s2.rig;
+  }
+  function concertRigHide(s2) { if (s2.rig && s2.rig.group.visible) { s2.rig.group.visible = false; for (const l of s2.rig.lights) l.intensity = 0; stadDrawBoard(s2, true); } }
+  function concertRigDrop(s2) { if (!s2.rig) return; const R = s2.rig; s2.rig = null; concertStages = Math.max(0, concertStages - 1); scene.remove(R.group); disposeObject3D(R.group); if (s2.reg) { const i = s2.reg.props.indexOf(R.group); if (i >= 0) s2.reg.props.splice(i, 1); } }
+  // ---- the screen ----
+  function concertScreen(s2, R, pulse, colour, an) {
+    const now = performance.now(); if (now < (R.screenAt || 0)) return; R.screenAt = now + 110;
+    const x = R.cv.getContext('2d'), W = R.cv.width, H = R.cv.height, c = '#' + new THREE.Color(colour).getHexString();
+    x.fillStyle = '#05050c'; x.fillRect(0, 0, W, H);
+    const bars = 32; let data = null; if (an) { try { if (!R.fft || R.fft.length !== an.frequencyBinCount) R.fft = new Uint8Array(an.frequencyBinCount); an.getByteFrequencyData(R.fft); data = R.fft; } catch (e) {} }
+    x.fillStyle = c; for (let i = 0; i < bars; i++) { const v = data ? data[2 + i * 2] / 255 : 0.3 + 0.3 * Math.abs(Math.sin(now * 0.004 + i)) ; const h = v * H * 0.45; x.globalAlpha = 0.65; x.fillRect(i * W / bars + 1, H - h, W / bars - 2, h); }
+    x.globalAlpha = 1; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#ffffff';
+    const name = concertBandName(s2).toUpperCase(); let sz = 58; x.font = 'bold ' + sz + 'px sans-serif'; while (sz > 22 && x.measureText(name).width > W - 30) { sz -= 2; x.font = 'bold ' + sz + 'px sans-serif'; }
+    x.shadowColor = c; x.shadowBlur = 8 + pulse * 18; x.fillText(name, W / 2, 74); x.shadowBlur = 0;
+    const t = concertSong(s2).title; sz = 28; x.font = '600 ' + sz + 'px sans-serif'; while (sz > 14 && x.measureText(t).width > W - 30) { sz -= 1; x.font = '600 ' + sz + 'px sans-serif'; }
+    x.fillStyle = '#e8e8f4'; x.fillText('♪ ' + t, W / 2, 132);
+    R.tex.needsUpdate = true;
+  }
+  // ---- every frame, while it's on ----
+  const _cDummy = new THREE.Object3D();
+  function concertStep(s2, dt) {
+    const R = s2.rig || concertRigBuild(s2); if (!R.group.visible) R.group.visible = true;
+    dt = Math.min(dt, 0.1);
+    const now = performance.now(), an = concertAnalyser, BT = R.beat, song = concertSong(s2), playingHere = concertHeard;
+    jdBeatStep(dt, now, BT, playingHere ? an : null);
+    const b = BT.b, phrase = Math.floor(b / 8), bIn = b - phrase * 8, pulse = Math.pow(0.5 + 0.5 * Math.cos(2 * Math.PI * b), 3), colour = CONCERT_COLOURS[Math.floor(b / 4) % CONCERT_COLOURS.length], col2 = CONCERT_COLOURS[(Math.floor(b / 4) + 2) % CONCERT_COLOURS.length];
+    // beams and lasers
+    for (const B of R.beams) { const q = B.i, tw = b * Math.PI / 4; B.piv.rotation.set(0.55 * Math.sin(tw + q * 0.7) + (q % 2 ? -0.45 : -0.2), 0, 0.65 * Math.sin(tw * 0.75 + q)); B.mat.color.setHex(q % 2 ? colour : col2); B.mat.opacity = 0.09 + 0.14 * pulse; }
+    const lazOn = phrase % 2 === 1; for (let i = 0; i < R.lasers.length; i++) { const L = R.lasers[i]; L.visible = lazOn; if (lazOn) { L.rotation.y = Math.sin(b * Math.PI / 8 + i) * 0.5; L.rotation.x = 0.03 + 0.09 * Math.sin(b * Math.PI / 4 + i * 0.6); } }
+    // flame jets: on the first beat of every fourth phrase
+    if (phrase !== R.lastFlame && phrase % 4 === 0) { R.lastFlame = phrase; R.flameT = 1.1; }
+    R.flameT -= dt; for (let i = 0; i < R.flames.length; i++) { const fl = R.flames[i]; fl.visible = R.flameT > 0; if (fl.visible) fl.scale.set(1 + Math.sin(now * 0.05 + i) * 0.15, 0.55 + Math.max(0, R.flameT) * 0.6 + Math.sin(now * 0.08 + i) * 0.12, 1); }
+    // the light on it all
+    R.lights[0].color.setHex(0xffffff); R.lights[0].intensity = 1.2 + pulse * 0.6; R.lights[1].color.setHex(colour); R.lights[1].intensity = 0.45 + pulse * 0.55; R.lights[2].color.setHex(col2); R.lights[2].intensity = 0.45 + pulse * 0.55;
+    concertScreen(s2, R, pulse, colour, playingHere ? an : null);
+    R.phones.material.opacity = 0.55 + 0.25 * Math.sin(b * Math.PI / 2);
+    // the people on the stage
+    const dist = Math.hypot(player.pos.x - R.group.position.x, player.pos.z - R.group.position.z);
+    if (dist < 110) {
+      for (let n = 0; n < R.perf.length; n++) {
+        const d = R.perf[n], T = _jdTarget; Object.assign(T, jdPoseZero());
+        const target = d.inst === 'mic' && song.duet && d.duet ? d.duet : d.home, dx = target[0] - d.pos[0], dz = target[1] - d.pos[1], ds = Math.hypot(dx, dz);
+        if (ds > 0.05) { // walking over for the duet, or back
+          const st = Math.min(ds, 1.4 * dt); d.pos[0] += dx / ds * st; d.pos[1] += dz / ds * st; d.stride = (d.stride || 0) + st * 4.2;
+          const w = Math.sin(d.stride); T.fz1 = 0.2 * w; T.fz0 = -0.2 * w; T.fl1 = 0.06 * Math.max(0, Math.cos(d.stride)); T.fl0 = 0.06 * Math.max(0, -Math.cos(d.stride)); T.fx0 = -0.09; T.fx1 = 0.09; T.hy = 0.76; T.la = 0.15 + 0.35 * w; T.le = 0.35; d.yaw = (d.yaw || 0) + angWrap(Math.atan2(dx, dz) - (d.yaw || 0)) * Math.min(1, dt * 8);
+        } else {
+          const moves = d.inst === 'mic' ? ['taps', 'rock', 'twist', 'taps', 'armsUp', 'rock'] : ['rock', 'taps', 'rock', 'twist'];
+          JD_MOVES[moves[(phrase + n) % moves.length]](T, bIn);
+          let want = 0; // facing the fans; for a duet, turned in towards each other
+          if (d.inst === 'mic') { if (song.duet) want = (target[0] < 0 ? 1 : -1) * (0.55 + 0.35 * Math.sin(b * Math.PI / 16)); else want = Math.sin(b * Math.PI / 16 + n) * 0.5; } else want = (target[0] < 0 ? 0.25 : -0.25) + Math.sin(b * Math.PI / 8) * 0.12;
+          d.yaw = (d.yaw || 0) + angWrap(want - (d.yaw || 0)) * Math.min(1, dt * 3);
+        }
+        if (d.inst === 'mic') { T.ra = 1.15; T.ro = -0.28; T.re = 2.42; T.tf = Math.max(0, T.tf); T.hn = Math.min(0.06, T.hn); } // the mic at her / his mouth
+        if (d.inst === 'guitar') { T.ra = 0.75; T.ro = -0.2; T.re = 1.35 + 0.28 * Math.sin(b * Math.PI * 2); T.la = 1.1; T.lo = -0.3; T.le = 1.25; T.hn = 0.14 + 0.1 * pulse; T.tw = T.tw * 0.3; T.tf = 0.08; T.hr = T.hr * 0.3; } // strumming
+        d.root.position.set(d.pos[0], CONCERT_DECK.h, d.pos[1]); d.root.rotation.y = d.yaw || 0;
+        const q = d.pose, k = Math.min(1, dt * 13); for (const key2 of Object.keys(q)) q[key2] += (T[key2] - q[key2]) * k;
+        jdApply(d); d.mane.rotation.x = 0.1 + 0.12 * Math.abs(Math.sin(b * Math.PI));
+      }
+      const dm = R.drummer, arms = dm.userData.arms || []; if (arms[0]) arms[0].rotation.x = -1.2 - Math.abs(Math.sin(b * Math.PI)) * 0.9; if (arms[1]) arms[1].rotation.x = -1.2 - Math.abs(Math.sin(b * Math.PI + 1.6)) * 0.9;
+    }
+    // the crowd: the pitch one frame, the stands the next (mobile: smaller crowds)
+    const tint = new THREE.Color(colour); for (const m of R.bodyMats) m.color.set(0xc4c4cc).lerp(tint, 0.1 + pulse * 0.3);
+    R.limbMat.color.set(0xc99a7a).lerp(tint, 0.08 + pulse * 0.25);
+    R.fanTick = (R.fanTick + 1) % 2;
+    if (dist < 130) {
+      const O = _cDummy; O.rotation.order = 'YXZ';
+      for (const F of R.fans) {
+        if (F.stand !== (R.fanTick === 1)) continue;
+        let am = F.ai, lm = F.ai;
+        const t = b + F.ph, s1 = Math.sin(Math.PI * t), bounce = Math.abs(Math.sin(Math.PI * t)), hop = F.style === 0 ? bounce * 0.42 : bounce * 0.08, sway = F.style === 1 ? s1 * 0.16 : s1 * 0.05;
+        const px = F.x + sway, py = F.y + hop, cy = Math.cos(F.yaw), sy = Math.sin(F.yaw);
+        O.position.set(px, py + 0.74, F.z); O.rotation.set(0, F.yaw, -sway * 0.8); O.scale.set(1, 1, 1); O.updateMatrix(); F.im.setMatrixAt(F.ii, O.matrix);
+        for (const side of [-1, 1]) {
+          const lift = F.style === 0 ? 2.75 + 0.2 * s1 * side : F.style === 1 ? 2.65 + 0.25 * s1 * side : F.style === 2 ? (side > 0 ? 2.5 + 0.55 * bounce : 0.25) : 1.45 + 0.28 * Math.sin(2 * Math.PI * t);
+          const out = F.style === 3 ? -0.45 : 0.2 + 0.12 * s1;
+          O.position.set(px + cy * side * 0.28, py + 1.26, F.z - sy * side * 0.28); O.rotation.set(-lift, F.yaw, side * out); O.updateMatrix(); R.armIM.setMatrixAt(am++, O.matrix);
+          const stp = F.style === 3 ? s1 * side * 0.2 : side * 0.1 * F.step * s1;
+          O.position.set(px + cy * side * 0.11, py + 0.72, F.z - sy * side * 0.11); O.rotation.set(stp, F.yaw, side * 0.04); O.updateMatrix(); R.legIM.setMatrixAt(lm++, O.matrix);
+        }
+      }
+      for (const im of R.ims) im.instanceMatrix.needsUpdate = true; R.armIM.instanceMatrix.needsUpdate = true; R.legIM.instanceMatrix.needsUpdate = true;
+    }
+  }
+  // ---- the music: heard from the spec alone, so it carries before the stadium's even loaded ----
+  var concertEl = null, concertGain = null, concertFilter = null, concertAnalyser = null, concertHeard = false, concertFor = null, concertTry = 0, concertFails = 0, concertPlayingIdx = -1;
+  function concertLoad(i) { concertPlayingIdx = i; concertTry = 0; concertEl.src = CONCERT_SONGS[i].file; }
+  function concertNext() { // on to the next song
+    if (!concertFor || !concertFor.stadium || !concertFor.stadium.concert) return;
+    const c = concertFor.stadium.concert; c.song = (((c.song | 0) + 1) % CONCERT_SONGS.length); concertLoad(c.song);
+    if (concertHeard) concertEl.play().catch(() => {});
+    const live = stadiums.get(concertFor.ck); if (live && live.spec === concertFor) stadDrawBoard(live, false);
+  }
+  function concertEnsure() {
+    if (concertEl) return;
+    concertEl = new Audio(); concertEl.crossOrigin = 'anonymous'; concertEl.preload = 'auto';
+    concertEl.addEventListener('ended', () => { concertFails = 0; concertNext(); });
+    concertEl.addEventListener('playing', () => { concertFails = 0; });
+    concertEl.addEventListener('error', () => { // not in concert/: try it loose beside voxel.html, then move on
+      if (!concertEl.getAttribute('src')) return;
+      if (concertTry === 0) { concertTry = 1; concertEl.src = CONCERT_SONGS[concertPlayingIdx].file.replace(/^.*\//, ''); if (concertHeard) concertEl.play().catch(() => {}); return; }
+      if (++concertFails >= CONCERT_SONGS.length) { console.warn('[voxel] the concert songs could not be loaded — are they in concert/ next to voxel.html?'); concertEl.removeAttribute('src'); concertPlayingIdx = -2; return; }
+      concertNext();
+    });
+  }
+  function concertAudioChain() {
+    if (concertGain || typeof audioCtx === 'undefined' || !audioCtx || audioCtx.state !== 'running') return;
+    try { const src = audioCtx.createMediaElementSource(concertEl); concertAnalyser = audioCtx.createAnalyser(); concertAnalyser.fftSize = 512; concertAnalyser.smoothingTimeConstant = 0.3; concertFilter = audioCtx.createBiquadFilter(); concertFilter.type = 'lowpass'; concertGain = audioCtx.createGain(); src.connect(concertAnalyser); concertAnalyser.connect(concertFilter); concertFilter.connect(concertGain); concertGain.connect(audioCtx.destination); } catch (e) { concertGain = null; }
+  }
+  setInterval(() => { try {
+    let best = null, bd = Infinity;
+    if (typeof currentWorldId !== 'undefined' && currentWorldId && !document.hidden && concertWindow() && !(typeof musicInGame === 'function' && !musicInGame()) && !(typeof jukeBusy === 'function' && jukeBusy()) && !onMoon) {
+      for (const sp of structureSpecs.values()) {
+        if (!sp || sp.t !== 'stadium' || !sp.stadium || !sp.stadium.concert || !sp.site) continue;
+        const d = Math.hypot(player.pos.x - (sp.site.sx0 + sp.site.sx1) / 2, player.pos.z - (sp.site.sz0 + sp.site.sz1) / 2);
+        if (d < bd) { bd = d; best = sp; }
+      }
+    }
+    const heard = best && bd < CONCERT_HEAR;
+    concertHeard = !!heard;
+    if (!heard) { if (concertEl && !concertEl.paused) concertEl.pause(); return; }
+    concertEnsure();
+    if (concertFor !== best || concertPlayingIdx === -1) { concertFor = best; concertLoad((best.stadium.concert.song | 0) % CONCERT_SONGS.length); }
+    if (!concertEl.getAttribute('src')) return; // (the files aren't on the site)
+    concertAudioChain();
+    if (typeof musicEl !== 'undefined' && musicEl && !musicEl.paused) musicEl.pause();
+    const k = 1 - bd / CONCERT_HEAR, vol = 0.85 * Math.pow(k, 1.6); // close to full inside the ground; muffled through the stands until you're near
+    if (concertGain) { concertGain.gain.value = vol; concertEl.volume = 1; if (concertFilter) concertFilter.frequency.value = bd < 45 ? 20000 : 500 + Math.pow(k / (1 - 45 / CONCERT_HEAR), 3) * 7000; } else concertEl.volume = Math.min(1, vol);
+    if (concertEl.paused) concertEl.play().catch(() => {}); // (not allowed yet — no tap/click so far: tried again shortly)
+  } catch (e) {} }, 400);
 
   // ================= SUPERYACHT =================
   // Bought from the Property menu (💰5,000,000) — stand on the shore facing open sea; it needs deep water (3+) along its
@@ -38708,6 +39226,7 @@ float moonDetail(vec3 p, float d) {
     if (!may) { if (musicEl && !musicEl.paused) musicEl.pause(); return; }
     if (typeof jukeBusy === 'function' && jukeBusy()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // a jukebox song's playing: the game's tune waits till it's finished (see THE JUKEBOX)
     if (typeof pianoAudible === 'function' && pianoAudible()) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // …or you're in earshot of a restaurant's pianist (see RESTAURANT)
+    if (typeof concertHeard !== 'undefined' && concertHeard) { if (musicEl && !musicEl.paused) musicEl.pause(); return; } // …or a concert (see STADIUM CONCERTS)
     if (musicOn) { if (musicEl.paused) { musicApplyVol(); musicEl.play().catch(() => {}); } return; } // back from the menu / another tab
     if (musicNextAt && now >= musicNextAt) {
       musicEnsure(); musicApplyVol();
@@ -39676,6 +40195,7 @@ float moonDetail(vec3 p, float d) {
     loadBreed(); const S = breedState, mt = animalTypeByName((hatchedLive.get(mk) || {}).kindName) || (() => { const v = seedEdits.get(mk); const i = v === undefined ? null : incInfo(Math.floor(v / SEED_VALUE_MUL)); return i ? ANIMAL_TYPES[i.idx] : null; })();
     if (!mt || !mt.breeds || S.preg[fk] || !seedEdits.has(fk)) return false;
     S.preg[fk] = { t: Date.now(), sire: mk, idx: ANIMAL_TYPES.findIndex(t => t.name === mt.breeds) }; S.last[mk] = Date.now(); saveBreed();
+    objNote('mated'); // see OBJECTIVES
     const m = hatchedLive.get(mk), f = hatchedLive.get(fk);
     if (m && f && m.mesh && f.mesh && Math.hypot(m.mesh.position.x - player.pos.x, m.mesh.position.z - player.pos.z) < 45) {
       heartsAt(f.mesh.position); heartsAt(m.mesh.position); setPregMark(f, true);
@@ -47706,9 +48226,9 @@ float moonDetail(vec3 p, float d) {
     addLegs(g, hide, [[-0.2, 0.4], [0.2, 0.4], [-0.2, -0.38], [0.2, -0.38]], 0.13, 0.55, hoof);
     return g;
   }
-  function buildRealSheep() {
+  function buildRealSheep(woolHex) {
     const g = new THREE.Group();
-    const wool = phong(0xefeae0), face = phong(0x2e2723);
+    const wool = phong(woolHex || 0xefeae0), face = phong(0x2e2723);
     for (let i = 0; i < 9; i++) { // lumpy fleece from overlapping puffs
       const puff = new THREE.Mesh(new THREE.SphereGeometry(0.2 + (i % 3) * 0.03, 8, 6), wool);
       puff.position.set(((i % 3) - 1) * 0.15, 0.62 + ((i >> 1) % 2) * 0.08, (Math.floor(i / 3) - 1) * 0.22); g.add(puff);
@@ -47820,7 +48340,7 @@ float moonDetail(vec3 p, float d) {
     return g;
   }
   function buildRealRam() {
-    const g = buildRealSheep();
+    const g = buildRealSheep(0x1a1a1e); // a black fleece
     const horn = phong(0xc9b48a), ridge = phong(0xa8946a);
     for (const sx of [-1, 1]) { // a big horn curling down and round beside each side of the face
       const h = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.045, 6, 12, Math.PI * 1.55), horn); h.position.set(sx * 0.16, 0.76, 0.4); h.rotation.set(0, sx * Math.PI / 2, Math.PI * 0.2); g.add(h);
@@ -53098,6 +53618,7 @@ float moonDetail(vec3 p, float d) {
     try { updateDestDesks(); } catch (e) { console.warn('[voxel] destination desks error (recovered):', e); } // see DESTINATION DESKS
     try { updateFerries(dt); updatePorts(dt); } catch (e) { console.warn('[voxel] ferries error (recovered):', e); } // see FERRY PORTS // see AIRPORTS & PLANES, DEPARTURE BOARDS
     updateRestaurants(dt); // service, diners, waiters — see RESTAURANT
+    try { updateJukeDancers(dt, performance.now()); } catch (err) { console.warn('jukebox dancers error (recovered):', err); } // see THE DANCERS
     updateMansions(dt); // the household — see MANSION
     updateChandeliers(); // hang them from their ceilings; their light level — see buildChandelierFurniture
     updateParks(dt); // the rides and the visitors — see THEME PARK

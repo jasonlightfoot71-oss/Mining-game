@@ -138,6 +138,51 @@
   .cat-column.cat-open, .menu-panel { animation: menuRise .16s ease-out; }
   .menu-panel.menu-sub { animation-name: menuSlideR; }
   .menu-panel.menu-sub-left { animation-name: menuSlideL; }
+  /* ── BRICK GRID: a menu category opens as a sideways-scrolling grid of tiles above the bar (see BRICK GRID) ── */
+  #brickGrid {
+    position: fixed; z-index: 50; display: none; flex-direction: column; left: 50%; transform: translateX(-50%);
+    max-width: calc(calc(100 * var(--vw, 1vw)) - 16px); box-sizing: border-box; padding: 6px 8px 7px;
+    background: linear-gradient(180deg, rgba(26,32,44,0.94), rgba(12,15,22,0.94)); border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
+  }
+  #brickGrid.open { display: flex; animation: brickGridRise .16s ease-out; }
+  @keyframes brickGridRise { from { opacity: 0; transform: translate(-50%, 10px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  #brickGrid .bg-head { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 2px 5px; color: #fff; font: 700 13px system-ui, sans-serif; text-shadow: 0 1px 2px #000; }
+  #brickGrid .bg-count { color: rgba(255,255,255,0.5); font-weight: 600; font-size: 11px; }
+  #brickGrid .bg-hint { margin-left: auto; color: rgba(255,255,255,0.45); font-weight: 500; font-size: 11px; white-space: nowrap; }
+  #brickGrid .bg-close { margin-left: 6px; background: rgba(255,255,255,0.12); border: none; color: #fff; width: 26px; height: 22px; border-radius: 7px; cursor: pointer; font-size: 12px; flex-shrink: 0; }
+  #brickGrid .bg-close:hover { background: rgba(255,255,255,0.25); }
+  #brickGrid .bg-scroll { overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; touch-action: pan-x; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.3) transparent; }
+  #brickGrid .bg-scroll::-webkit-scrollbar { height: 5px; } #brickGrid .bg-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.3); border-radius: 3px; }
+  #brickGrid .bg-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(var(--rows, 2), var(--th, 104px)); grid-auto-columns: var(--tw, 82px); gap: 6px; padding-bottom: 5px; }
+  .bg-tile {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px 5px; box-sizing: border-box; min-width: 0;
+    border-radius: 11px; background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03)); border: 1px solid rgba(255,255,255,0.08); cursor: pointer;
+    transition: background .12s ease, border-color .12s ease, transform .12s ease;
+  }
+  .bg-tile:hover { background: linear-gradient(180deg, rgba(255,255,255,0.20), rgba(255,255,255,0.07)); border-color: rgba(255,255,255,0.3); }
+  .bg-tile:active { transform: scale(0.95); }
+  .bg-tile.active { border-color: #ffd866; box-shadow: inset 0 0 0 1px #ffd866, 0 0 12px rgba(255,216,102,0.35); background: linear-gradient(180deg, rgba(255,216,102,0.20), rgba(255,216,102,0.05)); }
+  .bg-tile.faded .bg-icon { opacity: 0.5; }
+  .bg-icon {
+    position: relative; width: var(--ic, 54px); height: var(--ic, 54px); border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 35%, rgba(255,255,255,0.18), rgba(0,0,0,0.28) 78%); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -3px 8px rgba(0,0,0,0.35);
+  }
+  .bg-icon canvas { width: 88%; height: 88%; object-fit: contain; }
+  .bg-qty { position: absolute; right: -4px; bottom: -4px; min-width: 14px; padding: 1px 4px; border-radius: 9px; background: #1f7a33; color: #d8ffd8; font: 800 10px/13px system-ui, sans-serif; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.7); border: 1px solid rgba(170,255,170,0.55); }
+  .bg-qty.none { background: #7a1f1f; color: #ffd0d0; border-color: rgba(255,150,150,0.55); }
+  .bg-name { color: #fff; font: 600 10.5px/1.15 system-ui, sans-serif; text-align: center; max-width: 100%; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-shadow: 0 1px 2px #000; overflow-wrap: normal; flex-shrink: 0; }
+  .bg-cost { margin-top: auto; color: #ffd866; font: 800 10.5px/1 system-ui, sans-serif; text-shadow: 0 1px 2px #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .bg-cost.plain { color: rgba(255,255,255,0.55); font-weight: 600; }
+  .bg-empty { color: rgba(255,255,255,0.75); font: 13px system-ui, sans-serif; padding: 18px 22px; white-space: nowrap; }
+  #brickGrid.compact { padding: 4px 6px 5px; border-radius: 12px; }
+  #brickGrid.compact .bg-head { height: 20px; font-size: 12px; padding-bottom: 3px; }
+  #brickGrid.compact .bg-tile { gap: 2px; padding: 4px 3px 4px; border-radius: 9px; }
+  #brickGrid.compact .bg-name { font-size: 9px; line-height: 1.1; }
+  #brickGrid.compact .bg-close { margin-left: auto; }
+  #brickGrid.compact .bg-cost { font-size: 9.5px; }
+  #brickGrid.compact .bg-hint { display: none; }
+
   /* Short landscape screens (phones on their side): tighter rows so more fit before scrolling. */
   @media (max-height: 500px) {
     .cat-column .slot, .menu-panel > .slot, .menu-panel > .popup-item { height: 34px; width: 150px; gap: 7px; }
@@ -2521,23 +2566,22 @@
       // through the block and a few frost sparkles. Every leaf block in winter shows this (no more solid brown branch
       // blocks in the canopy — see scanForWinterBranchVariety). Plotted pixel by pixel (no anti-aliasing at 16x16), from a
       // fixed seed so it looks the same every time.
-      let sd = 90217; const R = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+      let sd = 4421; const R = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
       ctx.clearRect(0, 0, s, s);
-      ctx.fillStyle = 'rgba(205,228,250,0.14)'; ctx.fillRect(0, 0, s, s); // the icy haze
       const pts = [];
-      for (let i = 0; i < 4; i++) {
-        let px = 1 + R() * 14, py = s, dx = (R() - 0.5) * 1.2; const len = 8 + R() * 8;
+      for (let i = 0; i < 4; i++) { // four stems spread across the block, each with a fork or two
+        let px = 1.5 + i * 3.6 + (R() - 0.5) * 1.5, py = s, dx = (R() - 0.5) * 0.9; const len = 8 + R() * 8;
         for (let t = 0; t < len; t++) {
           pts.push([Math.round(px), Math.round(py)]); px += dx; py -= 1;
-          if (R() < 0.18) { let qx = px, qy = py; const d = dx + (R() < 0.5 ? -1 : 1); for (let k = 0; k < 4; k++) { pts.push([Math.round(qx), Math.round(qy)]); qx += d; qy -= 1; } }
+          if (R() < 0.22) { let qx = px, qy = py; const d = dx + (R() < 0.5 ? -0.9 : 0.9), n = 3 + Math.floor(R() * 2); for (let k = 0; k < n; k++) { pts.push([Math.round(qx), Math.round(qy)]); qx += d; qy -= 1; } }
         }
       }
-      ctx.fillStyle = 'rgba(225,238,250,0.85)'; // the frost round each twig…
-      for (const [a, b] of pts) { ctx.fillRect(a - 1, b, 1, 1); ctx.fillRect(a + 1, b, 1, 1); ctx.fillRect(a, b - 1, 1, 1); }
-      ctx.fillStyle = '#4a3826'; // …and the twig itself
-      for (const [a, b] of pts) ctx.fillRect(a, b, 1, 1);
-      ctx.fillStyle = '#ffffff'; // frost sparkles
-      for (let i = 0; i < 10; i++) ctx.fillRect(Math.floor(R() * s), Math.floor(R() * s), 1, 1);
+      for (const [a, b] of pts) { // frost on top of each twig, and on one side now and then (solid: cut out, not blended — see the leaf material in winter)
+        ctx.fillStyle = '#e8f1fa'; ctx.fillRect(a, b - 1, 1, 1);
+        if (R() < 0.5) { ctx.fillStyle = '#e4eef8'; ctx.fillRect(a + (R() < 0.5 ? 1 : -1), b, 1, 1); }
+      }
+      ctx.fillStyle = '#4a3826'; for (const [a, b] of pts) ctx.fillRect(a, b, 1, 1); // the twigs
+      ctx.fillStyle = '#ffffff'; for (let i = 0; i < 8; i++) ctx.fillRect(Math.floor(R() * s), Math.floor(R() * s), 1, 1); // frost sparkles
     }),
     sand: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#e0d18a',['#d8c67c','#e8dc9c'],0.35)),
     water: makeCanvasTexture((ctx,s) => speckle(ctx,s,'#3b6fd6',['#4a80e6','#3260c2'],0.3)),
@@ -15884,7 +15928,7 @@
           blocks.delete(k); stepRotations.delete(k);
           if (waterBlocks.delete(k)) anyWaterTouchedThisStream = true;
         }
-        for (let y = overWater ? cur : Math.max(0, floor - 8); y < floor; y++) blocks.set(key(x, y, z), fillType); // solid base under the new floor
+        for (let y = overWater ? cur : Math.max(0, floor - 48, Math.min(floor - 8, cur !== undefined ? cur : floor - 8)); y < floor; y++) blocks.set(key(x, y, z), fillType); // (down to the real ground, up to 48 deep — not a thin shelf over a drop) // solid base under the new floor
         blocks.set(key(x, floor, z), fillType === 5 ? 5 : 0); // a clean grass/sand surface
         trackVillageHeight(x, z, floor);
         markVillageGround(x, z, floor);
@@ -18200,6 +18244,7 @@
   // something that just happened to them, not post a line into a shared
   // chat transcript.
   function showBriefMessage(text) {
+    if (gridBuilding) return; // (a menu being read into the BRICK GRID says nothing — e.g. "no weapons yet")
     let el = document.getElementById('briefMsg');
     if (!el) {
       el = document.createElement('div');
@@ -27634,8 +27679,8 @@
     mixed.multiply(SEASON_SKY[demoState ? 2 : getSeasonState().season]); // (the promo demo: spring on the ground, but a clean blue sky — see PROMO DEMO)
     scene.background = mixed;
     scene.fog.color = demoState ? mixed.clone().lerp(new THREE.Color(0xffffff), 0.3) : mixed; // (a pale horizon haze in the demo, not a coloured fog)
-    sun.intensity = 0.25 + dayFactor*0.9;
-    hemi.intensity = 0.25 + dayFactor*0.4;
+    sun.intensity = (0.25 + dayFactor*0.9) * (1 - (typeof rideDark === 'number' ? rideDark : 0) * 0.94);
+    hemi.intensity = (0.25 + dayFactor*0.4) * (1 - (typeof rideDark === 'number' ? rideDark : 0) * 0.86); // (dimmed inside the ghost train — see RIDE SOUNDS / rideDark)
     updateSkyDecor(dt, dayFactor);
     updateClockDisplay();
   }
@@ -29966,7 +30011,7 @@
     { t: 'yacht',     name: 'Superyacht',     emoji: '🛥️', price: 5000000, sx: 12, sz: 36, h: 12, note: 'sail her anywhere there\u2019s deep water — stand on the shore facing the sea to buy' },
     { t: 'stadium',   name: 'Football Stadium', emoji: '🏟️', price: 5000000, sx: 52, sz: 68, h: 24, note: 'a match from 12:00 to 16:00 you can watch live — gate money every day. Upgrade it at the ticket office for concerts every night' },
     { t: 'haunted',   name: 'Haunted House',  emoji: '👻', price: 1000000, sx: 33, sz: 35, h: 17, note: 'a ghost train through five spooky rooms you can ride — riders pay every day' },
-    { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 60, sz: 60, h: 26, note: 'a rollercoaster, ferris wheel and carousel you can ride — visitors pay every day' },
+    { t: 'themepark', name: 'Theme Park',     emoji: '🎢', price: 5000000, sx: 132, sz: 132, h: 50, note: 'a huge park: a rollercoaster with a loop, a ferris wheel and a carousel to ride, and 8 more rides to buy at the booth — visitors pay every day' },
     { t: 'arena',     name: 'Arena',          emoji: '🎯', price: 1000000, sx: 120, sz: 120, h: 22, note: 'a massive indestructible metal battle arena — three levels, maze, containers, towers and catwalks; fight other players or bots' }, // see ARENA
     { t: 'mansion',   name: 'Mansion',        emoji: '🏰', price: 1000000, sx: 49, sz: 70, h: 18, note: 'a fully furnished country house with grounds, pool and tennis court' },
     { t: 'airport',   name: 'Airport',        emoji: '✈️', price: 50000, sx: 140, sz: 56, h: 17, note: 'runway, terminal, control tower and hangar — buy airliners at check-in, fly them yourself or hire pilots; passengers pay by the distance flown' },
@@ -29989,12 +30034,17 @@
   function applyPropertyPrices() { const on = propertyTestMode(); for (const bt of BUILDING_TYPES) bt.price = on && bt.realPrice > PROPERTY_TEST_PRICE ? PROPERTY_TEST_PRICE : bt.realPrice; }
   applyPropertyPrices();
   let propertyTypeIdx = 0;
-  function propertyIconCanvas(idx) {
-    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+  // A building's icon: just its emoji, big and clear with a soft shadow under it (no coloured square behind it). Drawn at 68px for sharpness.
+  function emojiIconCanvas(emoji) {
+    const c = document.createElement('canvas'); c.width = 68; c.height = 68; c.className = 'swatch';
     const ctx = c.getContext('2d');
-    ctx.fillStyle = 'rgba(199,144,29,0.35)'; ctx.fillRect(3, 3, 28, 28);
-    ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(BUILDING_TYPES[idx].emoji, 17, 18);
+    ctx.font = '46px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 2;
+    ctx.fillText(emoji, 34, 37);
     return c;
+  }
+  function propertyIconCanvas(idx) {
+    return emojiIconCanvas(BUILDING_TYPES[idx].emoji);
   }
   function showPropertyPopup(slotEl) {
     if (togglePopupFor(slotEl)) return;
@@ -30003,9 +30053,7 @@
     { // not a building — the world manager who runs them all (see WORLD MANAGER)
       const btn = document.createElement('div');
       btn.className = 'popup-item'; btn.title = 'World manager — collects every till, safe and rent, and sells your harvest, every sunrise, for 1%';
-      const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
-      const ctx = c.getContext('2d'); ctx.fillStyle = 'rgba(47,125,70,0.45)'; ctx.fillRect(3, 3, 28, 28); ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('🧑‍💼', 17, 18);
-      btn.appendChild(c);
+      btn.appendChild(emojiIconCanvas('🧑‍💼'));
       const label = document.createElement('span'); label.className = 'popup-item-label'; label.textContent = 'World Manager · ' + (wmState().hired ? 'hired' : '💰' + WM_COST); btn.appendChild(label);
       btn.addEventListener('click', e => { e.stopPropagation(); closeFamilyPopup(); openWorldManager(); });
       popup.appendChild(btn);
@@ -30083,12 +30131,18 @@
     const colWet = (x, z) => waterBlocks.has(key(x, floor, z)) || waterBlocks.has(key(x, floor - 1, z)) || (x === r.hit.x && z === r.hit.z);
     if (floor < SEA_LEVEL && bt.t !== 'ferryport') return fail('Too low — that\u2019s under the waterline. To build on water, put one block on the surface and aim at that');
     if (player.pos.x > site.sx0 - 1 && player.pos.x < site.sx1 + 2 && player.pos.z > site.sz0 - 1 && player.pos.z < site.sz1 + 2) return fail('Step back — you\u2019re standing where it would go');
-    const stepXZ = bt.t === 'arena' ? 2 : 1; // (the Arena's 14,400 columns: every other one is plenty, and keeps the outline quick)
+    const BIG = bt.t === 'arena' || bt.t === 'themepark', stepXZ = BIG ? 2 : 1; // (the big plots: 14,000+ columns — every other one is plenty) // (the Arena's 14,400 columns: every other one is plenty, and keeps the outline quick)
     if (bt.t !== 'ferryport') for (let x = site.sx0; x <= site.sx1; x += stepXZ) for (let z = site.sz0; z <= site.sz1; z += stepXZ) { // (a ferry port's land and water were checked by fpFindSite)
       if (!canEditAt(x, z)) return fail('Not allowed here');
       let g = liveGroundHeight(x, z); // as it is now — not how it was generated (see liveGroundHeight)
-      if (g === undefined) { if (bt.t === 'arena') g = Math.round(rawTerrainHeight(x, z)); else return fail('Too far out — that ground isn\u2019t loaded'); } // (the Arena reaches further than the loaded ground — its far end is checked against the terrain as generated, and generated when it's built: see tryBuyBuilding)
-      const slack = (bt.t === 'airport' || bt.t === 'arena') ? 2.5 : 1; // an airport's (or the arena's) levelled flat whatever — only a real cliff or mountain stops it
+      if (g === undefined) { if (BIG) g = Math.round(rawTerrainHeight(x, z)); else return fail('Too far out — that ground isn\u2019t loaded'); }
+      if (BIG) { // the big plots: hills are dug away (up to 45 above), drops filled in (up to 48 below), and open water is fine when it's anchored on a block on the surface
+        const wet = anchorWet && (colWet(x, z) || g < SEA_LEVEL);
+        if (g > floor + 45) return fail('There\u2019s a mountain in the way — too much to dig away (try aiming higher up it, or somewhere flatter)');
+        if (g < floor - 48 && !wet) return fail('The ground drops away too far there — a deep valley or the sea. Over water? Put one block on the surface and aim at that');
+        continue;
+      } // (the Arena reaches further than the loaded ground — its far end is checked against the terrain as generated, and generated when it's built: see tryBuyBuilding)
+      const slack = (bt.t === 'airport' || BIG) ? 2.5 : 1; // an airport's (or the arena's) levelled flat whatever — only a real cliff or mountain stops it
       if (g < floor - 6 * slack && !(anchorWet && colWet(x, z))) return fail(anchorWet ? 'Not enough room here — something\u2019s in the way' : 'Too steep — the ground drops away there. Over water? Put one block on the surface and aim at that');
       if (g > floor + 14 * slack) return fail('Too steep — there\u2019s a hill in the way');
     }
@@ -34605,6 +34659,14 @@
   function parkState(p) { if (!p.spec.park) p.spec.park = { till: 0, last: null }; return p.spec.park; }
   function parkName(p) { const n = p.spec && typeof p.spec.name === 'string' ? p.spec.name.trim() : ''; return n || 'Wonderland Park'; }
   // ---- the rides ----
+  // A visitor riding a ride: one merged mesh (seated; arms up on the thrill rides), its origin at the seat, facing +z.
+  const RIDER_SHIRTS = [0xc0392b, 0x2468b0, 0xf2c14e, 0x2f8f4a, 0xe86aa6, 0xe8702a, 0x6a2a8a, 0xf4f1e8, 0x2aa8a8, 0x333333], RIDER_SKIN = [0xe8b892, 0xc98a5a, 0x8a5a3a, 0xf2d0a8], RIDER_HAIR = [0x2a1a12, 0x6a4a2a, 0x151515, 0xd4a017, 0x8a8a8a];
+  function parkRiderFig(n, armsUp) {
+    const sh = RIDER_SHIRTS[n % RIDER_SHIRTS.length], sk = RIDER_SKIN[(n * 7) % 4], hr = RIDER_HAIR[(n * 3) % 5], lg = [0x26304a, 0x1c1c22, 0x3a3a40][n % 3];
+    const L = [[0.34, 0.14, 0.42, 0, 0.07, 0.18, 0, lg], [0.3, 0.38, 0.12, 0, -0.14, 0.38, 0, lg], [0.4, 0.5, 0.24, 0, 0.36, -0.02, 0, sh], [0.26, 0.28, 0.26, 0, 0.78, 0, 0, sk], [0.28, 0.08, 0.28, 0, 0.95, 0, 0, hr]];
+    for (const sx of [-1, 1]) L.push(armsUp ? [0.1, 0.46, 0.12, sx * 0.25, 0.86, 0.02, 0, sh] : [0.1, 0.4, 0.12, sx * 0.26, 0.36, 0.08, 0, sh]);
+    const m = mergedBoxes(L); m.castShadow = false; return m;
+  }
   function buildFerrisWheel(radius, hubH) { // hubH: how high the hub is above the ground (the legs reach down that far)
     // the wheel turns about its local X axis; gondolas hang from the rim and stay upright
     const g = new THREE.Group(), wheel = new THREE.Group(); g.add(wheel);
@@ -34634,6 +34696,7 @@
       const cab = mergedBoxes([[1.1, 0.08, 1.1, 0, -1.6, 0, 0, 0x555555], [1.1, 0.28, 0.06, 0, -1.44, 0.52, 0, gCols[i]], [1.1, 0.28, 0.06, 0, -1.44, -0.52, 0, gCols[i]], [0.06, 0.28, 1.1, 0.52, -1.44, 0, 0, gCols[i]], [0.06, 0.28, 1.1, -0.52, -1.44, 0, 0, gCols[i]],
         [1.2, 0.08, 1.2, 0, -0.32, 0, 0, gCols[i]], [0.04, 1.3, 0.04, 0, -0.65, 0, 0, 0x9aa2a8]]);
       pivot.add(cab); gondolas.push(pivot);
+      { const rd = parkRiderFig(i + 3, false); rd.position.set(0.2, -1.52, 0); rd.rotation.y = Math.PI / 2; pivot.add(rd); pivot.userData.rider = rd; } // (someone in every gondola)
     }
     g.userData.wheel = wheel; g.userData.gondolas = gondolas; g.userData.radius = radius;
     return g;
@@ -34654,54 +34717,639 @@
       h.add(mergedBoxes([[0.06, 4.0, 0.06, 0, 2.0, 0, 0, 0xc9a24a]]));
       const body = mergedBoxes([[0.35, 0.4, 1.0, 0, 1.4, 0, 0, col], [0.22, 0.5, 0.25, 0, 1.75, 0.5, 0, col, -0.5], [0.2, 0.22, 0.4, 0, 2.0, 0.72, 0, col], [0.5, 0.06, 0.4, 0, 1.62, 0, 0, 0xc0392b],
         [0.08, 0.6, 0.08, 0.12, 1.0, 0.38, 0, col, 0.4], [0.08, 0.6, 0.08, -0.12, 1.0, 0.38, 0, col, 0.4], [0.08, 0.6, 0.08, 0.12, 1.0, -0.38, 0, col, -0.4], [0.08, 0.6, 0.08, -0.12, 1.0, -0.38, 0, col, -0.4]]);
-      h.add(body); horses.push({ h, body, phase: i * 0.9 });
+      h.add(body); const hz = { h, body, phase: i * 0.9 };
+      if (i % 3 !== 1) { const rd = parkRiderFig(i + 11, false); rd.position.set(0, 1.68, 0); body.add(rd); hz.rider = rd; } // (two horses in three ridden)
+      horses.push(hz);
     }
     g.userData.spin = spin; g.userData.horses = horses;
     return g;
   }
-  // The coaster track: a closed curve through local [u, v, height] points; rails and a spine as tubes, the supports
-  // merged into one mesh, and a 3-car train.
   const COASTER_PTS = [[18, 46, 1.6], [24, 46, 1.6], [30, 46, 1.6], [36, 47, 3], [41, 48, 8], [45, 49, 13], [48, 49, 17], [51, 47, 18.5], [53, 43, 12], [54, 38, 3], [54, 31, 9], [54, 25, 3.5],
     [53, 18, 5], [50, 12, 8], [44, 9, 6], [36, 9, 4], [30, 9, 9], [23, 9, 4], [15, 9, 5], [8, 10, 6], [5, 15, 7], [4, 22, 9], [4, 30, 4], [5, 37, 6], [7, 42, 4], [11, 45, 2.4], [14, 46, 1.8]];
-  function buildCoaster(f, baseY) {
-    const pts = COASTER_PTS.map(([u, v, h]) => { const [x, z] = f.pos(u, v); return new THREE.Vector3(x, baseY + h, z); });
-    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.3);
+  // The coaster track: a closed curve through local [u, v, height] points (pts: COASTER_PTS for the original park,
+  // COASTER2_PTS for the big one). The track's orientation is carried along it by parallel transport from "up" at the
+  // station, so it rolls through a vertical loop properly (upside down at the top); rails and spine as tubes, ties and
+  // supports merged, and a train (3 cars, or opts.cars).
+  function coasterFrameAt(C, t) { // -> { p, tg, up } at fraction t (from the precomputed frames)
+    const M = C.M, i = ((Math.round(t * M) % M) + M) % M;
+    return { p: C.curve.getPointAt(((t % 1) + 1) % 1), tg: C.tans[i], up: C.ups[i] };
+  }
+  function buildCoaster(f, baseY, ptsIn, opts) {
+    opts = opts || {};
+    const pts = (ptsIn || COASTER_PTS).map(([u, v, h]) => { const [x, z] = f.pos(u, v); return new THREE.Vector3(x, baseY + h, z); });
+    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', opts.tension || 0.3);
     const g = new THREE.Group();
-    const N = 600, frames = curve.computeFrenetFrames(N, true);
-    const railMat = new THREE.MeshPhongMaterial({ color: 0x2468b0, shininess: 60 });
-    // two rails either side of the centre line, and a spine under it
-    const offsetCurve = (off, down) => { const ps = []; for (let i = 0; i <= N; i++) { const t = i / N, p = curve.getPointAt(t), tg = curve.getTangentAt(t); const side = new THREE.Vector3().crossVectors(tg, new THREE.Vector3(0, 1, 0)).normalize(); ps.push(p.clone().addScaledVector(side, off).add(new THREE.Vector3(0, -down, 0))); } return new THREE.CatmullRomCurve3(ps, true); };
-    for (const off of [-0.45, 0.45]) g.add(new THREE.Mesh(new THREE.TubeGeometry(offsetCurve(off, 0), N, 0.06, 6, true), railMat));
-    g.add(new THREE.Mesh(new THREE.TubeGeometry(offsetCurve(0, 0.25), N, 0.12, 6, true), new THREE.MeshPhongMaterial({ color: 0xc0392b, shininess: 40 })));
-    // ties and supports, merged
-    const bits = [];
-    for (let i = 0; i < 160; i++) {
-      const t = i / 160, p = curve.getPointAt(t), tg = curve.getTangentAt(t), yawT = Math.atan2(tg.x, tg.z);
-      bits.push([1.05, 0.06, 0.12, p.x, p.y - 0.08, p.z, yawT, 0x6a6a6a]);
-      if (i % 3 === 0 && p.y - baseY > 1.2) { const hgt = p.y - baseY - 0.3; bits.push([0.18, hgt, 0.18, p.x, baseY + hgt / 2, p.z, yawT, 0xe9e9e6]); }
+    // frames: tangents, and "up" carried along without twisting
+    const M = 1600, tans = [], ups = [];
+    for (let i = 0; i < M; i++) tans.push(curve.getTangentAt(i / M).normalize());
+    let up = new THREE.Vector3(0, 1, 0); up.addScaledVector(tans[0], -up.dot(tans[0])).normalize();
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < M; i++) {
+      if (i) { q.setFromUnitVectors(tans[i - 1], tans[i]); up = up.clone().applyQuaternion(q); up.addScaledVector(tans[i], -up.dot(tans[i])).normalize(); }
+      ups.push(up);
     }
-    g.add(mergedBoxes(bits));
-    // the train: three cars, the front one with a nose
-    const cars = [];
-    const carCols = [0xc0392b, 0xf2c14e, 0x2f8f4a];
-    for (let i = 0; i < 3; i++) {
-      const car = new THREE.Group();
-      // low-sided cars (the sides come up to your hips, not your chin) with low seat backs, so you see out all round
-      const list = [[1.0, 0.26, 1.4, 0, 0.18, 0, 0, carCols[i]], [0.9, 0.22, 0.1, 0, 0.42, -0.45, 0, carCols[i]], [0.9, 0.22, 0.1, 0, 0.42, 0.25, 0, carCols[i]], [0.08, 0.26, 0.08, 0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8], [0.08, 0.26, 0.08, -0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8]];
+    const C = { curve, M, tans, ups };
+    const N = opts.segs || 700;
+    const railMat = new THREE.MeshPhongMaterial({ color: opts.railColor || 0x2468b0, shininess: 60 });
+    const offsetCurve = (off, down) => { const ps = []; for (let i = 0; i < N; i++) { const t = i / N, F = coasterFrameAt(C, t), side = new THREE.Vector3().crossVectors(F.tg, F.up).normalize(); ps.push(F.p.clone().addScaledVector(side, off).addScaledVector(F.up, -down)); } return new THREE.CatmullRomCurve3(ps, true); };
+    for (const off of [-0.45, 0.45]) g.add(new THREE.Mesh(new THREE.TubeGeometry(offsetCurve(off, 0), N, 0.06, 6, true), railMat));
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(offsetCurve(0, 0.25), N, 0.12, 6, true), new THREE.MeshPhongMaterial({ color: opts.spineColor || 0xc0392b, shininess: 40 })));
+    // ties (square to the track, whichever way up it is) and supports
+    const bits = [], geos = [], tieN = opts.ties || 160, mtx = new THREE.Matrix4(), tieGeo = new THREE.BoxGeometry(1.05, 0.06, 0.12);
+    for (let i = 0; i < tieN; i++) {
+      const t = i / tieN, F = coasterFrameAt(C, t), side = new THREE.Vector3().crossVectors(F.tg, F.up).normalize();
+      mtx.makeBasis(side, F.up, F.tg); mtx.setPosition(F.p.clone().addScaledVector(F.up, -0.08));
+      geos.push([tieGeo.clone().applyMatrix4(mtx), 0x6a6a6a]);
+      const hgt = F.p.y - baseY - 0.3;
+      if (i % 3 === 0 && hgt > 0.9) {
+        if (F.up.y > 0.7) bits.push([0.18, hgt, 0.18, F.p.x, baseY + hgt / 2, F.p.z, Math.atan2(F.tg.x, F.tg.z), opts.supportColor || 0xe9e9e6]);
+        else if (F.up.y < -0.7) { /* upside down at the top of a loop: held from the loop's own frame, no post */ }
+      }
+    }
+    g.add(mergedBoxes(bits, geos));
+    // the train
+    const cars = [], nCars = opts.cars || 3;
+    const carCols = opts.carCols || [0xc0392b, 0xf2c14e, 0x2f8f4a, 0x2468b0, 0xe86aa6];
+    for (let i = 0; i < nCars; i++) {
+      const car = new THREE.Group(), cc = carCols[i % carCols.length];
+      // low-sided cars (the sides come up to your hips, not your chin) with low seat backs, so you see out all round; a lap bar
+      const list = [[1.0, 0.26, 1.4, 0, 0.18, 0, 0, cc], [0.9, 0.22, 0.1, 0, 0.42, -0.45, 0, cc], [0.9, 0.22, 0.1, 0, 0.42, 0.25, 0, cc], [0.08, 0.26, 0.08, 0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8], [0.08, 0.26, 0.08, -0.3, 0.5, 0.05, 0, 0xc8ced2, 0.8]];
       if (i === 0) list.push([1.0, 0.2, 0.4, 0, 0.21, 0.85, 0, 0xffd34d]);
       for (const x of [-0.45, 0.45]) for (const z of [-0.5, 0.5]) list.push([0.1, 0.18, 0.18, x, 0.0, z, 0, 0x222222]);
       car.add(mergedBoxes(list)); g.add(car); cars.push(car);
+      if (i > 0) for (const sx of [-0.22, 0.22]) { const rd = parkRiderFig(i * 2 + (sx > 0 ? 1 : 0), true); rd.position.set(sx, 0.36, 0.45); rd.scale.setScalar(0.9); car.add(rd); } // (screaming, arms up)
     }
-    g.userData.curve = curve; g.userData.cars = cars; g.userData.length = curve.getLength();
-    // where the station / lift hill are along the track (fractions): the lift is the climb to the top point
-    let top = 0, topT = 0; for (let i = 0; i <= 400; i++) { const y = curve.getPointAt(i / 400).y; if (y > top) { top = y; topT = i / 400; } }
+    Object.assign(g.userData, C, { cars, length: curve.getLength() });
+    let top = 0, topT = 0; for (let i = 0; i <= 600; i++) { const y = curve.getPointAt(i / 600).y; if (y > top) { top = y; topT = i / 600; } }
     g.userData.topT = topT; g.userData.topY = top;
-    g.userData.stationT = 0.04; // a little way along from the first point — the station platform's alongside here
+    g.userData.stationT = opts.stationT !== undefined ? opts.stationT : 0.04;
     return g;
   }
+  const _cbM = new THREE.Matrix4(), _cbS = new THREE.Vector3(), _cbZ = new THREE.Vector3();
+  function coasterPlace(obj, F) { // a car (front along +z) on the track at frame F
+    _cbS.crossVectors(F.up, F.tg).normalize(); // local +x
+    _cbM.makeBasis(_cbS, F.up, F.tg); obj.quaternion.setFromRotationMatrix(_cbM); obj.position.copy(F.p);
+  }
+  function coasterCamQ(F, out) { // the rider's view along the track (camera looks down -z), upside down in the loop
+    _cbZ.copy(F.tg).negate(); _cbS.crossVectors(F.up, _cbZ).normalize();
+    _cbM.makeBasis(_cbS, F.up, _cbZ); return out.setFromRotationMatrix(_cbM);
+  }
 
+  // ---- RIDE SOUNDS: loops that live as long as your ride (all synthesised) ----
+  // rideSnd(r) -> the ride's sound kit: noise(name, type, freq, q) / osc(name, type, freq) give a looping voice you can
+  // set(level, freq) every frame; they all stop when the ride ends (see endRide).
+  function rideSnd(r) {
+    if (r.snd) return r.snd;
+    ensureAudio(); const A = audioCtx; const voices = {}, S = { voices, stop() { for (const v of Object.values(voices)) try { v.g.gain.setTargetAtTime(0, A.currentTime, 0.08); setTimeout(() => { try { v.src.stop(); v.g.disconnect(); } catch (e) {} }, 500); } catch (e) {} } };
+    const mk = (name, src, type, freq, q) => { const f = A.createBiquadFilter(); f.type = type; f.frequency.value = freq; if (q) f.Q.value = q; const g = A.createGain(); g.gain.value = 0; src.connect(f); f.connect(g); g.connect(A.destination); src.start(); voices[name] = { src, f, g, set(level, fq) { g.gain.setTargetAtTime(Math.max(0, level), A.currentTime, 0.06); if (fq) f.frequency.setTargetAtTime(fq, A.currentTime, 0.08); } }; return voices[name]; };
+    S.noise = (name, type, freq, q) => voices[name] || (noiseBuffer() ? mk(name, (() => { const s = A.createBufferSource(); s.buffer = noiseBuffer(); s.loop = true; return s; })(), type, freq, q) : null);
+    S.osc = (name, wave, freq, lp) => { if (voices[name]) return voices[name]; const o = A.createOscillator(); o.type = wave; o.frequency.value = freq; const v = mk(name, o, 'lowpass', lp || 2000); v.o = o; v.pitch = f2 => o.frequency.setTargetAtTime(f2, A.currentTime, 0.05); return v; };
+    return r.snd = S;
+  }
+  function rideBlip(type, f0, f1, dur, vol, lp) { // a one-off: an oscillator sweep (or noise burst when type is 'noise')
+    if (!audioCtx || vol <= 0.001) return; const A = audioCtx, t = A.currentTime, g = A.createGain(); g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); g.connect(A.destination);
+    if (type === 'noise') { if (!noiseBuffer()) return; const s = A.createBufferSource(); s.buffer = noiseBuffer(); const f = A.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = f0; f.Q.value = f1 || 1; s.connect(f); f.connect(g); s.start(t, Math.random()); s.stop(t + dur + 0.05); return; }
+    const o = A.createOscillator(); o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur); if (lp) { const f = A.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = lp; o.connect(f); f.connect(g); } else o.connect(g); o.start(t); o.stop(t + dur + 0.05);
+  }
+  // ---- the carousel's organ: a fairground waltz, oom-pah-pah, while you ride ----
+  const CAROUSEL_TUNE = [ // [semitones from middle C, beats] — an original waltz in C
+    [7, 1], [4, 1], [7, 1], [12, 2], [11, 1], [9, 1], [5, 1], [9, 1], [14, 2], [12, 1], [11, 1], [7, 1], [11, 1], [16, 2], [14, 1], [12, 1], [7, 1], [4, 1], [12, 3],
+    [9, 1], [12, 1], [9, 1], [5, 2], [9, 1], [7, 1], [11, 1], [14, 1], [12, 2], [7, 1], [4, 1], [5, 1], [7, 1], [9, 2], [11, 1], [12, 3], [-1, 3]];
+  const CAROUSEL_BASS = [0, 5, 7, 0, 5, 0, 7, 0]; // a chord root per bar
+  function carouselMusic(r) {
+    ensureAudio(); const A = audioCtx; if (!A) return; const S = rideSnd(r), beat = 60 / 168;
+    const out = A.createGain(); out.gain.value = 0.16; out.connect(A.destination);
+    const note = (semi, t, dur, vol, wave, oct) => { const o = A.createOscillator(), g = A.createGain(), f = 261.63 * Math.pow(2, semi / 12 + (oct || 0)); o.type = wave; o.frequency.value = f; const vib = A.createOscillator(), vg = A.createGain(); vib.frequency.value = 5.5; vg.gain.value = f * 0.008; vib.connect(vg); vg.connect(o.frequency);
+      g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.02); g.gain.setValueAtTime(vol * 0.8, t + dur * 0.7); g.gain.exponentialRampToValueAtTime(0.0001, t + dur); o.connect(g); g.connect(out); o.start(t); vib.start(t); o.stop(t + dur + 0.05); vib.stop(t + dur + 0.05); };
+    let t = A.currentTime + 0.1, i = 0, bar = 0, beatInBar = 0;
+    const tick = () => {
+      if (!rideNow || rideNow !== r) { out.gain.setTargetAtTime(0, A.currentTime, 0.2); setTimeout(() => { try { out.disconnect(); } catch (e) {} }, 1500); return; }
+      while (t < A.currentTime + 0.6) {
+        const [semi, len] = CAROUSEL_TUNE[i % CAROUSEL_TUNE.length]; i++;
+        if (semi >= 0) { note(semi, t, len * beat * 0.95, 0.5, 'square'); note(semi, t, len * beat * 0.95, 0.35, 'triangle', 1); } // the pipes, and the piccolo an octave up
+        for (let b = 0; b < len; b++) { const bt = t + b * beat, root = CAROUSEL_BASS[bar % CAROUSEL_BASS.length];
+          if (beatInBar === 0) { note(root, bt, beat * 0.9, 0.55, 'triangle', -2); rideBlip('noise', 120, 1, 0.12, 0.05); } // oom (and the drum)
+          else { note(root + 4, bt, beat * 0.4, 0.22, 'square', -1); note(root + 7, bt, beat * 0.4, 0.2, 'square', -1); } // pah
+          beatInBar = (beatInBar + 1) % 3; if (beatInBar === 0) bar++; }
+        t += len * beat;
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  }
+  // ---- inside the ghost train it goes dark (the sun and sky dimmed while your cart's indoors) ----
+  var rideDark = 0, rideDarkTarget = 0, rideFlashUntil = 0;
+  function stepRideDark(dt) { const t = performance.now() < rideFlashUntil ? 0 : (rideNow ? rideDarkTarget : 0); rideDark += (t - rideDark) * Math.min(1, dt * (t > rideDark ? 2.5 : 6)); if (rideDark < 0.002) rideDark = 0; }
+  // ================= THE BIG PARK (v2) =================
+  // 128 x 128 inside its hedge (parks bought before grow in place: the entrance edge stays put, the plot extends back
+  // and out to both sides — if anything of yours is in the way it stays as it was, and the booth says what and where,
+  // with a button to try again). It opens with the rollercoaster (now right round the park — a 34-high lift, camel
+  // hills over the entrance and a vertical LOOP), the ferris wheel and the carousel; eight more rides are bought at the
+  // ticket booth, each bringing more visitors and a dearer ticket. Every ride is ridden with ✋ on its gate.
+  //   front row:  DODGEMS (drive your own car), HELTER SKELTER, CHAIR SWINGS, DROP TOWER
+  //   middle:     GHOST TRAIN, the carousel, the plaza and stalls, the ferris wheel, PIRATE SHIP
+  //   back:       LOG FLUME (splash!), GO-KARTS (race three laps), and the coaster's station along the back
+  // State: spec.park = { till, last, v2, rides: [keys bought], blocked: why it couldn't grow }.
+  const PARK2_W = 128, PARK2_D = 128;
+  const PARK_RIDES = { // key: [name, emoji, price, extra visitors a day]
+    drop: ['Drop Tower', '🗼', 250000, 200], pirate: ['Pirate Ship', '🏴‍☠️', 180000, 160], flume: ['Log Flume', '🪵', 300000, 220], helter: ['Helter Skelter', '🌀', 80000, 90],
+    dodgems: ['Dodgems', '🚗', 150000, 140], ghost: ['Ghost Train', '👻', 200000, 170], karts: ['Go-Karts', '🏎️', 250000, 200], swings: ['Chair Swings', '🎪', 120000, 120] };
+  const PARK_RIDE_ORDER = ['helter', 'swings', 'dodgems', 'pirate', 'ghost', 'drop', 'karts', 'flume'];
+  function parkRides(p) { const st = parkState(p); if (!Array.isArray(st.rides)) st.rides = []; return st.rides; }
+  function parkHas(p, k) { return parkRides(p).includes(k); }
+  // the plot growing in place, front edge fixed: -> the new site
+  function parkGrownSite(spec) {
+    const s = spec.site, rng = mulberry32(spec.rs); rng(); // (the palette roll, as in bizKit)
+    const side = pickDoorSide(['south', 'north', 'east', 'west'], rng, spec), M = 2; // (a 2-block margin round the hedge)
+    const ex = PARK2_W + M * 2, ez = PARK2_D + M * 2;
+    const mx = Math.floor((s.sx0 + s.sx1) / 2), mz = Math.floor((s.sz0 + s.sz1) / 2);
+    let sx0 = mx - Math.floor(ex / 2), sz0 = mz - Math.floor(ez / 2);
+    if (side === 'south') sz0 = s.sz1 - ez + 1; else if (side === 'north') sz0 = s.sz0; else if (side === 'east') sx0 = s.sx1 - ex + 1; else sx0 = s.sx0;
+    return { sx0, sz0, sx1: sx0 + ex - 1, sz1: sz0 + ez - 1, floor: s.floor };
+  }
+  function parkTryGrow(spec) { // -> null (grown), or why not
+    const st = spec.park || (spec.park = { till: 0, last: null }); if (st.v2) return null;
+    const o = spec.site, n = parkGrownSite(spec);
+    if (o.sx1 - o.sx0 + 1 >= PARK2_W && o.sz1 - o.sz0 + 1 >= PARK2_D) { st.v2 = true; return null; } // (bought big)
+    const inOld = (x, z) => x >= o.sx0 && x <= o.sx1 && z >= o.sz0 && z <= o.sz1;
+    for (const o2 of structureSpecs.values()) { if (o2 === spec) continue; const b = structureSpecBox(o2); if (b && b.x0 <= n.sx1 + 1 && b.x1 >= n.sx0 - 1 && b.z0 <= n.sz1 + 1 && b.z1 >= n.sz0 - 1) return 'another building (' + ((BUILDING_TYPES.find(b2 => b2.t === o2.t) || {}).name || o2.t) + ') is in the way, at ' + Math.round((b.x0 + b.x1) / 2) + ', ' + Math.round((b.z0 + b.z1) / 2); }
+    for (const tck of chunksTouchedByBox(n.sx0 - 1, n.sx1 + 1, n.sz0 - 1, n.sz1 + 1)) { const list = villageHouseFootprints.get(tck); const e = list && list.find(e => e.__ck !== spec.ck && e.x0 <= n.sx1 + 1 && e.x1 >= n.sx0 - 1 && e.z0 <= n.sz1 + 1 && e.z1 >= n.sz0 - 1); if (e) return 'another building is in the way, at ' + Math.round((e.x0 + e.x1) / 2) + ', ' + Math.round((e.z0 + e.z1) / 2); }
+    for (let x = n.sx0; x <= n.sx1; x += 1) for (let z = n.sz0; z <= n.sz1; z += 1) if (!inOld(x, z) && !canEditAt(x, z)) return 'the ground round it isn’t yours to build on';
+    // anything of yours on the new ground (track, a road, a field, something built) — strip by strip, so the old plot isn't counted
+    for (const [a, b, c, d] of [[n.sx0, n.sx1, n.sz0, o.sz0 - 1], [n.sx0, n.sx1, o.sz1 + 1, n.sz1], [n.sx0, o.sx0 - 1, o.sz0, o.sz1], [o.sx1 + 1, n.sx1, o.sz0, o.sz1]]) {
+      if (a > b || c > d) continue; const bl = growAreaBlocked(a, b, c, d, o.floor); if (bl) return 'there’s ' + bl.what + ' in the way, at ' + bl.x + ', ' + bl.z + ' — clear it and try again';
+    }
+    // clear: the edits on the new ground go (dug/levelled ground, trees), and the site grows
+    for (const tck of chunksTouchedByBox(n.sx0, n.sx1, n.sz0, n.sz1)) { const m = blockEdits.byChunk.get(tck); if (!m) continue; for (const k of [...m.keys()]) { const c1 = k.indexOf(','), c2 = k.lastIndexOf(','), x = +k.slice(0, c1), z = +k.slice(c2 + 1); if (x >= n.sx0 && x <= n.sx1 && z >= n.sz0 && z <= n.sz1 && !inOld(x, z)) { blockEdits.delete(k); stepRotEdits.delete(k); } } dirtyChunks.add(tck); }
+    spec.site = n; st.v2 = true; delete st.blocked;
+    return null;
+  }
+  function parkExpandNow(p) { // the booth's "try again"
+    const why = parkTryGrow(p.spec); const st = parkState(p);
+    if (why) { st.blocked = why; specSave(p.ck, p.spec); return why; }
+    specSave(p.ck, p.spec); teardownVillage(p.ck, true); replayStructureSpec(p.spec); return null;
+  }
+  const COASTER2_PTS = (() => {
+    const P = [[34, 112, 1.6], [42, 112, 1.6], [50, 112, 1.6], [58, 112, 1.6], [64, 112, 3], [72, 112, 10], [80, 112, 18], [88, 112, 27], [94, 112, 33], [98, 112, 34.5],
+      [103, 112, 28], [108, 112, 14], [112, 111, 4], [117, 107, 3], [119, 100, 6], [120, 92, 15], [120, 84, 8], [120, 76, 15], [120, 68, 6], [120, 60, 3.5], [120, 53, 3.2]];
+    for (let a = 0; a < 360; a += 30) { const r = a * Math.PI / 180; P.push([120 + 3 * a / 360, 44 - 9 * Math.sin(r), 12.5 - 9 * Math.cos(r)]); } // the LOOP
+    P.push([123, 44, 3.4], [123, 36, 3.6], [123, 28, 4.5], [121, 20, 8], [116, 12, 6], [108, 8, 4], [98, 7, 10], [88, 7, 4], [78, 7, 12], [66, 7, 13], [54, 7, 5], [44, 7, 11], [32, 7, 4], [22, 7, 9], [13, 9, 5], [7, 15, 6],
+      [6, 26, 13], [6, 38, 5], [6, 50, 12], [6, 62, 4], [6, 74, 10], [6, 86, 4], [7, 98, 7], [10, 106, 4], [17, 111, 2.5], [25, 112, 1.8]);
+    return P;
+  })();
+  // ---- the eight new rides: build / step / ride ----
+  // Each ride R = { key, g, gate (its Ride Gate's furniture key), exit [u, v, dy], ... }. step(p, R, dt, riding) runs
+  // every frame (the ride idles and runs for show when nobody's on it); start(p, R) puts you on; pin(r) seats you each
+  // frame (and steers your view for the rides that carry you along a track — r.camQ).
+  const parkV = (p, u, v, y) => { const [x, z] = p.f.pos(u, v); return new THREE.Vector3(x, y, z); };
+  function parkLocalGroup(p, u, v, y) { const g = new THREE.Group(), [x, z] = p.f.pos(u, v); g.position.set(x, y, z); g.rotation.y = Math.atan2(-p.f.s[1], p.f.s[0]); return g; } // local +x along u
+  function parkTrack(pts, closed, tension) { // a curve with twist-free frames (as the coaster's)
+    const curve = new THREE.CatmullRomCurve3(pts, closed !== false, 'catmullrom', tension || 0.4), M = 900, tans = [], ups = [];
+    for (let i = 0; i < M; i++) tans.push(curve.getTangentAt(i / M).normalize());
+    let up = new THREE.Vector3(0, 1, 0).addScaledVector(tans[0], -tans[0].y).normalize(); const q = new THREE.Quaternion();
+    for (let i = 0; i < M; i++) { if (i) { q.setFromUnitVectors(tans[i - 1], tans[i]); up = up.clone().applyQuaternion(q); up.addScaledVector(tans[i], -up.dot(tans[i])).normalize(); } ups.push(up); }
+    return { curve, M, tans, ups, length: curve.getLength() };
+  }
+  const _pkM = new THREE.Matrix4();
+  function boxAlong(w, h, a, b, upHint) { // a box of width w and height h from point a to point b (its length along a→b)
+    const d = new THREE.Vector3().subVectors(b, a), len = d.length(); d.normalize();
+    const up = (upHint || new THREE.Vector3(0, 1, 0)).clone(); up.addScaledVector(d, -up.dot(d)); if (up.lengthSq() < 1e-6) up.set(1, 0, 0); up.normalize();
+    const side = new THREE.Vector3().crossVectors(up, d).normalize();
+    _pkM.makeBasis(side, up, d); _pkM.setPosition(a.clone().add(b).multiplyScalar(0.5));
+    return new THREE.BoxGeometry(w, h, len + 0.02).applyMatrix4(_pkM);
+  }
+  function rideLookSpring(r) { // let go of the look and it eases back to straight ahead
+    const now = performance.now(), dt = Math.min(0.1, (now - (r.springAt || now)) / 1000); r.springAt = now;
+    if (r.setYaw === undefined || Math.abs(yaw - r.setYaw) > 1e-4 || Math.abs(pitch - r.setPitch) > 1e-4) r.lookAt = now; // (you're looking about)
+    else if (now - (r.lookAt || 0) > 600) { const k = Math.exp(-3 * dt); yaw *= k; pitch *= k; }
+  }
+  function rideViewQ(r, tg, up) { // your view along tg (with up), plus your own look (yaw / pitch, relative, for the ride)
+    rideLookSpring(r);
+    pitch = Math.max(-1.3, Math.min(1.3, pitch)); yaw = Math.max(-2.6, Math.min(2.6, Math.atan2(Math.sin(yaw), Math.cos(yaw))));
+    _cbZ.copy(tg).negate().normalize(); const u = (up || _pkUp).clone().addScaledVector(_cbZ, -(up || _pkUp).dot(_cbZ)).normalize(); _cbS.crossVectors(u, _cbZ).normalize();
+    _pkM.makeBasis(_cbS, u, _cbZ); r.camQ = (r.camQ || new THREE.Quaternion()).setFromRotationMatrix(_pkM).multiply(_rideLookQ.setFromEuler(_rideLookE.set(pitch, yaw, 0, 'YXZ')));
+    r.setYaw = yaw; r.setPitch = pitch;
+  }
+  const _pkUp = new THREE.Vector3(0, 1, 0), _pkV = new THREE.Vector3(), _pkV2 = new THREE.Vector3();
+  function parkGate(p, K, u, v, dir) { const [x, z] = p.f.cell(u, v), d = K.dirW[dir]; return addFurnitureTracked(x, p.floor + 1 - 1, z, furnRotFacing('Ride Gate', d[0], d[1]), K.idxOf('Ride Gate'), K.reg); }
+  function parkScream(pos, lvl) { try { crowdBurst({ n: 6, lo: 260, hi: 520, vowel: 'ee', vowel2: 'ae', rise: 1.3, fall: 0.8, dur: 2.2, attack: 0.1, spread: 0.3, level: lvl || 0.25, scream: 1 }, distGain(pos, 60)); } catch (e) {} }
+  function parkSplash(pos, lvl) { if (!audioCtx || !noiseBuffer()) return; const L = distGain(pos, 50) * (lvl || 0.5); if (L < 0.003) return; try { const t = audioCtx.currentTime, s = audioCtx.createBufferSource(); s.buffer = noiseBuffer(); const f = audioCtx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(3000, t); f.frequency.exponentialRampToValueAtTime(300, t + 1.2); const g = audioCtx.createGain(); g.gain.setValueAtTime(L, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 1.4); s.connect(f); f.connect(g); g.connect(audioCtx.destination); s.start(t, Math.random()); s.stop(t + 1.5); } catch (e) {} }
+  // ---- DROP TOWER: up slowly, a moment at the top, then the drop ----
+  const DROP_TOP = 36;
+  function buildDropTower(p, K, G) {
+    const R = { key: 'drop', g: parkLocalGroup(p, 104.5, 22.5, G + 1), y: 1, phase: 'idle', idleAt: performance.now() + 15000, exit: [104.5, 28.5, 1] };
+    const L = [[7, 0.4, 7, 0, 0.2, 0, 0, 0x3a3d44], [1.6, 1.0, 1.6, 0, DROP_TOP + 6.5, 0, 0, 0xe8e8e8], [2.4, 0.4, 2.4, 0, DROP_TOP + 7.1, 0, 0, 0xc0392b]];
+    for (let y = 0; y < DROP_TOP + 6; y += 3) L.push([1.4, 3, 1.4, 0, y + 1.9, 0, 0, (y / 3) % 2 ? 0xc0392b : 0xf4f1e8]);
+    const bulbs = []; for (let y = 2; y < DROP_TOP + 6; y += 2) for (const [x, z] of [[0.72, 0.72], [-0.72, 0.72], [0.72, -0.72], [-0.72, -0.72]]) bulbs.push([0.1, 0.1, 0.1, x, y, z, 0, 0xfff1c4]);
+    R.g.add(mergedBoxes(L)); const bm = mergedBoxes(bulbs); bm.material = new THREE.MeshBasicMaterial({ vertexColors: true }); R.g.add(bm);
+    const car = new THREE.Group(), cl = [[3.8, 0.25, 3.8, 0, 0, 0, 0, 0x2468b0]];
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, cx = Math.sin(a) * 1.55, cz = Math.cos(a) * 1.55; cl.push([0.6, 0.1, 0.5, cx, 0.45, cz, a, 0xf2c14e], [0.6, 0.9, 0.12, Math.sin(a) * 1.25, 0.9, Math.cos(a) * 1.25, a, 0xf2c14e], [0.5, 0.12, 0.4, Math.sin(a) * 1.45, 1.35, Math.cos(a) * 1.45, a, 0x222222]); }
+    car.add(mergedBoxes(cl)); car.position.y = 1; R.g.add(car); R.car = car;
+    for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, rd = parkRiderFig(i + 20, i % 2 === 0); rd.position.set(Math.sin(a) * 1.6, 0.5, Math.cos(a) * 1.6); rd.rotation.y = a; car.add(rd); if (!i) R.mineFig = rd; } // (facing out; seat 0 is yours when you ride)
+    scene.add(R.g); K.reg.props.push(R.g);
+    R.gate = parkGate(p, K, 104, 27, 'front');
+    return R;
+  }
+  function stepDropTower(p, R, dt, riding, now) {
+    if (R.phase === 'idle') { if (riding || now > R.idleAt) { R.phase = 'up'; R.vy = 0; } }
+    else if (R.phase === 'up') { R.y += 3.4 * dt; if (R.y >= DROP_TOP) { R.y = DROP_TOP; R.phase = 'hold'; R.hold = 2.8; } }
+    else if (R.phase === 'hold') { R.hold -= dt; if (R.hold <= 0) { R.phase = 'drop'; R.vy = 0; parkScream(R.g.position.clone().setY(R.g.position.y + R.y), riding ? 0.3 : 0.2); } }
+    else if (R.phase === 'drop') { R.vy += 15 * dt; R.y -= R.vy * dt; if (R.y < 9) R.phase = 'brake'; }
+    else if (R.phase === 'brake') { R.vy = Math.max(0.6, R.vy - 30 * dt); R.y -= R.vy * dt; if (R.y <= 1.3) { R.y = 1; R.phase = 'idle'; R.idleAt = now + 35000; if (riding) endRide(); } }
+    R.car.position.y = R.y; if (R.mineFig) R.mineFig.visible = !riding;
+  }
+  function pinDropTower(r) { const R = r.R; _pkV.set(0, R.y + 0.55, 1.55); R.g.localToWorld(_pkV); const out = _pkV.clone().sub(R.g.position).setY(0).normalize(); rideViewQ(r, out, _pkUp); r.eye = _pkV.clone().setY(_pkV.y + 0.3); return _pkV.clone(); } // (facing out, over the park)
+  // ---- PIRATE SHIP: swinging higher and higher ----
+  function buildPirateShip(p, K, G) {
+    const R = { key: 'pirate', g: parkLocalGroup(p, 106.5, 56.5, G + 1), t: 0, A: 0, run: 0, idleAt: performance.now() + 20000, exit: [99.5, 56.5, 1] };
+    const H = 12, frame = [];
+    for (const x of [-2.6, 2.6]) for (const z of [-1, 1]) frame.push([boxAlong(0.4, 0.4, new THREE.Vector3(x, 0, z * 6.5), new THREE.Vector3(x, H, 0)), 0x6a3a1a]);
+    const axle = new THREE.CylinderGeometry(0.25, 0.25, 5.6, 10).rotateZ(Math.PI / 2).translate(0, H, 0); frame.push([axle, 0x9aa2a8]);
+    R.g.add(mergedBoxes([[6, 0.4, 14, 0, 0.2, 0, 0, 0x3a3d44]], frame));
+    const piv = new THREE.Group(); piv.position.y = H; R.g.add(piv); R.piv = piv;
+    const S = []; const D = -8.5;
+    S.push([3.4, 1.4, 11, 0, D, 0, 0, 0x5a3418], [3.6, 0.15, 11.2, 0, D + 0.75, 0, 0, 0x8a5a2a], [3.4, 1.6, 1.4, 0, D + 0.5, 6.0, 0, 0x5a3418], [3.4, 1.6, 1.4, 0, D + 0.5, -6.0, 0, 0x5a3418], [3.8, 0.2, 0.3, 0, D + 1.4, 6.6, 0, 0xd4a017], [3.8, 0.2, 0.3, 0, D + 1.4, -6.6, 0, 0xd4a017]);
+    for (let i = -4; i <= 4; i += 2) S.push([3.0, 0.4, 0.5, 0, D + 1.0, i, 0, 0x2a1a0a], [3.0, 0.5, 0.12, 0, D + 1.3, i - 0.25, 0, 0x2a1a0a]); // benches
+    for (const x of [-1.6, 1.6]) for (const z of [-5, 5]) S.push([boxAlong(0.18, 0.18, new THREE.Vector3(x, D + 0.8, z), new THREE.Vector3(x * 0.1, 0, 0)), 0x9aa2a8]);
+    const shipM = mergedBoxes(S.filter(e => Array.isArray(e) && typeof e[0] === 'number'), S.filter(e => e[0] && e[0].isBufferGeometry));
+    piv.add(shipM);
+    let n = 0; for (let i = -4; i <= 4; i += 2) for (const x of [-1, 0, 1]) { const rd = parkRiderFig(30 + n++, true); rd.position.set(x === 0 ? 0 : x * 1.0, D + 1.2, i + (i > 0 ? -0.3 : 0.3)); rd.rotation.y = i > 0 ? Math.PI : 0; rd.scale.setScalar(0.9); piv.add(rd); if (i === 4 && x === 1) R.mineFig = rd; } // (facing the middle of the ship)
+    const mast = mergedBoxes([[0.25, 6, 0.25, 0, D + 3.8, 0, 0, 0x4a2a10], [3.2, 0.12, 0.12, 0, D + 5.6, 0, 0, 0x4a2a10]]); piv.add(mast);
+    const flag = apCanvasPlane(1.6, 1.0, (x, w, h) => { x.fillStyle = '#111'; x.fillRect(0, 0, w, h); x.fillStyle = '#fff'; x.beginPath(); x.arc(w / 2, h * 0.42, h * 0.22, 0, 6.3); x.fill(); x.fillRect(w / 2 - 22, h * 0.7, 44, 8); }); flag.position.set(0, D + 6.4, 0.85); flag.rotation.y = Math.PI / 2; flag.material.side = THREE.DoubleSide; piv.add(flag);
+    scene.add(R.g); K.reg.props.push(R.g);
+    R.gate = parkGate(p, K, 100, 56, 'right');
+    return R;
+  }
+  function stepPirateShip(p, R, dt, riding, now) {
+    if (!R.run && (riding || now > R.idleAt)) { R.run = 1; R.rt = 0; }
+    if (R.run) { R.rt += dt; const T = R.rt; R.A = T < 12 ? 1.15 * T / 12 : T < 22 ? 1.15 : Math.max(0, 1.15 * (1 - (T - 22) / 10));
+      if (T > 9 && !R.screamed) { R.screamed = true; parkScream(R.g.position, riding ? 0.28 : 0.18); }
+      if (T >= 32) { R.run = 0; R.A = 0; R.screamed = false; R.idleAt = now + 40000; if (riding) endRide(); } }
+    R.t += dt; R.piv.rotation.x = R.A * Math.sin(R.t * 0.95); if (R.mineFig) R.mineFig.visible = !riding;
+  }
+  function pinPirateShip(r) { const P = r.R.piv; _pkV.set(1.0, -8.5 + 1.3, 3.7); P.localToWorld(_pkV); const fw = new THREE.Vector3(0, 0, -1).transformDirection(P.matrixWorld), up = new THREE.Vector3(0, 1, 0).transformDirection(P.matrixWorld); rideViewQ(r, fw, up); r.eye = _pkV.clone().addScaledVector(up, 0.3); return _pkV.clone(); } // (looking along the deck, tilting with her)
+  // ---- CHAIR SWINGS: chairs on chains flying out as the top spins ----
+  function buildChairSwings(p, K, G) {
+    const R = { key: 'swings', g: parkLocalGroup(p, 82.5, 22.5, G + 1), w: 0, ang: 0, run: 0, idleAt: performance.now() + 10000, exit: [82.5, 34.5, 1], chairs: [] };
+    R.g.add(mergedBoxes([[3, 0.4, 3, 0, 0.2, 0, 0, 0x3a3d44]], [[new THREE.CylinderGeometry(0.45, 0.6, 9, 12).translate(0, 4.5, 0), 0xe8e8e8]]));
+    const rot = new THREE.Group(); rot.position.y = 8.6; R.g.add(rot); R.rot = rot;
+    rot.add(mergedBoxes([], [[new THREE.CylinderGeometry(4.8, 4.8, 0.4, 24), 0xf2c14e], [new THREE.ConeGeometry(5.2, 2, 24).translate(0, 1.2, 0), 0x6a2a8a]]));
+    const cols = [0xc0392b, 0x2468b0, 0xf2c14e, 0x2f8f4a];
+    for (let i = 0; i < 16; i++) { const a = i / 16 * Math.PI * 2, hang = new THREE.Group(); hang.position.set(Math.cos(a) * 4.5, -0.2, Math.sin(a) * 4.5); hang.rotation.y = -a; rot.add(hang);
+      const sw = new THREE.Group(); hang.add(sw);
+      sw.add(mergedBoxes([[0.03, 4.4, 0.03, -0.22, -2.2, 0, 0, 0x9aa2a8], [0.03, 4.4, 0.03, 0.22, -2.2, 0, 0, 0x9aa2a8], [0.55, 0.08, 0.5, 0, -4.4, 0, 0, cols[i % 4]], [0.55, 0.5, 0.08, 0, -4.15, 0.24, 0, cols[i % 4]]])); // (seat facing the way it flies)
+      const rd = parkRiderFig(i + 40, i % 3 === 0); rd.position.set(0, -4.36, 0); rd.rotation.y = Math.PI; sw.add(rd);
+      R.chairs.push({ hang, sw, fig: rd }); }
+    scene.add(R.g); K.reg.props.push(R.g);
+    R.gate = parkGate(p, K, 82, 33, 'front'); // (beyond the chairs' reach when they fly right out — about v 31)
+    return R;
+  }
+  function stepChairSwings(p, R, dt, riding, now) {
+    if (!R.run && (riding || now > R.idleAt)) { R.run = 1; R.rt = 0; }
+    if (R.run) { R.rt += dt; const T = R.rt; R.w = T < 6 ? 1.5 * T / 6 : T < 24 ? 1.5 : Math.max(0, 1.5 * (1 - (T - 24) / 6)); if (T >= 30) { R.run = 0; R.w = 0; R.idleAt = now + 35000; if (riding) endRide(); } }
+    R.ang += R.w * dt; R.rot.rotation.y = R.ang; R.rot.position.y = 8.6 + Math.min(1, R.w / 1.5) * 1.4;
+    const tilt = Math.min(1.05, Math.atan(R.w * R.w * 6.5 / 9.8)); for (const c of R.chairs) c.sw.rotation.z = tilt; // out from the middle (+z tilts the chair's foot outward — it was swinging in)
+    if (R.chairs[0].fig) R.chairs[0].fig.visible = !riding;
+  }
+  function pinChairSwings(r) { const R = r.R; _pkV.set(0, -4.2, 0); R.chairs[0].sw.localToWorld(_pkV); const c = R.rot.getWorldPosition(_pkV2), rx = _pkV.x - c.x, rz = _pkV.z - c.z, l = Math.hypot(rx, rz) || 1; rideViewQ(r, new THREE.Vector3(rz / l, 0, -rx / l), _pkUp); r.eye = _pkV.clone().setY(_pkV.y + 0.35); return _pkV.clone(); } // (facing the way you're flying)
+  // ---- HELTER SKELTER: up the tower, down the spiral on a mat ----
+  function buildHelter(p, K, G) {
+    const R = { key: 'helter', g: parkLocalGroup(p, 46.5, 22.5, G + 1), run: 0 };
+    const L = [], geos = [];
+    for (let i = 0; i < 9; i++) geos.push([new THREE.CylinderGeometry(2.3, 2.4, 1.5, 16).translate(0, 0.75 + i * 1.5, 0), i % 2 ? 0xf4f1e8 : 0xc0392b]);
+    geos.push([new THREE.ConeGeometry(2.9, 3, 16).translate(0, 15, 0), 0x2468b0], [new THREE.CylinderGeometry(0.05, 0.05, 1.6, 6).translate(0, 17.2, 0), 0x9aa2a8]);
+    const turns = 3, top = 13, bot = 0.35, rad = 3.6, N = 120; const hel = [];
+    for (let i = 0; i <= N; i++) { const t = i / N, a = t * turns * Math.PI * 2; hel.push(new THREE.Vector3(Math.cos(a) * rad, top + (bot - top) * t, Math.sin(a) * rad)); }
+    for (let i = 0; i < N; i++) { const a = hel[i], b = hel[i + 1], out = new THREE.Vector3(a.x, 0, a.z).normalize();
+      geos.push([boxAlong(1.3, 0.1, a, b), 0xf2c14e]); geos.push([boxAlong(0.08, 0.35, a.clone().addScaledVector(out, 0.65).setY(a.y + 0.15), b.clone().addScaledVector(new THREE.Vector3(b.x, 0, b.z).normalize(), 0.65).setY(b.y + 0.15)), 0xe8702a]);
+      if (i % 10 === 5) geos.push([boxAlong(0.12, 0.12, a.clone().addScaledVector(out, 0.5), a.clone().addScaledVector(out, 0.5).setY(0)), 0xe9e9e6]); }
+    L.push([1.2, 2, 0.1, 0, 1, 2.42, 0, 0x5a3418]); // the door
+    L.push([2.2, 0.15, 1.6, Math.cos(turns * Math.PI * 2) * (rad + 1.2), 0.08, Math.sin(turns * Math.PI * 2) * (rad + 1.2), 0, 0x2f8f4a]); // the landing mat
+    R.g.add(mergedBoxes(L, geos)); R.hel = hel;
+    R.curve = new THREE.CatmullRomCurve3(hel, false);
+    scene.add(R.g); K.reg.props.push(R.g);
+    R.gate = parkGate(p, K, 46, 28, 'front'); // (clear of the slide — it reaches v 26.8)
+    R.g.updateMatrixWorld(true); R.exitW = R.g.localToWorld(hel[N].clone().add(new THREE.Vector3(hel[N].x, 0, hel[N].z).normalize().multiplyScalar(1.8))); // (in the world — it was left in the tower's own coordinates, so you were dropped near 0, 0)
+    return R;
+  }
+  function stepHelter(p, R, dt, riding) {
+    if (!R.slider) { R.slider = parkRiderFig(90, true); R.g.add(R.slider); R.ss = 0; R.sw = 3; }
+    if (riding) R.slider.visible = false; else { if (R.sw > 0) { R.sw -= dt; R.slider.visible = false; } else { R.ss = Math.min(1, R.ss + dt * (0.05 + R.ss * 0.12)); const q = R.curve.getPointAt(Math.min(0.999, R.ss)), tg = R.curve.getTangentAt(Math.min(0.999, R.ss)); R.slider.visible = true; R.slider.position.copy(q).setY(q.y + 0.1); R.slider.rotation.y = Math.atan2(tg.x, tg.z); if (R.ss >= 1) { R.ss = 0; R.sw = 6 + Math.random() * 6; } } }
+    if (!riding) return;
+    const r = rideNow; r.t = (r.t || 0) + dt; r.s = Math.min(1, (r.s || 0) + dt * (0.04 + r.s * 0.12)); // picking up speed down the slide
+    if (r.s >= 1) endRide();
+  }
+  function pinHelter(r) { const R = r.R, s = Math.min(0.999, r.s || 0);
+    try { const S = rideSnd(r), sp = 0.04 + s * 0.12; S.noise('slide', 'bandpass', 900, 0.7).set(0.06 + s * 0.22, 600 + s * 1600); S.noise('mat', 'highpass', 3000, 0.5).set(0.02 + s * 0.05); if (s > 0.995 && !r.thump) { r.thump = true; rideBlip('noise', 160, 1, 0.35, 0.35); } } catch (e) {} _pkV.copy(R.curve.getPointAt(s)); R.g.localToWorld(_pkV); const tg = R.curve.getTangentAt(s).transformDirection(R.g.matrixWorld); rideViewQ(r, tg, _pkUp); r.eye = _pkV.clone().add(new THREE.Vector3(0, 1.0, 0)); return _pkV.clone().setY(_pkV.y + 0.2); }
+  // ---- DODGEMS: drive your own car round the floor, bumping the others ----
+  const DG = { u0: 16.5, u1: 33.5, v0: 16.5, v1: 27.5 };
+  function buildDodgems(p, K, G) {
+    const R = { key: 'dodgems', cars: [], exit: [25.5, 30.5, 1] };
+    for (let u = 16; u <= 34; u++) for (let v = 16; v <= 28; v++) K.put(u, v, G, BLOCK_ID('Black Concrete'));
+    const g = new THREE.Group(); scene.add(g); K.reg.props.push(g); R.g = g;
+    const geos = [], c = (u, v, y) => parkV(p, u, v, G + 1 + y);
+    for (const [a, b] of [[[16, 16], [35, 16]], [[35, 16], [35, 29]], [[35, 29], [16, 29]], [[16, 29], [16, 16]]]) geos.push([boxAlong(0.35, 0.5, c(a[0], a[1], 0.25), c(b[0], b[1], 0.25)), 0x222222], [boxAlong(0.4, 0.12, c(a[0], a[1], 0.55), c(b[0], b[1], 0.55)), 0xf2c14e]);
+    for (const [u, v] of [[16, 16], [35, 16], [16, 29], [35, 29], [25.5, 16], [25.5, 29]]) geos.push([boxAlong(0.3, 0.3, c(u, v, 0), c(u, v, 5)), 0xc0392b]);
+    for (const [a, b] of [[[16, 16], [35, 16]], [[35, 16], [35, 29]], [[35, 29], [16, 29]], [[16, 29], [16, 16]]]) geos.push([boxAlong(0.5, 0.6, c(a[0], a[1], 5.2), c(b[0], b[1], 5.2)), 0xf4f1e8]);
+    g.add(mergedBoxes([], geos));
+    const roof = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x2a2d33, side: THREE.DoubleSide })); roof.rotation.x = -Math.PI / 2; const rg = new THREE.Group(); rg.add(roof); rg.position.copy(c(25.5, 22.5, 5.4)); rg.rotation.y = Math.atan2(-p.f.s[1], p.f.s[0]); rg.scale.set(19, 1, 13); g.add(rg); // the electric mesh ceiling
+    const cols = [0xc0392b, 0x2468b0, 0xf2c14e, 0x2f8f4a, 0xe86aa6, 0xe8702a, 0x6a2a8a];
+    for (let i = 0; i < 7; i++) { const m = new THREE.Group(); m.add(mergedBoxes([[1.3, 0.35, 1.9, 0, 0.35, 0, 0, cols[i]], [1.45, 0.22, 2.05, 0, 0.14, 0, 0, 0x111111], [0.9, 0.5, 0.15, 0, 0.7, -0.45, 0, cols[i]], [0.7, 0.12, 0.6, 0, 0.55, 0, 0, 0x222222], [0.05, 4.3, 0.05, 0, 2.6, -0.8, 0, 0x9aa2a8], [0.18, 0.18, 0.18, 0, 0.62, 0.5, 0, 0x333333]]));
+      g.add(m); const car = { m, u: 18 + (i % 4) * 4, v: 18 + Math.floor(i / 4) * 6, h: i * 0.9, sp: 2.2, turn: 0 };
+      { const rd = parkRiderFig(i + 60, false); rd.position.set(0, 0.6, -0.1); m.add(rd); car.fig = rd; }
+      R.cars.push(car); }
+    R.gate = parkGate(p, K, 25, 30, 'front');
+    return R;
+  }
+  function stepDodgems(p, R, dt, riding, now) {
+    const me = riding ? R.cars[0] : null; if (R.cars[0].fig) R.cars[0].fig.visible = !riding;
+    if (riding) { const r = rideNow; r.t = (r.t || 0) + dt; let thr = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0), st = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
+      if (isTouchDevice || padStickActive) { if (Math.abs(moveState.y) > 0.12) thr = -moveState.y; if (Math.abs(moveState.x) > 0.12) st = moveState.x; }
+      const hand = Math.sign(p.f.s[0] * p.f.d[1] - p.f.s[1] * p.f.d[0]) || 1; // (the park's frame can be mirrored: A must always turn you left)
+      me.sp += (thr * 4.2 - me.sp) * Math.min(1, dt * 2.5); me.h += st * hand * dt * 2.4 * (me.sp >= -0.2 ? 1 : -1);
+      try { const S = rideSnd(r), sp = Math.abs(me.sp); S.osc('hum', 'sawtooth', 70, 400).set(0.03 + sp * 0.012, 300 + sp * 80); S.voices.hum.pitch(65 + sp * 14); S.noise('rumble', 'lowpass', 200, 1).set(0.02 + sp * 0.01);
+        if (Math.random() < dt * 3) rideBlip('noise', 5000 + Math.random() * 3000, 8, 0.05, 0.05); } catch (e) {} // (the motor, the floor, sparks off the ceiling mesh)
+      if (r.t >= 45) endRide(); }
+    for (const c of R.cars) {
+      if (c !== me) { c.turn -= dt; if (c.turn <= 0) { c.turn = 1 + Math.random() * 2; c.dh = (Math.random() - 0.5) * 2; } c.h += (c.dh || 0) * dt; c.sp += (2.4 - c.sp) * dt; }
+      c.u += Math.cos(c.h) * c.sp * dt; c.v += Math.sin(c.h) * c.sp * dt;
+      const wall = (c.u < DG.u0 + 0.6 || c.u > DG.u1 + 0.6 || c.v < DG.v0 + 0.6 || c.v > DG.v1 + 0.6);
+      if (wall) { const ou = c.u, ov = c.v; c.u = Math.max(DG.u0 + 0.6, Math.min(DG.u1 + 0.6, c.u)); c.v = Math.max(DG.v0 + 0.6, Math.min(DG.v1 + 0.6, c.v));
+        if (c === me) { if (Math.abs(c.sp) > 1.2) { rideBlip('noise', 180, 1, 0.3, 0.3); rideBlip('triangle', 140, 70, 0.25, 0.15); } c.sp *= -0.35; } // (you: bounced back off the rail, still facing the way you were)
+        else { if (ou !== c.u) c.h = Math.PI - c.h; if (ov !== c.v) c.h = -c.h; c.sp *= 0.6; } }
+    }
+    for (let i = 0; i < R.cars.length; i++) for (let j = i + 1; j < R.cars.length; j++) { const a = R.cars[i], b = R.cars[j], du = b.u - a.u, dv = b.v - a.v, d = Math.hypot(du, dv);
+      if (d < 1.9 && d > 0.001) { const nu = du / d, nv = dv / d, ov = (1.9 - d) / 2; a.u -= nu * ov; a.v -= nv * ov; b.u += nu * ov; b.v += nv * ov; if (!a.bumpAt || now - a.bumpAt > 450) { a.bumpAt = now; if (a === me || b === me) { const hit = Math.min(1, Math.abs(a.sp - b.sp) / 4 + 0.3); rideBlip('noise', 200, 1, 0.35, 0.35 * hit); rideBlip('triangle', 160, 60, 0.3, 0.2 * hit); rideBlip('square', 900, 500, 0.08, 0.05 * hit, 2000); } else if (animNear(a.m.position.x, a.m.position.z)) playThud(140); } if (a !== me && b !== me) { const t = a.sp; a.sp = b.sp * 0.8; b.sp = t * 0.8; } else { a.sp *= a === me ? 0.45 : 0.8; b.sp *= b === me ? 0.45 : 0.8; } } }
+    const s = p.f.s, d = p.f.d;
+    for (const c of R.cars) { const [x, z] = p.f.pos(c.u, c.v); c.m.position.set(x, p.floor + 1.02, z); const wx = s[0] * Math.cos(c.h) + d[0] * Math.sin(c.h), wz = s[1] * Math.cos(c.h) + d[1] * Math.sin(c.h); c.m.rotation.y = Math.atan2(wx, wz); c.wd = [wx, wz]; }
+  }
+  function pinDodgems(r) { const c = r.R.cars[0]; rideViewQ(r, new THREE.Vector3(c.wd ? c.wd[0] : 0, 0, c.wd ? c.wd[1] : 1), _pkUp); const s = c.m.position.clone(); r.eye = s.clone().setY(s.y + 1.35); return s.setY(s.y + 0.55); }
+  // ---- GHOST TRAIN: a dark ride through five rooms of a haunted house ----
+  // The building (u 16-37 x v 43-61) holds the whole track, clear of the carousel. From the candle-lit STATION through
+  // crash doors into the HALL OF GHOSTS (one swoops at you), the PORTRAIT GALLERY (lightning; eyes that follow you),
+  // the CRYPT (coffins open, skeletons sit up), the LAB (a Tesla coil sparks, the scientist cackles) and the SPIDER'S LAIR
+  // (it drops right in front of you), and back. Inside it's dark — the daylight's shut out while you ride (rideDark) —
+  // with an eerie drone, creaking and wind under the scares. Props and scare sounds are the Haunted House's.
+  const GHOST_PATH = [[34.5, 46], [30, 46], [27, 46], [24, 46.3], [20.5, 47], [19.3, 49.5], [19.6, 52.5], [21.3, 54.5], [21.6, 56.6], [23.5, 58], [27, 58.2], [30.5, 58.2], [33.5, 57.6], [35, 55.8], [33.8, 53.8], [33.4, 52.2], [31.2, 51.6], [29.9, 50.4], [30.3, 48.9], [32.5, 48.1], [35.6, 47.6], [36, 46.6]];
+  const GHOST_DOORS = [[28.5, 46, 'u'], [19.5, 50.5, 'v'], [21.5, 55.5, 'v'], [28.5, 58, 'u'], [34, 53.5, 'v'], [30.5, 49.5, 'v']]; // where the track goes through each inner wall
+  function buildGhostTrain(p, K, G) {
+    const R = { key: 'ghost', exit: [38.5, 48.5, 1], scares: [], S: {}, doors: [] };
+    const blk = BLOCK_ID('Black Concrete'), stone = BLOCK_ID('Cracked Stone') >= 0 ? BLOCK_ID('Cracked Stone') : blk, purple = BLOCK_ID('Purple Concrete') >= 0 ? BLOCK_ID('Purple Concrete') : blk, planks = BLOCK_ID('Dark Planks') >= 0 ? BLOCK_ID('Dark Planks') : blk;
+    for (let u = 16; u <= 37; u++) for (let v = 43; v <= 61; v++) { K.put(u, v, G, planks); const edge = u === 16 || u === 37 || v === 43 || v === 61; if (edge) for (let y = G + 1; y <= G + 6; y++) K.put(u, v, y, y >= G + 5 && u === 37 ? purple : stone); K.put(u, v, G + 7, blk); }
+    const wall = (u0, u1, v0, v1, gap) => { for (let u = u0; u <= u1; u++) for (let v = v0; v <= v1; v++) { if (gap(u, v)) continue; for (let y = G + 1; y <= G + 6; y++) K.put(u, v, y, blk); } };
+    wall(28, 28, 44, 49, (u, v) => v === 45 || v === 46); wall(17, 25, 50, 50, u => u >= 18 && u <= 20); wall(17, 25, 55, 55, u => u >= 20 && u <= 22); wall(28, 28, 56, 60, (u, v) => v === 57 || v === 58); wall(29, 36, 53, 53, u => u === 33 || u === 34); wall(29, 36, 49, 49, u => u >= 29 && u <= 31);
+    for (const v of [47, 48]) for (const y of [G + 1, G + 2]) K.clear(37, v, y); // the riders' door from outside, beside the gate
+    for (const v of [44, 45, 46, 47, 48, 49, 50, 51]) for (let y = G + 7; y <= G + 9; y++) if (Math.abs(v - 47.5) + (y - G - 7) < 4.5) K.put(37, v, y, purple); // a crooked gable over the front
+    const sg = new THREE.Group(); sg.userData.w = 6; bizSetSign(sg, '👻 GHOST TRAIN', '#2a0a3a', '#7aff8a'); K.prop(sg, 37.95, 47.5, G + 4.6, 'right');
+    for (const [u, v, k] of [[38.5, 44.5, 0], [38.5, 51.5, 1], [38.5, 54.5, 2]]) { try { K.prop(buildTombstone(k), u, v, G + 1, 'right'); } catch (e) {} } // a few graves by the door
+    try { K.prop(buildJackOLantern(), 38.4, 46, G + 1, 'right'); K.prop(buildJackOLantern(), 38.4, 49.4, G + 1, 'right'); } catch (e) {}
+    const pts = GHOST_PATH.map(([u, v]) => parkV(p, u, v, G + 1.05)); R.track = parkTrack(pts, true, 0.5);
+    const g = new THREE.Group(); scene.add(g); K.reg.props.push(g); R.g = g;
+    { const N = 260, geos = []; for (let i = 0; i < N; i++) { const a = R.track.curve.getPointAt(i / N), b = R.track.curve.getPointAt((i + 1) / N); geos.push([boxAlong(0.12, 0.08, a.clone().add(new THREE.Vector3(0, 0, 0)), b), 0x55555c]); } g.add(mergedBoxes([], geos)); }
+    R.cart = buildGhostCart(); g.add(R.cart); R.t = 0;
+    { const rd = parkRiderFig(80, false); rd.position.set(0, 0.55, 0); R.cart.add(rd); R.mineFig = rd; }
+    const S = R.S;
+    // station
+    try { K.prop(buildCandelabra(), 35.5, 44.6, G + 1); K.prop(buildCandelabra(), 31, 44.6, G + 1); } catch (e) {}
+    { const s2 = new THREE.Group(); s2.userData.w = 3.2; bizSetSign(s2, 'ABANDON HOPE…', '#1a0505', '#ff4a4a'); K.prop(s2, 28.95, 47.8, G + 4.1, 'right'); }
+    // hall of ghosts
+    S.ghosts = []; for (const [u, v, y] of [[24, 47.6, 3.0], [21, 45.2, 2.6], [25.6, 44.9, 3.4]]) { const gh = buildGhost(); gh.userData.noSolid = true; K.prop(gh, u, v, G + y); gh.userData.home = gh.position.clone(); S.ghosts.push(gh); }
+    // portrait gallery
+    S.portraits = []; for (const v of [51.4, 53, 54.5]) { const pr = buildPortrait(Math.round(v * 7)); K.prop(pr, 17.05, v, G + 0.2, 'right'); S.portraits.push(pr); }
+    // crypt
+    S.coffins = []; for (const u of [18.6, 21.4, 24.4]) { const c = buildCoffin(); K.prop(c, u, 59.6, G + 1, 'right'); S.coffins.push(c); }
+    // the lab
+    S.benches = []; for (const [u, i] of [[30.5, 0], [33.5, 1]]) { const bn = buildLabBench(i); K.prop(bn, u, 60.45, G + 1, 'front'); S.benches.push(bn); }
+    S.tesla = buildTeslaCoil(); K.prop(S.tesla, 31.2, 55.6, G + 1);
+    { const sc = pubFigure(false, 'chef', p.ck + ':ghostlab'); const [x, z] = p.f.pos(35.4, 59.6); sc.position.set(x, G + 1, z); sc.rotation.y = Math.atan2(-p.f.d[0], -p.f.d[1]); scene.add(sc); K.reg.props.push(sc); S.scientist = sc; }
+    // the spider's lair
+    S.spider = buildSpider(); S.spider.userData.noSolid = true; K.prop(S.spider, 31.6, 51.0, G + 4.2); S.spider.userData.home = S.spider.position.clone();
+    for (const [u, v, dir] of [[17.2, 44.3, 'back'], [27.6, 44.3, 'back'], [29.2, 52.6, 'front'], [36.6, 50, 'left'], [17.2, 56.2, 'back'], [36.6, 59.8, 'front']]) { try { K.prop(buildCobweb(1.4), u, v, G + 4.9, dir); } catch (e) {} }
+    // glowing eyes in dark corners, and candles
+    for (const [u, v, y] of [[17.4, 48.6, 3.2], [26.6, 54.4, 2.4], [36.4, 50.4, 3.6], [17.6, 60.4, 1.2]]) { const eyes = new THREE.Group(); for (const x of [-0.12, 0.12]) { const e = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), new THREE.MeshBasicMaterial({ color: 0xff3030 })); e.position.x = x; eyes.add(e); } const [x, z] = p.f.pos(u, v); eyes.position.set(x, G + 1 + y, z); g.add(eyes); }
+    // crash doors in the inner walls
+    for (const [u, v, ax] of GHOST_DOORS) {
+      const d = new THREE.Group(); const [x, z] = p.f.pos(u, v); d.position.set(x, G + 1, z);
+      const along = ax === 'u' ? p.f.d : p.f.s; d.rotation.y = Math.atan2(along[0], along[1]) + Math.PI / 2; // (the doors span the gap, across the track)
+      const leaves = []; for (const sx of [-1, 1]) { const hinge = new THREE.Group(); hinge.position.x = sx * 1.0; d.add(hinge); hinge.add(mergedBoxes([[0.96, 2.2, 0.08, -sx * 0.5, 1.1, 0, 0, 0x3a1a0a], [0.6, 0.08, 0.1, -sx * 0.5, 1.6, 0.02, 0, 0x8a1a1a]])); leaves.push({ hinge, sx }); }
+      g.add(d); R.doors.push({ d, leaves, open: 0, t: 0 });
+    }
+    // where along the track each thing happens
+    const nearT = obj => { const w = new THREE.Vector3(); obj.updateMatrixWorld(true); obj.getWorldPosition(w); let best = 0, bd = Infinity; for (let i = 0; i < 500; i++) { const q = R.track.curve.getPointAt(i / 500), d = Math.hypot(q.x - w.x, q.z - w.z); if (d < bd) { bd = d; best = i / 500; } } return best; };
+    R.doors.forEach(D => D.t = nearT(D.d));
+    R.scares = [{ kind: 'ghost', t: nearT(S.ghosts[0]) - 0.02 }, { kind: 'lightning', t: nearT(S.portraits[1]) - 0.01 }, { kind: 'coffin', t: nearT(S.coffins[1]) - 0.03 }, { kind: 'lab', t: nearT(S.tesla) - 0.02 }, { kind: 'spider', t: nearT(S.spider) - 0.02 }].map(s => ({ ...s, t: Math.max(0.02, s.t) }));
+    R.anims = {};
+    R.gate = parkGate(p, K, 38, 47, 'left');
+    return R;
+  }
+  function stepGhostTrain(p, R, dt, riding, now) {
+    const S = R.S;
+    if (riding) {
+      const r = rideNow, slow = R.scares.some(s => s.fired && R.t - s.t < 0.025 && R.t >= s.t) ? 0.4 : 1; // it slows right down for each scare
+      R.t += 2.1 * slow * dt / R.track.length;
+      for (const s of R.scares) if (!s.fired && R.t >= s.t) { s.fired = true; R.anims[s.kind] = now; try { hauntSfx[s.kind] && hauntSfx[s.kind](); } catch (e) {} if (s.kind === 'lightning') rideFlashUntil = now + 140, setTimeout(() => { rideFlashUntil = performance.now() + 110; }, 330); if (s.kind !== 'lightning') setTimeout(() => parkScream(R.cart.position, 0.18), 300); }
+      rideDarkTarget = 0.9;
+      try { const Sn = rideSnd(r); Sn.osc('drone', 'sawtooth', 55, 180).set(0.05); Sn.osc('drone2', 'sawtooth', 58.3, 160).set(0.04); Sn.noise('wind', 'bandpass', 420 + Math.sin(now / 1700) * 160, 2).set(0.04 + Math.max(0, Math.sin(now / 2300)) * 0.05, 420 + Math.sin(now / 1700) * 160);
+        if (Math.random() < dt * 0.6) rideBlip('sawtooth', 70 + Math.random() * 40, 50, 0.8 + Math.random() * 0.6, 0.04, 400); // a creak
+        if (Math.random() < dt * 0.25) rideBlip('sine', 300 + Math.random() * 200, 140, 1.8, 0.04); } catch (e) {} // a far-off moan
+      if (R.t >= 1) { R.t = 0; for (const s of R.scares) s.fired = false; endRide(); }
+    } else { R.t = (R.t + 2.0 * dt / R.track.length) % 1; for (const s of R.scares) s.fired = false; }
+    if (R.mineFig) R.mineFig.visible = !riding;
+    const F = coasterFrameAt(R.track, R.t); coasterPlace(R.cart, F);
+    if (!riding && !animNear(R.cart.position.x, R.cart.position.z)) return;
+    const tt = now / 1000, since = k => R.anims[k] ? (now - R.anims[k]) / 1000 : 99, cam = camera.getWorldPosition(_pkV2.clone());
+    // the crash doors burst open as the cart comes through
+    for (const D of R.doors) { let d = R.t - D.t; if (d < -0.5) d += 1; if (d > 0.5) d -= 1; const want = d > -0.03 && d < 0.04 ? 1 : 0; const was = D.open; D.open += (want - D.open) * Math.min(1, dt * (want ? 9 : 2)); if (riding && was < 0.2 && D.open >= 0.2 && want) { rideBlip('noise', 220, 1, 0.4, 0.3); rideBlip('triangle', 110, 55, 0.35, 0.15); } for (const L of D.leaves) L.hinge.rotation.y = L.sx * D.open * 1.5; }
+    // ghosts drift; the first swoops at the cart
+    S.ghosts.forEach((gh, i) => { const hm = gh.userData.home; const q = hm.clone(); q.y += Math.sin(tt * 1.3 + i * 2) * 0.25; q.x += Math.sin(tt * 0.6 + i) * 0.35;
+      const s = since('ghost'); if (i === 0 && s < 2.6) { const k = s < 0.9 ? s / 0.9 : s < 1.5 ? 1 : 1 - (s - 1.5) / 1.1; q.lerp(new THREE.Vector3(R.cart.position.x, R.cart.position.y + 1.6, R.cart.position.z), Math.max(0, Math.min(1, k)) * 0.85); }
+      gh.position.copy(q); gh.lookAt(cam.x, gh.position.y, cam.z); });
+    for (const pr of S.portraits) { const pu = pr.userData.pupils; if (!pu) continue; const lp = pr.worldToLocal(cam.clone()); const ex = Math.max(-0.018, Math.min(0.018, lp.x * 0.01)); pu.forEach((m, j) => { m.position.x = (j ? 0.075 : -0.075) + ex; }); }
+    { const s = since('coffin'), k = s < 1 ? s : s < 7 ? 1 : Math.max(0, 1 - (s - 7) / 2); S.coffins.forEach((c, i) => { const kk = Math.max(0, Math.min(1, k * 1.2 - i * 0.08)); if (c.userData.lidPivot) c.userData.lidPivot.rotation.z = kk * 1.7; if (c.userData.torso) c.userData.torso.rotation.x = -Math.PI / 2 * (1 - kk * 0.92); }); }
+    for (const bn of S.benches) for (const b of bn.userData.bubbles || []) { const y = (tt * b.sp + b.ph) % 1; b.m.position.y = 1.15 + y * 0.35; b.m.material.opacity = 0.8 * (1 - y); }
+    { const s = since('lab'), on = s < 2.5 || Math.sin(tt * 3.1) > 0.995; (S.tesla.userData.arcs || []).forEach((a, i) => { a.visible = on && Math.random() < 0.6; if (a.visible) { a.rotation.set(Math.random() * 2 - 1, Math.random() * 6, Math.random() * 2 - 1); a.position.set(Math.cos(i) * 0.3, 1.8 + Math.random() * 0.3, Math.sin(i) * 0.3); } });
+      const arms = S.scientist.userData.arms || []; const wave = s < 3 ? -2.6 + Math.sin(tt * 9) * 0.4 : -0.5 - Math.abs(Math.sin(tt * 1.5)) * 0.4; arms.forEach((a, j) => { a.rotation.x = wave + (j ? 0.2 : 0); }); }
+    { const s = since('spider'), hm = S.spider.userData.home, drop = s < 0.5 ? s / 0.5 : s < 2.2 ? 1 : Math.max(0, 1 - (s - 2.2) / 1.5); S.spider.position.set(hm.x, hm.y - drop * 1.7 + Math.sin(tt * 2) * 0.05, hm.z);
+      (S.spider.userData.legs || []).forEach((l, i) => { l.rotation.x = Math.sin(tt * (drop > 0.5 ? 14 : 2) + i) * (drop > 0.5 ? 0.35 : 0.08); }); if (riding && drop > 0.5 && Math.random() < dt * 4) rideBlip('noise', 3500, 4, 0.2, 0.06); }
+  }
+  function pinGhostTrain(r) { const F = coasterFrameAt(r.R.track, r.R.t); rideViewQ(r, F.tg, _pkUp); const s = F.p.clone(); r.eye = s.clone().setY(s.y + 1.4); return s.setY(s.y + 0.6); }
+  // ---- LOG FLUME: along the water, up the lift, and down the drop — splash! ----
+  const FLUME_PTS = [[18, 70, 0.6], [26, 70, 0.6], [34, 70, 0.6], [42, 70.5, 0.6], [49, 73, 0.6], [53, 79, 0.7], [54, 86, 3], [54, 92, 7], [53, 97, 9.5], [48, 100, 9.8], [40, 100, 9.8], [34, 99.5, 9.6], [30, 99, 7], [26, 98.5, 2.2], [22, 98, 0.6], [17, 95, 0.6], [14, 89, 0.6], [14, 80, 0.6], [15, 74, 0.6]];
+  function buildLogFlume(p, K, G) {
+    const R = { key: 'flume', exit: [24.5, 65.5, 1], t: 0.02, v: 0, logs: [] };
+    const pts = FLUME_PTS.map(([u, v, h]) => parkV(p, u, v, G + 1 + h)); R.track = parkTrack(pts, true, 0.35);
+    let top = 0; for (let i = 0; i <= 400; i++) top = Math.max(top, R.track.curve.getPointAt(i / 400).y); R.topY = top;
+    const g = new THREE.Group(); scene.add(g); K.reg.props.push(g); R.g = g;
+    const N = 260, geos = [], wood = 0x8a5a2a, side = new THREE.Vector3();
+    for (let i = 0; i < N; i++) { const a = R.track.curve.getPointAt(i / N), b = R.track.curve.getPointAt((i + 1) / N), tg = new THREE.Vector3().subVectors(b, a).normalize(); side.crossVectors(tg, _pkUp).normalize();
+      geos.push([boxAlong(1.9, 0.12, a.clone().setY(a.y - 0.35), b.clone().setY(b.y - 0.35)), wood]);
+      for (const sx of [-0.95, 0.95]) geos.push([boxAlong(0.12, 0.7, a.clone().addScaledVector(side, sx), b.clone().addScaledVector(side, sx)), wood]);
+      if (i % 6 === 0 && a.y - (G + 1) > 1) for (const sx of [-0.8, 0.8]) geos.push([boxAlong(0.2, 0.2, a.clone().addScaledVector(side, sx).setY(a.y - 0.4), a.clone().addScaledVector(side, sx).setY(G + 1)), 0x6a4a2a]); }
+    g.add(mergedBoxes([], geos));
+    const wg = []; for (let i = 0; i < N; i++) { const a = R.track.curve.getPointAt(i / N), b = R.track.curve.getPointAt((i + 1) / N); wg.push(boxAlong(1.7, 0.04, a.clone().setY(a.y - 0.12), b.clone().setY(b.y - 0.12))); }
+    const water = mergedBoxes([], wg.map(x => [x, 0x3a8fd6])); water.material = new THREE.MeshLambertMaterial({ color: 0x3a8fd6, transparent: true, opacity: 0.75 }); g.add(water);
+    // the splash pool at the bottom of the drop, and the station platform
+    { const [x, z] = p.f.pos(19, 97); const pool = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.4, 0.5, 20), new THREE.MeshLambertMaterial({ color: 0x3a8fd6, transparent: true, opacity: 0.8 })); pool.position.set(x, G + 1.2, z); g.add(pool); }
+    for (let u = 18; u <= 31; u++) for (const v of [68, 69]) K.put(u, v, G + 1, BLOCK_ID('Dark Planks'));
+    for (let i = 0; i < 2; i++) { const m = new THREE.Group(); m.add(mergedBoxes([[1.2, 0.55, 2.4, 0, 0.1, 0, 0, 0x6a3a1a], [0.9, 0.12, 2.0, 0, 0.38, 0, 0, 0x3a2010], [0.9, 0.35, 0.12, 0, 0.55, -0.3, 0, 0x6a3a1a], [0.9, 0.35, 0.12, 0, 0.55, 0.5, 0, 0x6a3a1a]], [[new THREE.CylinderGeometry(0.6, 0.6, 0.4, 10).rotateX(Math.PI / 2).translate(0, 0.1, 1.3), 0x7a4a24], [new THREE.CylinderGeometry(0.6, 0.6, 0.4, 10).rotateX(Math.PI / 2).translate(0, 0.1, -1.3), 0x7a4a24]])); g.add(m); for (const z of i ? [-0.05, 0.75] : [-0.4]) { const rd = parkRiderFig(i * 3 + 70 + (z > 0 ? 1 : 0), true); rd.position.set(0, 0.42, z); rd.scale.setScalar(0.9); m.add(rd); } R.logs.push({ m, t: i * 0.5, v: 3 }); }
+    // spray
+    const NS = 160, pos = new Float32Array(NS * 3).fill(-999), sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    R.spray = new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xeaf6ff, size: 0.25, transparent: true, opacity: 0.9, depthWrite: false })); R.spray.frustumCulled = false; g.add(R.spray); R.sprayP = []; R.sprayLife = 0;
+    R.gate = parkGate(p, K, 24, 66, 'back'); // (on the grass in front of the platform — clear of the channel)
+    return R;
+  }
+  function flumeSpeed(L, tg, dt) { // the lift hauls it up; down the drop it speeds up; on the flat the water slows it back to a drift
+    if (tg.y > 0.15) L.v = 2.6; else if (tg.y < -0.15) L.v += 9.8 * -tg.y * dt; else L.v += (3.2 - L.v) * Math.min(1, dt * 0.9);
+    return L.v = Math.max(1.5, Math.min(14, L.v || 3));
+  }
+  function stepLogFlume(p, R, dt, riding, now) {
+    for (let i = 0; i < R.logs.length; i++) {
+      const L = R.logs[i], mine = riding && i === 0, prevY = R.track.curve.getPointAt(L.t).y;
+      if (mine && !rideNow.started) { rideNow.started = true; L.t = 0.01; L.run = 0; }
+      const F0 = coasterFrameAt(R.track, L.t);
+      let v = flumeSpeed(L, F0.tg, dt); if (L.splashSlow > 0) { L.splashSlow -= dt; v = L.v = Math.min(v, 3); }
+      L.t += v * dt / R.track.length; if (L.t >= 1) { L.t -= 1; if (mine) { endRide(); continue; } }
+      if (mine) { L.run += v * dt / R.track.length; if (L.run > 0.985) { endRide(); } }
+      const F = coasterFrameAt(R.track, L.t);
+      if (F0.tg.y < -0.35 && F.tg.y > -0.1 && !L.splashed) { L.splashed = true; L.splashSlow = 1.2; R.sprayLife = 1.6; R.sprayAt = F.p.clone(); R.sprayP = []; for (let k = 0; k < 160; k++) R.sprayP.push({ x: F.p.x, y: F.p.y, z: F.p.z, vx: (Math.random() - 0.5) * 5, vy: 3 + Math.random() * 5, vz: (Math.random() - 0.5) * 5 }); parkSplash(F.p, mine ? 0.8 : 0.4); if (mine) { parkScream(F.p, 0.2); flumeSoak(); } }
+      if (F.tg.y > -0.05) L.splashed = false;
+      _pkV2.copy(F.p); _pkV2.y -= 0.15; coasterPlace(L.m, { p: _pkV2, tg: F.tg, up: _pkUp.clone().addScaledVector(F.tg, -F.tg.y).normalize() });
+    }
+    if (R.sprayLife > 0) { R.sprayLife -= dt; const a = R.spray.geometry.attributes.position.array; R.sprayP.forEach((s, k) => { s.vy -= 9.8 * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.z += s.vz * dt; a[k * 3] = s.x; a[k * 3 + 1] = R.sprayLife > 0 ? s.y : -999; a[k * 3 + 2] = s.z; }); R.spray.geometry.attributes.position.needsUpdate = true; }
+  }
+  let flumeSoakEl = null;
+  function flumeSoak() { // a splash of water across your view
+    if (!flumeSoakEl) { flumeSoakEl = document.createElement('div'); flumeSoakEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:4;background:radial-gradient(circle at 50% 60%, rgba(220,240,255,0.15), rgba(160,210,255,0.75));opacity:0;transition:opacity 1.2s ease-out;'; document.body.appendChild(flumeSoakEl); }
+    flumeSoakEl.style.transition = 'none'; flumeSoakEl.style.opacity = '1'; requestAnimationFrame(() => { flumeSoakEl.style.transition = 'opacity 1.4s ease-out'; flumeSoakEl.style.opacity = '0'; });
+  }
+  function pinLogFlume(r) { const L = r.R.logs[0], F = coasterFrameAt(r.R.track, L.t); rideViewQ(r, F.tg, _pkUp); const s = F.p.clone().addScaledVector(F.tg, 0.7); r.eye = s.clone().setY(s.y + 1.2); // (at the front of the log)
+    try { const S = rideSnd(r), v = L.v || 3, lift = F.tg.y > 0.15; S.noise('rush', 'bandpass', 700, 0.8).set(0.05 + Math.min(0.3, v * 0.022), 500 + v * 120); S.noise('lap', 'lowpass', 380, 1).set(lift ? 0.02 : 0.08 + Math.sin(performance.now() / 260) * 0.03);
+      if (lift) { r.clk = (r.clk || 0) + 1; if (r.clk % 7 === 0) rideBlip('noise', 2200, 6, 0.04, 0.12); } } catch (e) {}
+    return s.setY(s.y + 0.4); }
+  // ---- GO-KARTS: three laps round the track; steer and accelerate, the other karts racing too ----
+  const KART_PTS = [[74, 70], [90, 69], [104, 71], [110, 78], [108, 88], [100, 95], [86, 96], [78, 90], [84, 84], [80, 79], [71, 82], [68, 76]];
+  function buildGoKarts(p, K, G) {
+    const R = { key: 'karts', exit: [72.5, 64.5, 1], karts: [] };
+    const pts = KART_PTS.map(([u, v]) => parkV(p, u, v, G + 1.03)); R.track = parkTrack(pts, true, 0.5);
+    const g = new THREE.Group(); scene.add(g); K.reg.props.push(g); R.g = g;
+    // the tarmac: one strip, and red/white kerbs and tyre walls along its edges
+    const N = 240, W = 2.4, posA = [], idx = [], geos = [], side = new THREE.Vector3();
+    for (let i = 0; i <= N; i++) { const t = (i % N) / N, a = R.track.curve.getPointAt(t), tg = R.track.curve.getTangentAt(t); side.crossVectors(tg, _pkUp).normalize(); const l = a.clone().addScaledVector(side, -W), r2 = a.clone().addScaledVector(side, W); posA.push(l.x, l.y, l.z, r2.x, r2.y, r2.z); if (i < N) { const b = i * 2; idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
+      if (i < N) { const b2 = R.track.curve.getPointAt((i + 1) / N); for (const sx of [-1, 1]) geos.push([boxAlong(0.4, 0.08, a.clone().addScaledVector(side, sx * (W + 0.2)), b2.clone().addScaledVector(side, sx * (W + 0.2))), i % 2 ? 0xc0392b : 0xf4f1e8]);
+        if (i % 4 === 0) for (const sx of [-1, 1]) geos.push([new THREE.CylinderGeometry(0.35, 0.35, 0.5, 8).translate(a.x + side.x * sx * (W + 1.0), a.y + 0.22, a.z + side.z * sx * (W + 1.0)), i % 8 ? 0x111111 : 0x2468b0]); } }
+    const tg2 = new THREE.BufferGeometry(); tg2.setAttribute('position', new THREE.Float32BufferAttribute(posA, 3)); tg2.setIndex(idx); tg2.computeVertexNormals();
+    const tarmac = new THREE.Mesh(tg2, new THREE.MeshLambertMaterial({ color: 0x3a3a3e, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })); tarmac.position.y = 0.04; g.add(tarmac); const kerbs = mergedBoxes([], geos); kerbs.position.y = 0.06; g.add(kerbs); // (lifted clear of the grass, and pulled forward in depth — it flickered against the ground)
+    { const a = R.track.curve.getPointAt(0), tg = R.track.curve.getTangentAt(0); side.crossVectors(tg, _pkUp).normalize(); const line = apCanvasPlane(W * 2, 0.8, (x, w, h) => { const n = 12; for (let i = 0; i < n; i++) for (let j = 0; j < 2; j++) { x.fillStyle = (i + j) % 2 ? '#111' : '#fff'; x.fillRect(i * w / n, j * h / 2, w / n + 1, h / 2 + 1); } }); line.rotation.x = -Math.PI / 2; line.material.polygonOffset = true; line.material.polygonOffsetFactor = -4; line.material.polygonOffsetUnits = -4; const lg = new THREE.Group(); lg.add(line); lg.position.copy(a).setY(a.y + 0.07); lg.rotation.y = Math.atan2(side.x, side.z) + Math.PI / 2; g.add(lg); }
+    const cols = [0xc0392b, 0x2468b0, 0xf2c14e, 0x2f8f4a];
+    for (let i = 0; i < 4; i++) { const m = new THREE.Group(); m.add(mergedBoxes([[0.9, 0.18, 1.6, 0, 0.18, 0, 0, cols[i]], [0.6, 0.35, 0.35, 0, 0.42, -0.35, 0, 0x222222], [0.5, 0.12, 0.25, 0, 0.32, 0.72, 0, cols[i]]].concat([[-0.5, -0.6], [0.5, -0.6], [-0.5, 0.6], [0.5, 0.6]].map(([x, z]) => [0.18, 0.28, 0.28, x, 0.14, z, 0, 0x111111]))));
+      if (i) { const d = pubFigure(true, 'customer', 'kart' + i); d.scale.set(0.8, 0.8, 0.8); d.position.set(0, 0.05, -0.2); m.add(d); const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), new THREE.MeshPhongMaterial({ color: cols[i], shininess: 80 })); helmet.position.set(0, 1.35, -0.2); m.add(helmet); }
+      g.add(m); R.karts.push({ m, t: 0.01 + i * 0.03, v: 0, ai: i > 0, top: 5.6 + i * 0.35, lap: 0 }); }
+    R.gate = parkGate(p, K, 72, 65, 'back'); // (clear of the tyre wall)
+    return R;
+  }
+  function kartNearestT(R, pos) { let best = 0, bd = Infinity; for (let i = 0; i < 240; i++) { const q = R.track.curve.getPointAt(i / 240), d = (q.x - pos.x) ** 2 + (q.z - pos.z) ** 2; if (d < bd) { bd = d; best = i / 240; } } return [best, Math.sqrt(bd)]; }
+  function stepGoKarts(p, R, dt, riding, now) {
+    for (const k of R.karts) {
+      if (k.ai || !riding) { // following the line (the player's kart too, parked, when nobody's driving it)
+        if (!riding && !k.ai) { const F = coasterFrameAt(R.track, 0.985); coasterPlace(k.m, F); continue; }
+        const F0 = coasterFrameAt(R.track, k.t), F1 = coasterFrameAt(R.track, (k.t + 0.04) % 1), bend = 1 - Math.max(0, F0.tg.dot(F1.tg)); const want = k.top * (1 - Math.min(0.45, bend * 6)); k.v += (want - k.v) * Math.min(1, dt * 1.5);
+        const nt = k.t + k.v * dt / R.track.length; if (nt >= 1) k.lap++; k.t = nt % 1; coasterPlace(k.m, coasterFrameAt(R.track, k.t)); continue;
+      }
+      // yours
+      const r = rideNow;
+      if (!r.started) { r.started = true; const F = coasterFrameAt(R.track, 0.985); k.pos = F.p.clone(); k.hdg = Math.atan2(F.tg.x, F.tg.z); k.v = 0; k.lap = -1; k.lastT = 0.985; r.lapStart = now; r.raceStart = now; showBriefMessage('🏎️ Over the line and you\u2019re racing — 3 laps!'); }
+      let thr = (keys['KeyW'] || keys['ArrowUp'] ? 1 : 0) - (keys['KeyS'] || keys['ArrowDown'] ? 1 : 0), st = (keys['KeyD'] || keys['ArrowRight'] ? 1 : 0) - (keys['KeyA'] || keys['ArrowLeft'] ? 1 : 0);
+      if (isTouchDevice || padStickActive) { if (Math.abs(moveState.y) > 0.12) thr = -moveState.y; if (Math.abs(moveState.x) > 0.12) st = moveState.x; }
+      const [tNow, off] = kartNearestT(R, k.pos), offTrack = off > 2.6, top = offTrack ? 2.2 : 7.2;
+      k.v += (thr > 0 ? (top - k.v) * 1.4 : thr < 0 ? -k.v * 3 - 1 : -k.v * 0.6) * dt; k.v = Math.max(-2, Math.min(top + 0.5, k.v));
+      k.hdg -= st * dt * (1.4 + Math.min(1, Math.abs(k.v) / 4)) * Math.sign(k.v || 1);
+      k.pos.x += Math.sin(k.hdg) * k.v * dt; k.pos.z += Math.cos(k.hdg) * k.v * dt;
+      for (const o of R.karts) if (o !== k) { const dx = k.pos.x - o.m.position.x, dz = k.pos.z - o.m.position.z, d = Math.hypot(dx, dz); if (d < 1.4 && d > 0.01) { k.pos.x += dx / d * (1.4 - d); k.pos.z += dz / d * (1.4 - d); k.v *= 0.5; if (!k.bumpAt || now - k.bumpAt > 500) { k.bumpAt = now; playThud(160); } } }
+      if (off > 4.2) { const q = R.track.curve.getPointAt(tNow), dx = k.pos.x - q.x, dz = k.pos.z - q.z, d = Math.hypot(dx, dz); k.pos.x = q.x + dx / d * 4.2; k.pos.z = q.z + dz / d * 4.2; k.v *= 0.4; } // (the tyre wall)
+      if (k.lastT > 0.85 && tNow < 0.15) { k.lap++; const lt = ((now - r.lapStart) / 1000).toFixed(1); r.lapStart = now; if (k.lap === 0) { r.raceStart = now; showBriefMessage('🏎️ Lap 1 of 3 — go!'); } else if (k.lap >= 3) { const tot = (now - r.raceStart) / 1000; showSaveStatus('🏁 Chequered flag! 3 laps in ' + Math.floor(tot / 60) + ':' + String(Math.floor(tot % 60)).padStart(2, '0') + ' (last lap ' + lt + 's)'); endRide(); return; } else showBriefMessage('🏎️ Lap ' + (k.lap + 1) + ' of 3 — last lap ' + lt + 's'); }
+      else if (k.lastT < 0.15 && tNow > 0.85 && k.lap > -1) k.lap--; // (backwards over the line)
+      k.lastT = tNow;
+      if ((now - r.raceStart) > 180000) { showBriefMessage('🏎️ Time’s up!'); endRide(); return; }
+      k.m.position.set(k.pos.x, R.track.curve.getPointAt(tNow).y + 0.04, k.pos.z); k.m.rotation.set(0, k.hdg, 0);
+      try { const S = rideSnd(r), sp = Math.abs(k.v); S.osc('engine', 'sawtooth', 60, 900).set(0.05 + Math.min(0.08, sp * 0.012), 500 + sp * 120); S.voices.engine.pitch(55 + sp * 22 + (thr > 0 ? 12 : 0)); S.osc('engine2', 'square', 30, 300).set(0.03, 300); S.voices.engine2.pitch(28 + sp * 11);
+        let nd = 1e9; for (const o of R.karts) if (o !== k) nd = Math.min(nd, Math.hypot(o.m.position.x - k.pos.x, o.m.position.z - k.pos.z)); S.osc('others', 'sawtooth', 120, 700).set(Math.max(0, 0.05 * (1 - nd / 14)), 700); S.voices.others.pitch(150 + Math.sin(now / 300) * 20);
+        if (Math.abs(st) > 0.5 && sp > 4.5 && (!k.skidAt || now - k.skidAt > 450)) { k.skidAt = now; rideBlip('noise', 2600, 3, 0.35, 0.08); }
+        if (offTrack && sp > 2 && (!k.grassAt || now - k.grassAt > 300)) { k.grassAt = now; rideBlip('noise', 400, 1, 0.25, 0.06); } } catch (e) {}
+    }
+  }
+  function pinGoKarts(r) { const k = r.R.karts[0]; rideViewQ(r, new THREE.Vector3(Math.sin(k.hdg || 0), 0, Math.cos(k.hdg || 0)), _pkUp); const s = k.m.position.clone(); r.eye = s.clone().setY(s.y + 1.05); return s.setY(s.y + 0.3); }
+  const PARK_RIDE_IMPL = {
+    drop: { build: buildDropTower, step: stepDropTower, pin: pinDropTower, msg: '🗼 Up, up, up… hold on!', start: (p, R) => R.phase === 'idle' || 'The tower’s mid-ride — wait for it to come down' },
+    pirate: { build: buildPirateShip, step: stepPirateShip, pin: pinPirateShip, msg: '🏴‍☠️ All aboard, me hearties!', start: (p, R) => !R.run || 'She’s swinging — wait for her to stop' },
+    swings: { build: buildChairSwings, step: stepChairSwings, pin: pinChairSwings, msg: '🎪 Off we fly!', start: (p, R) => !R.run || 'It’s spinning — wait for it to stop' },
+    helter: { build: buildHelter, step: stepHelter, pin: pinHelter, msg: '🌀 Wheee!', start: () => true, exitW: R => R.exitW },
+    dodgems: { build: buildDodgems, step: stepDodgems, pin: pinDodgems, msg: '🚗 W / S to drive and reverse, A / D to steer (or the stick) — bump away! Jump to get off', start: () => true },
+    ghost: { build: buildGhostTrain, step: stepGhostTrain, pin: pinGhostTrain, msg: '👻 Into the dark… if you dare', start: (p, R) => { R.t = 0; for (const s of R.scares) s.fired = false; return true; } },
+    flume: { build: buildLogFlume, step: stepLogFlume, pin: pinLogFlume, msg: '🪵 Hold on — you might get wet!', start: () => true },
+    karts: { build: buildGoKarts, step: stepGoKarts, pin: pinGoKarts, msg: '🏎️ W / S to go and brake, A / D to steer (or the stick) — 3 laps! Jump to get off', start: () => true },
+  };
   function maybeBuildThemePark(cx, cz, replay) {
     if (!replay) return;
+    const st = replay.park || (replay.park = { till: 0, last: null });
+    if (!st.v2 && !visitMode) { try { const why = parkTryGrow(replay); if (why) st.blocked = why; else specSave(cx + '_' + cz, replay); } catch (e) { console.warn('park grow', e); } }
+    if (st.v2) maybeBuildThemeParkV2(cx, cz, replay); else maybeBuildThemeParkV1(cx, cz, replay);
+  }
+  function maybeBuildThemeParkV2(cx, cz, replay) {
+    const K = bizKit(cx, cz, replay, PARK2_W, PARK2_D, 30); if (!K) return;
+    const { f, floor, put, furn, prop, reg } = K, G = floor;
+    const B = { grass: BLOCK_ID('Grass'), path: BLOCK_ID('Gravel'), plaza: BLOCK_ID('Polished Stone'), hedge: BLOCK_ID('Hedge'), red: BLOCK_ID('Red Concrete'), white: BLOCK_ID('White Concrete'), platform: BLOCK_ID('Dark Planks') };
+    const plazaC = [64, 40];
+    const isPath = (u, v) => (u >= 62 && u <= 65 && v <= 108) || (v >= 31 && v <= 33 && u >= 12 && u <= 116) || (v >= 39 && v <= 41 && u >= 12 && u <= 116) || (v >= 62 && v <= 64 && u >= 12 && u <= 116) || (v >= 104 && v <= 108 && u >= 38 && u <= 65) || (u >= 12 && u <= 14 && v >= 31 && v <= 64) || (u >= 114 && u <= 116 && v >= 31 && v <= 64);
+    for (let u = 0; u < PARK2_W; u++) for (let v = 0; v < PARK2_D; v++) {
+      const [x, z] = f.cell(u, v); let t = B.grass;
+      if (Math.hypot(u - plazaC[0], v - plazaC[1]) <= 9.5) t = B.plaza; else if (isPath(u, v)) t = B.path;
+      put(u, v, G, t); markVillageGround(x, z, G);
+      const edge = u === 0 || v === 0 || u === PARK2_W - 1 || v === PARK2_D - 1;
+      if (edge && !(v === 0 && u >= 61 && u <= 66)) for (const y of [G + 1, G + 2]) put(u, v, y, B.hedge);
+    }
+    for (let i = 0; i < 28; i++) { const a = i / 28 * Math.PI * 2; if (Math.abs(Math.sin(a)) > 0.93 || Math.abs(Math.cos(a)) > 0.93) continue; put(Math.round(plazaC[0] + Math.cos(a) * 3.5), Math.round(plazaC[1] + Math.sin(a) * 3.5), G + 1, B.hedge); }
+    // the entrance arch over the gate, and the two ticket booths
+    for (const u of [60, 67]) for (let y = G + 1; y <= G + 6; y++) put(u, 0, y, y % 2 ? B.red : B.white);
+    for (let u = 60; u <= 67; u++) put(u, 0, G + 7, B.red);
+    const sign = new THREE.Group(); sign.userData.w = 8; prop(sign, 64, -0.12, G + 8.3, 'front');
+    const boothKey = furn(58, 2, 'Ticket Booth', 'front'); furn(69, 2, 'Ticket Booth', 'front');
+    // the coaster's station along the back: a platform beside the track under a striped canopy
+    for (let u = 34; u <= 58; u++) for (const v of [109, 110]) put(u, v, G + 1, B.platform);
+    for (const [u, v] of [[34, 109], [58, 109], [34, 114], [58, 114], [46, 114]]) for (let y = G + 2; y <= G + 5; y++) put(u, v, y, B.white);
+    for (let u = 34; u <= 58; u++) for (let v = 109; v <= 114; v++) put(u, v, G + 6, (u + v) % 2 ? B.red : B.white);
+    const coasterGate = (() => { const [x, z] = f.cell(46, 110); return addFurnitureTracked(x, G + 1, z, furnRotFacing('Ride Gate', K.dirW.back[0], K.dirW.back[1]), K.idxOf('Ride Gate'), reg); })();
+    // the ferris wheel and the carousel
+    for (let u = 86; u <= 90; u++) for (let v = 53; v <= 55; v++) put(u, v, G + 1, B.platform);
+    const wheelGate = (() => { const [x, z] = f.cell(85, 54); return addFurnitureTracked(x, G, z, furnRotFacing('Ride Gate', K.dirW.right[0], K.dirW.right[1]), K.idxOf('Ride Gate'), reg); })();
+    const carouselGate = furn(50, 54, 'Ride Gate', 'left');
+    const coaster = buildCoaster(f, G + 1, COASTER2_PTS, { tension: 0.4, ties: 420, segs: 1100, cars: 4, stationT: 0.015 }); scene.add(coaster); reg.props.push(coaster);
+    const wheel = buildFerrisWheel(11, 13.6); prop(wheel, 88.5, 54.5, G + 1 + 13.6); wheel.rotation.y = Math.atan2(-f.s[1], f.s[0]);
+    const carousel = buildCarousel(); prop(carousel, 44.5, 54.5, G + 1);
+    const p = { ck: K.ck, spec: replay, f, floor: G, worldId: currentWorldId, sign, coaster, wheel, carousel, gates: { coaster: coasterGate, wheel: wheelGate, carousel: carouselGate }, boothKey, people: [], peopleSig: null, v2: true, rides2: {},
+      cfg: { coasterExit: [46.5, 109.5, 2], wheelExit: [85.5, 54.5, 1], carouselExit: [50.5, 54.5, 1] },
+      bx0: K.bx0, bx1: K.bx1, bz0: K.bz0, bz1: K.bz1, coasterT: coaster.userData.stationT, coasterRun: false, coasterIdleAt: performance.now() + 20000, coasterV: 0 };
+    parkState(p);
+    // the rides you've bought — and a "coming soon" board where each of the others will go
+    const LOTS = { drop: [104.5, 22.5], pirate: [106.5, 56.5], swings: [82.5, 22.5], helter: [46.5, 22.5], dodgems: [25.5, 22.5], ghost: [26, 52], flume: [34, 84], karts: [90, 84] };
+    for (const k of Object.keys(PARK_RIDES)) {
+      if (parkHas(p, k)) { try { const R = PARK_RIDE_IMPL[k].build(p, K, G); p.rides2[k] = R; p.gates[k] = R.gate; } catch (e) { console.warn('park ride ' + k, e); } continue; }
+      const [u, v] = LOTS[k], holder = new THREE.Group(), post = new THREE.Mesh(new THREE.BoxGeometry(0.15, 2.4, 0.15), new THREE.MeshLambertMaterial({ color: 0x555555 })); post.position.y = 1.2; holder.add(post);
+      const bd = new THREE.Group(); bd.userData.w = 4.4; bizSetSign(bd, PARK_RIDES[k][1] + ' ' + PARK_RIDES[k][0] + ' — coming soon', '#3a2a12', '#ffd34d'); bd.position.y = 2.7; holder.add(bd);
+      prop(holder, u, v, G + 1, 'front');
+      const bar = []; for (let i = 0; i < 8; i++) { const a = i / 8 * Math.PI * 2, [x, z] = [Math.cos(a) * 3, Math.sin(a) * 3]; bar.push([1.6, 0.25, 0.1, x, 0.8, z, -a + Math.PI / 2, i % 2 ? 0xe8702a : 0xf4f1e8], [0.1, 1.0, 0.1, x, 0.5, z, 0, 0x555555]); }
+      prop(mergedBoxes(bar), u, v + 0.01, G + 1);
+    }
+    // stalls, benches, lamps
+    prop(buildParkStall(0), 53.5, 46.5, G + 1, 'right'); prop(buildParkStall(1), 75.5, 46.5, G + 1, 'left'); prop(buildParkStall(2), 64.5, 51.5, G + 1, 'front');
+    prop(buildParkStall(0), 58.5, 66.5, G + 1, 'front'); prop(buildParkStall(1), 70.5, 66.5, G + 1, 'front'); prop(buildParkStall(2), 64.5, 101.5, G + 1, 'front');
+    for (const [u, v, d] of [[61, 12, 'right'], [66, 12, 'left'], [61, 24, 'right'], [66, 24, 'left'], [61, 76, 'right'], [66, 76, 'left'], [61, 90, 'right'], [66, 90, 'left'], [40, 34, 'front'], [88, 34, 'front'], [40, 38, 'back'], [88, 38, 'back']]) furn(u, v, 'Chair', d);
+    for (const [u, v] of [[61, 6], [66, 6], [61, 18], [66, 18], [61, 28], [66, 28], [61, 70], [66, 70], [61, 84], [66, 84], [61, 98], [66, 98], [20, 34], [36, 34], [92, 34], [108, 34], [20, 61], [44, 61], [84, 61], [108, 61], [54, 31], [74, 31]]) furn(u, v, 'Street Light', 'front');
+    const old = parks.get(K.ck); if (old) bizClearPeople(old);
+    parks.set(K.ck, p);
+    bizSetSign(sign, parkName(p), '#c0392b', '#ffffff');
+    K.finish();
+  }
+  function maybeBuildThemeParkV1(cx, cz, replay) { // the original 56 x 56 park (kept for one that couldn't grow yet — see THE BIG PARK)
     const K = bizKit(cx, cz, replay, PARK_W, PARK_D, 28); if (!K) return;
     const { f, floor, put, clear, furn, prop, fix, reg } = K;
     const G = floor;
@@ -34763,46 +35411,55 @@
     if (kind === 'coaster') {
       if (p.coasterRun) { showBriefMessage('🎢 The train\u2019s out — it\u2019ll be back in a moment'); return; }
       p.coasterRun = true; p.coasterRider = true; p.coasterV = 2; p.coasterLapStart = p.coasterT;
-      rideNow = { kind, p, exit: exitAt(26.5, 44.5, p.floor + 2), lockLook: true };
+      rideNow = { kind, p, exit: p.cfg ? exitAt(p.cfg.coasterExit[0], p.cfg.coasterExit[1], p.floor + p.cfg.coasterExit[2]) : exitAt(26.5, 44.5, p.floor + 2), lockLook: true };
+      yaw = 0; pitch = 0; // (your look, relative to the car, for the ride)
       showSaveStatus('🎢 Hold on tight!');
     } else if (kind === 'wheel') {
       // board the gondola nearest the bottom, and go round once
       const W = p.wheel.userData, cur = W.wheel.rotation.x;
       let best = 0, bestY = Infinity; W.gondolas.forEach((gd, i) => { const y = Math.sin(i / 8 * Math.PI * 2 + cur) ; if (y < bestY) { bestY = y; best = i; } });
       W.wheel.rotation.x = -Math.PI / 2 - best / 8 * Math.PI * 2; // that gondola to the very bottom
-      rideNow = { kind, p, gondola: W.gondolas[best], t: 0, dur: 50, start: W.wheel.rotation.x, exit: exitAt(41.5, 26.5, p.floor + 1) };
-      showSaveStatus('🎡 Up you go — enjoy the view');
+      rideNow = { kind, p, gondola: W.gondolas[best], t: 0, dur: 50, start: W.wheel.rotation.x, exit: p.cfg ? exitAt(p.cfg.wheelExit[0], p.cfg.wheelExit[1], p.floor + p.cfg.wheelExit[2]) : exitAt(41.5, 26.5, p.floor + 1) };
+      showSaveStatus('🎡 Up you go — enjoy the view (jump to get off)');
     } else if (kind === 'carousel') {
       const H = p.carousel.userData.horses;
       let best = H[0], bd = Infinity; for (const h of H) { const w = new THREE.Vector3(); h.body.getWorldPosition(w); const d = w.distanceTo(player.pos); if (d < bd) { bd = d; best = h; } }
-      rideNow = { kind, p, horse: best, t: 0, dur: 30, exit: exitAt(20.5, 24.5, p.floor + 1) };
-      showSaveStatus('🎠 Round and round…');
+      rideNow = { kind, p, horse: best, t: 0, dur: 30, exit: p.cfg ? exitAt(p.cfg.carouselExit[0], p.cfg.carouselExit[1], p.floor + p.cfg.carouselExit[2]) : exitAt(20.5, 24.5, p.floor + 1) };
+      showSaveStatus('🎠 Round and round… (jump to get off)'); try { carouselMusic(rideNow); } catch (e) {}
+    } else if (PARK_RIDE_IMPL[kind] && p.rides2 && p.rides2[kind]) { // one of the new rides (see THE BIG PARK)
+      const impl = PARK_RIDE_IMPL[kind], R = p.rides2[kind], ok = impl.start(p, R);
+      if (ok !== true) { showBriefMessage(PARK_RIDES[kind][1] + ' ' + ok); return; }
+      const ex = impl.exitW ? impl.exitW(R) : null;
+      rideNow = { kind, p, R, t: 0, s: 0, exit: ex ? ex.clone().setY(p.floor + 1) : exitAt(R.exit[0], R.exit[1], p.floor + R.exit[2]) };
+      yaw = 0; pitch = 0; R.mineHidden = true; // (your look, relative to the ride)
+      showSaveStatus(impl.msg);
     }
     if (furnSeat) furnSeat = null;
   }
   function endRide() {
     if (!rideNow) return;
-    const r = rideNow; rideNow = null;
+    const r = rideNow; rideNow = null; rideDarkTarget = 0;
+    if (r.snd) try { r.snd.stop(); } catch (e) {}
     player.pos.copy(r.exit); player.vel.set(0, 0, 0);
     if (r.kind === 'coaster') { r.p.coasterRider = false; }
     if (r.kind === 'ghost') { r.p.riding = false; r.p.cartT = 0; showBriefMessage('👻 You survived the Haunted House!'); return; }
+    if (r.R) { yaw = 0; pitch = 0; if (r.kind !== 'karts') showBriefMessage(PARK_RIDES[r.kind][1] + ' What a ride!'); if (r.kind === 'karts' && r.R.karts[0]) { r.R.karts[0].v = 0; } return; }
     showBriefMessage(r.kind === 'coaster' ? '🎢 What a ride!' : r.kind === 'wheel' ? '🎡 Back on the ground' : '🎠 That was fun');
   }
-  const _rw = new THREE.Vector3();
+  const _rw = new THREE.Vector3(), _rideLookQ = new THREE.Quaternion(), _rideLookE = new THREE.Euler();
   function ridePin() { // put you in your seat this frame (and point you along the track on the coaster)
     const r = rideNow; if (!r) return;
     if (!r.p.sign || !r.p.sign.parent) { endRide(); return; } // the park unloaded under you
     let seat;
     if (r.kind === 'coaster') {
-      const C = r.p.coaster.userData, t = r.p.coasterT, pt = C.curve.getPointAt(t), tg = C.curve.getTangentAt(t);
-      seat = pt.clone().add(new THREE.Vector3(0, 0.95, 0)); // sitting up high in the car — your eye's well above its sides
-      // Your view turns and tilts with the car, and on top of that you can look wherever you like: anything the
-      // mouse / stick / touch changed since last frame is kept as your own look, added to the track's heading.
-      const trackYaw = Math.atan2(-tg.x, -tg.z), trackPitch = Math.asin(Math.max(-1, Math.min(1, tg.y))) * 0.9;
-      if (r.setYaw !== undefined) { r.offYaw = (r.offYaw || 0) + (yaw - r.setYaw); r.offPitch = (r.offPitch || 0) + (pitch - r.setPitch); }
-      r.offPitch = Math.max(-1.3, Math.min(1.3, r.offPitch || 0));
-      yaw = trackYaw + (r.offYaw || 0); pitch = Math.max(-1.5, Math.min(1.5, trackPitch + r.offPitch));
-      r.setYaw = yaw; r.setPitch = pitch;
+      // Your view rides with the car — turning, tilting, and rolling right over through the loop — and on top of that
+      // you can look wherever you like (yaw / pitch are your own look, relative to the car, while you ride).
+      const C = r.p.coaster.userData, F = coasterFrameAt(C, r.p.coasterT);
+      seat = F.p.clone().addScaledVector(F.up, 0.95).addScaledVector(F.tg, 0.4); // the front row of the front car — your eye's well above its sides
+      rideLookSpring(r); pitch = Math.max(-1.3, Math.min(1.3, pitch)); yaw = Math.max(-2.6, Math.min(2.6, Math.atan2(Math.sin(yaw), Math.cos(yaw)))); r.setYaw = yaw; r.setPitch = pitch;
+      r.camQ = r.camQ || new THREE.Quaternion(); coasterCamQ(F, r.camQ).multiply(_rideLookQ.setFromEuler(_rideLookE.set(pitch, yaw, 0, 'YXZ')));
+      r.eye = seat.clone().addScaledVector(F.up, 0.75);
+    } else if (r.R) { seat = PARK_RIDE_IMPL[r.kind].pin(r); // (the big park's rides)
     } else if (r.kind === 'ghost') { seat = hauntRidePin(r); // (see HAUNTED HOUSE)
     } else if (r.kind === 'wheel') { r.gondola.children[0].getWorldPosition(_rw); seat = _rw.clone(); seat.y -= 1.0; } // your eye ends up about 0.75 under the pivot — over the gondola's low sides
     else { r.horse.body.getWorldPosition(_rw); seat = _rw.clone(); seat.y += 1.55; }
@@ -34912,16 +35569,20 @@
     let sndVol = 0, sndP = null, sndRiding = false;
     if (!visitMode && parkPrevDayTime !== null && parkPrevDayTime > 0.9 && dayTime < 0.1) parkNightPassed();
     parkPrevDayTime = dayTime;
+    try { stepRideDark(dt); } catch (e) {}
+    if (rideNow && ['wheel', 'carousel', 'dodgems', 'karts'].includes(rideNow.kind) && rideNow.p && rideNow.p.f) { // jump to get off these any time
+      const j = keys['Space'] || touchJumpHeld; if (!j) rideNow.jArm = true; else if (rideNow.jArm) { keys['Space'] = false; touchJumpHeld = false; touchJumpQueued = false; endRide(); }
+    }
     for (const p of parks.values()) {
       if (p.worldId !== currentWorldId || !p.sign || !p.sign.parent) { if (p.people.length) bizClearPeople(p); continue; }
       // ferris wheel: always turning slowly (a full turn in 50s); gondolas kept upright
       const W = p.wheel.userData;
       if (rideNow && rideNow.kind === 'wheel' && rideNow.p === p) { rideNow.t += dt; W.wheel.rotation.x = rideNow.start - (rideNow.t / rideNow.dur) * Math.PI * 2; if (rideNow.t >= rideNow.dur) endRide(); }
       else W.wheel.rotation.x -= dt * (Math.PI * 2 / 50);
-      for (const gd of W.gondolas) gd.rotation.x = -W.wheel.rotation.x;
+      for (const gd of W.gondolas) { gd.rotation.x = -W.wheel.rotation.x; if (gd.userData.rider) gd.userData.rider.visible = !(rideNow && rideNow.gondola === gd); }
       // carousel: spinning, the horses rising and falling
       const Cu = p.carousel.userData; Cu.spin.rotation.y += dt * 0.55;
-      for (const h of Cu.horses) h.body.position.y = Math.sin(now / 600 + h.phase) * 0.25;
+      for (const h of Cu.horses) { h.body.position.y = Math.sin(now / 600 + h.phase) * 0.25; if (h.rider) h.rider.visible = !(rideNow && rideNow.horse === h); }
       if (rideNow && rideNow.kind === 'carousel' && rideNow.p === p) { rideNow.t += dt; if (rideNow.t >= rideNow.dur) endRide(); }
       // coaster: parked at the station until someone boards (or, every so often, it does a lap empty for show)
       const C = p.coaster.userData;
@@ -34943,9 +35604,10 @@
       // place the cars along the track
       C.cars.forEach((car, i) => {
         let t = p.coasterT - i * 1.7 / C.length; if (t < 0) t += 1;
-        const pt = C.curve.getPointAt(t), tg = C.curve.getTangentAt(t);
-        car.position.copy(pt); car.lookAt(pt.clone().add(tg));
+        coasterPlace(car, coasterFrameAt(C, t)); // (rolls with the track — upside down through the loop)
       });
+      if (p.rides2) { const cxp = (p.bx0 + p.bx1) / 2, czp = (p.bz0 + p.bz1) / 2, far = Math.hypot(player.pos.x - cxp, player.pos.z - czp) > 160;
+        for (const k in p.rides2) { const R = p.rides2[k], riding = !!(rideNow && rideNow.R === R); if (far && !riding) continue; try { PARK_RIDE_IMPL[k].step(p, R, dt, riding, now); } catch (err) { console.warn('park ride ' + k + ' (recovered):', err); if (riding) endRide(); } } }
       try { updateParkPeople(p, dt, now); } catch (err) { console.warn('park people error (recovered):', err); }
       // the coaster's sound: whichever park's train is loudest where you are
       const riding = !!(rideNow && rideNow.kind === 'coaster' && rideNow.p === p);
@@ -34960,7 +35622,7 @@
     const cx = (p.bx0 + p.bx1) / 2 + 0.5, cz = (p.bz0 + p.bz1) / 2 + 0.5;
     if (Math.hypot(player.pos.x - cx, player.pos.z - cz) > PUB_PEOPLE_SHOW + 20) { if (p.people.length) bizClearPeople(p); return; }
     if (!p.people.length) {
-      const spots = [[27, 8, 'back'], [28, 12, 'front'], [24, 24, 'right'], [31, 27, 'left'], [22, 30, 'back'], [35, 30, 'back'], [34, 22, 'front'], [26, 42, 'back'], [28, 42, 'back'], [40, 26, 'right'], [40, 27, 'right'], [19, 24, 'left'], [19, 25, 'left'], [29, 35, 'front']];
+      const spots = p.v2 ? [[63, 8, 'back'], [64, 14, 'front'], [60, 36, 'right'], [68, 44, 'left'], [56, 42, 'back'], [72, 36, 'back'], [52, 47, 'right'], [77, 47, 'left'], [64, 50, 'front'], [63, 58, 'back'], [65, 72, 'front'], [46, 106, 'back'], [50, 106, 'back'], [84, 53, 'right'], [84, 55, 'right'], [51, 53, 'left'], [51, 55, 'left'], [104, 29, 'front'], [82, 34.5, 'front'], [46, 29.5, 'front'], [25, 31, 'front'], [38.6, 50, 'left'], [99, 55, 'right'], [24, 65, 'back'], [72, 64.5, 'back'], [30, 34, 'front'], [96, 40, 'front'], [20, 62, 'front'], [110, 62, 'front'], [64, 26, 'back']] : [[27, 8, 'back'], [28, 12, 'front'], [24, 24, 'right'], [31, 27, 'left'], [22, 30, 'back'], [35, 30, 'back'], [34, 22, 'front'], [26, 42, 'back'], [28, 42, 'back'], [40, 26, 'right'], [40, 27, 'right'], [19, 24, 'left'], [19, 25, 'left'], [29, 35, 'front']];
       spots.forEach(([u, v, face], i) => {
         const m = pubFigure(false, 'customer', p.ck + ':park:' + i);
         const [x, z] = p.f.pos(u + 0.5, v + 0.5); m.position.set(x, p.floor + 1, z);
@@ -34977,11 +35639,14 @@
   }
   // ---- takings ----
   let parkPrevDayTime = null;
-  function parkNight() { const takings = PARK_VISITORS * PARK_TICKET; return { visitors: PARK_VISITORS, takings, wages: PARK_STAFF, profit: takings - PARK_STAFF }; }
+  function parkNight(p) { // every ride bought: more visitors, a dearer ticket (and a little more staff)
+    const rides = p ? parkRides(p).filter(k => PARK_RIDES[k]) : [], visitors = PARK_VISITORS + rides.reduce((a, k) => a + PARK_RIDES[k][3], 0), ticket = PARK_TICKET + 2 * rides.length, wages = PARK_STAFF + 600 * rides.length, takings = visitors * ticket;
+    return { visitors, ticket, takings, wages, profit: takings - wages, rides: rides.length };
+  }
   function parkNightPassed() {
     if (visitMode) return;
     for (const p of bizAllOfType('themepark', parks)) {
-      const st = parkState(p), n = parkNight();
+      const st = parkState(p), n = parkNight(p);
       st.till = Math.floor(st.till || 0) + n.profit; st.last = n;
       specSave(p.ck, p.spec); playCoin();
       showSaveStatus('🎢 ' + parkName(p) + ': ' + n.visitors + ' visitors — 💰' + n.profit + ' in the ticket booth');
@@ -34992,16 +35657,25 @@
     for (const p of parks.values()) if (p.worldId === currentWorldId && fu.bx >= p.bx0 && fu.bx <= p.bx1 && fu.bz >= p.bz0 && fu.bz <= p.bz1) return p;
     return null;
   }
+  function parkRidesHtml(p) { // the booth's rides list (or why the park hasn't grown yet)
+    const st = parkState(p);
+    if (!st.v2) return '<div style="margin-top:10px;background:rgba(232,112,42,0.12);border:1px solid rgba(232,112,42,0.45);border-radius:8px;padding:10px;"><b>Grow the park</b><div style="opacity:0.85;font-size:12px;margin:4px 0 8px;">It can grow to 128 × 128 with a much bigger rollercoaster (with a loop) and room for 8 more rides — but ' + bizEsc(st.blocked || 'it hasn\u2019t had the chance yet') + '.</div><button id="parkExpand" style="background:#e8702a;border:none;color:#fff;border-radius:6px;padding:7px 12px;font-weight:700;cursor:pointer;">Try again</button></div>';
+    const rows = PARK_RIDE_ORDER.map(k => { const R = PARK_RIDES[k], has = parkHas(p, k);
+      return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.08);"><span style="font-size:18px;">' + R[1] + '</span><div style="flex:1;"><div style="font-weight:600;">' + R[0] + '</div><div style="font-size:11px;opacity:0.65;">+' + R[3] + ' visitors a day</div></div>'
+        + (has ? '<span style="color:#7ee08a;font-weight:700;font-size:12px;">✓ Open</span>' : '<button class="parkBuyRide" data-k="' + k + '" style="background:#2f7d46;border:none;color:#fff;border-radius:6px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;' + (coins < R[2] ? 'opacity:0.45;' : '') + '">Buy · 💰' + R[2].toLocaleString() + '</button>') + '</div>'; }).join('');
+    return '<div style="margin-top:10px;"><div style="font-weight:700;margin-bottom:2px;">🎢 Rides</div><div style="font-size:12px;opacity:0.7;margin-bottom:4px;">The rollercoaster, ferris wheel and carousel, and more to buy — each brings more visitors and a dearer ticket.</div>' + rows + '</div>';
+  }
   function openParkBooth(fk) {
     const p = parkForFurniture(fk); if (!p) return;
     if (visitMode) { showBriefMessage('🎟️ "Welcome! Enjoy the rides — they\u2019re on the house today."'); return; }
-    const st = parkState(p), n = parkNight(), el = bizPanel('parkPanel'), L = st.last;
+    const st = parkState(p), n = parkNight(p), el = bizPanel('parkPanel'), L = st.last;
     el.innerHTML = '<div style="background:#1c1c22;border-radius:12px;padding:16px;width:min(380px,calc(92 * var(--vw, 1vw)));color:#fff;font:13px system-ui,sans-serif;line-height:1.45;">'
       + '<div style="font-size:16px;font-weight:700;margin-bottom:8px;">🎟️ ' + bizEsc(parkName(p)) + '</div>'
       + '<div style="display:flex;gap:6px;margin-bottom:12px;"><input id="parkNameInput" maxlength="24" autocomplete="off" placeholder="Park name" style="flex:1;min-width:0;box-sizing:border-box;padding:8px;border-radius:7px;border:1px solid rgba(255,255,255,0.3);background:#2a2a32;color:#fff;font-size:15px;">' + bizBtn('parkRename', 'Rename', '#2f7d46') + '</div>'
       + '<div style="background:rgba(210,176,98,0.12);border:1px solid rgba(210,176,98,0.4);border-radius:8px;padding:10px;margin-bottom:10px;display:flex;align-items:center;gap:8px;"><div style="flex:1;"><div style="font-size:12px;opacity:0.75;">In the till</div><div style="font-size:20px;font-weight:700;">💰' + Math.floor(st.till || 0) + '</div></div>' + bizBtn('parkCollect', 'Collect', '#c7901d', !(st.till > 0)) + '</div>'
-      + bizRow('Visitors a day', n.visitors) + bizRow('Tickets (💰' + PARK_TICKET + ' each)', '💰' + n.takings) + bizRow('Staff', '−💰' + n.wages) + bizRow('Each day', '💰' + n.profit, '#7ee08a')
-      + '<div style="opacity:0.7;margin-top:8px;">Paid at every sunrise. ✋ on a ride\u2019s gate to ride it — the rollercoaster, the ferris wheel and the carousel.</div>'
+      + bizRow('Rides', (3 + n.rides) + ' of 11') + bizRow('Visitors a day', n.visitors.toLocaleString()) + bizRow('Tickets (💰' + n.ticket + ' each)', '💰' + n.takings.toLocaleString()) + bizRow('Staff', '−💰' + n.wages.toLocaleString()) + bizRow('Each day', '💰' + n.profit.toLocaleString(), '#7ee08a')
+      + parkRidesHtml(p)
+      + '<div style="opacity:0.7;margin-top:8px;">Paid at every sunrise. ✋ on a ride\u2019s gate to ride it.</div>'
       + '<div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="parkClose" style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);color:#fff;border-radius:6px;padding:8px 16px;font-weight:600;cursor:pointer;">Close</button></div></div>';
     const $ = id => document.getElementById(id), inp = $('parkNameInput'); inp.value = p.spec.name || '';
     const rename = () => { const c = (inp.value || '').replace(/\s+/g, ' ').trim().slice(0, 24); if (c) p.spec.name = c; else delete p.spec.name; specSave(p.ck, p.spec); bizSetSign(p.sign, parkName(p), '#c0392b', '#ffffff'); playThud(500); openParkBooth(fk); };
@@ -35009,6 +35683,8 @@
     inp.addEventListener('keydown', e => { if (e.key === 'Enter') rename(); else if (e.key === 'Escape') el.style.display = 'none'; e.stopPropagation(); });
     $('parkCollect').addEventListener('click', () => { const a = Math.floor(st.till || 0); if (a <= 0) return; st.till = 0; specSave(p.ck, p.spec); coins += a; updateCoinsDisplay(); scheduleStatsSave(); playCoin(); objNote('collect_park', a); showSaveStatus('🎟️ Collected 💰' + a); openParkBooth(fk); });
     $('parkClose').addEventListener('click', () => { el.style.display = 'none'; });
+    el.querySelectorAll('.parkBuyRide').forEach(b => b.addEventListener('click', () => { const k = b.dataset.k, R = PARK_RIDES[k]; if (!R || parkHas(p, k)) return; if (rideNow) { showBriefMessage('🎢 Get off the ride first'); return; } if (!trySpendCoins(R[2], R[0])) return; parkRides(p).push(k); specSave(p.ck, p.spec); el.style.display = 'none'; playCoin(); teardownVillage(p.ck, true); replayStructureSpec(p.spec); showSaveStatus(R[1] + ' ' + R[0] + ' is open! +' + R[3] + ' visitors a day — ✋ its gate to ride it'); }));
+    { const ex = document.getElementById('parkExpand'); if (ex) ex.addEventListener('click', () => { if (rideNow) return; el.style.display = 'none'; const why = parkExpandNow(p); if (why) showSaveStatus('🎢 Can\u2019t grow yet: ' + why, true); else showSaveStatus('🎢 ' + parkName(p) + ' has grown — room for 8 more rides, bought here at the booth'); }); }
     document.exitPointerLock && document.exitPointerLock();
     el.style.display = 'flex';
   }
@@ -51559,8 +52235,10 @@ float moonDetail(vec3 p, float d) {
         if (!m) return;
         m.map = season === 3 ? TEX.leavesAutumn : season === 0 ? TEX.leavesWinter : TEX.leaves;
         m.color.setHex(season === 1 ? LEAF_TINTS[season] : 0xffffff); // spring keeps its own tint over the plain summer texture; summer, autumn and winter all have their own already-correct colours baked in and don't want a further multiply on top
-        m.transparent = (season === 0);
-        m.opacity = 1; // winter's transparency comes from the texture's own per-pixel alpha (see leavesWinter), not a uniform fade
+        // Winter: the twigs are cut out of the texture (alphaTest) rather than blended — blended, the nearest leaf face's
+        // see-through pixels still hid every twig behind it, so a tree looked like a pale box instead of a lattice.
+        m.transparent = false; m.alphaTest = season === 0 ? 0.5 : 0; m.side = season === 0 ? THREE.DoubleSide : THREE.FrontSide;
+        m.opacity = 1;
         m.needsUpdate = true;
       });
       if (season === 0 && prevSeason === 3) {
@@ -56171,6 +56849,7 @@ float moonDetail(vec3 p, float d) {
       camera.rotation.order = 'YXZ';
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
+      if (rideNow && rideNow.camQ) { camera.quaternion.copy(rideNow.camQ); if (rideNow.eye) camera.position.copy(rideNow.eye); } // a ride steering your view (the coaster's loop, the log flume, the karts… — see THEME PARK)
       updateSlCameraFocus(dt); // blends the camera toward a moving Snakes & Ladders token when relevant, then back — no-ops instantly everywhere else
       updateTennisCameraFocus(dt); // pulls the camera back to third-person near the tennis court, then back — no-ops instantly everywhere else
       updateFootballCameraFocus(dt); // a more modest third-person pull-back near the football pitch, then back — no-ops instantly everywhere else
@@ -56772,7 +57451,85 @@ float moonDetail(vec3 p, float d) {
     }
     return c;
   }
-  const blockSwatchCanvas = entry => entry.track ? trackSwatchCanvas(entry) : entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : entry.fence ? fenceSwatchCanvas(entry) : swatchCanvas(entry);
+  // ---- BLOCK ICONS: each block drawn as a little shaded 3D block (isometric) ----
+  // Top lit, the left face a little darker, the right darker still, a soft shadow underneath and a fine outline —
+  // Steps as stairs, Slopes as wedges, Curves as quarter-rounds, Fences and Gates from their own boxes. Drawn at
+  // 68px and shown at the slot's size, so they stay sharp on high-density screens. (Rails keep their flat plan.)
+  const ISO_PX = 68, ISO_C = 0.866;
+  function isoIconCanvas(entry) {
+    const c = document.createElement('canvas'); c.width = ISO_PX; c.height = ISO_PX; c.className = 'swatch';
+    const x = c.getContext('2d'); x.imageSmoothingEnabled = false;
+    const m = entry.mats || {}, multi = !!(m.top || m.side || m.bottom);
+    const img = t => (t && t.image && t.image.width) ? t.image : null;
+    const topI = img(multi ? (m.top || m.side) : m), sideI = img(multi ? (m.side || m.top) : m);
+    const fence = !!entry.fence, s = fence ? 27 : 28, ox = ISO_PX / 2, oy = 35;
+    const P = (px, py, pz) => [ox + (px - pz) * ISO_C * s, oy + ((px + pz) * 0.5 - py) * s];
+    const sub = (a, b) => [a[0] - b[0], a[1] - b[1]];
+    const path = poly => { x.beginPath(); poly.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); x.closePath(); };
+    const grow = poly => { const cx = poly.reduce((a, p) => a + p[0], 0) / poly.length, cy = poly.reduce((a, p) => a + p[1], 0) / poly.length; return poly.map(p => { const dx = p[0] - cx, dy = p[1] - cy, d = Math.hypot(dx, dy) || 1; return [p[0] + dx / d * 0.45, p[1] + dy / d * 0.45]; }); };
+    // one face: the texture's [u0,v0,u1,v1] patch stretched over the parallelogram O, O+A, O+B, clipped to poly; then shaded
+    function face(poly, im, O, A, B, src, shade, edge) {
+      x.save(); path(grow(poly)); x.clip();
+      if (im) { const W = im.width, H = im.height; x.setTransform(A[0], A[1], B[0], B[1], O[0], O[1]); x.drawImage(im, src[0] * W, src[1] * H, Math.max(1, (src[2] - src[0]) * W), Math.max(1, (src[3] - src[1]) * H), -0.01, -0.01, 1.02, 1.02); x.setTransform(1, 0, 0, 1, 0, 0); }
+      else { x.fillStyle = '#888'; x.fill(); }
+      if (shade > 0) { x.fillStyle = 'rgba(0,0,0,' + shade + ')'; path(poly); x.fill(); }
+      else if (shade < 0) { x.fillStyle = 'rgba(255,255,255,' + (-shade) + ')'; path(poly); x.fill(); }
+      x.restore();
+      if (edge !== false) { x.strokeStyle = 'rgba(0,0,0,0.3)'; x.lineWidth = 0.8; path(poly); x.stroke(); }
+    }
+    function box(b) { // [x0,x1, y0,y1, z0,z1] in 0..1
+      const [x0, x1, y0, y1, z0, z1] = b;
+      const T = [P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)];
+      face(T, topI, T[0], sub(T[1], T[0]), sub(T[3], T[0]), [x0, z0, x1, z1], -0.06);
+      const F = [P(x0, y1, z1), P(x1, y1, z1), P(x1, y0, z1), P(x0, y0, z1)];
+      face(F, sideI, F[0], sub(F[1], F[0]), sub(F[3], F[0]), [x0, 1 - y1, x1, 1 - y0], 0.16);
+      const R = [P(x1, y1, z1), P(x1, y1, z0), P(x1, y0, z0), P(x1, y0, z1)];
+      face(R, sideI, R[0], sub(R[1], R[0]), sub(R[3], R[0]), [1 - z1, 1 - y1, 1 - z0, 1 - y0], 0.34);
+      // a light catch along the top's front edges
+      x.strokeStyle = 'rgba(255,255,255,0.28)'; x.lineWidth = 0.9; x.beginPath(); x.moveTo(T[3][0], T[3][1]); x.lineTo(T[2][0], T[2][1]); x.lineTo(T[1][0], T[1][1]); x.stroke();
+    }
+    // the shadow it casts on the ground
+    { const g = P(0.5, 0, 0.5), gr = x.createRadialGradient(g[0], g[1], 1, g[0], g[1], s * 0.95); gr.addColorStop(0, 'rgba(0,0,0,0.38)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); x.save(); x.translate(g[0], g[1]); x.scale(1, 0.5); x.translate(-g[0], -g[1]); x.fillStyle = gr; x.beginPath(); x.arc(g[0], g[1], s * 0.95, 0, Math.PI * 2); x.fill(); x.restore(); }
+    const byDepth = list => list.slice().sort((a, b) => (a[0] + a[1] + a[2] + a[3] + a[4] + a[5]) - (b[0] + b[1] + b[2] + b[3] + b[4] + b[5])); // back (and low) first
+    if (entry.half) { box([0, 1, 0, 0.5, 0, 1]); box([0, 1, 0.5, 1, 0, 0.5]); } // a stair: the riser faces you
+    else if (entry.slope) {
+      const T = [P(0, 1, 0), P(1, 1, 0), P(1, 0, 1), P(0, 0, 1)];
+      face(T, topI, T[0], sub(T[1], T[0]), sub(T[3], T[0]), [0, 0, 1, 1], -0.02);
+      const O = P(1, 1, 1), R = [P(1, 1, 0), P(1, 0, 0), P(1, 0, 1)];
+      face(R, sideI, O, sub(P(1, 1, 0), O), sub(P(1, 0, 1), O), [0, 0, 1, 1], 0.34);
+      x.strokeStyle = 'rgba(255,255,255,0.28)'; x.lineWidth = 0.9; x.beginPath(); x.moveTo(T[0][0], T[0][1]); x.lineTo(T[1][0], T[1][1]); x.stroke();
+    } else if (entry.curve === 'in') { // the cube with a quarter-round bitten out of its back corner: both front faces whole, the top cut away
+      const N = 14, F = [P(0, 1, 1), P(1, 1, 1), P(1, 0, 1), P(0, 0, 1)], R = [P(1, 1, 1), P(1, 1, 0), P(1, 0, 0), P(1, 0, 1)];
+      face(F, sideI, F[0], sub(F[1], F[0]), sub(F[3], F[0]), [0, 0, 1, 1], 0.16);
+      face(R, sideI, R[0], sub(R[1], R[0]), sub(R[3], R[0]), [0, 0, 1, 1], 0.34);
+      const top = [P(1, 1, 0), P(1, 1, 1), P(0, 1, 1)]; for (let i = N; i >= 0; i--) { const a = (i / N) * Math.PI / 2; top.push(P(Math.cos(a), 1, Math.sin(a))); }
+      const T0 = P(0, 1, 0); face(top, topI, T0, sub(P(1, 1, 0), T0), sub(P(0, 1, 1), T0), [0, 0, 1, 1], -0.06);
+      // the curved inside of the bite, seen over the back edge — a darker band just under the arc
+      x.save(); path(top); x.clip(); x.restore();
+      x.strokeStyle = 'rgba(0,0,0,0.45)'; x.lineWidth = 1.4; x.beginPath(); for (let i = 0; i <= N; i++) { const a = (i / N) * Math.PI / 2, q = P(Math.cos(a), 1, Math.sin(a)); i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]); } x.stroke();
+      x.strokeStyle = 'rgba(255,255,255,0.28)'; x.lineWidth = 0.9; x.beginPath(); x.moveTo(F[0][0], F[0][1]); x.lineTo(F[1][0], F[1][1]); x.lineTo(R[1][0], R[1][1]); x.stroke();
+    } else if (entry.curve) { // a quarter-round, its corner at the back
+      const N = 14, pt = a => [Math.cos(a), Math.sin(a)], strips = [];
+      for (let i = 0; i < N; i++) {
+        const a0 = (i / N) * Math.PI / 2, a1 = ((i + 1) / N) * Math.PI / 2, [ax, az] = pt(a0), [bx, bz] = pt(a1), nx = Math.cos((a0 + a1) / 2);
+        strips.push({ ax, az, bx, bz, u0: 1 - (i + 1) / N, shade: 0.12 + 0.24 * nx * nx });
+      }
+      for (const S of strips) {
+        const A1 = P(S.ax, 1, S.az), B1 = P(S.bx, 1, S.bz), B0 = P(S.bx, 0, S.bz), A0 = P(S.ax, 0, S.az);
+        face([B1, A1, A0, B0], sideI, B1, sub(A1, B1), sub(B0, B1), [S.u0, 0, S.u0 + 1 / N, 1], S.shade, false);
+      }
+      const top = [P(0, 1, 0)]; for (let i = 0; i <= N; i++) { const [qx, qz] = pt((i / N) * Math.PI / 2); top.push(P(qx, 1, qz)); }
+      const T0 = P(0, 1, 0); face(top, topI, T0, sub(P(1, 1, 0), T0), sub(P(0, 1, 1), T0), [0, 0, 1, 1], -0.06);
+      x.strokeStyle = 'rgba(0,0,0,0.3)'; x.lineWidth = 0.8; x.beginPath(); for (let i = 0; i <= N; i++) { const [qx, qz] = pt((i / N) * Math.PI / 2), q = P(qx, 0, qz); i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]); } x.stroke();
+      x.strokeStyle = 'rgba(255,255,255,0.28)'; x.lineWidth = 0.9; x.beginPath(); for (let i = 0; i <= N; i++) { const [qx, qz] = pt((i / N) * Math.PI / 2), q = P(qx, 1, qz); i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]); } x.stroke();
+    } else if (entry.fence) {
+      byDepth(entryBoxes(entry).map(([x0, x1, y0, y1, z0, z1]) => [x0 + 0.5, x1 + 0.5, y0, y1, z0 + 0.5, z1 + 0.5])).forEach(box);
+    } else box([0, 1, 0, 1, 0, 1]);
+    if (entry.glow) { x.save(); x.globalCompositeOperation = 'lighter'; const g = P(0.5, 0.6, 0.5), gr = x.createRadialGradient(g[0], g[1], 2, g[0], g[1], s * 1.2); gr.addColorStop(0, 'rgba(255,255,255,0.18)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = gr; x.fillRect(0, 0, ISO_PX, ISO_PX); x.restore(); }
+    return c;
+  }
+  const flatSwatchCanvas = entry => entry.track ? trackSwatchCanvas(entry) : entry.half ? stepSwatchCanvas(entry) : entry.slope ? slopeSwatchCanvas(entry) : entry.curve ? curveSwatchCanvas(entry) : entry.fence ? fenceSwatchCanvas(entry) : swatchCanvas(entry);
+  const blockSwatchCanvas = entry => { if (entry.track) return trackSwatchCanvas(entry); try { return isoIconCanvas(entry); } catch (e) { return flatSwatchCanvas(entry); } };
   // A simple teardrop instead of a flat texture square, for the same
   // "actually looks like the thing" reason as the step icon above.
   function waterDropCanvas() {
@@ -56871,6 +57628,7 @@ float moonDetail(vec3 p, float d) {
   // column scrolls the same everywhere. (opts.reverse / opts.wrap remain
   // available for a menu that wants a wrapped grid; none currently does.)
   function mountPopup(popup, slotEl, opts) {
+    if (gridCapture) { gridCapture.push(...Array.from(popup.children).filter(c => c.matches && c.matches('.slot, .popup-item'))); return; } // being read into the BRICK GRID, not shown
     const keepReversed = !!(opts && opts.reverse);
     if (!keepReversed) Array.from(popup.children).reverse().forEach(c => popup.appendChild(c));
     const col = slotEl.closest && slotEl.closest('.cat-column');
@@ -57908,7 +58666,7 @@ float moonDetail(vec3 p, float d) {
     slot.style.position = 'relative';
     const keyEl = document.createElement('span'); keyEl.className = 'key'; keyEl.textContent = String(ci + 1);
     slot.appendChild(keyEl);
-    const c = document.createElement('canvas'); c.width = 34; c.height = 34; c.className = 'swatch';
+    const c = document.createElement('canvas'); c.width = 68; c.height = 68; c.className = 'swatch';
     slot.appendChild(c);
     const badge = document.createElement('span'); badge.className = 'cat-badge'; badge.textContent = '▴';
     slot.appendChild(badge);
@@ -57935,6 +58693,101 @@ float moonDetail(vec3 p, float d) {
     document.body.appendChild(col);
     catColumns[ci] = col;
   });
+  // ---- BRICK GRID: pressing a category opens it as a grid of tiles above the bar ----
+  // Every item in the category gets a tile — and so does every OPTION of an item with its own menu (Stone's variants,
+  // each Glass colour, every sofa, door, sign and seed), so nothing hides a level down. A tile shows the icon, the
+  // name and the price, with how many you've got in the icon's corner where that counts (furniture, vehicles…).
+  // The rows fill about half the screen's height and it scrolls sideways. The menus' own builders still make the
+  // options — mountPopup hands them over here instead of showing them (gridCapture) — so picking one does exactly
+  // what picking it from its old menu did. (The old pop-up menus remain for Q's weapons and the gamepad.)
+  var gridCapture = null, gridBuilding = false;
+  var brickGrid = document.createElement('div'); brickGrid.id = 'brickGrid';
+  brickGrid.innerHTML = '<div class="bg-head"><span class="bg-title"></span><span class="bg-count"></span><span class="bg-hint"></span><button class="bg-close" title="Close">✕</button></div><div class="bg-scroll"><div class="bg-grid"></div></div>';
+  document.body.appendChild(brickGrid);
+  const bgScroll = brickGrid.querySelector('.bg-scroll'), bgGrid = brickGrid.querySelector('.bg-grid');
+  brickGrid.querySelector('.bg-close').addEventListener('click', e => { e.stopPropagation(); closeCategoryColumn(); });
+  brickGrid.addEventListener('click', e => e.stopPropagation()); // (a tap inside isn't a tap "elsewhere")
+  bgScroll.addEventListener('wheel', e => { e.preventDefault(); e.stopPropagation(); bgScroll.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY; }, { passive: false }); // a mouse wheel scrolls it sideways
+  const CAT_EMOJI = { Terrain: '⛰️', Farming: '🌱', Buildings: '🧱', Light: '💡', Action: '⚙️', Furniture: '🛋️', Commercial: '🍺', Vehicles: '🚗', Equipment: '⚔️', Property: '🏠' };
+  // name / price / how many — read off a menu entry the way its menu shows them ("Sofa · ×2", "Oak Door — 💰40", "Carrot · 2m · 💰3 → 💰8")
+  function gridInfoFrom(el) {
+    const lab = el.querySelector('.popup-item-label, .slot-label'), text = ((lab && lab.textContent) || el.title || '').trim(), title = el.title || '';
+    const parts = text.split(/ · | — /);
+    let qty = null, cost = null, note = '';
+    const stock = el.querySelector('.stock-badge'); if (stock) { const m = /×\s*(\d+)/.exec(stock.textContent); if (m) qty = +m[1]; }
+    if (qty === null) { const m = /×\s*(\d+)/.exec(text) || /(\d+) to place/.exec(title); if (m) qty = +m[1]; else if (/none left/.test(title)) qty = 0; }
+    const pb = Array.from(el.querySelectorAll('.price-badge')).find(b => !b.classList.contains('stock-badge'));
+    let cm = /💰\s*([\d,.]+\s*[kKmM]?)/.exec((pb ? pb.textContent : '') + ' ' + text);
+    if (!cm && (qty === null || qty === 0)) cm = /💰\s*([\d,.]+\s*[kKmM]?)/.exec(title);
+    if (cm && /^0+$/.test(cm[1].trim())) cm = null; // (a 💰0 is no price at all — say what it does instead)
+    if (cm) cost = cm[1].trim();
+    else if (/\bfree\b/i.test(text)) note = 'Free';
+    else if (parts.length > 1 && !/×\s*\d/.test(parts[parts.length - 1])) note = parts[parts.length - 1].trim();
+    const name = (parts[0] || title.split(/ · | — /)[0] || '').replace(/\s*×\s*\d+\s*$/, '').replace(/\s*💰\s*[\d,.]+\s*[kKmM]?/, '').trim();
+    return { name, cost, qty, note, faded: !!(el.style.opacity && +el.style.opacity < 1) };
+  }
+  function blockGridInfo(e) { return { name: dispName(e), cost: e.cost ? String(e.cost) : null, qty: null, note: e.cost ? '' : 'Free' }; }
+  function gridTile(icon, info, onPick, active) {
+    const t = document.createElement('div'); t.className = 'bg-tile' + (active ? ' active' : '') + (info.faded ? ' faded' : '');
+    t.title = info.name + (info.cost ? ' — 💰' + info.cost : '') + (info.qty !== null && info.qty !== undefined ? ' — ×' + info.qty : '');
+    const ib = document.createElement('div'); ib.className = 'bg-icon'; if (icon) { icon.classList.remove('swatch'); ib.appendChild(icon); }
+    if (info.qty !== null && info.qty !== undefined) { const q = document.createElement('span'); q.className = 'bg-qty' + (info.qty > 0 ? '' : ' none'); q.textContent = '×' + info.qty; ib.appendChild(q); }
+    t.appendChild(ib);
+    const nm = document.createElement('div'); nm.className = 'bg-name'; nm.textContent = info.name; t.appendChild(nm);
+    const pr = document.createElement('div'); pr.className = 'bg-cost' + (info.cost ? '' : ' plain'); pr.textContent = info.cost ? '💰' + info.cost : (info.note || ''); t.appendChild(pr);
+    t.addEventListener('click', e => { e.stopPropagation(); closeCategoryColumn(); try { onPick(); } catch (err) { console.warn('[voxel] grid pick', err); } });
+    return t;
+  }
+  function copyIconCanvas(src) { if (!src) return null; const c = document.createElement('canvas'); c.width = src.width; c.height = src.height; try { c.getContext('2d').drawImage(src, 0, 0); } catch (e) {} return c; }
+  function gridTilesFor(ci) {
+    const out = [];
+    for (const idx of MENU_CATEGORIES[ci].items) {
+      const el = slotElByIndex[idx]; if (!el) continue;
+      if (idx < BLOCK_TYPES.length && BLOCK_FAMILIES[idx]) { // a block with variants: one tile per variant
+        for (const m of BLOCK_FAMILIES[idx]) { const e = BLOCK_TYPES[m]; if (!e) continue; out.push(gridTile(blockSwatchCanvas(e), blockGridInfo(e), () => { familyChoice[idx] = m; updateFamilySlotIcon(idx); selectSlot(m); }, selectedSlot === m)); }
+      } else if (el.querySelector('.family-badge')) { // an item with its own menu: one tile per option in it
+        gridCapture = []; gridBuilding = true;
+        try { el.click(); } catch (err) { console.warn('[voxel] grid menu', err); } finally { gridBuilding = false; }
+        const got = gridCapture || []; gridCapture = null;
+        for (const item of got) { const cv = item.querySelector('canvas'); out.push(gridTile(cv, gridInfoFrom(item), () => item.click(), false)); }
+      } else { // a plain item
+        const e = idx < BLOCK_TYPES.length ? BLOCK_TYPES[idx] : null;
+        const icon = e ? blockSwatchCanvas(e) : copyIconCanvas(el.querySelector('canvas.swatch') || el.querySelector('canvas'));
+        out.push(gridTile(icon, e ? blockGridInfo(e) : gridInfoFrom(el), () => el.click(), selectedSlot === idx));
+      }
+    }
+    return out;
+  }
+  function openBrickGrid(ci) {
+    const cat = MENU_CATEGORIES[ci], slotEl = catSlotEls[ci]; if (!cat || !slotEl) return;
+    const compact = window.innerHeight < 520 || window.innerWidth < 600;
+    const tw = compact ? 66 : 84, th = compact ? 84 : 114, ic = compact ? 40 : 56, gap = 6, headH = compact ? 23 : 29, padV = compact ? 10 : 14;
+    bgGrid.textContent = '';
+    const tiles = gridTilesFor(ci);
+    tiles.forEach(t => bgGrid.appendChild(t));
+    if (!tiles.length) { const n = document.createElement('div'); n.className = 'bg-empty'; n.textContent = cat.name === 'Vehicles' ? '🚗 No vehicles yet — buy one at a Vehicle Shop' : cat.name === 'Equipment' ? '⚔️ Nothing yet — buy equipment at an Equipment Shop' : 'Nothing here yet'; bgGrid.appendChild(n); }
+    brickGrid.classList.toggle('compact', compact);
+    brickGrid.querySelector('.bg-title').textContent = (CAT_EMOJI[cat.name] || '') + ' ' + cat.name;
+    brickGrid.querySelector('.bg-count').textContent = tiles.length ? String(tiles.length) : '';
+    const hb = hotbar.getBoundingClientRect(), maxW = window.innerWidth - 16 - (compact ? 12 : 16);
+    const fitCols = Math.max(1, Math.floor((maxW + gap) / (tw + gap)));
+    const room = Math.min(hb.top - 10, window.innerHeight * 0.55) - headH - padV; // about half the screen, and never over the bar
+    let rows = Math.max(1, Math.min(4, Math.floor((room + gap) / (th + gap))));
+    rows = Math.max(1, Math.min(rows, Math.ceil(Math.max(1, tiles.length) / fitCols))); // no more rows than it needs
+    brickGrid.querySelector('.bg-hint').textContent = tiles.length > rows * fitCols ? (isTouchDevice ? 'swipe for more ↔' : 'scroll for more ↔') : '';
+    brickGrid.style.setProperty('--rows', rows); brickGrid.style.setProperty('--tw', tw + 'px'); brickGrid.style.setProperty('--th', th + 'px'); brickGrid.style.setProperty('--ic', ic + 'px');
+    brickGrid.style.bottom = (window.innerHeight - hb.top + 6) + 'px';
+    brickGrid.classList.remove('open'); void brickGrid.offsetWidth; brickGrid.classList.add('open');
+    const a = bgGrid.querySelector('.bg-tile.active'); bgScroll.scrollLeft = a ? Math.max(0, a.offsetLeft - (bgScroll.clientWidth - tw) / 2) : 0;
+    slotEl.classList.add('cat-expanded');
+    openCatIdx = ci;
+    openCatHotbarScroll = hotbar.scrollLeft;
+  }
+  // A one-item category (Vehicles, Property) is its item's own slot in the bar — pressing it opens the grid too.
+  MENU_CATEGORIES.forEach((cat, ci) => {
+    if (cat.items.length !== 1 || !catSlotEls[ci]) return;
+    catSlotEls[ci].addEventListener('click', e => { if (gridBuilding) return; e.stopImmediatePropagation(); e.stopPropagation(); if (openCatIdx === ci) closeCategoryColumn(); else setTimeout(() => openCategoryColumn(ci), 0); }, true); // (deferred: a slot can't be clicked again while its own click is still running — and reading its menu does just that)
+  });
   function updateCategoryIcon(ci) {
     if (!catColumns[ci]) return; // single-item categories ARE their item's slot, which keeps its own icon
     const src = slotElByIndex[menuCatChoice[ci]] && slotElByIndex[menuCatChoice[ci]].querySelector('canvas.swatch');
@@ -57942,32 +58795,18 @@ float moonDetail(vec3 p, float d) {
     if (!src || !dst) return;
     const ctx = dst.getContext('2d');
     ctx.clearRect(0, 0, dst.width, dst.height);
-    ctx.imageSmoothingEnabled = false;
+    ctx.imageSmoothingEnabled = src.width > dst.width; // (shrinking the 3D block icons: smooth; growing the flat ones: crisp)
     ctx.drawImage(src, 0, 0, dst.width, dst.height);
   }
-  function openCategoryColumn(ci) {
+  function openCategoryColumn(ci) { // (now the grid — see BRICK GRID)
     closeFamilyPopup();
     closeCategoryColumn();
-    const col = catColumns[ci], slotEl = catSlotEls[ci];
-    if (!col) return;
-    const rect = slotEl.getBoundingClientRect();
-    const room = Math.max(POPUP_MIN_HEIGHT, Math.floor(rect.top - POPUP_GAP_ABOVE_SLOT - POPUP_MARGIN_FROM_SCREEN_TOP));
-    col.style.bottom = (window.innerHeight - rect.top + POPUP_GAP_ABOVE_SLOT) + 'px';
-    col.style.maxHeight = room + 'px';
-    col.style.left = rect.left + 'px';
-    col.style.display = 'flex';
-    const w = col.offsetWidth;
-    if (rect.left + w > window.innerWidth - 8) col.style.left = Math.max(8, window.innerWidth - 8 - w) + 'px';
-    col.scrollTop = col.scrollHeight;
-    col.classList.remove('cat-open'); void col.offsetWidth; col.classList.add('cat-open'); // restart the rise-in animation
-    slotEl.classList.add('cat-expanded');
-    openCatIdx = ci;
-    openCatHotbarScroll = hotbar.scrollLeft;
+    openBrickGrid(ci);
   }
   function closeCategoryColumn() {
+    if (gridBuilding) return; // (an item's menu being read into the grid closes "whatever's open" first — not the grid)
+    if (brickGrid) brickGrid.classList.remove('open');
     if (openCatIdx < 0) return;
-    const col = catColumns[openCatIdx];
-    if (col) col.style.display = 'none';
     if (catSlotEls[openCatIdx]) catSlotEls[openCatIdx].classList.remove('cat-expanded');
     openCatIdx = -1;
   }
@@ -57989,7 +58828,7 @@ float moonDetail(vec3 p, float d) {
   }, { passive: true });
   document.addEventListener('click', e => {
     if (openCatIdx < 0) return;
-    const inCol = catColumns[openCatIdx] && catColumns[openCatIdx].contains(e.target);
+    const inCol = brickGrid.contains(e.target) || (catColumns[openCatIdx] && catColumns[openCatIdx].contains(e.target));
     const inPopup = openFamilyPopup && openFamilyPopup.contains(e.target);
     if (!inCol && !inPopup && !catSlotEls[openCatIdx].contains(e.target)) closeCategoryColumn();
   });
@@ -58001,7 +58840,7 @@ float moonDetail(vec3 p, float d) {
     const t = e.target; if (!t || !t.closest) return;
     // the hotbar's menus
     if (openFamilyPopup || openCatIdx >= 0) {
-      const inMenu = (openFamilyPopup && openFamilyPopup.contains(t)) || (openCatIdx >= 0 && catColumns[openCatIdx] && catColumns[openCatIdx].contains(t)) || t.closest('.slot') || t.closest('#hotbar');
+      const inMenu = (openFamilyPopup && openFamilyPopup.contains(t)) || (openCatIdx >= 0 && brickGrid.contains(t)) || t.closest('.slot') || t.closest('#hotbar');
       if (!inMenu) { closeFamilyPopup(); closeCategoryColumn(); }
     }
     // the shop's trade panel
@@ -58537,56 +59376,74 @@ float moonDetail(vec3 p, float d) {
   // One tip at a time scrolls right-to-left along the bottom strip, in a shuffled order that reshuffles once
   // every tip has had a turn. Starts when play begins; the title / world-select / pause screens sit above it.
   const GAME_TIPS = [
-    '🍺 Earn coins by working a shift at The Mill — tap "Visit the Community" on the title screen and you\u2019re given a role. Stay in your work area and you\u2019re paid every few seconds.',
-    '🎓 Put the hours in at The Mill and you\u2019ll be offered a promotion quiz. Pass it and you move up a rank — every rank pays 25% more.',
-    '🌱 Plant seeds on top of a Mud block. They keep growing in real time, even while you\u2019re away.',
+    // getting going
+    '🍺 Earn coins by working a shift at The Mill — tap "Visit the Community" on the title screen and you’re given a role. Stay in your work area and you’re paid every few seconds.',
+    '🎓 Put the hours in at The Mill and you’ll be offered a promotion quiz. Pass it and you move up a rank — every rank pays 25% more.',
+    '🏠 The house button (top right) takes you back to where your world starts — it waits for the ground to load before dropping you in.',
+    '✨ Anything you can use with ✋ — ticket booths, tills, desks, safes, ride gates — glows gold, so it’s easy to spot.',
+    // the build menu
+    '🧱 Tap a category on the bar to open its grid — every block, colour and piece of furniture has its own tile, with its price underneath. Swipe (or scroll) sideways for more.',
+    '🔢 The ×N in the corner of a tile is how many you’ve got to place — furniture, lights, vehicles, drones. Red means none left: buy more at the shop that sells them.',
+    '⌨️ On a keyboard, the number keys 1–9 jump straight to the last thing you used in each category.',
+    '🔄 Building with steps, slopes, curves or fences? Use the 🔄 and ↕️ buttons to spin the one you’re aiming at.',
+    '🌳 The Hedge block (Terrain) stays green all year — tree leaves change with the seasons, and in winter the trees turn to frosted twigs.',
+    // farming
+    '🌱 Plant seeds on top of a Mud block (it’s in Terrain). They keep growing in real time, even while you’re away.',
     '🥕 A fully grown vegetable goes into your 🎒 harvest bag when you pull it up. Slow crops pay best — a pumpkin takes an hour but beats strawberries per minute.',
     '🧺 Sell your harvest to a shopkeeper: aim at him and press ✋. Flowers sell too.',
     '🥚 Cows, chickens and sheep leave milk, eggs and wool every 10 minutes (up to 3 pile up). Press ✋ to pick them up.',
-    '🥛 Milk and eggs sell at the grocer\u2019s. Wool sells to the Tailor, who knits it into clothes you can buy — check your 👕 Wardrobe.',
-    '🪵 Mining a tree trunk gives 1 Wood per block. Sell it to a Carpenter (Property menu) — that\u2019s also where you buy furniture. Each piece you place uses one up; the ×N on the furniture menus shows what you\u2019ve got left.',
+    '🥛 Milk and eggs sell at the grocer’s. Wool sells to the Tailor, who knits it into clothes you can buy — check your 👕 Wardrobe.',
     '🐣 Put an Incubator down and aim Animal Seeds at it to hatch a chicken, sheep, pig or cow. They keep laying produce for you.',
     '🍖 Lead an animal to the Slaughterhouse and pay the butcher. The BBQ Shop pays about 3 times what the animal seed cost for the meat.',
+    '🐕 Put an animal on the Lead and let go inside a fenced pen with the gates shut — it’ll stay in there.',
+    '🚜 Tractors head for ripe crops, replant as they go and fill empty mud. Once you’ve visited a field, its tractor keeps working even when you’re far away.',
+    '🪵 Mining a tree trunk gives 1 Wood per block. Sell it to a Carpenter — that’s also where you buy furniture. Each piece you place uses one up.',
     '💎 Treasure chests hide in shipwrecks, castle dungeons and windmills — worth 100 to 1,000 coins. Press ✋ on one to collect it.',
-    '🏠 Buy houses, shops and farms from the Property menu, in your own worlds. One building per chunk.',
+    // property
+    '🏠 Buy houses, shops and businesses from the Property grid, in your own worlds. One building per chunk.',
+    '🧑‍💼 Hire a World Manager (the first tile in Property): every sunrise they empty every till, safe and rent pot and sell your harvest, all for 1%.',
+    '🌙 Businesses settle up at sunrise — even ones you haven’t been near since starting the game.',
     '💰 Visitors pay you when they harvest your crops, use your butcher or sell in your shops — you get a 20% cut of their sales.',
-    '🚗 Finished with a vehicle or weapon? Trade it back in at the shop for some of your coins back.',
-    '🐕 Put an animal on the Lead and let go inside a fenced pen with the gates shut — it\u2019ll stay in there.',
-    '⚽ The Mill has football, tennis, crazy golf, Snakes & Ladders and Battleship to play with friends.',
-    '🔫 Weapons can\u2019t be used in The Mill, and any damage they do to the landscape is only temporary.',
-    '🔄 Building with steps, slopes or curves? Use the 🔄 and ↕️ buttons to spin the one you\u2019re aiming at.',
-    '🪧 Press ✋ on a street sign to turn it, add an arrow or rename it.',
-    // the businesses (Property menu)
-    '🏨 Hotel rooms come empty. Furnish one with a bed, sofa, TV, fridge, oven, kitchen sink, toilet, bathroom sink and a shower or bath and it\u2019s let — guests pay 💰100 a night each.',
-    '🛗 In the hotel, walk into the lift and pick a floor. Stand at the lift doors on any floor to call it.',
-    '🛎️ Press ✋ on the hotel receptionist to name your hotel (it goes up on the roof sign) and collect the takings.',
-    '🍺 Buy a Pub, then hire a manager at the safe in the office. Extra chairs, tables, TVs, fires and fruit machines bring in more trade.',
+    '🧨 Changed your mind about a building? Demolish (last tile in Property) knocks it down, puts the ground back and gives you half its price back.',
     '🏠 Houses come furnished and let — the family pays rent every sunrise. Collect it at the TO LET board; every extra piece of furniture puts the rent up.',
+    '🏨 Hotel rooms come empty. Furnish one with a bed, sofa, TV, fridge, oven, kitchen sink, toilet, bathroom sink and a shower or bath and it’s let — guests pay 💰100 a night each.',
+    '🛗 In the hotel, walk into the lift and pick a floor. Stand at the lift doors on any floor to call it. ✋ the receptionist to name your hotel and collect the takings.',
+    '🍺 Buy a Pub, then hire a manager at the safe in the office. Extra chairs, tables, TVs, fires and fruit machines bring in more trade.',
+    '🎯 Every pub has a dartboard — ✋ it to play 501, Around the Clock or Shanghai. When a game ends you’re back at the darts menu to go again.',
     '🥖 At the Mill & Bakery, bring wheat, eggs and milk to the till. Every sunrise the mill grinds flour and the baker sells bread and Victoria sponges.',
     '🍽️ A Restaurant cooks your own crops and meat into meals worth far more. Hire a head chef, stock the pantry — or hire a manager to restock it from your bag.',
-    '🎢 The Theme Park (💰5,000,000) has a rollercoaster, ferris wheel and carousel you can ride — ✋ on a ride\u2019s gate. Visitors pay every day.',
-    '🏟️ The Football Stadium (💰5,000,000) has a match every day from 12:00 to 16:00 — be there to watch it live. Any other time, kick the ball about yourself.',
-    '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm on the bridge to sail (V switches the view), ✋ again to drop anchor. ✋ beside her helicopter to fly it.',
-    '🎱 Pool: ✋ on a pool table steps up to play — turn to walk round the cue ball, hold ✋ for power and let go to strike, jump to leave.',
-    '🏠 The house button (top right) takes you back to where your world starts.',
-    '🚀 The Rocket & Moon Base (💰10,000,000): ✋ the launch console to fly to the Moon — low gravity, a moon base and moon rock samples worth 💰1,000 to 💰10,000 each.',
+    // the big ones
+    '🎢 The Theme Park (💰5,000,000) opens with a looping rollercoaster, a big wheel and a carousel. Buy 8 more rides at the booth for bigger takings: Drop Tower, Pirate Ship, Log Flume, Helter Skelter, Dodgems, Ghost Train, Go-Karts and Chair Swings.',
+    '🎡 ✋ a ride’s gate to ride it — you get the front seat. Press jump to get off the big wheel, carousel, dodgems or go-karts early. Look around on any ride — let go and the view swings back to face forward.',
+    '🏎️ On the dodgems and go-karts, drive with forward / back and steer left and right. The go-karts are a 3-lap race against the other karts.',
+    '👻 The Haunted House (💰1,000,000) has a ghost train through five spooky rooms — riders pay every day.',
+    '🏟️ The Football Stadium (💰5,000,000) plays a match every day from 12:00 to 16:00 — be there to watch it live. Win more and the gate money goes up.',
+    '📋 ✋ the stadium’s ticket booth → Manage the team: pick a formation and tactics, and buy better players (skill goes up to 10).',
+    '🎤 Upgrade the stadium at the ticket office for concerts every night — with dancers and stage effects. Hear a song all the way through and it’s added to the jukebox.',
+    '✈️ The Airport (💰50,000): buy airliners at check-in, fly them yourself or hire pilots — passengers pay by the distance flown.',
+    '⛴️ The Ferry Port (💰25,000) goes on a shore or lake: buy a ferry at the Ferry Desk, steer it yourself or let it sail. Passengers pay by the distance.',
+    '🚌 A Bus Station (💰25,000) sells buses at the Bus Desk. Lay roads to other stations, put Bus Stops along them, and passengers pay by the distance.',
+    '🚉 A Train Station comes with its own track — buy trains at the ticket machine and passengers pay to ride station to station.',
+    '🛥️ The Superyacht (💰5,000,000): stand on the shore facing the sea to buy her. ✋ to board, ✋ at the helm to sail (V switches the view). ✋ beside her helicopter to fly it.',
+    '🚀 The Rocket & Moon Base (💰10,000,000): ✋ the launch console to fly to the Moon — low gravity, a moon base and moon rock worth 💰1,000 to 💰10,000 a sample.',
     '🏰 The Mansion costs a million — fully furnished, with a pool and tennis court. Press ✋ on the butler to rename it.',
-    '🧑‍💼 Hire a World Manager (top of the Property menu): every sunrise they empty every till, safe and rent pot and sell your harvest, all for 1%.',
-    '🌙 Businesses settle up at sunrise — even ones you haven\u2019t been near since starting the game.',
-    // farming
-    '🚜 Tractors head for ripe crops, replant as they go and fill empty mud. Once you\u2019ve visited a field, its tractor keeps working even when you\u2019re far away.',
-    // furniture you can use
+    '⚔️ The Arena (💰1,000,000) is a huge indestructible metal battle arena — three levels, a maze, towers and catwalks. Fight other players or bots.',
+    // vehicles & equipment
+    '🚗 Buy vehicles at a Vehicle Shop and weapons at an Equipment Shop. Finished with one? Sell it back there for some of your coins.',
+    '🔫 Weapons can’t be used in The Mill, and any damage they do to the landscape is only temporary.',
+    '🌀 A teleporter drops you just beside the pad you travel to, so you’re not straight back in the menu.',
+    // furniture that works
     '✋ Most furniture works: taps, toilets, baths, showers, ovens, fridges, the microwave, the washing machine, wardrobes and more.',
     '🛋️ Press ✋ on a sofa, armchair or chair to sit down. Move or jump to get up.',
     '🛏️ Press ✋ on a bed to sleep — it moves the time on 6 hours.',
-    '📺 Press ✋ on a TV to change the channel, a fireplace to light it, a grand piano to play it, or a pool table to break.',
+    '📺 Press ✋ on a TV to change the channel, a fireplace to light it or a grand piano to play it.',
+    '🎱 Pool: ✋ on a pool table steps up to play — turn to walk round the cue ball, hold ✋ for power and let go to strike, jump to leave.',
     '🎰 Fruit machines cost 💰5 a spin — three of a kind pays 💰25, three stars 💰100.',
-    '🪟 Curtains and Blinds each have their own slot in the Furniture menu (buy them at a Carpenter). Aim at the wall over a window to hang them, then ✋ to close or open them.',
-    '💡 Press ✋ on a wall light or street light to step it through Bright, Medium, Dim and Off.',
-    '🚗 Press ✋ on a garage door to roll it up or down.',
-    // building
-    '🌳 The Hedge block (Terrain menu) stays green all year — tree leaves change with the seasons.',
-    '🌀 A teleporter drops you just beside the pad you travel to, so you\u2019re not straight back in the menu.',
+    '🪟 Curtains and blinds are in Furniture (buy them at a Carpenter). Aim at the wall over a window to hang them, then ✋ to close or open them.',
+    '💡 Press ✋ on a wall light or street light to step it through Bright, Medium, Dim and Off. ✋ a garage door to roll it up or down.',
+    '🪧 Press ✋ on a street sign to turn it, add an arrow or rename it.',
+    // games
+    '⚽ The Mill has football, tennis, crazy golf, Snakes & Ladders and Battleship to play with friends.',
     '📊 Press ` (under Esc), or the button on the pause screen, to show the performance readout.',
   ];
   const TIP_SPEED = 70; // pixels per second
